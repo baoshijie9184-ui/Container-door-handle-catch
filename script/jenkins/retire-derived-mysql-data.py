@@ -23,6 +23,7 @@ import time
 LOADED_SOURCE = None if __name__ == '_approved_worker' else Path(__file__).read_bytes()
 BATCH = 'derived-mysql-221-222-235-238-247-v1'
 RECENT_BATCH = 'derived-mysql-250-253-256-259-264-268-v1'
+FOLLOWUP_BATCH = 'derived-mysql-281-283-v1'
 ROOT = Path('/home/ecs-user/doorhandle-ci')
 INSTANCE = 'i-2zeieuov2aum486jm1ek'
 MACHINE = '1ebe8f77e3104ab6a49a9386e38abd20'
@@ -72,6 +73,18 @@ RECENT_APPROVED_METADATA = {
     'ci-264-2ff9edc00291': (330, 288403456),
     'ci-268-b3f23013513b': (369, 308985856),
 }
+FOLLOWUP_TARGETS = {
+    'ci-281-81244ba1761d': (4474349, '81244ba1761dcd96a1bdfb7e00154c950e778f3e'),
+    'ci-283-30f03c1b1535': (1775872, '30f03c1b15354b9585aee1e4594d53f9f57e802c'),
+}
+FOLLOWUP_BACKUP_MANIFESTS = {
+    'ci-281-81244ba1761d': '51f742817aad0d36020af05fad0791147d0ae622167c780c5ba937d02b7f24dc',
+    'ci-283-30f03c1b1535': 'e1524fcf84dd2c6981564ee83eccf09ddfaef5d19101e0c7917ae14485a67fbe',
+}
+FOLLOWUP_APPROVED_METADATA = {
+    'ci-281-81244ba1761d': (369, 308858880),
+    'ci-283-30f03c1b1535': (374, 311005184),
+}
 SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2
 
@@ -85,10 +98,15 @@ def batch_configuration(batch=BATCH):
     # Preserve the original default and select exactly one closed set, never a union.
     if batch == BATCH:
         return TARGETS, BACKUP_MANIFESTS, APPROVED_METADATA
-    need(batch == RECENT_BATCH, 'CLOSED_BATCH_REQUIRED')
-    need(set(RECENT_TARGETS) == set(RECENT_BACKUP_MANIFESTS) == set(RECENT_APPROVED_METADATA),
+    if batch == RECENT_BATCH:
+        need(set(RECENT_TARGETS) == set(RECENT_BACKUP_MANIFESTS) == set(RECENT_APPROVED_METADATA),
+             'COMPLETE_APPROVED_BATCH_REQUIRED')
+        return RECENT_TARGETS, RECENT_BACKUP_MANIFESTS, RECENT_APPROVED_METADATA
+    need(batch == FOLLOWUP_BATCH, 'CLOSED_BATCH_REQUIRED')
+    need(len(FOLLOWUP_TARGETS) == 2
+         and set(FOLLOWUP_TARGETS) == set(FOLLOWUP_BACKUP_MANIFESTS) == set(FOLLOWUP_APPROVED_METADATA),
          'COMPLETE_APPROVED_BATCH_REQUIRED')
-    return RECENT_TARGETS, RECENT_BACKUP_MANIFESTS, RECENT_APPROVED_METADATA
+    return FOLLOWUP_TARGETS, FOLLOWUP_BACKUP_MANIFESTS, FOLLOWUP_APPROVED_METADATA
 
 
 def encoded(value):
@@ -282,7 +300,7 @@ def process_references(inventories, proc=Path('/proc')):
 
 
 def root_worker(request):
-    need(os.getuid() == 0 and request.get('batch') in (BATCH, RECENT_BATCH)
+    need(os.getuid() == 0 and request.get('batch') in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH)
          and Path('/etc/machine-id').read_text().strip() == MACHINE, 'APPROVED_ROOT_BATCH_REQUIRED')
     batch = request['batch']; selected, _, _ = batch_configuration(batch)
     phase = request.get('phase'); need(phase in ('inventory', 'remove'), 'ROOT_OPERATION_REFUSED')
@@ -401,9 +419,10 @@ def fixed_helpers(args):
 
 
 def run(args):
-    need(os.getuid() == 1000 and args.batch in (BATCH, RECENT_BATCH) and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}', args.tag)
+    need(os.getuid() == 1000 and args.batch in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH) and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}', args.tag)
          and re.fullmatch(r'[a-f0-9]{40}', args.commit) and args.tag.endswith(args.commit[:12])
-         and int(args.tag.split('-')[1]) > (271 if args.batch == BATCH else 278) and SHA.fullmatch(args.source_sha256), 'EXPLICIT_FIXED_MAINTENANCE_REQUIRED')
+         and int(args.tag.split('-')[1]) > (271 if args.batch == BATCH else 278 if args.batch == RECENT_BATCH else 283)
+         and SHA.fullmatch(args.source_sha256), 'EXPLICIT_FIXED_MAINTENANCE_REQUIRED')
     batch = args.batch; targets, _, _ = batch_configuration(batch)
     modules = fixed_helpers(args); verifier = modules['verify-remote.py']; cleanup = modules['cleanup-ecs-builds.py']
     identity = verifier.ecs_identity(INSTANCE, MACHINE)

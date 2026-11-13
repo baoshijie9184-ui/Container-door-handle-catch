@@ -96,9 +96,15 @@ class ModelOperationAuditMySqlTest {
     @ParameterizedTest @ValueSource(strings={"+00:00","-05:30"})
     void explicitOffsetsDetermineUtcWithoutAssumingBeijing(String offset) throws Exception {
         fixture.copy("40-model-operations.sql","__SOURCE_MODEL_LOG_OFFSET__",offset,fixture.sourceName());
+        var sourceTime=LOCAL.atOffset(java.time.ZoneOffset.of(offset));
         assertThat(target.queryForList("SELECT occurred_at FROM audit_event",LocalDateTime.class))
-                .containsOnly(LOCAL.atOffset(java.time.ZoneOffset.of(offset)).withOffsetSameInstant(java.time.ZoneOffset.UTC).toLocalDateTime());
-        assertThat(store.selectByModelId(7)).extracting(ModelOperationLog::getOperationTime).containsOnly(LOCAL);
+                .containsOnly(sourceTime.withOffsetSameInstant(java.time.ZoneOffset.UTC).toLocalDateTime());
+        // The API displays confirmed instants at its business +08 offset, not the original source wall time.
+        assertThat(store.selectByModelId(7)).extracting(ModelOperationLog::getOperationTime)
+                .containsOnly(sourceTime.withOffsetSameInstant(java.time.ZoneOffset.ofHours(8)).toLocalDateTime());
+        assertThat(target.queryForList("SELECT JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.legacyOperationTime')) FROM audit_event",String.class))
+                .containsOnly("2026-10-14T16:30:00");
+        assertThat(source.queryForList("SELECT operation_time FROM model_operation_log",LocalDateTime.class)).containsOnly(LOCAL);
     }
 
     @ParameterizedTest @ValueSource(strings={"new-column","type","nullable","collation","default","index","foreign-key","cascade","check","trigger"})

@@ -12,11 +12,14 @@
 
 ### 数据库验收仍待完成
 
-最新完整数据库任务 **#281 FAILURE**，固定 `81244ba1761dcd96a1bdfb7e00154c950e778f3e`：13模块本地跳测试打包成功，同轮ECS控制 **2,453项全部通过**；原生实际运行 **33类、466项：465通过、1错误、零跳过**。#268的DetectionCollaboration旧审计夹具修复已由原13项全通过验证，Workspace16项仍全通过，Context尚未达到。
+最新完整数据库任务 **#283 FAILURE**，固定 `30f03c1b15354b9585aee1e4594d53f9f57e802c`：13模块本地跳测试打包、同轮ECS控制 **2,453项全部通过**；原生实际覆盖 **46类、681项：677通过、3断言失败、1错误，零跳过**。此前Infra未知CHECK已由27项全通过验证，ContextStore4项、Workbench40项和DetectionCollaboration13项均全通过；其余原生类及后续source/整库/恢复尚未完成。
 
-唯一错误为`InfraOperationAuditMySqlTest`未知结构负例在准备`CHECK(id>0)`时，被MySQL 8.4以3818拒绝：CHECK不能引用自增列。尚未达到该负例原本要验证的迁移拒绝断言。已将该夹具改为合法非自增字段`CHECK(CHAR_LENGTH(operator)>0)`；相邻检查又修正ModelOperationAudit未知CHECK引用CASCADE外键列的问题，改用非外键字段`CHAR_LENGTH(operation_type)<=32`。两类原27/33项保持，13模块离线test-compile59.847秒成功，未运行本地测试；生产DDL、迁移检查及原断言不变。完整source、整库131→29、SQL双恢复及旧文件恢复在本轮尚未达到，不能据465项通过宣称迁移完成。
+本轮已集中修正四文件，原11/12/33/9项数量保持，不改生产DDL、translator、helper或业务代码：
+- SystemHistory及未达到的LoginSession负例改用既有严格3819/HY000和精确CHECK名；SystemHistory的V2先构造合法USER载荷，再只验证NULL执行人；每次拒绝后比较完整原行。
+- ModelOperationAudit原offset→UTC结果正确，错误在测试把API固定+08展示误当原wall time。源2026-10-14 16:30在+00、−05:30下分别为UTC16:30、22:00，API应为次日00:30、06:00；修正展示期望并保留UTC及原wall/payload不变断言。
+- ModelUpload缺旧命令回执负例不能DELETE受保护历史。现使用已有非命令模式完成一次真实REGISTERED上传，恢复保护后验证409、仅验证一次、无新命令或回执头，模型/文件登记/审计原行均不变。
 
-#281原始90份归档已核对，89份非应用JAR、21,662,649字节及原build.xml已保全在 `ci-281-raw-receipts`；应用JAR仍在Jenkins原归档。夹具监督5,098次，内核峰值1,201,307,648字节，无OOM，`STOPPED/watchStopped=true`；该峰值只覆盖实际完成部分。工具与夹具均已STOPPED，**13:42:18（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-281-external-stop-readback.json`。Jenkins保持运行，修复期间任务禁自动触发、无队列。
+13模块离线跳测试编译 **23.113秒BUILD SUCCESS**，原件 `work/jenkins/native283-model-fixtures-final-test-compile.log`；修复尚待新固定提交ECS统一验证。#283的111份原归档已核对，110份非应用JAR、23,135,018字节及原build.xml保全在 `ci-283-raw-receipts`；应用JAR仍在Jenkins原归档。夹具监督6,876次、内核峰值1,166,548,992字节、无OOM，工具及夹具均STOPPED，**15:15:54（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-283-external-stop-readback.json`。该峰值只覆盖已完成部分。
 
 ### 十一份旧测试副本已按两次授权回收
 
@@ -30,6 +33,8 @@
 后续完整数据库验证保留64原生类、最低755项、完整source、131→29及源/目标双恢复、旧45表、5,599文件和三库输入。为避免SQL临时恢复卷与5,599文件新展开同时占盘，已核对依赖：旧45及三库仅依赖本轮完整VerifyEcs PASS、原clone和各自原件；两阶段成功返回前均清理其两个派生恢复卷。已将两SQL阶段原样移到旧文件恢复之前，保留全部when、ATTEMPTED、逐项校验和失败清理。完整顶层stage顺序回归已随#281控制模块39项实际全通过；后续仍由完整`verify/mysql`自带预检及全部恢复统一验证，不重复已消费维护批次。
 
 为继续下一轮，在既有FailedNative准入中仅登记#281原归档的真实已审发布配方。其`verify/mysql`、生产false及未请求builder均由原件核定；原算法和目录范围不变，若现场容量需要则只回收#281可再生JAR及停止对象，保留其mysql-data、SQL、源码和报告，不重跑五/六闭集。
+
+用户已另行批准#281/#283两份新增派生库按同样条件回收。一次管理员只读统计已完成：743个文件、619,864,064分配字节，无链接/硬链或异项；各自131表/5,755行完整源SQL和备份manifest已核验，原件 `two-derived-mysql-admin-metadata-once.json`、`two-derived-mysql-original-backup-facts.json`。两份仍未删除。复用原维护入口增加第三个精确闭集`DerivedMysql281283`，原五/六范围和默认保持，不合并扫描；97项回收回归、控制总2,476项已完成静态编译，提交后统一控制验证，再先标准FailedNative283清停止对象/JAR并保数据，最后执行获批两目录回收。
 
 完整native、131→29整库及双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、Mem0/RAG正式生效与旧数据业务合入/切库仍未验收。正式压测继续后置。
 

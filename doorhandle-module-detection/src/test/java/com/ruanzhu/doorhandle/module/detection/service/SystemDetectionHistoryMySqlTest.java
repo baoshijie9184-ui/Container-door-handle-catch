@@ -19,7 +19,6 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.context.annotation.*;
 import org.springframework.core.env.MapPropertySource;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -30,6 +29,7 @@ import javax.sql.DataSource;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import static com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.assertCheckViolation;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -155,11 +155,17 @@ class SystemDetectionHistoryMySqlTest {
     }
     @Test void schemaRejectsUserExecutorInSystemPayloadAndNullExecutorInV2() throws Exception {
         worker.applyFinishedEvent(event("event-one","dispatch-a"));var value=(ObjectNode)payload();value.put("sourceEventId","guard-event");value.put("causationRequestId","guard-event");
+        String rows="SELECT * FROM audit_event WHERE kind='OPERATIONS' ORDER BY id";
+        var original=jdbc.queryForList(rows);assertThat(original).hasSize(1);
         String insert="INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,request_id,action,payload_version,payload_json) VALUES(UUID(),'OPERATIONS',?,?,'OPERATIONS','worker-task','guard-event','SYSTEM_COMPLETED',?,?)";
-        assertThatThrownBy(()->jdbc.update(insert,1L,1L,3,value.toString())).isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(()->jdbc.update(insert,null,null,2,value.toString())).isInstanceOf(DataIntegrityViolationException.class);
-        value.put("source","USER");assertThatThrownBy(()->jdbc.update(insert,null,null,3,value.toString())).isInstanceOf(DataIntegrityViolationException.class);
-        assertThat(count()).isEqualTo(1);
+        assertCheckViolation(()->jdbc.update(insert,1L,1L,3,value.toString()),"ck_audit_operations");
+        assertThat(jdbc.queryForList(rows)).hasSize(1).isEqualTo(original);
+        var userValue=value.deepCopy();userValue.remove(List.of("source","component","sourceEventId","initiator"));
+        userValue.put("actorUsername","origin");userValue.putNull("actorDisplayName");userValue.put("actorRole","INSPECTOR");
+        assertCheckViolation(()->jdbc.update(insert,null,null,2,userValue.toString()),"ck_audit_operations");
+        assertThat(jdbc.queryForList(rows)).hasSize(1).isEqualTo(original);
+        value.put("source","USER");assertCheckViolation(()->jdbc.update(insert,null,null,3,value.toString()),"ck_audit_operation_versions");
+        assertThat(jdbc.queryForList(rows)).hasSize(1).isEqualTo(original);assertThat(count()).isEqualTo(1);
     }
     @Test void nullSystemActorNeverGrantsPersonalHistoryAndCurrentResourceRevocationStillApplies(){
         worker.applyFinishedEvent(event("event-one","dispatch-a"));var item=history.changes(boss,Long.MAX_VALUE,50,filter()).items().get(0);

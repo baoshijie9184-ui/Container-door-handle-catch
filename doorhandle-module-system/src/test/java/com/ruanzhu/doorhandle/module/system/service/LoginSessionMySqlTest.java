@@ -20,6 +20,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.util.*;
 import java.util.concurrent.*;
+import static com.ruanzhu.doorhandle.module.system.support.EcsIsolatedMysql.assertCheckViolation;
 import static org.assertj.core.api.Assertions.*;
 
 /** Real MySQL, full 29-table DDL, current account facts, durable session races. ECS only. */
@@ -104,8 +105,13 @@ class LoginSessionMySqlTest {
     }
     @Test void closedSchemaRejectsExtraCredentialFieldsWrongTypesAndSdkSlotUse(){
         sessions.login(1,"boss-a");
-        for(String mutation:List.of("payload_json=JSON_SET(payload_json,'$.rawToken','forbidden')","payload_json=JSON_SET(payload_json,'$.userId','1')","session_id='not-sdk'","scope_key='raw-sid'","state_code='UNKNOWN'","window_ends_at=window_started_at"))
-            assertThatThrownBy(()->jdbc.update("UPDATE runtime_state SET "+mutation+" WHERE namespace='LOGIN_SESSION'")).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        String rows="SELECT * FROM runtime_state WHERE namespace='LOGIN_SESSION' ORDER BY owner_id,scope_key";
+        var original=jdbc.queryForList(rows);assertThat(original).hasSize(1);
+        for(String mutation:List.of("payload_json=JSON_SET(payload_json,'$.rawToken','forbidden')","payload_json=JSON_SET(payload_json,'$.userId','1')","session_id='not-sdk'","scope_key='raw-sid'","state_code='UNKNOWN'","window_ends_at=window_started_at")){
+            String[] constraints="session_id='not-sdk'".equals(mutation)?new String[]{"ck_runtime_login_session","ck_runtime_sdk"}:new String[]{"ck_runtime_login_session"};
+            assertCheckViolation(()->jdbc.update("UPDATE runtime_state SET "+mutation+" WHERE namespace='LOGIN_SESSION'"),constraints);
+            assertThat(jdbc.queryForList(rows)).hasSize(1).isEqualTo(original);
+        }
     }
     @Test void accountCommandChecksVersionAndSelfProtectionAndRevokesOtherDevices(){
         var one=sessions.login(2,"boss-b");var two=sessions.login(2,"boss-b");

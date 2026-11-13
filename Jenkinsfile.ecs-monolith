@@ -3,7 +3,7 @@
 def configureVerificationInputs() {
     if (!(params.ACTION in ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'])) error('Unsupported pipeline action')
     env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'
-    if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268'])) error('Unsupported native retention policy')
+    if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283'])) error('Unsupported native retention policy')
     if (env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs') error('An explicit retired-copy policy requires source-only build maintenance')
     env.FAILED_NATIVE_BUILD_NUMBER = params.FAILED_NATIVE_BUILD_NUMBER?.trim() ?: ''
     if (env.FAILED_NATIVE_BUILD_NUMBER) {
@@ -122,7 +122,7 @@ pipeline {
     triggers { pollSCM('H/5 * * * *') }
     parameters {
         choice(name: 'ACTION', choices: ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'], description: 'verify-controls仅运行ECS控制脚本预检；verify-embedding独立验证免费向量模型；verify-runtime验收隔离应用；reclaim-build-outputs仅维护旧构建输出；切库仍须完整证据')
-        choice(name: 'NATIVE_RETENTION_POLICY', choices: ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268'], description: 'Maintenance only: choose one native retention policy; default FailedNative follows failed runtime builds')
+        choice(name: 'NATIVE_RETENTION_POLICY', choices: ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283'], description: 'Maintenance only: choose one native retention policy; default FailedNative follows failed runtime builds')
         string(name: 'FAILED_NATIVE_BUILD_NUMBER', defaultValue: '', trim: true, description: 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete failed-native batch')
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
         choice(name: 'DOORHANDLE_CI_SCOPE', choices: ['source', 'mysql'], description: 'source 记录可选套件跳过；mysql 要求显式隔离夹具及所有选择用例实际执行')

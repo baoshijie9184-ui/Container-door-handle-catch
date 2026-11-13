@@ -20,20 +20,22 @@ retirement = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(retirement)
 RELEASE = 'ci-221-8c30776fcd95'
 RECENT_RELEASE = 'ci-250-6444cbc36a65'
-BATCHES = (retirement.BATCH, retirement.RECENT_BATCH)
-POLICIES = ('DerivedMysql221222235238247', 'DerivedMysql250253256259264268')
+BATCHES = (retirement.BATCH, retirement.RECENT_BATCH, retirement.FOLLOWUP_BATCH)
+POLICIES = ('DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283')
 
 
 def test_batch_has_only_the_five_explicitly_approved_replicas():
     assert {int(key.split('-')[1]) for key in retirement.TARGETS} == {221, 222, 235, 238, 247}
     assert set(retirement.BACKUP_MANIFESTS) == set(retirement.TARGETS)
     assert all(len(value[1]) == 40 for value in retirement.TARGETS.values())
-    with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
-        retirement.data_path('ci-266-f6e062edc7b6')
+    for release in (*retirement.RECENT_TARGETS, *retirement.FOLLOWUP_TARGETS, 'ci-266-f6e062edc7b6'):
+        with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
+            retirement.data_path(release)
 
 
 @pytest.mark.parametrize('batch,numbers', [(BATCHES[0], {221, 222, 235, 238, 247}),
-                                         (BATCHES[1], {250, 253, 256, 259, 264, 268})])
+                                         (BATCHES[1], {250, 253, 256, 259, 264, 268}),
+                                         (BATCHES[2], {281, 283})])
 def test_closed_batches_never_union_targets_or_admit_the_oom_replica(batch, numbers):
     targets, manifests, metadata = retirement.batch_configuration(batch)
     assert {int(key.split('-')[1]) for key in targets} == numbers
@@ -41,7 +43,8 @@ def test_closed_batches_never_union_targets_or_admit_the_oom_replica(batch, numb
     for release in targets:
         assert retirement.data_path(release, batch).parts[-1] == 'mysql-data'
         assert len(targets[release][1]) == 40 and len(manifests[release]) == 64
-    other = retirement.RECENT_TARGETS if batch == retirement.BATCH else retirement.TARGETS
+    other = [release for other_batch in BATCHES if other_batch != batch
+             for release in retirement.batch_configuration(other_batch)[0]]
     for release in (*other, 'ci-266-f6e062edc7b6'):
         with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
             retirement.data_path(release, batch)
@@ -73,9 +76,11 @@ def test_root_inventory_selects_the_exact_batch_and_rejects_cross_batch_removal(
     result = retirement.root_worker({'phase': 'inventory', 'batch': batch})
     assert [row['release'] for row in result['targets']] == list(selected)
     assert calls == [(release, batch) for release in selected]
-    other = RECENT_RELEASE if batch == retirement.BATCH else RELEASE
-    with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
-        retirement.root_worker({'phase': 'remove', 'batch': batch, 'target': {'release': other}})
+    for other_batch in BATCHES:
+        if other_batch == batch: continue
+        other = next(iter(retirement.batch_configuration(other_batch)[0]))
+        with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
+            retirement.root_worker({'phase': 'remove', 'batch': batch, 'target': {'release': other}})
 
 
 @pytest.mark.parametrize('payload', [
@@ -188,9 +193,10 @@ def test_complete_original_sql_binding_omits_private_password(keeper_documents):
     result = retirement.keeper_binding(state.release, state.batch)
     assert result['sourceSqlBytes'] == len(b'complete original source SQL')
     assert 'never-output-this-secret' not in json.dumps(result)
-    other = retirement.RECENT_BATCH if state.batch == retirement.BATCH else retirement.BATCH
-    with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
-        retirement.keeper_binding(state.release, other)
+    for other in BATCHES:
+        if other == state.batch: continue
+        with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
+            retirement.keeper_binding(state.release, other)
 
 
 @pytest.mark.parametrize('damage', ['phase', 'source-container', 'clone', 'path', 'tables', 'sql-hash', 'snapshot', 'cleanup'])
@@ -213,7 +219,7 @@ def test_pipeline_requires_the_explicit_closed_batch_and_keeps_old_defaults():
         text = (root / relative).read_text(encoding='utf-8-sig')
         assert all(name in text for name in POLICIES) and 'FailedNative' in text
     wrapper = (root / 'script/jenkins/retire-derived-mysql-data.ps1').read_text(encoding='utf-8-sig')
-    for policy, batch, count in zip(POLICIES, BATCHES, (5, 6)):
+    for policy, batch, count in zip(POLICIES, BATCHES, (5, 6, 2)):
         assert f"{policy}=@{{batch='{batch}';count={count}}}" in wrapper
     assert 'reclaim-build-outputs' in wrapper
     assert 'Remove-Item' not in wrapper and 'plan-sha256' in wrapper
@@ -238,7 +244,7 @@ def test_pipeline_requires_the_explicit_closed_batch_and_keeps_old_defaults():
 
 @pytest.fixture(params=BATCHES)
 def observation_attempt(tmp_path, monkeypatch, request):
-    args = SimpleNamespace(phase='status', batch=request.param, tag='ci-280-' + 'a' * 12,
+    args = SimpleNamespace(phase='status', batch=request.param, tag='ci-286-' + 'a' * 12,
                            commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
     identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
     monkeypatch.setattr(retirement, 'ROOT', tmp_path)
@@ -269,12 +275,13 @@ def test_observation_reports_only_the_existing_execution_without_replay(observat
 @pytest.mark.parametrize('damage', ['source', 'batch'])
 def test_observation_rejects_another_source_terminal(observation_attempt, damage):
     attempt = observation_attempt
-    changed = {'sourceSha256': '0' * 64} if damage == 'source' else {
-        'batch': retirement.RECENT_BATCH if attempt.args.batch == retirement.BATCH else retirement.BATCH}
-    (attempt.output / 'receipt.json').write_bytes(retirement.encoded(
-        {**attempt.binding, 'status': 'COMPLETE', **changed}))
-    with pytest.raises(ValueError, match='TERMINAL_BINDING_DIFFERS'):
-        retirement.run(attempt.args)
+    changes = [{'sourceSha256': '0' * 64}] if damage == 'source' else [
+        {'batch': other} for other in BATCHES if other != attempt.args.batch]
+    for changed in changes:
+        (attempt.output / 'receipt.json').write_bytes(retirement.encoded(
+            {**attempt.binding, 'status': 'COMPLETE', **changed}))
+        with pytest.raises(ValueError, match='TERMINAL_BINDING_DIFFERS'):
+            retirement.run(attempt.args)
 
 
 @pytest.fixture
@@ -431,11 +438,11 @@ def test_process_directories_arguments_and_namespace_inode_aliases_are_fenced(sy
 @pytest.mark.parametrize('batch', BATCHES)
 def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path, monkeypatch, batch):
     args = SimpleNamespace(phase='plan', batch=batch,
-        tag='ci-280-' + 'a' * 12, commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
+        tag='ci-286-' + 'a' * 12, commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
     root = tmp_path / 'ci'; (root / 'inbox' / args.tag).mkdir(parents=True)
     identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
     selected = retirement.batch_configuration(batch)[0]
-    all_releases = [*retirement.TARGETS, *retirement.RECENT_TARGETS, 'ci-266-f6e062edc7b6']
+    all_releases = [*retirement.TARGETS, *retirement.RECENT_TARGETS, *retirement.FOLLOWUP_TARGETS, 'ci-266-f6e062edc7b6']
     states = {}
     for release in all_releases:
         parent = root / 'verification' / release / 'checkout/work/compact-fixtures'; parent.mkdir(parents=True)
@@ -477,10 +484,12 @@ def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path,
     assert public_plan['batch'] == batch and [row['release'] for row in public_plan['targets']] == list(selected)
     # A validly hashed plan from the other closed batch cannot authorize this apply.
     private = Path(planned['file']).with_name('plan-private.json'); original = private.read_bytes()
-    wrong = json.loads(original); wrong['batch'] = retirement.RECENT_BATCH if batch == retirement.BATCH else retirement.BATCH
-    private.write_bytes(retirement.encoded(wrong)); args.plan_sha256 = retirement.digest(private.read_bytes())
-    with pytest.raises(ValueError, match='PLAN_OR_KEEPERS_CHANGED'): retirement.run(args)
-    assert all(state.path.exists() for state in states.values())
+    for other in BATCHES:
+        if other == batch: continue
+        wrong = json.loads(original); wrong['batch'] = other
+        private.write_bytes(retirement.encoded(wrong)); args.plan_sha256 = retirement.digest(private.read_bytes())
+        with pytest.raises(ValueError, match='PLAN_OR_KEEPERS_CHANGED'): retirement.run(args)
+        assert all(state.path.exists() for state in states.values())
     private.write_bytes(original); args.plan_sha256 = planned['privatePlanSha256']
     result = retirement.run(args)
     assert result['status'] == 'COMPLETE' and result['removedDirectories'] == len(selected)

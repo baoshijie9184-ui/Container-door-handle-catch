@@ -132,9 +132,20 @@ class ModelUploadIdempotencyMySqlTest {
         assertThat(upload(request,BODY,"original").getResponse().getStatus()).isEqualTo(409);assertThat(state()).isEqualTo("RESERVED");assertThat(fileCount()).isZero();assertThat(count("model_management")).isZero();verifyNoInteractions(context.getBean(ModelValidationService.class));
     }
     @Test void registeredFileWithMissingBusinessReceiptFailsClosedInsteadOfReexecuting()throws Exception{
-        assertThat(upload("missing-receipt",BODY,"original").getResponse().getStatus()).isEqualTo(200);
-        jdbc.update("DELETE FROM workflow_instance WHERE kind='BUSINESS_COMMAND'");
-        assertThat(upload("missing-receipt",BODY,"original").getResponse().getStatus()).isEqualTo(409);assertThat(fileCount()).isEqualTo(1);assertThat(count("model_management")).isEqualTo(1);
+        // A pre-command registration is valid history; completed command receipts must never be deleted.
+        var aspect=context.getBean(BusinessMutationAudit.class);ReflectionTestUtils.setField(aspect,"mutationProtectionEnabled",false);
+        try{assertThat(upload("missing-receipt",BODY,"original").getResponse().getStatus()).isEqualTo(200);}
+        finally{ReflectionTestUtils.setField(aspect,"mutationProtectionEnabled",true);}
+        assertThat(state()).isEqualTo("REGISTERED");assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='BUSINESS_COMMAND'",Integer.class)).isZero();
+        var originalModel=jdbc.queryForList("SELECT * FROM model_management ORDER BY model_id");
+        var originalFiles=jdbc.queryForList("SELECT * FROM workflow_instance WHERE kind='MODEL_FILE_UPLOAD' ORDER BY workflow_id");
+        var originalAudit=jdbc.queryForList("SELECT * FROM audit_event ORDER BY id");
+        var retry=upload("missing-receipt",BODY,"original");assertThat(retry.getResponse().getStatus()).isEqualTo(409);
+        assertThat(retry.getResponse().getHeader("X-Audit-ID")).isNull();assertThat(retry.getResponse().getHeader("X-Resource-Version")).isNull();
+        assertThat(fileCount()).isEqualTo(1);assertThat(count("model_management")).isEqualTo(1);
+        assertThat(jdbc.queryForList("SELECT * FROM model_management ORDER BY model_id")).isEqualTo(originalModel);
+        assertThat(jdbc.queryForList("SELECT * FROM workflow_instance WHERE kind='MODEL_FILE_UPLOAD' ORDER BY workflow_id")).isEqualTo(originalFiles);
+        assertThat(jdbc.queryForList("SELECT * FROM audit_event ORDER BY id")).isEqualTo(originalAudit);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='BUSINESS_COMMAND'",Integer.class)).isZero();verify(context.getBean(ModelValidationService.class),times(1)).validate(any());
     }
     @Test void changedManagedBytesAreNotRewrittenOrRevalidated()throws Exception{
