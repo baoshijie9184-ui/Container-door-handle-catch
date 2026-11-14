@@ -211,6 +211,11 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('920874a7f6da76a75b369b32e229f58616d947a6c88a8866ea6bb65e58a78f3c',
      '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
      '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
+    # Same producer pair after adding only derived-mysql stdout/stderr archive
+    # coverage to Jenkins post; execution and publication gates are unchanged.
+    ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0',
+     '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
+     '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
 })
 
 

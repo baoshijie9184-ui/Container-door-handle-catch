@@ -1406,13 +1406,13 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 187,
+        "minimumTests": 202,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 438,
+        "minimumTests": 449,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },

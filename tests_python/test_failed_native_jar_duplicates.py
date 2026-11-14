@@ -2371,7 +2371,8 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
     reviewed = ('920874a7f6da76a75b369b32e229f58616d947a6c88a8866ea6bb65e58a78f3c',
                 '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
                 '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
-    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed})
+    diagnostic = ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0', *reviewed[1:])
+    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic})
     assert reviewed[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
     assert reviewed[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
     assert retirer.database_verification_recipe(reviewed[:2], reviewed[2]) is True
@@ -2381,6 +2382,16 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
         assert retirer.database_verification_recipe(legacy, retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE) is True
         assert retirer.database_verification_recipe(legacy, reviewed[2]) is False
         assert retirer.database_verification_recipe((legacy[0], reviewed[1]), reviewed[2]) is False
+
+
+def test_diagnostic_archive_recipe_remains_bound_to_the_three_current_source_members():
+    paths = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
+    recipe = tuple(sha((MODULE.parents[2] / path).read_bytes().replace(b'\r\n', b'\n')) for path in paths)
+    assert recipe == ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0',
+                      '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
+                      '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
+    assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is True
+    assert recipe[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
 
 
 @pytest.fixture
@@ -2944,6 +2955,110 @@ def test_reviewed_database_builder_absence_rejects_mixed_recipe_or_receipt(datab
         retirer.database_builder_absence_controls(s.root, s.request, historical)
     assert s.commands == [] and s.keeper.read_bytes() == s.copy_path.read_bytes() == s.jar
     assert s.page.read_bytes() == s.page_bytes and s.data.stat().st_ino == s.data_inode
+
+
+@pytest.fixture
+def derived_database_fixture(database_only_failed_native_pair, monkeypatch):
+    from tests_python.test_derived_mysql_retirement import retirement
+    s = database_only_failed_native_pair
+    monkeypatch.setattr(retirement, 'ROOT', s.root)
+    refs = s.request['candidates'][0]['controls']
+    owner_path = s.root / refs['fixtureOwner']['path']
+    owner = json.loads(owner_path.read_bytes())
+    keepers = [{**s.context, 'token': owner['token'],
+                'ownerSha256': refs['fixtureOwner']['sha256'],
+                'cleanupSha256': refs['fixtureCleanup']['sha256']}]
+    helpers = {'retire-failed-native-jar-duplicates.py': retirer,
+               'compact-build-resources.py': s.options['modules']['builder'],
+               'cleanup-ecs-builds.py': s.cleanup}
+    value = {'identity': s.request['identity'], 'candidates': [dict(s.context)]}
+    # These regenerable outputs were already retired by a different lifecycle.
+    # The exact stopped fixture must not require them to be recreated.
+    s.keeper.unlink(); s.copy_path.unlink()
+    sql = s.data.parent / 'retained-source.sql'; sql.write_bytes(b'complete original SQL')
+    report = s.data.parent / 'retained-report.xml'; report.write_bytes(b'original failed report')
+    protected = s.root / 'verification/ci-266-cccccccccccc/checkout/work/compact-fixtures/mysql-data/keep.ibd'
+    protected.parent.mkdir(parents=True, mode=0o700); protected.write_bytes(b'protected recovery point')
+    return SimpleNamespace(native=s, retirement=retirement, keepers=keepers, helpers=helpers, value=value,
+                           owner_path=owner_path, sql=sql, report=report, protected=protected,
+                           watch_originals={role: path.read_bytes() for role, path in s.watch_files.items()})
+
+
+def assert_derived_fixture_preservation(state):
+    s = state.native
+    assert not s.keeper.exists() and not s.copy_path.exists()
+    assert s.production in s.rows and s.rows[s.production]['State']['Running'] is True
+    assert s.page.read_bytes() == s.page_bytes and s.data.stat().st_ino == s.data_inode
+    assert state.sql.read_bytes() == b'complete original SQL'
+    assert state.report.read_bytes() == b'original failed report'
+    assert state.protected.read_bytes() == b'protected recovery point'
+    assert (s.keeper.parent / 'source.tar.gz').read_bytes() == s.original_archive
+    assert state.watch_originals == {role: path.read_bytes() for role, path in s.watch_files.items()}
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('already_absent', [False, True])
+def test_derived_stopped_fixture_is_retired_without_recreating_either_jar(derived_database_fixture, already_absent):
+    state = derived_database_fixture; s = state.native; retirement = state.retirement
+    if already_absent: del s.rows[s.fid]
+    candidates = retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)
+    assert len(candidates) == 1 and (candidates[0]['fixture'] is None) is already_absent
+    retirement.task_fixture_quiescence(state.keepers, candidates, state.helpers)
+    result = retirement.task_remove_fixture(candidates[0], state.helpers)
+    assert result['status'] == ('ALREADY_ABSENT' if already_absent else 'REMOVED')
+    assert s.commands == ([] if already_absent else [('rm', s.fid)]) and s.fid not in s.rows
+    # Once the object is gone, the original strict no-exclusions gate applies.
+    absent = retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)
+    assert absent[0]['fixture'] is None
+    retirement.task_fixture_quiescence(state.keepers, absent, state.helpers)
+    assert_derived_fixture_preservation(state)
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('damage', ['running', 'oom', 'foreign-mount', 'owner-drift'])
+def test_derived_fixture_admission_keeps_real_stopped_owner_and_mount_guards(derived_database_fixture, damage):
+    state = derived_database_fixture; s = state.native
+    if damage == 'running': s.rows[s.fid]['State'].update(Status='running', Running=True, Pid=1234)
+    elif damage == 'oom': s.rows[s.fid]['State']['OOMKilled'] = True
+    elif damage == 'foreign-mount': s.rows[s.fid]['Mounts'].append(
+        {'Type': 'bind', 'Source': '/var/lib/business', 'Destination': '/unapproved', 'RW': True})
+    else: state.owner_path.write_bytes(state.owner_path.read_bytes() + b' ')
+    with pytest.raises(ValueError):
+        state.retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)
+    assert s.commands == [] and s.fid in s.rows
+    assert_derived_fixture_preservation(state)
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('reference', ['bind', 'namespace'])
+def test_derived_fixture_quiescence_never_excludes_another_container(derived_database_fixture, reference):
+    state = derived_database_fixture; s = state.native; retirement = state.retirement
+    candidates = retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)
+    if reference == 'bind': s.rows[s.production]['Mounts'] = [
+        {'Type': 'bind', 'Source': str(s.data), 'Destination': '/other', 'RW': False}]
+    else: s.rows[s.production]['HostConfig']['NetworkMode'] = 'container:' + s.fid
+    with pytest.raises(ValueError):
+        retirement.task_fixture_quiescence(state.keepers, candidates, state.helpers)
+    assert s.commands == [] and s.fid in s.rows
+    assert_derived_fixture_preservation(state)
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('changed', ['restarted', 'new-reference'])
+def test_derived_fixture_remove_rechecks_state_and_references_after_admission(derived_database_fixture, changed):
+    state = derived_database_fixture; s = state.native; retirement = state.retirement
+    candidates = retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)
+    retirement.task_fixture_quiescence(state.keepers, candidates, state.helpers)
+    if changed == 'restarted': s.rows[s.fid]['State'].update(Status='running', Running=True, Pid=1234)
+    else: s.rows[s.production]['HostConfig']['NetworkMode'] = 'container:' + s.fid
+    with pytest.raises(ValueError):
+        retirement.task_remove_fixture(candidates[0], state.helpers)
+    assert s.commands == [] and s.fid in s.rows
+    assert_derived_fixture_preservation(state)
 
 
 @pytest.mark.parametrize('changed', ['missing', 'changed'])

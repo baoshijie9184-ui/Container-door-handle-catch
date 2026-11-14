@@ -6,6 +6,7 @@ The privileged worker accepts no arbitrary directory and opens no MySQL contents
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import contextmanager, ExitStack
 import fcntl
 import hashlib
@@ -104,6 +105,28 @@ class TaskBatch:
 def need(value, code):
     if not value:
         raise ValueError(code)
+
+
+def failure_reason_code(error):
+    """Publish only a literal guard from executing, authenticated helper bytes."""
+    if not isinstance(error, ValueError) or len(error.args) != 1 or type(error.args[0]) is not str:
+        return 'UNCLASSIFIED_ERROR'
+    sources = {LOADED_SOURCE} if LOADED_SOURCE else set()
+    trace = error.__traceback__
+    while trace is not None:
+        source = trace.tb_frame.f_globals.get('LOADED_SOURCE')
+        if type(source) is bytes and len(source) <= MIB:
+            sources.add(source)
+        trace = trace.tb_next
+    for source in sources:
+        for node in ast.walk(ast.parse(source)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in ('need', 'require') and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant) and type(node.args[1].value) is str
+                    and re.fullmatch(r'[A-Z][A-Z0-9_]{1,160}', node.args[1].value)
+                    and node.args[1].value == error.args[0]):
+                return error.args[0]
+    return 'UNCLASSIFIED_ERROR'
 
 
 def batch_configuration(batch=BATCH):
@@ -552,13 +575,14 @@ def task_helpers(binding):
     raw = read(ROOT / 'inbox' / tag / 'cleanup-source.tar.gz', 128 * MIB)
     need(digest(raw) == binding['sourceSha256'], 'FIXED_TASK_SOURCE_CHANGED')
     wanted = {'retire-derived-mysql-data.py', 'retire-failed-native-jar-duplicates.py',
-              'cleanup-ecs-builds.py', 'verify-remote.py'}
+              'cleanup-ecs-builds.py', 'verify-remote.py', 'compact-build-resources.py'}
     bodies = {}
     with tarfile.open(fileobj=io.BytesIO(raw), mode='r:gz') as archive:
         need(archive.pax_headers.get('comment') == commit, 'TASK_SOURCE_COMMIT_DIFFERS')
         for member in archive:
-            name = member.name.removeprefix('script/jenkins/')
-            if member.name != 'script/jenkins/' + name or name not in wanted:
+            name = member.name.rsplit('/', 1)[-1]
+            prefix = 'script/docker/' if name == 'compact-build-resources.py' else 'script/jenkins/'
+            if member.name != prefix + name or name not in wanted:
                 continue
             need(name not in bodies and member.isfile() and 0 < member.size <= MIB,
                  'TASK_HELPER_CLOSURE_DIFFERS')
@@ -784,6 +808,65 @@ def task_configuration(value, keepers, roots):
     return TaskBatch(targets, {row['release']: row['backupManifestSha256'] for row in keepers})
 
 
+def task_fixture_candidates(value, keepers, helpers):
+    """Reuse the stopped-object proof, independently of regenerable JAR presence."""
+    native, builder = helpers['retire-failed-native-jar-duplicates.py'], helpers['compact-build-resources.py']
+    need(len(value['candidates']) == len(keepers), 'COMPLETE_TASK_FIXTURE_PROOFS_REQUIRED')
+    candidates = []
+    for row, keeper in zip(value['candidates'], keepers):
+        context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}
+        need(context == {key: keeper[key] for key in context}, 'TASK_FIXTURE_KEEPER_CONTEXT_DIFFERS')
+        work = ROOT / 'verification' / row['release'] / 'checkout/work/compact-fixtures'
+        documents, references = {}, {}
+        for role, path, checksum in (('fixtureOwner', work.parent / 'compact-fixtures-owner.json', keeper['ownerSha256']),
+                                     ('fixtureCleanup', work / 'cleanup-receipt.json', keeper['cleanupSha256'])):
+            with native.held_file(ROOT, path, native.MAX_CONTROL) as (stream, metadata):
+                raw = stream.read(native.MAX_CONTROL + 1)
+                need(digest(raw) == checksum, 'TASK_FIXTURE_ORIGINAL_CHANGED')
+                documents[role] = native.decode(raw)
+                references[role] = {'path': path.relative_to(ROOT).as_posix(), 'bytes': len(raw),
+                                    'sha256': checksum, 'metadata': metadata}
+        source = native.source_proof(ROOT, row['release'], row['commit'], row['sourceSha256'],
+                                     canonical_jar=True, failed_native=True, database_verification=True)
+        historical = {'context': context, 'controls': references, 'sourceArchive': source,
+            'evidence': {'identity': value['identity'], 'ownerToken': keeper['token']},
+            'fixtureOwner': native.fixture_owner_projection(documents['fixtureOwner']),
+            'fixtureCleanup': {key: documents['fixtureCleanup'].get(key) for key in
+                ('schemaVersion', 'kind', 'release', 'commit', 'sourceSha256', 'identity', 'status', 'errors',
+                 'containerId', 'sourceContainerUntouched', 'dataDirectoryRetained', 'sourceDumpAndEvidenceRetained')}}
+        fixture = native.capture_fixture(ROOT, value, historical, builder, source_proof=source, failed_native=True)
+        candidates.append({'historical': historical, 'fixture': fixture})
+    return candidates
+
+
+def task_fixture_quiescence(keepers, candidates, helpers):
+    native, cleanup, builder = (helpers[name] for name in
+        ('retire-failed-native-jar-duplicates.py', 'cleanup-ecs-builds.py', 'compact-build-resources.py'))
+    need(len(keepers) == len(candidates), 'COMPLETE_TASK_FIXTURE_PROOFS_REQUIRED')
+    for keeper, candidate in zip(keepers, candidates):
+        need(candidate['historical']['context']['release'] == keeper['release'], 'TASK_FIXTURE_KEEPER_CONTEXT_DIFFERS')
+        fixture = candidate['fixture']
+        if fixture is None:
+            cleanup.quiescent({'checkout': ROOT / 'verification' / keeper['release'] / 'checkout',
+                               'token': keeper['token']}, keeper['release'], cleanup.docker_snapshot(), include_inbox=True)
+        else:
+            native.recent_fixture_references(ROOT, candidate, cleanup, builder)
+
+
+def task_remove_fixture(candidate, helpers):
+    """Remove only the exact admitted stopped object; never its data or images."""
+    fixture = candidate['fixture']
+    if fixture is None:
+        return {'release': candidate['historical']['context']['release'], 'status': 'ALREADY_ABSENT'}
+    native, cleanup, builder = (helpers[name] for name in
+        ('retire-failed-native-jar-duplicates.py', 'cleanup-ecs-builds.py', 'compact-build-resources.py'))
+    return builder.historical_mysql_fixture_remove(fixture,
+        lambda cid: native.builder_docker('inspect', cid), lambda cid: native.builder_docker('rm', cid),
+        native.builder_container_ids,
+        lambda _cid: native.recent_fixture_references(ROOT, candidate, cleanup, builder),
+        lambda: native.fixture_data_metadata(ROOT, fixture['dataDirectory']))
+
+
 def task_root_worker(request):
     need(os.getuid() == 0 and Path('/etc/machine-id').read_text().strip() == MACHINE,
          'APPROVED_TASK_ROOT_IDENTITY_REQUIRED')
@@ -833,8 +916,12 @@ def task_run(args):
             return {**public_binding, 'terminal': False, 'status': 'RUNNING'}
         return {**public_binding, 'terminal': False, 'status': 'UNKNOWN'}
     cleanup = helpers['cleanup-ecs-builds.py']
-    def admitted():
+    def admitted(*, fixture_objects=False):
         keepers = task_admitted(binding, value, helpers)
+        if fixture_objects:
+            candidates = task_fixture_candidates(value, keepers, helpers)
+            task_fixture_quiescence(keepers, candidates, helpers)
+            return keepers, candidates
         containers = cleanup.docker_snapshot()
         for keeper in keepers:
             cleanup.quiescent({'checkout': ROOT / 'verification' / keeper['release'] / 'checkout', 'token': keeper['token']},
@@ -845,33 +932,46 @@ def task_run(args):
             attempts.enter_context(attempt_lock(row['release']))
         if args.phase == 'plan':
             need(not plan_file.exists() and not receipt_file.exists() and not execution_file.exists(), 'FRESH_TASK_PLAN_REQUIRED')
-            keepers = admitted()
+            keepers, fixtures = admitted(fixture_objects=True)
             roots = {row['release']: signature(safe(ROOT / 'verification' / row['release'] /
                      'checkout/work/compact-fixtures/mysql-data').stat())[:5] for row in value['candidates']}
             measured = privileged({'phase': 'task-inventory', 'binding': binding, 'roots': roots})
             need(measured['processProbe']['status'] == 'QUIESCENT', 'ALL_UID_TASK_QUIESCENCE_REQUIRED')
-            plan = {**public_binding, 'keepers': keepers, 'roots': roots, 'targets': measured['targets'],
+            plan = {**public_binding, 'keepers': keepers, 'fixtures': fixtures, 'roots': roots, 'targets': measured['targets'],
                     'processProbe': measured['processProbe']}
             write(plan_file, plan)
             public = {**public_binding, 'planSha256': digest(encoded(plan)), 'sourceSqlAndReportsRetained': True,
                 'targets': [{key: target[key] for key in ('release', 'path', 'allocatedBytes', 'files', 'inventorySha256')}
-                            for target in measured['targets']], 'processProbe': measured['processProbe']}
+                            for target in measured['targets']], 'processProbe': measured['processProbe'],
+                'fixtureObjects': [{'release': item['historical']['context']['release'],
+                    'containerId': item['fixture']['containerId'] if item['fixture'] else None,
+                    'status': 'STOPPED_OBJECT_ADMITTED' if item['fixture'] else 'ALREADY_ABSENT'} for item in fixtures]}
             write(output / 'plan.json', public)
             return {'status': 'PLANNED', **public_binding, 'planSha256': public['planSha256']}
         raw = read(plan_file, 8 * MIB); plan = json.loads(raw)
         need(SHA.fullmatch(args.plan_sha256 or '') and digest(raw) == args.plan_sha256 and
-             all(plan.get(key) == expected for key, expected in public_binding.items()) and plan['keepers'] == admitted()
+             all(plan.get(key) == expected for key, expected in public_binding.items())
+             and (plan['keepers'], plan['fixtures']) == admitted(fixture_objects=True)
              and not receipt_file.exists() and not execution_file.exists(), 'TASK_PLAN_OR_KEEPERS_CHANGED')
         write(execution_file, {'binding': public_binding, 'pid': os.getpid(),
             'startTicks': Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19],
             'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
         receipt = {**public_binding, 'status': 'FAILED_OR_UNKNOWN', 'planSha256': args.plan_sha256,
-                   'removed': [], 'sourceSqlAndReportsRetained': True,
+                   'removed': [], 'fixtureRetirements': [], 'sourceSqlAndReportsRetained': True,
                    'availableBytesBefore': os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize}
         try:
             measurement = privileged({'phase': 'task-inventory', 'binding': binding, 'roots': plan['roots']})
             need(measurement['targets'] == plan['targets'] and measurement['processProbe']['status'] == 'QUIESCENT',
                  'TASK_TARGETS_CHANGED_AFTER_PLAN')
+            for candidate in plan['fixtures']:
+                need(plan['keepers'] == task_admitted(binding, value, helpers), 'TASK_KEEPERS_CHANGED_BEFORE_OBJECT_REMOVE')
+                observed = task_fixture_candidates(value, plan['keepers'], helpers)
+                current = next(item for item in observed if item['historical']['context'] == candidate['historical']['context'])
+                need(current == candidate, 'TASK_FIXTURE_CHANGED_AFTER_PLAN')
+                receipt['fixtureRetirements'].append(task_remove_fixture(candidate, helpers))
+            # No object is excluded at the data-removal boundary. A stopped
+            # object is first retired through its existing held-identity proof.
+            need(plan['keepers'] == admitted(), 'TASK_KEEPERS_CHANGED_AFTER_OBJECT_REMOVE')
             for target in plan['targets']:
                 need(plan['keepers'] == admitted(), 'TASK_KEEPERS_CHANGED_BEFORE_REMOVE')
                 receipt['removed'].append(privileged({'phase': 'task-remove', 'binding': binding,
@@ -883,6 +983,7 @@ def task_run(args):
             receipt['status'] = 'COMPLETE'
         except BaseException as error:
             receipt['errorType'] = type(error).__name__
+            receipt['reasonCode'] = failure_reason_code(error)
             raise
         finally:
             receipt['availableBytesAfter'] = os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize
@@ -904,7 +1005,8 @@ def main():
     try:
         print(json.dumps(run(args))); return 0
     except BaseException as error:
-        print(json.dumps({'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__}), file=sys.stderr)
+        print(json.dumps({'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__,
+                          'reasonCode': failure_reason_code(error), 'phase': args.phase}), file=sys.stderr)
         return 2
 
 

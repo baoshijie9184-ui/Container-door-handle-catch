@@ -614,7 +614,8 @@ def test_task_privileged_worker_refuses_extra_or_missing_arguments(root_identity
 
 
 @pytest.mark.parametrize('changed', [False, True])
-def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, monkeypatch, changed):
+@pytest.mark.parametrize('objects', ['absent', 'stopped', 'remove-failed'])
+def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, monkeypatch, changed, objects):
     args = SimpleNamespace(phase='plan', batch=retirement.TASK_BATCH, tag='ci-300-' + 'f' * 12,
         commit='f' * 40, source_sha256='e' * 64, request_sha256='d' * 64, failed_builds='287,289', plan_sha256=None)
     root = tmp_path / 'ci'; output = root / 'inbox' / args.tag / 'derived-failed-mysql-retirement'; output.mkdir(parents=True)
@@ -633,17 +634,32 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
     identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
     value = {'candidates': [{'release': tag, 'commit': tag[-12:] + '0' * 28} for tag in tags]}
     keepers = [{'release': tag, 'token': 'a' * 10, 'backupManifestSha256': 'c' * 64} for tag in tags]
+    remaining = set(tags) if objects != 'absent' else set()
+    def strict_quiescent(*_args, **_kwargs):
+        assert not remaining, 'Data removal must never ignore an existing fixture object'
     helpers = {'verify-remote.py': SimpleNamespace(ecs_identity=lambda *_: identity),
-               'cleanup-ecs-builds.py': SimpleNamespace(docker_snapshot=lambda: [], quiescent=lambda *_a, **_k: None)}
+               'cleanup-ecs-builds.py': SimpleNamespace(docker_snapshot=lambda: [], quiescent=strict_quiescent)}
     monkeypatch.setattr(retirement, 'ROOT', root); monkeypatch.setattr(retirement.os, 'getuid', lambda: 1000)
     monkeypatch.setattr(retirement, 'task_helpers', lambda _: helpers)
     monkeypatch.setattr(retirement, 'task_request', lambda _: value)
     monkeypatch.setattr(retirement, 'task_admitted', lambda *_a, **_k: keepers)
+    monkeypatch.setattr(retirement, 'task_fixture_candidates', lambda *_: [
+        {'historical': {'context': {'release': tag}}, 'fixture': {'containerId': str(i) * 64} if tag in remaining else None}
+        for i, tag in enumerate(tags, 1)])
+    monkeypatch.setattr(retirement, 'task_fixture_quiescence', lambda *_: None)
     monkeypatch.setattr(retirement, 'task_configuration', lambda *_: retirement.TaskBatch(
         {tag: (states[tag].item['rootMetadata'][1], 'a' * 40) for tag in tags}, {tag: 'b' * 64 for tag in tags}))
     monkeypatch.setattr(retirement, 'tree', lambda tag, _batch: states[tag].item)
     monkeypatch.setattr(retirement, 'lock', lambda _: nullcontext()); monkeypatch.setattr(retirement, 'attempt_lock', lambda _: nullcontext())
     calls = []
+    def remove_fixture(candidate, _helpers):
+        tag = candidate['historical']['context']['release']
+        assert all(state.path.exists() for state in states.values())
+        if objects == 'remove-failed': raise ValueError('TASK_FIXTURE_CHANGED_AFTER_PLAN')
+        if tag in remaining:
+            calls.append('remove-stopped-object'); remaining.remove(tag)
+        return {'release': tag, 'status': 'REMOVED' if candidate['fixture'] else 'ALREADY_ABSENT'}
+    monkeypatch.setattr(retirement, 'task_remove_fixture', remove_fixture)
     def privileged(payload):
         calls.append(payload['phase'])
         with monkeypatch.context() as context:
@@ -658,13 +674,22 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
         states[tags[0]].file.write_bytes(b'changed after planning')
         with pytest.raises(ValueError, match='ENTRY_CHANGED_AFTER_PLAN'): retirement.run(args)
         assert all(state.path.exists() for state in states.values())
+        assert remaining == (set(tags) if objects != 'absent' else set())
+    elif objects == 'remove-failed':
+        with pytest.raises(ValueError, match='TASK_FIXTURE_CHANGED_AFTER_PLAN'): retirement.run(args)
+        receipt = json.loads((output / 'receipt.json').read_bytes())
+        assert receipt['status'] == 'FAILED_OR_UNKNOWN' and receipt['removed'] == []
+        assert receipt['reasonCode'] == 'TASK_FIXTURE_CHANGED_AFTER_PLAN'
+        assert all(state.path.exists() for state in states.values()) and remaining == set(tags)
     else:
         assert retirement.run(args)['status'] == 'COMPLETE'
         assert all(not state.path.exists() for state in states.values())
         for state in states.values():
             marker = json.loads((state.parent / 'derived-mysql-retired-task.json').read_text())
             assert marker['taskThreadId'] == retirement.TASK_ID and marker['status'] == 'REMOVED'
-        assert calls == ['task-inventory', 'task-inventory', 'task-remove', 'task-remove']
+        assert calls == ['task-inventory', 'task-inventory',
+                         *(['remove-stopped-object'] * 2 if objects == 'stopped' else []), 'task-remove', 'task-remove']
+        assert len(json.loads((output / 'receipt.json').read_bytes())['fixtureRetirements']) == 2
     assert (protected / 'keep.ibd').read_bytes() == b'recovery point'
     for state in states.values():
         assert (state.parent / 'data.sql').read_bytes() == b'original SQL'
@@ -883,14 +908,16 @@ def test_task_report_preservation_validates_the_complete_original_archive(tmp_pa
 def test_task_helper_closure_is_bound_to_current_git_archive_without_path_import(monkeypatch, damage):
     tag = 'ci-300-' + 'f' * 12; own = FILE.read_bytes()
     bodies = {'retire-derived-mysql-data.py': own, 'retire-failed-native-jar-duplicates.py': b'VALUE=1\n',
-              'cleanup-ecs-builds.py': b'VALUE=1\n', 'verify-remote.py': b'VALUE=1\n'}
+              'cleanup-ecs-builds.py': b'VALUE=1\n', 'verify-remote.py': b'VALUE=1\n',
+              'compact-build-resources.py': b'VALUE=1\n'}
     if damage == 'missing': bodies.pop('verify-remote.py')
     if damage == 'oversize': bodies['verify-remote.py'] = b'#' * (retirement.MIB + 1)
     archive_bytes = io.BytesIO()
     with tarfile.open(fileobj=archive_bytes, mode='w:gz', format=tarfile.PAX_FORMAT,
                       pax_headers={'comment': ('0' * 40 if damage == 'commit' else 'f' * 40)}) as archive:
         for name, body in bodies.items():
-            member = tarfile.TarInfo('script/jenkins/' + name); member.size = len(body)
+            prefix = 'script/docker/' if name == 'compact-build-resources.py' else 'script/jenkins/'
+            member = tarfile.TarInfo(prefix + name); member.size = len(body)
             if damage == 'link' and name == 'verify-remote.py': member.type = tarfile.SYMTYPE; member.linkname = '/etc/passwd'
             archive.addfile(member, None if member.issym() else io.BytesIO(body))
         if damage == 'duplicate':
@@ -975,11 +1002,13 @@ def test_task_real_cleanup_root_probe_keeps_authenticated_archive_bytes(tmp_path
     drifted = cleanup + b'\n# unreviewed on-disk replacement\n'
     disk = inbox / 'cleanup-ecs-builds.py'; disk.write_bytes(drifted if when == 'before-load' else cleanup); disk.chmod(0o600)
     bodies = {'retire-derived-mysql-data.py': own, 'cleanup-ecs-builds.py': cleanup,
-              'retire-failed-native-jar-duplicates.py': b'VALUE=1\n', 'verify-remote.py': b'VALUE=1\n'}
+              'retire-failed-native-jar-duplicates.py': b'VALUE=1\n', 'verify-remote.py': b'VALUE=1\n',
+              'compact-build-resources.py': b'VALUE=1\n'}
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode='w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': 'f' * 40}) as archive:
         for name, body in bodies.items():
-            member = tarfile.TarInfo('script/jenkins/' + name); member.size = len(body); archive.addfile(member, io.BytesIO(body))
+            prefix = 'script/docker/' if name == 'compact-build-resources.py' else 'script/jenkins/'
+            member = tarfile.TarInfo(prefix + name); member.size = len(body); archive.addfile(member, io.BytesIO(body))
     raw = stream.getvalue()
     monkeypatch.setattr(retirement, 'ROOT', root)
     monkeypatch.setattr(retirement, 'read', lambda path, _maximum=0: raw if path.name == 'cleanup-source.tar.gz' else own)
@@ -993,3 +1022,93 @@ def test_task_real_cleanup_root_probe_keeps_authenticated_archive_bytes(tmp_path
     monkeypatch.setattr(loaded.subprocess, 'run', lambda *_a, **_k: pytest.fail('Changed source must never reach sudo'))
     with pytest.raises(ValueError, match='LOADED_PROCESS_PROBE_SOURCE_CHANGED'):
         loaded.privileged_process_probe(root / 'verification' / ('ci-287-' + 'a' * 12) / 'checkout', 123, Path('/proc'))
+
+
+TASK_DIAGNOSTIC_CONTROLLER = FILE.with_name('retire-task-failed-mysql-data.ps1').read_text(encoding='utf-8-sig')
+
+
+def test_task_mysql_remote_streams_are_preserved_separately_before_diagnostic_projection():
+    capture = TASK_DIAGNOSTIC_CONTROLLER.split('function Invoke-TaskDataRemote(', 1)[1].split('function Copy-TaskDataEvidence(', 1)[0]
+    assert "'artifacts/derived-mysql-{0}-{1:D2}'" in capture
+    assert 'stdout="$stem.stdout.txt";stderr="$stem.stderr.txt"' in capture
+    assert capture.count('[IO.FileMode]::CreateNew') == 2
+    assert '$process.StartInfo.RedirectStandardOutput=$true;$process.StartInfo.RedirectStandardError=$true' in capture
+    assert '$process.StandardOutput.BaseStream.CopyToAsync($output)' in capture
+    assert '$process.StandardError.BaseStream.CopyToAsync($errorOutput)' in capture
+    assert capture.index('$stderrCopy=') < capture.index('$process.WaitForExit()')
+    assert capture.index('$process.WaitForExit()') < capture.index('$stdoutCopy.GetAwaiter().GetResult()')
+    assert capture.index('$errorOutput.Dispose()') < capture.index('Get-TaskDataRemoteDiagnostic $Phase')
+    assert '$process.StartInfo.UseShellExecute=$false' in capture
+    assert '$process.StartInfo.ArgumentList.Add($argument)' in capture
+    assert '2>&1' not in capture and 'ReadToEnd' not in capture
+
+
+@pytest.mark.parametrize('phase', ['plan', 'apply', 'status'])
+def test_task_mysql_each_remote_phase_uses_original_stream_capture_without_apply_replay(phase):
+    calls = re.findall(r"Invoke-TaskDataRemote '(plan|apply|status)'", TASK_DIAGNOSTIC_CONTROLLER)
+    assert calls.count(phase) == 1
+    assert not re.search(r'& ssh\.exe[^\n]*python3[^\n]*\b' + phase + r'\b', TASK_DIAGNOSTIC_CONTROLLER)
+    observation = TASK_DIAGNOSTIC_CONTROLLER.split('if($applyExit -eq 255){', 1)[1].split('}catch{\n    $failure=$_', 1)[0]
+    assert "Invoke-TaskDataRemote 'status'" in observation
+    assert "Invoke-TaskDataRemote 'apply'" not in observation
+    assert '$state.terminal -eq $true -and $state.status -ceq \'COMPLETE\'' in observation
+
+
+def test_task_mysql_only_fixed_safe_remote_diagnostic_fields_reach_controller_receipt():
+    projection = TASK_DIAGNOSTIC_CONTROLLER.split('function Get-TaskDataRemoteDiagnostic(', 1)[1].split('function Invoke-TaskDataRemote(', 1)[0]
+    assert 'if($ExitCode -eq 0){return $null}' in projection
+    assert '.Length -gt 1048576' in projection
+    assert '[Text.UTF8Encoding]::new($false,$true)' in projection
+    assert "$value.status -cne 'FAILED_OR_UNKNOWN' -or $value.phase -cne $Phase" in projection
+    assert "$value.errorType -cnotmatch '\\A[A-Za-z][A-Za-z0-9]{0,63}\\z'" in projection
+    assert "$value.reasonCode -cnotmatch '\\A[A-Z][A-Z0-9_]{1,160}\\z'" in projection
+    assert 'return @{errorType=$value.errorType;reasonCode=$value.reasonCode;phase=$Phase}' in projection
+    assert 'catch{return $fallback}' in projection
+    assert 'Exception.Message' not in projection and '$value.message' not in projection
+
+
+def test_task_mysql_final_collection_cannot_replace_primary_failure_or_claim_partial_success():
+    final = TASK_DIAGNOSTIC_CONTROLLER.split('}finally{\n    foreach($evidence', 1)[1]
+    assert '$failure=$_' not in final and '$failureDiagnostic=$_' not in final
+    assert "$secondaryFailures.Add(@{errorType='ControllerError';reasonCode='EVIDENCE_COLLECTION_FAILED'" in final
+    assert "$secondaryFailures.Add(@{errorType='ControllerError';reasonCode='EVIDENCE_UNAVAILABLE'" in final
+    assert '$null -eq $failure -and $secondaryFailures.Count -eq 0' in final
+    assert '$receipt.status -ceq \'COMPLETE\'' in final
+    assert '$receipt.planSha256 -ceq $plan.planSha256' in final
+    assert '@($receipt.removed).Count -eq $numbers.Count' in final
+    assert 'if(-not $ok -and $null -eq $failureDiagnostic)' in final
+    assert 'failure=$failureDiagnostic;secondaryFailures=@($secondaryFailures.ToArray());remoteCalls=@($remoteCalls.ToArray())' in final
+
+
+def test_task_mysql_original_streams_are_archived_by_the_existing_maintenance_entry():
+    pipeline = (FILE.parents[2] / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf-8-sig')
+    assert 'artifacts/derived-mysql-*.json' in pipeline
+    assert 'artifacts/derived-mysql-*.txt' in pipeline
+
+
+@pytest.mark.parametrize('message,expected', [
+    ('TASK_FIXTURE_CHANGED_AFTER_PLAN', 'TASK_FIXTURE_CHANGED_AFTER_PLAN'),
+    ('/home/private/credential: password=secret', 'UNCLASSIFIED_ERROR'),
+    ('PRIVATE_SECRET', 'UNCLASSIFIED_ERROR'),
+])
+def test_task_main_preserves_only_literal_failure_codes_and_phase(monkeypatch, capsys, message, expected):
+    monkeypatch.setattr(sys, 'argv', ['retirement', 'plan', '--batch', retirement.TASK_BATCH,
+        '--tag', 'ci-300-' + 'f' * 12, '--commit', 'f' * 40, '--source-sha256', 'e' * 64])
+    monkeypatch.setattr(retirement.signal, 'signal', lambda *_: None)
+    def failed(_args): raise ValueError(message)
+    monkeypatch.setattr(retirement, 'run', failed)
+    assert retirement.main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert json.loads(captured.err) == {'status': 'FAILED_OR_UNKNOWN', 'errorType': 'ValueError',
+                                       'reasonCode': expected, 'phase': 'plan'}
+
+
+def test_task_failure_reason_preserves_loaded_cleanup_literal_without_arbitrary_messages():
+    spec = importlib.util.spec_from_file_location('task_diagnostic_cleanup', FILE.with_name('cleanup-ecs-builds.py'))
+    cleanup = importlib.util.module_from_spec(spec); spec.loader.exec_module(cleanup)
+    try:
+        cleanup.require(False, 'OLD_BUILD_CONTAINER_STILL_PRESENT')
+    except ValueError as error:
+        assert retirement.failure_reason_code(error) == 'OLD_BUILD_CONTAINER_STILL_PRESENT'
+    assert retirement.failure_reason_code(OSError('private path or credentials')) == 'UNCLASSIFIED_ERROR'
