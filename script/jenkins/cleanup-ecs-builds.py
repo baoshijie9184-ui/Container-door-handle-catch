@@ -491,7 +491,14 @@ def evidence_binding(root, custody, identity, verifier, *, generated=False):
         file = checkout / ('driver.log' if name == 'driver.log' else 'work/ci-evidence/' + name.removeprefix('reports/'))
         owned_chain(file, root, maximum=verifier.MAX_FILE_BYTES)
         require(file.stat().st_size == row['bytes'] and digest(file) == row['sha256'], 'ECS_ORIGINAL_REPORT_CHANGED')
-    inner = read_json(checkout / 'work/ci-evidence/receipt.json', verifier.MAX_RECEIPT_BYTES)
+    # The command-detail receipt is a catalogued report, not the small outer
+    # verification envelope. Use its already authenticated exact size only in
+    # the generated lifecycle; the original Verified caller keeps its limit.
+    inner_limit = verifier.MAX_RECEIPT_BYTES
+    if generated:
+        require('reports/receipt.json' in catalog, 'ORIGINAL_INNER_RECEIPT_NOT_CATALOGUED')
+        inner_limit = catalog['reports/receipt.json']['bytes']
+    inner = read_json(checkout / 'work/ci-evidence/receipt.json', inner_limit)
     require(inner.get('scopeKind') in (('source', 'mysql') if generated else ('source',))
             and inner.get('finishedAt') and inner.get('status') in ('PASS', 'FAILED'), 'SOURCE_BUILD_NOT_FINISHED')
     require(inner.get('identity') == identity and isinstance(inner.get('commands'), list)

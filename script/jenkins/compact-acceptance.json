@@ -1310,7 +1310,7 @@
       },
       {
         "module": "tests_python.test_generated_artifact_lifecycle",
-        "minimumTests": 48,
+        "minimumTests": 52,
         "source": "tests_python/test_generated_artifact_lifecycle.py",
         "allowedSkippedTests": []
       },

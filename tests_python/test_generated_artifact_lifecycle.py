@@ -61,6 +61,79 @@ def test_terminal_results_retire_without_business_pass_and_keep_originals(genera
     assert before == {str(path): path.read_bytes() for path in generated.keep}
 
 
+@pytest.fixture
+def large_inner_report(generated):
+    report = generated.evidence / 'receipt.json'
+    inner = cleanup.read_json(report)
+    inner['sourceRegression'] = {'status': 'FAILED'}
+    # Valid JSON whitespace crosses the envelope cap without inventing commands
+    # or requiring a 32 MiB allocation to exercise the report-file boundary.
+    legacy.put(report, cleanup.canonical(inner) + b' ' * (remote.MAX_RECEIPT_BYTES + 1))
+    regression = generated.evidence / 'source-regression/build' / legacy.MODULE
+    generated.regression_classes = legacy.put(regression / 'classes/Regression.class', b'compiled-regression').parent
+    generated.keep.append(legacy.put(regression / 'surefire-reports/TEST-Regression.xml',
+                                    b'<testsuite><testcase name="original-regression"/></testsuite>'))
+    legacy.seal(generated)
+    assert remote.MAX_RECEIPT_BYTES < report.stat().st_size < remote.MAX_FILE_BYTES
+    assert (generated.attempt / 'verification-receipt.json').stat().st_size < remote.MAX_RECEIPT_BYTES
+    return generated
+
+
+def test_generated_large_catalogued_inner_report_retires_both_compile_phases_and_keeps_originals(large_inner_report):
+    state = large_inner_report
+    before = legacy.preserved_bytes(state)
+    value = request(state)
+    plan = make_plan(state, value)
+    assert not plan['skipped']
+    paths = {target['path'] for candidate in plan['candidates'] for target in candidate['targets']}
+    assert {path.relative_to(state.root).as_posix() for path in (state.classes, state.regression_classes)} <= paths
+    receipt = cleanup.apply_plan(state.root, value, plan, remote)
+    assert receipt['status'] == 'REMOVED' and receipt['retention']['status'] == 'SATISFIED'
+    assert not state.classes.exists() and not state.regression_classes.exists()
+    assert legacy.preserved_bytes(state) == before
+
+
+def test_legacy_verified_keeps_its_inner_receipt_bound_for_the_same_large_report(large_inner_report):
+    state = large_inner_report
+    before = legacy.preserved_bytes(state)
+    plan = cleanup.build_plan(state.root, state.request, remote, [])
+    assert plan['candidates'] == []
+    assert plan['skipped'][0]['reason'] == 'PATH_TYPE_LINK_OR_SIZE_INVALID'
+    assert state.classes.exists() and state.regression_classes.exists()
+    assert legacy.preserved_bytes(state) == before
+
+
+def test_large_report_change_after_catalog_sealing_blocks_plan_and_deletion(large_inner_report):
+    state = large_inner_report
+    value = request(state)
+    plan = make_plan(state, value)
+    assert plan['candidates'] and not plan['skipped']
+    report = state.evidence / 'receipt.json'
+    before = legacy.preserved_bytes(state)
+    changed = report.read_bytes()[:-1] + b'\n'  # Same size and JSON value, different authenticated bytes.
+    legacy.put(report, changed)
+    rejected = make_plan(state, value)
+    assert not rejected['candidates'] and rejected['skipped'][0]['reason'] == 'ECS_ORIGINAL_REPORT_CHANGED'
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, value, plan, remote)
+    assert state.classes.exists() and state.regression_classes.exists()
+    before[report.relative_to(state.root).as_posix()] = changed
+    assert legacy.preserved_bytes(state) == before
+    assert not (state.root / 'inbox' / CURRENT / 'generated-cleanup-journal.jsonl').exists()
+
+
+def test_generated_outer_envelope_still_rejects_over_its_original_bound(large_inner_report):
+    state = large_inner_report
+    state.record['diagnostics'] = 'x' * remote.MAX_RECEIPT_BYTES
+    legacy.seal(state)  # The archive and custody agree; only the outer size is inadmissible.
+    assert (state.attempt / 'verification-receipt.json').stat().st_size > remote.MAX_RECEIPT_BYTES
+    before = legacy.preserved_bytes(state)
+    plan = make_plan(state)
+    assert not plan['candidates'] and plan['skipped'][0]['reason'] == 'PATH_TYPE_LINK_OR_SIZE_INVALID'
+    assert state.classes.exists() and state.regression_classes.exists()
+    assert legacy.preserved_bytes(state) == before
+
+
 @pytest.mark.parametrize('field', ['evidenceArchived', 'remoteStagesClosed'])
 def test_current_post_requires_archival_and_remote_closure_not_jenkins_completed(generated, field):
     value = request(generated, current=True)

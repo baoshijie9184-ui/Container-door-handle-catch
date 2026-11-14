@@ -8,11 +8,13 @@
 
 ## 当前验证进展（2026-11-15）
 
-固定 `344bebd4` 的 **#322 为 FAILURE**：原生 MySQL 1,072 项中 1,071 通过、1 项失败，`ReportWorkflow` 61 项全部通过。唯一失败来自 `WorkspaceMigration` 对无时间永久回执读取的错误预期，现已修正用例并完成 11 模块跳测试构建；生产代码、时钟围栏及用例数量不变，待 ECS 复验。工具与 fixture 均已 `STOPPED`，生成物收尾为 `REMOVED / SATISFIED`；149 份非 JAR 原件、27,724,387 字节保全于 `work/jenkins/data-residency-20261107/ci-322-raw-receipts`。整库迁移或候选运行验收尚未完成。
+固定 `1fe6697e` 的 **#334 为 FAILURE**：64 类原生 MySQL **1,072 项全部通过**，包括 `WorkspaceMigration` 29 项及 `ReportWorkflow` 61 项。后续普通 Java 共 1,654 项，941 通过、1 错误、712 条件跳过；唯一错误是配置契约检查从项目根目录递归遍历，误入受保护的 `work/compact-fixtures/mysql-data`。已将扫描限定到 Maven 模块的 `src/main/java`，11 模块离线跳测试打包通过，待 ECS 复验。Python、131→29 整库迁移与双恢复、旧 45 表及三库恢复、5,599 份旧文件恢复均未执行，正式切库和候选运行仍未验收。
 
-**11 月 15 日 00:04:26（北京时间）**已从流水线外实际回读原 ECS 为 `Stopped / StopCharging`，本地 Jenkins 保持运行；原件为 `work/middleware-alignment-20261113/ci-322-external-stop-readback.json`。代码整合与本地构建继续，下一验证窗口按需开机。
+本轮工具与 fixture 均已 `STOPPED`；生成物收尾因将 328,994 字节的内层报告误套外层 262,144 字节限制而阻断，尚未删除 #334 生成物。修复及 4 项控制回归已开发，待统一验证。383 份非 JAR 原件、53,315,254 字节保全于 `work/jenkins/data-residency-20261107/ci-334-raw-receipts`。
 
-历史 SOURCE 包输出的六目标条件回收已获用户明确批准，实测约 2.16 GiB；实现已在 `90f1834c` 整合并通过静态检查和独立审阅，尚未执行这批删除。与工作区用例修复一起由固定提交在 ECS 统一验证，再按用户顺序条件回收；不将候选占用计入已释放空间。
+**11 月 15 日 04:51:53（北京时间）**已从流水线外实际回读原 ECS 为 `Stopped / StopCharging`；Jenkins 控制器运行，项目任务暂禁自动触发且无排队。停机原件为 `work/jenkins/data-residency-20261107/ci-334-external-stop-readback.json`。代码整合期间不空转，下一验证窗口按需开机。
+
+#327/#333 已按条件回收失败 #322 的两份 JAR 及派生 MySQL 数据，实际分配共 1,127,428,096 字节（约 1.05 GiB），该批不重放。#333 后实余 6,295,760,896 字节是 #334 运行前的历史读数，后续按新鲜余量准入。用户批准的 #219/#147/#183 六项 SOURCE 包输出约 2.16 GiB 尚未删除，仍在数据库验收后按条件回收；业务数据、原始 SQL、源码、报告和 #266 保留。
 
 ## 历史运行记录
 

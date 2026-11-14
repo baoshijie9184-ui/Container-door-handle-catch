@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,7 +33,6 @@ import static org.assertj.core.api.SoftAssertions.assertSoftly;
 class ConfigurationTopologyContractTest {
 
     private static final Path PROJECT_ROOT = locateProjectRoot();
-    private static final Path MAIN_JAVA = PROJECT_ROOT;
     private static final Path APPLICATION_PACKAGE = PROJECT_ROOT.resolve(
             "doorhandle-server/src/main/java/com/ruanzhu/doorhandle/server");
     private static final Path MAIN_RESOURCES = PROJECT_ROOT.resolve("doorhandle-server/src/main/resources");
@@ -116,14 +116,22 @@ class ConfigurationTopologyContractTest {
                 )
         );
         Map<Path, List<String>> workaroundsBySource = new LinkedHashMap<>();
-        List<Path> javaSources;
-        try (Stream<Path> sourceFiles = Files.walk(MAIN_JAVA)) {
-            javaSources = sourceFiles
-                    .filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName().toString().endsWith(".java"))
-                    .filter(path -> normalizePath(PROJECT_ROOT.relativize(path)).contains("/src/main/java/"))
-                    .toList();
+        List<Path> javaSources = new ArrayList<>();
+        // Inspect module sources, not CI work trees that also contain private MySQL data.
+        try (Stream<Path> modules = Files.list(PROJECT_ROOT)) {
+            for (Path module : modules.filter(path -> Files.isRegularFile(path.resolve("pom.xml"))).toList()) {
+                Path sourceRoot = module.resolve("src/main/java");
+                if (!Files.isDirectory(sourceRoot)) {
+                    continue;
+                }
+                try (Stream<Path> sourceFiles = Files.walk(sourceRoot)) {
+                    javaSources.addAll(sourceFiles.filter(Files::isRegularFile)
+                            .filter(path -> path.getFileName().toString().endsWith(".java"))
+                            .toList());
+                }
+            }
         }
+        assertThat(javaSources).as("production Java sources from Maven modules").isNotEmpty();
         for (Path javaSource : javaSources) {
             String sourceWithoutComments = removeJavaComments(Files.readString(javaSource, UTF_8));
             List<String> matchingTokens = workaroundPatterns.stream()
