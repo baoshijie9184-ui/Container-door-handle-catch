@@ -420,6 +420,7 @@ if ($Action -ceq 'PackageSourceOnly') {
         $maintenancePaths += 'script/jenkins/retire-derived-mysql-data.py'
     }
     if ($nativeRetentionPolicy -cin @('SourcePytest16','SourcePytest307308')) { $maintenancePaths += 'script/jenkins/retire-source-pytest.py' }
+    elseif ($env:GENERATED_ARTIFACTS_ONLY -ceq 'true') { $maintenancePaths += 'script/jenkins/retire-source-pytest.py' }
     $archiveArguments = @('-c', 'core.autocrlf=false', 'archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', $commit) + $maintenancePaths
     Invoke-Checked 'git.exe' $archiveArguments
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -104,7 +104,8 @@ with gzip.open(sys.argv[1],'rb') as expanded,tarfile.open(fileobj=Bounded(expand
         raw=archive.extractfile(entry).read(1048577)
         if len(raw)!=entry.size: raise ValueError('Truncated fixed helper')
         result[entry.name]={'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
-    if archive.pax_headers.get('comment')!=sys.argv[2] or set(result)!=wanted: raise ValueError('Fixed helper commit differs')
+    if archive.pax_headers.get('comment')!=sys.argv[2]: raise ValueError('Fixed helper commit differs')
+    if set(result)!=wanted: raise ValueError('Required cleanup helper missing from fixed source archive')
 print(json.dumps(result))
 '@
 $helpers = (Invoke-Reclaim $python @('-I', '-B', '-c', $archiveReader, $archive, $Commit, ([bool]$GeneratedArtifacts).ToString()) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable

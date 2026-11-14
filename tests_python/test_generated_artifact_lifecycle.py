@@ -7,7 +7,9 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import stat
+import sys
 
 import pytest
 
@@ -279,3 +281,57 @@ def test_request_payload_not_embedded_in_windows_ssh_command():
     descriptor = {'bytes': len(raw), 'sha256': 'a'*64}
     assert len(raw) > 23000 and len(json.dumps(descriptor)) < 120
     assert len(raw) < 1024**2
+
+
+def maintenance_package_paths(generated):
+    """Read the versioned source-only package selection, not a test copy of it."""
+    pipeline = (legacy.ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    block = re.search(r"(?ms)^if \(\$Action -ceq 'PackageSourceOnly'\) \{\n(.*?)^\}\n", pipeline)
+    assert block, 'The source-only package must have its own guarded action block'
+    package = block[1]
+    base = re.search(r"(?m)^    \$maintenancePaths = @\(([^\n]+)\)$", package)
+    assert base, 'Maintenance must explicitly select its small fixed helper closure'
+    paths = re.findall(r"'([^']+)'", base[1])
+    if generated:
+        selected = re.search(
+            r"(?m)^    elseif \(\$env:GENERATED_ARTIFACTS_ONLY -ceq 'true'\) \{ \$maintenancePaths \+= '([^']+)' \}$",
+            package)
+        assert selected, 'Generated maintenance must package its dynamic tree helper'
+        paths.append(selected[1])
+    assert "'--output=artifacts/source.tar.gz', $commit) + $maintenancePaths" in package
+    return paths
+
+
+def inspect_packaged_helpers(tmp_path, monkeypatch, *, generated, damage=None):
+    paths = maintenance_package_paths(generated)
+    if damage == 'missing-helper': paths.remove('script/jenkins/retire-source-pytest.py')
+    source = tmp_path / 'source.tar.gz'
+    legacy.package(source, {name: (legacy.ROOT / name).read_bytes() for name in paths}, 'a' * 40)
+    controller = (legacy.ROOT / 'script/jenkins/reclaim-build-outputs.ps1').read_text(encoding='utf8')
+    reader = controller.split("$archiveReader = @'\n", 1)[1].split("\n'@", 1)[0]
+    monkeypatch.setattr(sys, 'argv', ['fixed-helper-reader', str(source),
+        'b' * 40 if damage == 'wrong-commit' else 'a' * 40, str(generated)])
+    # Execute only the fixed byte-inspection controller. Packaged helpers stay
+    # opaque bytes: no application import, remote access or cleanup takes place.
+    exec(compile(reader, '<fixed-helper-reader>', 'exec'), {'__name__': '__main__'})
+
+
+@pytest.mark.parametrize('generated', [False, True])
+def test_actual_maintenance_package_contains_its_required_helper_closure(tmp_path, monkeypatch, capsys, generated):
+    inspect_packaged_helpers(tmp_path, monkeypatch, generated=generated)
+    result = json.loads(capsys.readouterr().out)
+    expected = {'script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py'}
+    if generated: expected.add('script/jenkins/retire-source-pytest.py')
+    assert set(result) == expected
+    for name, descriptor in result.items():
+        raw = (legacy.ROOT / name).read_bytes()
+        assert descriptor == {'bytes': len(raw), 'sha256': cleanup.sha(raw)}
+
+
+@pytest.mark.parametrize(('damage', 'error'), [
+    ('missing-helper', 'Required cleanup helper missing from fixed source archive'),
+    ('wrong-commit', 'Fixed helper commit differs'),
+])
+def test_generated_package_rejects_missing_helper_and_wrong_commit_separately(tmp_path, monkeypatch, damage, error):
+    with pytest.raises(ValueError, match=error):
+        inspect_packaged_helpers(tmp_path, monkeypatch, generated=True, damage=damage)
