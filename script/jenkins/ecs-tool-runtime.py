@@ -70,6 +70,29 @@ def require(value, message):
         raise ValueError(message)
 
 
+def runtime_failure(error):
+    """Export source position, never an exception message, filename or arguments."""
+    result = {'code': 'TOOL_RUNTIME_FAILURE', 'errorType': type(error).__name__}
+    trace = error.__traceback__
+    while trace is not None:
+        if trace.tb_frame.f_code.co_filename == __file__:
+            result['sourceLine'] = trace.tb_lineno
+        trace = trace.tb_next
+    return result
+
+
+def public_runtime_failure(value):
+    if value is None:
+        return None  # Historical command receipts have no diagnostic field.
+    require(type(value) is dict and set(value) in (
+        {'code', 'errorType'}, {'code', 'errorType', 'sourceLine'})
+        and value.get('code') == 'TOOL_RUNTIME_FAILURE'
+        and isinstance(value.get('errorType'), str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,99}', value['errorType'])
+        and ('sourceLine' not in value or type(value['sourceLine']) is int and 0 < value['sourceLine'] <= 100000),
+        'Tool failure diagnostic is not a bounded source-only projection')
+    return value
+
+
 def digest(path):
     result = hashlib.sha256()
     with Path(path).open('rb') as stream:
@@ -202,19 +225,53 @@ def maven_cache_lock(value):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def maven_cache_usage(value):
+def maven_cache_usage(value, *, live=False):
+    """Measure metadata while downloads run; READY admission stays strict.
+
+    A resolver can rename/unlink a temporary file between walk and lstat.
+    Only the live sample may omit those already-disappeared children; it is
+    explicitly non-atomic and never substitutes for the final stopped inventory.
+    """
     repository = cache_directory(Path(registered_maven_cache(value)['repository']))
-    files, logical, allocated = 0, 0, 0
-    for current, dirs, names in os.walk(repository, followlinks=False):
-        allocated += Path(current).lstat().st_blocks * 512
+    root_info = repository.lstat()
+    files, logical, allocated, disappeared = 0, 0, 0, 0
+    def vanished(error):
+        nonlocal disappeared
+        missing = Path(error.filename) if error.filename is not None else repository
+        if (live and isinstance(error, FileNotFoundError) and missing != repository
+                and missing.is_relative_to(repository) and '..' not in missing.parts):
+            disappeared += 1
+            return
+        raise error
+    def metadata(path):
+        try:
+            return path.lstat()
+        except FileNotFoundError as error:
+            vanished(error)
+            return None
+    for current, dirs, names in os.walk(repository, followlinks=False, onerror=vanished):
+        directory = metadata(Path(current))
+        if directory is None:
+            dirs[:] = []
+            continue
+        require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid(),
+                'Maven cache contains a foreign path or link')
+        allocated += directory.st_blocks * 512
         for name in dirs + names:
-            path = Path(current) / name; info = path.lstat()
-            require(not path.is_symlink() and info.st_uid == os.getuid(), 'Maven cache contains a foreign path or link')
-            if path.is_file():
+            info = metadata(Path(current) / name)
+            if info is None:
+                continue
+            require(not stat.S_ISLNK(info.st_mode) and info.st_uid == os.getuid(), 'Maven cache contains a foreign path or link')
+            require(stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), 'Maven cache contains a special file')
+            if stat.S_ISREG(info.st_mode):
                 require(info.st_nlink == 1 and not info.st_mode & 0o022, 'Maven cache file is linked or writable by others')
                 files += 1; logical += info.st_size; allocated += info.st_blocks * 512
                 require(files <= 50000 and logical <= 2 * 1024 ** 3, 'Maven dependency cache exceeds its reviewed budget')
-    return {'files': files, 'bytes': logical, 'allocatedBytes': allocated}
+    final_root = cache_directory(repository).lstat()
+    require((root_info.st_dev, root_info.st_ino) == (final_root.st_dev, final_root.st_ino),
+            'Maven cache root changed during measurement')
+    return {'files': files, 'bytes': logical, 'allocatedBytes': allocated,
+            **({'sampleKind': 'LIVE_NONATOMIC', 'disappearedEntries': disappeared} if live else {})}
 
 
 def maven_cache_inventory(value):
@@ -813,6 +870,7 @@ def evidence(value, stopped):
                          'resourceLimitTriggered': item.get('resourceLimitTriggered', False),
                          'resourceMonitoring': item.get('resourceMonitoring'),
                          'runtimeLimits': limits,
+                         **({'failure': public_runtime_failure(item['failure'])} if 'failure' in item else {}),
                          'mavenDependencyCache': public_maven_cache(value, item.get('mavenDependencyCache'))})
     return {'schema': 1, 'kind': 'doorhandle-ecs-tool-evidence', 'release': value['release'],
             'commit': value['commit'], 'sourceSha256': value['sourceSha256'],
@@ -956,7 +1014,7 @@ def observe_resources(value, record, file):
     if record.get('tool') == 'mvn':
         # The shared repository is explicitly separate from this checkout's owned outputs.
         monitoring['sharedMavenDependencyCache'] = {'key': registered_maven_cache(value)['key'],
-            'scope': 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES', **maven_cache_usage(value)}
+            'scope': 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES', **maven_cache_usage(value, live=True)}
     if probe['diskAvailableBytes'] < DISK_FLOOR or probe['memoryAvailableBytes'] < MEMORY_FLOOR:
         record.update(status='FAILED_OR_UNKNOWN', resourceLimitTriggered=True)
         write_json(file, record)
@@ -1006,6 +1064,9 @@ def launch_command(value, tool, arguments, cache_before=None):
                 'Tool attachment result differs from the actual container')
         record.update(status='EXITED', exitCode=result)
         return result
+    except BaseException as error:
+        record['failure'] = runtime_failure(error)
+        raise
     finally:
         if process is not None and process.poll() is None:
             process.terminate()

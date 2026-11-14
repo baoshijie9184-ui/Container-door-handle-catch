@@ -1,5 +1,6 @@
 """ECS-only dependency-cache contracts. No Maven/network/application is executed."""
 import copy
+import errno
 import hashlib
 import importlib.util
 import io
@@ -246,6 +247,106 @@ def test_resource_probes_measure_shared_growth_separately_from_owned_checkout(ca
     shared = record['resourceMonitoring']['sharedMavenDependencyCache']
     assert shared['scope'] == 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES' and shared['bytes'] > 0
     assert shared['allocatedBytes'] > 0 and shared['key'] == cache['mavenCache']['key']
+    assert shared['sampleKind'] == 'LIVE_NONATOMIC' and shared['disappearedEntries'] == 0
+
+
+@pytest.mark.parametrize('live', [False, True])
+@pytest.mark.parametrize('transition', ['file', 'directory', 'walk'])
+def test_only_live_sampling_tolerates_a_resolver_child_disappearing(cache, monkeypatch, live, transition):
+    artifact = release_artifact(cache)
+    target = artifact.parent / ('download.part' if transition == 'file' else 'temporary-directory')
+    if transition == 'file': target.write_bytes(b'partial')
+    else: target.mkdir()
+    original = Path.lstat
+    vanished = []
+    def changed(path, *args, **kwargs):
+        if path == target and not vanished and transition != 'walk':
+            vanished.append(True)
+            if transition == 'file': target.unlink()
+            else: target.rmdir()
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'lstat', changed)
+    if transition == 'walk':
+        scandir = tools.os.scandir
+        def removed_before_traversal(path):
+            if Path(path) == target and not vanished:
+                vanished.append(True); target.rmdir()
+            return scandir(path)
+        monkeypatch.setattr(tools.os, 'scandir', removed_before_traversal)
+    if live:
+        measured = tools.maven_cache_usage(cache, live=True)
+        assert measured['files'] == 2 and measured['disappearedEntries'] >= 1
+        assert measured['sampleKind'] == 'LIVE_NONATOMIC'
+    else:
+        with pytest.raises(FileNotFoundError): tools.maven_cache_usage(cache)
+    assert vanished == [True] and artifact.is_file()
+
+
+@pytest.mark.parametrize('site', ['entry', 'traversal'])
+def test_live_sampling_does_not_suppress_permission_errors(cache, monkeypatch, site):
+    artifact = release_artifact(cache)
+    denied = artifact if site == 'entry' else artifact.parent
+    if site == 'entry':
+        original = Path.lstat
+        def fail(path, *args, **kwargs):
+            if path == denied: raise PermissionError(errno.EACCES, 'denied', str(path))
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'lstat', fail)
+    else:
+        original = tools.os.scandir
+        def fail(path):
+            if Path(path) == denied: raise PermissionError(errno.EACCES, 'denied', str(path))
+            return original(path)
+        monkeypatch.setattr(tools.os, 'scandir', fail)
+    with pytest.raises(PermissionError): tools.maven_cache_usage(cache, live=True)
+
+
+@pytest.mark.parametrize('damage', ['symlink', 'hardlink', 'foreign-owner', 'permissions', 'special', 'size'])
+def test_live_sampling_retains_the_original_metadata_safety_and_budget_gates(cache, monkeypatch, damage):
+    target = release_artifact(cache)
+    if damage == 'symlink':
+        original = target.with_name('original.jar'); target.rename(original); target.symlink_to(original)
+    elif damage == 'hardlink': os.link(target, target.with_name('linked.jar'))
+    elif damage == 'permissions': target.chmod(0o666)
+    elif damage == 'special': target.unlink(); os.mkfifo(target, 0o600)
+    else:
+        original = Path.lstat
+        def altered(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if path != target: return info
+            fields = {name: getattr(info, name) for name in ('st_mode', 'st_uid', 'st_nlink', 'st_size', 'st_blocks')}
+            fields['st_uid' if damage == 'foreign-owner' else 'st_size'] = os.getuid() + 1 if damage == 'foreign-owner' else 2 * 1024 ** 3 + 1
+            return SimpleNamespace(**fields)
+        monkeypatch.setattr(Path, 'lstat', altered)
+    with pytest.raises(ValueError): tools.maven_cache_usage(cache, live=True)
+
+
+def test_live_sampling_cannot_ignore_a_disappearing_repository_root(cache, monkeypatch):
+    repository = Path(cache['mavenCache']['repository'])
+    walk = tools.os.walk
+    def disappearing(path, **kwargs):
+        repository.rmdir()
+        yield from walk(path, **kwargs)
+    monkeypatch.setattr(tools.os, 'walk', disappearing)
+    with pytest.raises(FileNotFoundError): tools.maven_cache_usage(cache, live=True)
+
+
+@pytest.mark.parametrize('resource', ['diskAvailableBytes', 'memoryAvailableBytes'])
+def test_live_cache_churn_never_weakens_actual_resource_floors(cache, monkeypatch, resource):
+    usage = tools.maven_cache_usage
+    modes = []
+    def live(value, **kwargs):
+        modes.append(kwargs)
+        return {**usage(value, **kwargs), 'disappearedEntries': 1}
+    monkeypatch.setattr(tools, 'maven_cache_usage', live)
+    probe = {'capturedAtUnix': 1, 'diskAvailableBytes': tools.DISK_FLOOR,
+             'memoryAvailableBytes': tools.MEMORY_FLOOR}
+    probe[resource] -= 1
+    monkeypatch.setattr(tools, 'resource_probe', lambda _: probe)
+    record = {'tool': 'mvn'}
+    with pytest.raises(RuntimeError, match='resource floor'):
+        tools.observe_resources(cache, record, Path(cache['directory']) / 'probe.json')
+    assert record['resourceLimitTriggered'] is True and modes == [{'live': True}]
 
 
 def test_archive_catalog_and_commit_bind_maven_execution_before_cache_access(cache):

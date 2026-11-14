@@ -1472,7 +1472,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_tool_runtime",
-        "minimumTests": 72,
+        "minimumTests": 79,
         "source": "tests_python/test_jenkins_ecs_tool_runtime.py",
         "allowedSkippedTests": []
       },
@@ -1694,7 +1694,7 @@
       },
       {
         "module": "tests_python.test_jenkins_maven_dependency_cache",
-        "minimumTests": 89,
+        "minimumTests": 106,
         "source": "tests_python/test_jenkins_maven_dependency_cache.py",
         "allowedSkippedTests": []
       },

@@ -300,6 +300,59 @@ def test_resource_floor_fails_before_execution_and_retains_actual_probe(registra
     assert proof['resourceMonitoring']['capacityVerdict'] == 'CONTROLLED_MEASUREMENT'
 
 
+@pytest.mark.parametrize('failing_sample', [1, 2])
+def test_sampling_failure_records_safe_source_location_and_preserves_owned_stop(registration, monkeypatch, failing_sample):
+    value, _, _ = registration
+    name = 'doorhandle-ci-tool-' + value['token'] + '-123456789abc'
+    monkeypatch.setattr(tools, 'command', lambda *_args: (['/usr/bin/docker', 'create'], name))
+    monkeypatch.setattr(tools, 'canonical', lambda path, **_kwargs: Path(path))
+    monkeypatch.setattr(tools, 'docker', lambda *_args: ('e' * 64).encode())
+    observed = row(value)
+    observed['HostConfig'].update(Memory=2 * 1024 ** 3, MemorySwap=2 * 1024 ** 3)
+    monkeypatch.setattr(tools, 'owned_row', lambda *_args: observed)
+    samples, stopped = [], []
+    def sample(*_args):
+        samples.append(True)
+        if len(samples) == failing_sample:
+            raise FileNotFoundError(2, 'private-message-token', '/private/secret-cache-name')
+    monkeypatch.setattr(tools, 'observe_resources', sample)
+    class Process:
+        terminated = False
+        def poll(self): return 143 if self.terminated else None
+        def terminate(self): self.terminated = True
+        def wait(self, **_kwargs): return 143
+    process = Process()
+    monkeypatch.setattr(tools.subprocess, 'Popen', lambda *_args, **_kwargs: process)
+    def cleanup(*_args):
+        stopped.append(True)
+        return {'containerId': 'e' * 64, 'image': value['images']['maven'], 'pid': 0,
+                'exitCode': 143, 'removed': True}
+    monkeypatch.setattr(tools, 'stop_container', cleanup)
+    with pytest.raises(FileNotFoundError): tools.launch_command(value, 'java', ['-version'])
+    record = tools.private_json(Path(value['directory']) / 'receipts' / (name + '.json'))
+    failure = record['failure']
+    assert failure['code'] == 'TOOL_RUNTIME_FAILURE' and failure['errorType'] == 'FileNotFoundError'
+    assert type(failure['sourceLine']) is int and failure['sourceLine'] > 0
+    assert set(failure) == {'code', 'errorType', 'sourceLine'}
+    assert record['status'] == 'FAILED_OR_UNKNOWN' and 'exitCode' not in record
+    assert stopped == ([True] if failing_sample == 2 else [])
+    assert process.terminated is (failing_sample == 2)
+    report = tools.evidence(value, {'status': 'STOPPED', 'remaining': []})
+    assert report['commands'][0]['failure'] == failure
+    assert 'private-message-token' not in json.dumps(report) and '/private/' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('damage', ['message', 'path', 'unknown-code', 'line-type', 'line-range'])
+def test_public_failure_projection_refuses_private_or_unbounded_diagnostics(damage):
+    failure = {'code': 'TOOL_RUNTIME_FAILURE', 'errorType': 'FileNotFoundError', 'sourceLine': 1}
+    if damage == 'message': failure['message'] = 'private-message'
+    elif damage == 'path': failure['path'] = '/private/file'
+    elif damage == 'unknown-code': failure['code'] = 'secret-token'
+    elif damage == 'line-type': failure['sourceLine'] = True
+    else: failure['sourceLine'] = 0
+    with pytest.raises(ValueError, match='source-only projection'): tools.public_runtime_failure(failure)
+
+
 @pytest.mark.parametrize('mutation', ['owner', 'source', 'writable-identity', 'foreign-bind', 'privileged'])
 def test_cleanup_refuses_foreign_or_changed_container_before_any_stop(registration, monkeypatch, mutation):
     value, _, _ = registration
