@@ -83,10 +83,23 @@ foreach($upload in $uploads){
     Require-TaskData ((Get-Item -LiteralPath $upload.source).Length -eq $upload.bytes -and (Get-FileHash -LiteralPath $upload.source -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $upload.sha256) 'An original Jenkins control changed during upload.'
 }
 $binding="--batch 'current-task-failed-verify-mysql-v1' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --failed-builds '$FailedBuildNumbers' --request-sha256 '$requestSha'"
-$plan=$null;$receipt=$null;$attempted=$false;$failure=$null;$failureDiagnostic=$null;$currentPhase='plan'
+$plan=$null;$receipt=$null;$attempted=$false;$failure=$null;$failureDiagnostic=$null;$currentPhase='plan';$currentStep='PLAN_REMOTE'
 $secondaryFailures=[Collections.Generic.List[object]]::new()
 $remoteCalls=[Collections.Generic.List[object]]::new()
 $ssh=(Get-Command ssh.exe -CommandType Application -ErrorAction Stop|Select-Object -First 1).Source
+function Get-TaskDataControllerDiagnostic([Management.Automation.ErrorRecord]$Record,[string]$Phase,
+    [ValidateSet('PLAN_REMOTE','PLAN_EVIDENCE','PLAN_VALIDATE','AUTHORIZATION_RECHECK','APPLY_REMOTE','STATUS_REMOTE','STATUS_VALIDATE')][string]$Step){
+    $exceptionType=$Record.Exception.GetType().Name
+    if($exceptionType -cnotmatch '\A[A-Za-z][A-Za-z0-9]{0,95}\z'){$exceptionType='ControllerException'}
+    $sourceFile=$null;$sourceLine=$null
+    if($Record.InvocationInfo.ScriptName -ceq $PSCommandPath -and $Record.InvocationInfo.ScriptLineNumber -gt 0){
+        $sourceFile='script/jenkins/retire-task-failed-mysql-data.ps1';$sourceLine=$Record.InvocationInfo.ScriptLineNumber
+    }
+    # Report only type and fixed source coordinates, never an exception message,
+    # command text, arguments, stack trace or an arbitrary local path.
+    return @{errorType='ControllerError';reasonCode='CONTROLLER_OPERATION_FAILED';phase=$Phase;step=$Step;
+        exceptionType=$exceptionType;sourceFile=$sourceFile;sourceLine=$sourceLine}
+}
 function Get-TaskDataRemoteDiagnostic([string]$Phase,[int]$ExitCode,[string]$StderrPath){
     if($ExitCode -eq 0){return $null}
     $fallback=@{errorType='RemoteProcessError';reasonCode=$(if($ExitCode -eq 255){'SSH_TRANSPORT_LOST'}else{'REMOTE_PROCESS_FAILED'});phase=$Phase}
@@ -108,7 +121,7 @@ function Invoke-TaskDataRemote([ValidateSet('plan','apply','status')][string]$Ph
     $attempt=1+@($remoteCalls|Where-Object{$_.phase -ceq $Phase}).Count
     $stem='artifacts/derived-mysql-{0}-{1:D2}' -f $Phase,$attempt
     $row=[ordered]@{phase=$Phase;attempt=$attempt;exitCode=$null;stdout="$stem.stdout.txt";stderr="$stem.stderr.txt";diagnostic=$null}
-    $remoteCalls.Add($row)
+    [void]$remoteCalls.Add($row)
     $output=$null;$errorOutput=$null;$process=[Diagnostics.Process]::new()
     try{
         # CreateNew prevents overwriting earlier evidence or replaying a phase.
@@ -116,12 +129,14 @@ function Invoke-TaskDataRemote([ValidateSet('plan','apply','status')][string]$Ph
         $errorOutput=[IO.File]::Open([IO.Path]::GetFullPath($row.stderr),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
         $process.StartInfo.FileName=$ssh;$process.StartInfo.UseShellExecute=$false;$process.StartInfo.CreateNoWindow=$true
         $process.StartInfo.RedirectStandardOutput=$true;$process.StartInfo.RedirectStandardError=$true
-        foreach($argument in @($SshOptions)+@('-p',$PortText,$Destination,$Command)){$process.StartInfo.ArgumentList.Add($argument)}
+        foreach($argument in @($SshOptions)+@('-p',$PortText,$Destination,$Command)){[void]$process.StartInfo.ArgumentList.Add($argument)}
         Require-TaskData ($process.Start()) 'The task-data SSH process did not start.'
         $stdoutCopy=$process.StandardOutput.BaseStream.CopyToAsync($output)
         $stderrCopy=$process.StandardError.BaseStream.CopyToAsync($errorOutput)
         $process.WaitForExit()
-        $stdoutCopy.GetAwaiter().GetResult();$stderrCopy.GetAwaiter().GetResult()
+        # PowerShell can expose Task<VoidTaskResult>'s internal result. Keep both
+        # waits exception-propagating but keep the success stream to one row.
+        [void]$stdoutCopy.GetAwaiter().GetResult();[void]$stderrCopy.GetAwaiter().GetResult()
         $row.exitCode=$process.ExitCode
     }finally{
         if($null -ne $output){$output.Dispose()};if($null -ne $errorOutput){$errorOutput.Dispose()};$process.Dispose()
@@ -130,7 +145,7 @@ function Invoke-TaskDataRemote([ValidateSet('plan','apply','status')][string]$Ph
     return $row
 }
 function Copy-TaskDataEvidence([string]$Name,[string]$Local){
-    & scp.exe @SshOptions -P $PortText "${Destination}:$directory/$Name" $Local
+    $null=& scp.exe @SshOptions -P $PortText "${Destination}:$directory/$Name" $Local
     if($LASTEXITCODE -ne 0){return $null}
     Require-TaskData ((Get-Item -LiteralPath $Local).Length -le 2097152) 'Task data evidence exceeds its bound.'
     $value=Get-Content -LiteralPath $Local -Raw|ConvertFrom-Json
@@ -142,18 +157,23 @@ try {
     $planned=Invoke-TaskDataRemote 'plan' ("chmod 600 " + ($privateFiles -join ' ') + " && python3 -I -B '$helper' plan $binding")
     if($planned.exitCode -ne 0){$failureDiagnostic=$planned.diagnostic}
     Require-TaskData ($planned.exitCode -eq 0) 'Task data planning failed; no apply was issued.'
+    $currentStep='PLAN_EVIDENCE'
     $plan=Copy-TaskDataEvidence 'plan.json' 'artifacts/derived-mysql-plan.json'
+    $currentStep='PLAN_VALIDATE'
     Require-TaskData ($null -ne $plan -and @($plan.targets).Count -eq $numbers.Count -and $plan.planSha256 -cmatch '\A[a-f0-9]{64}\z') 'The first administrator metadata plan is incomplete.'
+    $currentStep='AUTHORIZATION_RECHECK'
     Require-TaskData ((Read-TaskDataAuthorization) -ceq $authorizationSha) 'Task authorization changed after metadata planning; retain all data.'
     $attempted=$true
-    $currentPhase='apply'
+    $currentPhase='apply';$currentStep='APPLY_REMOTE'
     $applied=Invoke-TaskDataRemote 'apply' "python3 -I -B '$helper' apply $binding --plan-sha256 '$($plan.planSha256)'"
     $applyExit=$applied.exitCode
     if($applyExit -eq 255){
         $state=$null;$currentPhase='status';$lastObservationFailure=$null
         for($i=0;$i -lt 30;$i++){
+            $currentStep='STATUS_REMOTE'
             $observed=Invoke-TaskDataRemote 'status' "python3 -I -B '$helper' status $binding"
             if($observed.exitCode -eq 0){
+                $currentStep='STATUS_VALIDATE'
                 $lines=@(Get-Content -LiteralPath $observed.stdout -Encoding utf8)
                 $state=$lines[-1]|ConvertFrom-Json
                 Require-TaskData ($state.release -ceq $Tag -and $state.commit -ceq $Commit -and $state.sourceSha256 -ceq $SourceSha256 -and $state.requestSha256 -ceq $requestSha -and $state.taskThreadId -ceq $task) 'Original task-data observation binding differs.'
@@ -171,7 +191,7 @@ try {
     }
 }catch{
     $failure=$_
-    if($null -eq $failureDiagnostic){$failureDiagnostic=@{errorType='ControllerError';reasonCode='CONTROLLER_OPERATION_FAILED';phase=$currentPhase}}
+    if($null -eq $failureDiagnostic){$failureDiagnostic=Get-TaskDataControllerDiagnostic $_ $currentPhase $currentStep}
 }finally{
     foreach($evidence in @(@('plan.json','artifacts/derived-mysql-plan.json'),@('receipt.json','artifacts/derived-mysql-receipt.json'))){
         try{

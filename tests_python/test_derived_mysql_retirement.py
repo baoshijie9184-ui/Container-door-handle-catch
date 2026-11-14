@@ -1057,6 +1057,33 @@ def test_task_mysql_remote_streams_are_preserved_separately_before_diagnostic_pr
     assert '2>&1' not in capture and 'ReadToEnd' not in capture
 
 
+def test_task_mysql_remote_and_evidence_functions_emit_only_their_result_object():
+    capture = TASK_DIAGNOSTIC_CONTROLLER.split('function Invoke-TaskDataRemote(', 1)[1].split('function Copy-TaskDataEvidence(', 1)[0]
+    await_results = re.findall(r'(?:\[void\]\s*)?\$(?:stdoutCopy|stderrCopy)\.GetAwaiter\(\)\.GetResult\(\)', capture)
+    assert len(await_results) == 2 and all(item.startswith('[void]') for item in await_results)
+    assert re.search(r'\[void\]\s*\$process\.StartInfo\.ArgumentList\.Add\(\$argument\)', capture)
+    assert re.search(r'\[void\]\s*\$remoteCalls\.Add\(\$row\)', capture)
+    assert capture.count('return $row') == 1
+    evidence = TASK_DIAGNOSTIC_CONTROLLER.split('function Copy-TaskDataEvidence(', 1)[1].split('\ntry {', 1)[0]
+    assert re.search(r'\$null\s*=\s*& scp\.exe\b', evidence)
+    assert 'if($LASTEXITCODE -ne 0){return $null}' in evidence
+    assert evidence.count('return $value') == 1 and '2>&1' not in evidence
+
+
+def test_task_mysql_plan_and_authorization_gates_precede_the_single_apply_attempt():
+    controller = TASK_DIAGNOSTIC_CONTROLLER
+    ordered = ["$planned=Invoke-TaskDataRemote 'plan'",
+               'Require-TaskData ($planned.exitCode -eq 0)',
+               "$plan=Copy-TaskDataEvidence 'plan.json'",
+               'Require-TaskData ($null -ne $plan -and @($plan.targets).Count -eq $numbers.Count',
+               'Require-TaskData ((Read-TaskDataAuthorization) -ceq $authorizationSha)',
+               '$attempted=$true', "$applied=Invoke-TaskDataRemote 'apply'"]
+    offsets = [controller.index(value) for value in ordered]
+    assert offsets == sorted(offsets) and len(set(offsets)) == len(offsets)
+    assert controller.count("Invoke-TaskDataRemote 'apply'") == 1
+    assert controller.count('$attempted=$true') == 1
+
+
 @pytest.mark.parametrize('phase', ['plan', 'apply', 'status'])
 def test_task_mysql_each_remote_phase_uses_original_stream_capture_without_apply_replay(phase):
     calls = re.findall(r"Invoke-TaskDataRemote '(plan|apply|status)'", TASK_DIAGNOSTIC_CONTROLLER)
@@ -1079,6 +1106,27 @@ def test_task_mysql_only_fixed_safe_remote_diagnostic_fields_reach_controller_re
     assert 'return @{errorType=$value.errorType;reasonCode=$value.reasonCode;phase=$Phase}' in projection
     assert 'catch{return $fallback}' in projection
     assert 'Exception.Message' not in projection and '$value.message' not in projection
+
+
+def test_task_mysql_local_diagnostic_has_only_safe_coordinates_and_never_replaces_remote_failure():
+    projection = TASK_DIAGNOSTIC_CONTROLLER.split('function Get-TaskDataControllerDiagnostic(', 1)[1].split('function Get-TaskDataRemoteDiagnostic(', 1)[0]
+    assert "$exceptionType -cnotmatch '\\A[A-Za-z][A-Za-z0-9]{0,95}\\z'" in projection
+    assert "$exceptionType='ControllerException'" in projection
+    assert '$sourceFile=$null;$sourceLine=$null' in projection
+    assert '$Record.InvocationInfo.ScriptName -ceq $PSCommandPath -and $Record.InvocationInfo.ScriptLineNumber -gt 0' in projection
+    assert "$sourceFile='script/jenkins/retire-task-failed-mysql-data.ps1'" in projection
+    assert '$sourceLine=$Record.InvocationInfo.ScriptLineNumber' in projection
+    assert set(re.findall(r'\$Record\.([A-Za-z0-9_.]+)', projection)) == {
+        'Exception.GetType', 'InvocationInfo.ScriptName', 'InvocationInfo.ScriptLineNumber'}
+    assert "return @{errorType='ControllerError';reasonCode='CONTROLLER_OPERATION_FAILED';phase=$Phase;step=$Step;" in projection
+    assert 'exceptionType=$exceptionType;sourceFile=$sourceFile;sourceLine=$sourceLine}' in projection
+    steps = set(re.findall(r"'([^']+)'", re.search(r'\[ValidateSet\(([^)]*)\)\]', projection).group(1)))
+    assert steps == {'PLAN_REMOTE', 'PLAN_EVIDENCE', 'PLAN_VALIDATE', 'AUTHORIZATION_RECHECK',
+                     'APPLY_REMOTE', 'STATUS_REMOTE', 'STATUS_VALIDATE'}
+    assert all("$currentStep='" + step + "'" in TASK_DIAGNOSTIC_CONTROLLER for step in steps)
+    assert 'if($null -eq $failureDiagnostic){$failureDiagnostic=Get-TaskDataControllerDiagnostic $_ $currentPhase $currentStep}' in TASK_DIAGNOSTIC_CONTROLLER
+    assert 'if($planned.exitCode -ne 0){$failureDiagnostic=$planned.diagnostic}' in TASK_DIAGNOSTIC_CONTROLLER
+    assert 'if($applyExit -ne 0){$failureDiagnostic=$applied.diagnostic}' in TASK_DIAGNOSTIC_CONTROLLER
 
 
 def test_task_mysql_final_collection_cannot_replace_primary_failure_or_claim_partial_success():

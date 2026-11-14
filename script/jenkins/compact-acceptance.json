@@ -1406,7 +1406,7 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 202,
+        "minimumTests": 205,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },
