@@ -884,7 +884,15 @@ def test_source_pytest_policy_returns_before_ordinary_or_failed_native_maintenan
     selector = "if ($nativeRetentionPolicy -cin @('SourcePytest16','SourcePytest307308')) {"
     exact = maintenance.split(selector, 1)[1].split('\n    }', 1)[0]
     assert re.fullmatch(r'\s*& ./script/jenkins/retire-source-pytest\.ps1[^\n]+\n\s*return\s*', exact)
-    assert maintenance.index(selector) < maintenance.index('reclaim-build-outputs.ps1 -Mode Maintenance')
+    # The independent generated-only branch also invokes this controller, but
+    # returns before policy dispatch. Locate the ordinary maintenance call by
+    # its complete switch boundary, not the prefix shared by both modes.
+    ordinary = list(re.finditer(
+        r'(?m)^    & ./script/jenkins/reclaim-build-outputs\.ps1 -Mode Maintenance -SshOptions [^\n]+$',
+        maintenance))
+    assert len(ordinary) == 1, 'There must be one ordinary maintenance fall-through'
+    assert maintenance.index(selector) < ordinary[0].start()
+    assert ordinary[0].end() < maintenance.index('-CanonicalBatch FailedNative -SshOptions')
     assert 'reclaim-build-outputs.ps1' not in exact and 'FailedNative' not in exact
     assert maintenance.count('retire-source-pytest.ps1') == 1
 
