@@ -26,6 +26,10 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 可退役内容限于已证明的编译目录、前端 node_modules/npm 缓存、公共工具下载副本及本轮合成 pytest 临时目录。混放内容、证据未闭合、活动引用或无法确认的 socket 明确保留，不整目录清除 checkout、inbox 或 tool-home。业务库、原始 SQL、源码、报告、#266 恢复点、#117 公共层 keeper、共享 Maven 缓存及运行/待上线候选均保留；#57/#59 私有旧 Maven 另需完整共享 keeper 的逐项字节证明。进程扫描范围为执行用户 UID；Docker 引用检查覆盖所有容器，包括已停止但仍挂载目标的容器。
 
+历史源码测试还会在 `java-suites/suite-001` 留下 Maven `package` 生成物。原六类编译目录规则不删除依赖拷贝和 JAR；新增精确类型 `SOURCE_DEPENDENCIES`、`SOURCE_JAR` 分别只对应 `doorhandle-module-app/dependency` 与 `doorhandle-server/doorhandle-server-0.0.1-SNAPSHOT.jar`。历史清单仅准入 #219/#147/#183；今后已登记轮次的同路径由自动收尾发现。固定源码 POM 必须证明隔离构建和依赖复制位置，原归档日志必须逐文件记录复制或生成，Maven 命令已结束、SOURCE 原报告保全且无引用才可退役。失败 SOURCE 保留 FAILED，不要求伪造 PASS；混入 SQL、目录或未记录文件时保留整个目标。原普通 Verified 合同不变。
+
+这三轮的新精确私有清单为 `work/middleware-alignment-20261113/source-package-retirement-input-20261114.json`，共 6 个目标，实测分配 2,321,580,032 字节；需在包含修复的固定提交通过 ECS 控制验证后，再使用上述 Generated 独立维护参数执行。它不覆盖已消费的原 52 目标清单，也不包含 #83、#225/#229 或此前 7 项权限拒绝对象。源码接线完成不等于这些字节已释放。
+
 ## 历史实施记录
 
 下方为历史环境、流水线及验收记录，其中 `18080` 构建链接保留原地址。本地运行测试、旧 `Jenkinsfile` 与轮询自动发布等旧指令均已失效，不得用于新构建；历史成功不代表当前源码或流水线已验收。

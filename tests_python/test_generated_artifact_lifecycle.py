@@ -4,12 +4,15 @@ All filesystem operations target pytest-owned synthetic trees; container and
 process snapshots are injected. These are not business-data migration tests.
 """
 import copy
+import io
 import json
 import os
 from pathlib import Path
 import re
 import stat
 import sys
+import tarfile
+import zipfile
 
 import pytest
 
@@ -243,6 +246,175 @@ def test_failed_historical_candidate_does_not_block_other_eligible_rows(generate
     assert receipt['retention']['budgetVerdict'] == 'UNKNOWN'
     assert not generated.classes.exists()
     assert source.read_bytes() == original_bytes and retained.read_bytes() == b'retained input'
+
+
+def add_source_package_outputs(state, *, damage=None):
+    """Bind real SOURCE failure evidence to small, regenerable Maven outputs."""
+    source = state.inbox / 'source.tar.gz'
+    with tarfile.open(source, 'r:gz') as archive:
+        files = {entry.name: archive.extractfile(entry).read() for entry in archive}
+    files['pom.xml'] = files['pom.xml'].replace(b'<version>1.0.0</version>', b'<version>0.0.1-SNAPSHOT</version>')
+    files['pom.xml'] = files['pom.xml'].replace(b'</modules>',
+        b'<module>doorhandle-module-app</module><module>doorhandle-server</module></modules>')
+    files['doorhandle-module-app/pom.xml'] = (
+        b'<project><artifactId>doorhandle-module-app</artifactId><build><plugins><plugin>'
+        b'<artifactId>maven-dependency-plugin</artifactId><executions><execution>'
+        b'<phase>prepare-package</phase><goals><goal>copy-dependencies</goal></goals>'
+        b'<configuration><outputDirectory>${project.build.directory}/dependency</outputDirectory>'
+        b'</configuration></execution></executions></plugin></plugins></build></project>')
+    if damage == 'pom-routing':
+        files['doorhandle-module-app/pom.xml'] = files['doorhandle-module-app/pom.xml'].replace(
+            b'${project.build.directory}/dependency', b'${project.basedir}/business-files')
+    files['doorhandle-server/pom.xml'] = b'<project><artifactId>doorhandle-server</artifactId></project>'
+    legacy.package(source, files, 'a' * 40)
+    source_sha = cleanup.digest(source)
+    manifest = cleanup.read_json(state.manifest)
+    manifest['sourceSha256'] = source_sha
+    legacy.put_json(state.manifest, manifest)
+    claim_path = state.attempt / '.verification-claimed/claim.json'
+    claim = cleanup.read_json(claim_path)
+    claim['sourceSha256'] = source_sha
+    legacy.put_json(claim_path, claim)
+    tools = cleanup.read_json(state.evidence / 'tool-runtime.json')
+    tools.update(sourceSha256=source_sha, manifestSha256=cleanup.digest(state.manifest))
+    tools['cleanup']['manifestSha256'] = cleanup.digest(state.manifest)
+    legacy.put_json(state.evidence / 'tool-runtime.json', tools)
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    inner.update(status='FAILED', javaOnly=False, wholeMigrationRequested=False,
+                 workerMysqlRequested=False, fixtureProperties=[], fixtureManifest=None)
+    if damage == 'unfinished-command': inner['commands'][0].pop('finishedAt')
+    legacy.put_json(state.evidence / 'receipt.json', inner)
+    # Both archives are genuine ZIP/JAR shapes, not executable application code.
+    blob = io.BytesIO()
+    with zipfile.ZipFile(blob, 'w') as archive:
+        archive.writestr('META-INF/MANIFEST.MF', 'Manifest-Version: 1.0\n')
+    kinds = ('GENERATED_SOURCE_DEPENDENCIES', 'GENERATED_SOURCE_JAR')
+    paths = {kind: state.root / cleanup.generated_paths(OLD)[kind] for kind in kinds}
+    dependency = legacy.put(paths[kinds[0]] / 'synthetic-library-1.0.jar', blob.getvalue())
+    legacy.put(paths[kinds[1]], blob.getvalue())
+    if damage == 'jar-signature': legacy.put(paths[kinds[1]], b'not a generated JAR')
+    log = '[INFO] Copying ' + dependency.name + ' to ' + str(dependency) + '\n'
+    log += '[INFO] Building jar: ' + str(paths[kinds[1]]) + '\n'
+    if damage == 'missing-output-log': log = '[INFO] unrelated build diagnostics\n'
+    legacy.put(state.evidence / 'java-suite-001.log', log.encode())
+    state.reports.append('reports/java-suite-001.log')
+    state.record.update(sourceSha256=source_sha, status='FAILED', verificationExitCode=1)
+    legacy.seal(state)
+    state.keep.append(state.evidence / 'java-suite-001.log')
+    return paths
+
+
+def source_package_request(state, paths):
+    value = request(state, targets=[{'kind': kind, 'path': path.relative_to(state.root).as_posix()}
+                                    for kind, path in paths.items()])
+    value['candidates'][0]['terminal']['kind'] = 'REMOTE_VERIFICATION'
+    return value
+
+
+def test_failed_source_package_retires_exact_outputs_and_preserves_old_contract(generated, monkeypatch):
+    paths = add_source_package_outputs(generated)
+    # Real packaged JARs exceed the 32 MiB control-file cap. A sparse tail
+    # exercises the output inventory boundary without allocating a large buffer.
+    with paths['GENERATED_SOURCE_JAR'].open('r+b') as stream:
+        stream.truncate(cleanup.MAX_PLAN + 1)
+    monkeypatch.setattr(cleanup, 'GENERATED_SOURCE_PACKAGE_HISTORY', frozenset({OLD}))
+    before = legacy.preserved_bytes(generated)
+    old = cleanup.build_plan(generated.root, generated.request, remote, [])
+    assert old['candidates'] and not old['skipped']
+    assert all(target['path'] not in {path.relative_to(generated.root).as_posix() for path in paths.values()}
+               for candidate in old['candidates'] for target in candidate['targets'])
+    value = source_package_request(generated, paths)
+    plan = make_plan(generated, value)
+    assert not plan['skipped']
+    assert {target['kind'] for candidate in plan['candidates'] for target in candidate['targets']} == set(paths)
+    jar_target = next(target for candidate in plan['candidates'] for target in candidate['targets']
+                      if target['kind'] == 'GENERATED_SOURCE_JAR')
+    assert jar_target['bytes'] == cleanup.MAX_PLAN + 1
+    receipt = cleanup.apply_plan(generated.root, value, plan, remote)
+    assert receipt['status'] == 'REMOVED' and receipt['retention']['status'] == 'SATISFIED'
+    assert all(not path.exists() for path in paths.values())
+    assert legacy.preserved_bytes(generated) == before
+    assert cleanup.read_json(generated.evidence / 'receipt.json')['status'] == 'FAILED'
+    assert cleanup.read_json(generated.attempt / 'verification-receipt.json')['status'] == 'FAILED'
+
+
+def test_future_current_post_auto_discovers_source_packages_without_historical_enrollment(generated):
+    paths = add_source_package_outputs(generated)
+    assert OLD not in cleanup.GENERATED_SOURCE_PACKAGE_HISTORY
+    value = request(generated, current=True)
+    plan = make_plan(generated, value)
+    assert not plan['skipped']
+    assert set(paths) <= {target['kind'] for candidate in plan['candidates'] for target in candidate['targets']}
+    receipt = cleanup.apply_plan(generated.root, value, plan, remote)
+    assert receipt['retention']['status'] == 'SATISFIED'
+    assert all(not path.exists() for path in paths.values())
+
+
+def test_unapproved_historical_source_packages_are_kept(generated):
+    paths = add_source_package_outputs(generated)
+    value = source_package_request(generated, paths)
+    plan = make_plan(generated, value)
+    assert not plan['candidates']
+    assert plan['skipped'][0]['reason'] == 'SOURCE_PACKAGE_HISTORY_NOT_APPROVED'
+    assert all(path.exists() for path in paths.values())
+
+
+@pytest.mark.parametrize(('damage', 'reason'), [
+    ('pom-routing', 'SOURCE_DEPENDENCY_OUTPUT_ROUTING_NOT_PROVEN'),
+    ('missing-output-log', 'SOURCE_DEPENDENCY_COPY_NOT_RECORDED'),
+    ('unfinished-command', 'BUILD_HAS_UNSETTLED_COMMANDS'),
+    ('jar-signature', 'SOURCE_PACKAGE_JAR_SIGNATURE_INVALID'),
+])
+def test_source_package_requires_archived_routing_and_completed_output_proof(generated, monkeypatch, damage, reason):
+    paths = add_source_package_outputs(generated, damage=damage)
+    monkeypatch.setattr(cleanup, 'GENERATED_SOURCE_PACKAGE_HISTORY', frozenset({OLD}))
+    plan = make_plan(generated, source_package_request(generated, paths))
+    assert not plan['candidates'] and plan['skipped']
+    assert plan['skipped'][0]['reason'] == reason
+    assert all(path.exists() for path in paths.values())
+
+
+def test_source_dependency_directory_mixed_with_sql_is_not_retired(generated, monkeypatch):
+    paths = add_source_package_outputs(generated)
+    original = legacy.put(paths['GENERATED_SOURCE_DEPENDENCIES'] / 'original.sql', b'original SQL')
+    monkeypatch.setattr(cleanup, 'GENERATED_SOURCE_PACKAGE_HISTORY', frozenset({OLD}))
+    plan = make_plan(generated, source_package_request(generated, paths))
+    assert not plan['candidates']
+    assert plan['skipped'][0]['reason'] == 'SOURCE_DEPENDENCY_OUTPUT_NOT_CLOSED'
+    assert original.read_bytes() == b'original SQL' and all(path.exists() for path in paths.values())
+
+
+def test_stopped_container_mount_still_protects_source_package(generated, monkeypatch):
+    paths = add_source_package_outputs(generated)
+    monkeypatch.setattr(cleanup, 'GENERATED_SOURCE_PACKAGE_HISTORY', frozenset({OLD}))
+    container = ['f' * 64, False, False, 0, OLD, 'b' * 24,
+                 [{'Type': 'bind', 'Source': str(paths['GENERATED_SOURCE_JAR'])}]]
+    plan = make_plan(generated, source_package_request(generated, paths), [container])
+    assert not plan['candidates'] and plan['skipped'][0]['reason'] == 'CONTAINER_REFERENCES_GENERATED_TARGET'
+    assert all(path.exists() for path in paths.values())
+
+
+def test_source_package_change_after_plan_refuses_before_any_deletion(generated, monkeypatch):
+    paths = add_source_package_outputs(generated)
+    monkeypatch.setattr(cleanup, 'GENERATED_SOURCE_PACKAGE_HISTORY', frozenset({OLD}))
+    value = source_package_request(generated, paths)
+    plan = make_plan(generated, value)
+    jar = paths['GENERATED_SOURCE_JAR']
+    legacy.put(jar, jar.read_bytes() + b'new-build-output')
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED'):
+        cleanup.apply_plan(generated.root, value, plan, remote)
+    assert all(path.exists() for path in paths.values())
+
+
+def test_generated_source_jar_cannot_address_recovery_point(generated):
+    target = {'kind': 'GENERATED_SOURCE_JAR',
+              'path': cleanup.generated_paths('ci-266-f6e062edc7b6')['GENERATED_SOURCE_JAR']}
+    fd = os.open(generated.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match='PROTECTED'):
+            cleanup.remove_target(fd, target)
+    finally:
+        os.close(fd)
 
 
 def test_enrollment_discovers_closed_attempt_without_requiring_same_job_final_state(generated):

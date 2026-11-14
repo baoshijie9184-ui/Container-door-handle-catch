@@ -50,6 +50,8 @@ GENERATED_TOOL_KEEPER = 'ci-117-8c898996cc28'
 GENERATED_RETAINED_BUDGET = 512 * 1024 ** 2
 GENERATED_TREE_HELPER = None
 GENERATED_PRIVATE_MAVEN = frozenset({'ci-57-075ae4801851', 'ci-59-68ee188164e8'})
+GENERATED_SOURCE_PACKAGE_HISTORY = frozenset({'ci-219-f285497829e9', 'ci-147-ebe1a357df7f', 'ci-183-9caed5c71ec3'})
+GENERATED_SOURCE_PACKAGE_KINDS = frozenset({'GENERATED_SOURCE_DEPENDENCIES', 'GENERATED_SOURCE_JAR'})
 # These reviewed functions route checkout commands to this one disposable cache.
 # Compare syntax only; never execute an old source or infer ownership by name.
 NPM_ROUTING_AST = {
@@ -1005,6 +1007,8 @@ def generated_tree_helper():
 
 def generated_inventory(root, target):
     path = root / target['path']
+    if target['kind'] in GENERATED_SOURCE_PACKAGE_KINDS:
+        owned_chain(path, root, directory=target['kind'] == 'GENERATED_SOURCE_DEPENDENCIES', maximum=MAX_TREE_BYTES)
     if target['kind'] in ('GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'):
         data = generated_tree_helper().inventory(path)
         # Active socket references cannot be inferred from a pathname or a
@@ -1012,14 +1016,16 @@ def generated_inventory(root, target):
         require(not any(stat.S_ISSOCK(item['metadata'][0]) for item in data['entries']), 'GENERATED_SOCKET_REFERENCE_UNRESOLVED')
         return {key: data[key] for key in ('files','allocatedBytes','rootMetadata','inventorySha256','entries')} | {
             'bytes': sum(item['metadata'][3] for item in data['entries'] if stat.S_ISREG(item['metadata'][0]))}
-    return generated_file_inventory(path) if target['kind'] == 'GENERATED_IMAGE_ARCHIVE' else tree_inventory(path)
+    return generated_file_inventory(path) if target['kind'] in ('GENERATED_IMAGE_ARCHIVE', 'GENERATED_SOURCE_JAR') else tree_inventory(path)
 
 
 def generated_paths(tag):
     return {'GENERATED_OCI_CACHE': f'inbox/{tag}/candidate-build-tools/official-oci',
             'GENERATED_IMAGE_ARCHIVE': f'inbox/{tag}/candidate-build-tools/official-image.tar',
             'NPM_CACHE': f'verification/{tag}/checkout/{NPM_CACHE_SUFFIX}',
-            'RETIRED_PRIVATE_MAVEN': f'verification/{tag}/checkout/work/ecs-maven-repository'}
+            'RETIRED_PRIVATE_MAVEN': f'verification/{tag}/checkout/work/ecs-maven-repository',
+            'GENERATED_SOURCE_DEPENDENCIES': f'verification/{tag}/checkout/work/ci-evidence/java-suites/suite-001/doorhandle-module-app/dependency',
+            'GENERATED_SOURCE_JAR': f'verification/{tag}/checkout/work/ci-evidence/java-suites/suite-001/doorhandle-server/doorhandle-server-0.0.1-SNAPSHOT.jar'}
 
 
 def has_generated_outputs(root, tag):
@@ -1229,6 +1235,65 @@ def generated_maven_basis(root, binding, row, target):
     return {'keeper': keeper.relative_to(root).as_posix(), 'receiptSha256': state['receiptSha256'], 'artifacts': artifacts}
 
 
+def generated_source_package_basis(root, binding, row, target, verifier):
+    """Retire two exact source-test package outputs, never candidate artifacts.
+
+    Historical SOURCE failures retain their original result. The pinned POM,
+    closed Maven command and archived producer log establish these outputs;
+    the original report directories and source archive are not deletion targets.
+    """
+    require(row['terminal']['kind'] in ('CURRENT_POST', 'ENROLLED_POST')
+            or row['release'] in GENERATED_SOURCE_PACKAGE_HISTORY, 'SOURCE_PACKAGE_HISTORY_NOT_APPROVED')
+    require(row['release'] != GENERATED_TOOL_KEEPER, 'SOURCE_PACKAGE_RECOVERY_POINT_PROTECTED')
+    require(binding.get('record', {}).get('scope') == 'source'
+            and binding['inner'].get('scopeKind') == 'source', 'SOURCE_PACKAGE_REQUIRES_SOURCE_SCOPE')
+    suites = [item for item in binding['inner'].get('javaSuites', []) if item.get('id') == 'suite-001']
+    require(len(suites) == 1 and suites[0].get('compiledBuildRoot', 'java-suites/suite-001') == 'java-suites/suite-001'
+            and suites[0].get('commandLabel', 'java-suite-001') == 'java-suite-001', 'SOURCE_PACKAGE_SUITE_NOT_BOUND')
+    commands = [item for item in binding['inner']['commands'] if item.get('label') == 'java-suite-001']
+    require(len(commands) == 1 and commands[0].get('finishedAt') and type(commands[0].get('exitCode')) is int,
+            'SOURCE_PACKAGE_COMMAND_NOT_FINISHED')
+    log_name = 'reports/java-suite-001.log'
+    require(log_name in binding['catalog'], 'SOURCE_PACKAGE_PRODUCER_LOG_NOT_ARCHIVED')
+    log_path = owned_chain(binding['checkout'] / 'work/ci-evidence/java-suite-001.log', root, maximum=verifier.MAX_FILE_BYTES)
+    log_lines = set(log_path.read_text(encoding='utf8').splitlines())
+    require(digest(log_path) == binding['catalog'][log_name]['sha256'], 'SOURCE_PACKAGE_PRODUCER_LOG_CHANGED')
+    pom_raw = None
+    with verifier.bounded_tar(Path(binding['sourceArchive']), verifier.MAX_SOURCE_BYTES) as archive:
+        for member in archive:
+            if member.name == 'doorhandle-module-app/pom.xml':
+                require(pom_raw is None and member.isfile() and 0 < member.size <= 1024 ** 2, 'SOURCE_PACKAGE_POM_INVALID')
+                pom_raw = archive.extractfile(member).read()
+    require(pom_raw is not None and 'doorhandle-module-app' in binding['modules'], 'SOURCE_PACKAGE_POM_MISSING')
+    pom = ET.fromstring(pom_raw)
+    executions = [execution for plugin in pom.findall('./{*}build/{*}plugins/{*}plugin')
+                  if plugin.findtext('./{*}artifactId') == 'maven-dependency-plugin'
+                  and plugin.findtext('./{*}groupId', 'org.apache.maven.plugins') == 'org.apache.maven.plugins'
+                  for execution in plugin.findall('./{*}executions/{*}execution')
+                  if execution.findtext('./{*}phase') == 'prepare-package'
+                  and any(goal.text == 'copy-dependencies' for goal in execution.findall('./{*}goals/{*}goal'))
+                  and execution.findtext('./{*}configuration/{*}outputDirectory') == '${project.build.directory}/dependency']
+    require(len(executions) == 1, 'SOURCE_DEPENDENCY_OUTPUT_ROUTING_NOT_PROVEN')
+    path = root / target['path']
+    if target['kind'] == 'GENERATED_SOURCE_DEPENDENCIES':
+        require(target['entries'], 'SOURCE_DEPENDENCY_OUTPUT_EMPTY')
+        for entry in target['entries']:
+            name = entry['path']
+            require(re.fullmatch(r'[A-Za-z0-9_.+-]{1,200}\.jar', name) and 'sha256' in entry,
+                    'SOURCE_DEPENDENCY_OUTPUT_NOT_CLOSED')
+            require('[INFO] Copying ' + name + ' to ' + str(path / name) in log_lines,
+                    'SOURCE_DEPENDENCY_COPY_NOT_RECORDED')
+    else:
+        require(path.name in binding['modules'].get('doorhandle-server', set()), 'SOURCE_PACKAGE_ARTIFACT_NAME_NOT_PINNED')
+        require('[INFO] Building jar: ' + str(path) in log_lines, 'SOURCE_PACKAGE_JAR_NOT_RECORDED')
+    files = [path / item['path'] for item in target['entries']] if target['kind'] == 'GENERATED_SOURCE_DEPENDENCIES' else [path]
+    for file in files:
+        with file.open('rb') as stream:
+            require(stream.read(4) == b'PK\x03\x04', 'SOURCE_PACKAGE_JAR_SIGNATURE_INVALID')
+    return {'pomSha256': sha(pom_raw), 'producerLogSha256': binding['catalog'][log_name]['sha256'],
+            'commandLabel': 'java-suite-001', 'commandExitCode': commands[0]['exitCode'], 'kind': target['kind']}
+
+
 def discover_generated_request(root, current, commit, source_sha, identity, terminal_result):
     require(terminal_result in ('SUCCESS', 'UNSTABLE', 'FAILURE', 'ABORTED', 'NOT_BUILT'), 'GENERATED_POST_RESULT_REQUIRED')
     current_row = {'release': current, 'commit': commit, 'sourceSha256': source_sha, 'targets': 'AUTO',
@@ -1328,7 +1393,7 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                         unresolved.append({'release': tag, 'path': str(binding['checkout'].relative_to(root)),
                             'reason': 'CHECKOUT_OUTPUT_EVIDENCE_INCOMPLETE'})
                     declared = [{'kind': kind, 'path': path} for kind, path in generated_paths(tag).items()
-                                if kind in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE')]
+                                if kind in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE') or kind in GENERATED_SOURCE_PACKAGE_KINDS]
                 for item in declared:
                     require(type(item) is dict and set(item) == {'kind', 'path'}
                             and generated_paths(tag).get(item['kind']) == item['path'], 'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
@@ -1340,7 +1405,9 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                     if item['kind'] == 'NPM_CACHE':
                         require(binding.get('npmCache', {}).get('status') == 'PROVEN', 'GENERATED_NPM_ROUTING_NOT_PROVEN')
                     target = {**item, **generated_inventory(root, item)}
-                    if item['kind'].startswith('GENERATED_'):
+                    if item['kind'] in GENERATED_SOURCE_PACKAGE_KINDS:
+                        bases[item['kind']] = generated_source_package_basis(root, binding, enriched, target, verifier)
+                    elif item['kind'] in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE'):
                         if 'publicTools' not in bases: bases['publicTools'] = generated_public_basis(root, binding, enriched, verifier)
                         generated_public_target(root, enriched, target, bases['publicTools'])
                     elif item['kind'] == 'RETIRED_PRIVATE_MAVEN':
@@ -1445,6 +1512,8 @@ def remove_target(root_fd, target):
         'PYTEST_CASE_DIRECTORY': base + re.escape(PYTEST_TMP_SUFFIX.removeprefix('work/')) + r'/[A-Za-z0-9_.-]{1,180}',
         'GENERATED_OCI_CACHE': r'inbox/ci-[0-9]+-[a-f0-9]{12}/candidate-build-tools/official-oci',
         'GENERATED_IMAGE_ARCHIVE': r'inbox/ci-[0-9]+-[a-f0-9]{12}/candidate-build-tools/official-image\.tar',
+        'GENERATED_SOURCE_DEPENDENCIES': base + r'ci-evidence/java-suites/suite-001/doorhandle-module-app/dependency',
+        'GENERATED_SOURCE_JAR': base + r'ci-evidence/java-suites/suite-001/doorhandle-server/doorhandle-server-0\.0\.1-SNAPSHOT\.jar',
         'RETIRED_PRIVATE_MAVEN': r'verification/(?:' + '|'.join(sorted(GENERATED_PRIVATE_MAVEN)) + r')/checkout/work/ecs-maven-repository'}
     require(target.get('kind') in patterns and re.fullmatch(patterns[target['kind']], target.get('path', '')),
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
@@ -1452,7 +1521,7 @@ def remove_target(root_fd, target):
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
     require(not any('/' + tag + '/' in '/' + target['path'] + '/' for tag in GENERATED_PROTECTED_RELEASES),
             'PROTECTED_RECOVERY_POINT_MAY_NOT_BE_REMOVED')
-    require(not (target['kind'] in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE')
+    require(not (target['kind'] in ({'GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE'} | GENERATED_SOURCE_PACKAGE_KINDS)
                  and '/' + GENERATED_TOOL_KEEPER + '/' in target['path']), 'EXISTING_PUBLIC_LAYER_KEEPER_PROTECTED')
     parts = target['path'].split('/'); stack = [os.dup(root_fd)]
     try:
@@ -1467,7 +1536,7 @@ def remove_target(root_fd, target):
         entries = {row['path']: row for row in target['entries']}
         require(len(entries) == len(target['entries']) and sha(canonical(target['entries'])) == target['inventorySha256'],
                 'DELETION_INVENTORY_NOT_BOUND')
-        if target['kind'] == 'GENERATED_IMAGE_ARCHIVE':
+        if target['kind'] in ('GENERATED_IMAGE_ARCHIVE', 'GENERATED_SOURCE_JAR'):
             require(set(entries) == {'.'}, 'GENERATED_FILE_INVENTORY_INVALID')
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
             try:

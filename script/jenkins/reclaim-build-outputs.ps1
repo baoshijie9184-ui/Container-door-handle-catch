@@ -126,7 +126,7 @@ if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
     Require-Reclaim ($authorization.version -eq 1 -and $authorization.userReply -and
         $authorization.diskExpansionAuthorized -eq $false -and $authorization.blanketDockerPruneAuthorized -eq $false -and
         'ci-266-f6e062edc7b6' -cin $authorization.excluded) 'Generated maintenance lacks the recorded scoped authorization.'
-    $kindMap = @{OFFICIAL_OCI='GENERATED_OCI_CACHE';OFFICIAL_IMAGE_TAR='GENERATED_IMAGE_ARCHIVE';NPM_CACACHE='NPM_CACHE';OLD_PRIVATE_MAVEN='RETIRED_PRIVATE_MAVEN'}
+    $kindMap = @{OFFICIAL_OCI='GENERATED_OCI_CACHE';OFFICIAL_IMAGE_TAR='GENERATED_IMAGE_ARCHIVE';NPM_CACACHE='NPM_CACHE';OLD_PRIVATE_MAVEN='RETIRED_PRIVATE_MAVEN';SOURCE_DEPENDENCIES='GENERATED_SOURCE_DEPENDENCIES';SOURCE_JAR='GENERATED_SOURCE_JAR'}
     $rows = @()
     foreach ($row in $inputManifest.rows) {
         Require-Reclaim ($row.release -cmatch '^ci-[0-9]+-[a-f0-9]{12}$' -and $row.commit -cmatch '^[a-f0-9]{40}$' -and
