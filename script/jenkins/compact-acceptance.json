@@ -1309,6 +1309,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_generated_artifact_lifecycle",
+        "minimumTests": 30,
+        "source": "tests_python/test_generated_artifact_lifecycle.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_jenkins_ecs_build_cleanup",
         "minimumTests": 225,
         "source": "tests_python/test_jenkins_ecs_build_cleanup.py",

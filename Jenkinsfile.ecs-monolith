@@ -8,6 +8,13 @@ def configureVerificationInputs() {
     env.FAILED_NATIVE_BUILD_NUMBER = params.FAILED_NATIVE_BUILD_NUMBER?.trim() ?: ''
     env.FAILED_MYSQL_DATA_BUILDS = params.FAILED_MYSQL_DATA_BUILDS?.trim() ?: ''
     env.EXISTING_EVIDENCE_BUILD = params.EXISTING_EVIDENCE_BUILD?.trim() ?: ''
+    env.GENERATED_ARTIFACTS_ONLY = params.GENERATED_ARTIFACTS_ONLY ? 'true' : 'false'
+    env.GENERATED_RETENTION_MANIFEST = params.GENERATED_RETENTION_MANIFEST?.trim() ?: ''
+    if (params.GENERATED_ARTIFACTS_ONLY) {
+        if (params.ACTION != 'reclaim-build-outputs' || env.NATIVE_RETENTION_POLICY != 'FailedNative'
+            || env.FAILED_NATIVE_BUILD_NUMBER || env.FAILED_MYSQL_DATA_BUILDS || !env.GENERATED_RETENTION_MANIFEST)
+            error('Generated-only maintenance requires its exact manifest and cannot mix retired database/JAR batches')
+    } else if (env.GENERATED_RETENTION_MANIFEST) error('A generated manifest is accepted only by generated-only maintenance')
     if (params.ACTION == 'collect-existing-evidence') {
         if (!(env.EXISTING_EVIDENCE_BUILD ==~ /[1-9][0-9]{0,8}/) || !(env.BUILD_NUMBER ==~ /[1-9][0-9]{0,8}/)
             || env.EXISTING_EVIDENCE_BUILD.toLong() >= env.BUILD_NUMBER.toLong()) error('Evidence recollection requires one canonical earlier build number')
@@ -138,6 +145,8 @@ pipeline {
     parameters {
         choice(name: 'ACTION', choices: ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs', 'collect-existing-evidence'], description: 'collect-existing-evidence仅补收已保全原回执，不重跑测试；verify-controls仅运行ECS控制脚本预检；verify-runtime验收隔离应用；切库仍须完整证据')
         choice(name: 'NATIVE_RETENTION_POLICY', choices: ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16', 'SourcePytest307308'], description: 'Maintenance only: choose one native retention policy; default FailedNative follows failed runtime builds')
+        booleanParam(name: 'GENERATED_ARTIFACTS_ONLY', defaultValue: false, description: '仅回收已授权的精确生成物，不运行旧数据库/JAR批次；无需业务测试PASS')
+        string(name: 'GENERATED_RETENTION_MANIFEST', defaultValue: '', trim: true, description: '生成物维护的本地私有精确输入清单绝对路径')
         string(name: 'FAILED_NATIVE_BUILD_NUMBER', defaultValue: '', trim: true, description: 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete failed-native batch')
         string(name: 'FAILED_MYSQL_DATA_BUILDS', defaultValue: '', trim: true, description: '本任务已授权的失败verify/mysql临时库编号，如287,289；空值保持原保留策略，正式库/候选/#266/SQL/报告不动')
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
@@ -199,6 +208,8 @@ pipeline {
                     env.CI_LEGACY_CANDIDATE_PREPARED = 'false'
                     env.CI_LOCAL_MYSQL_ATTEMPTED = 'false'
                     env.CI_PROJECT_MYSQL_ATTEMPTED = 'false'
+                    env.CI_EVIDENCE_ARCHIVED = 'false'
+                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'false'
                     if (isUnix()) error('Control steps require the dedicated local Windows agent')
                     def expectedWorkspace = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith'
                     if (pwd().replace('\\', '/') != expectedWorkspace) error('Unexpected CI workspace')
@@ -509,9 +520,10 @@ pipeline {
                     }
                 } else if (params.ACTION == 'reclaim-build-outputs') {
                     if (env.CI_ARTIFACTS_READY == 'true') {
-                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/derived-mysql-*.json,artifacts/source-pytest16/*,artifacts/source-pytest307308/*,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.json,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.json,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/native-python-build-cache-*.json,artifacts/native-python-build-cache-*.jsonl,artifacts/native-python-build-cache-inspect/*.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/generated-cleanup-*.json,artifacts/generated-cleanup-*.jsonl,artifacts/derived-mysql-*.json,artifacts/source-pytest16/*,artifacts/source-pytest307308/*,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.json,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.json,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/native-python-build-cache-*.json,artifacts/native-python-build-cache-*.jsonl,artifacts/native-python-build-cache-inspect/*.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }
                 } else {
+                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'true'
                     // A cutover can fail after runtime acceptance and its owned
                     // cleanup have passed. Preserve that completed evidence.
                     if (env.CI_RUNTIME_ATTEMPTED == 'true' && env.CI_RUNTIME_VERIFIED != 'true' && !fileExists('artifacts/runtime-gate-passed.json')) {
@@ -520,7 +532,12 @@ pipeline {
                                 sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                                 file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                             ]) {
-                                pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupRuntime'
+                                try {
+                                    pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupRuntime'
+                                } catch (failure) {
+                                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'false'
+                                    throw failure
+                                }
                             }
                         }
                     }
@@ -530,7 +547,12 @@ pipeline {
                                 sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                                 file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                             ]) {
-                                pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupLegacyCandidate'
+                                try {
+                                    pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupLegacyCandidate'
+                                } catch (failure) {
+                                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'false'
+                                    throw failure
+                                }
                             }
                         }
                     }
@@ -540,7 +562,12 @@ pipeline {
                                 sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                                 file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                             ]) {
-                                pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupProjectMySql'
+                                try {
+                                    pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupProjectMySql'
+                                } catch (failure) {
+                                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'false'
+                                    throw failure
+                                }
                             }
                         }
                     }
@@ -550,7 +577,12 @@ pipeline {
                                 sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                                 file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                             ]) {
-                                pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupLocalMySql'
+                                try {
+                                    pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupLocalMySql'
+                                } catch (failure) {
+                                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'false'
+                                    throw failure
+                                }
                             }
                         }
                     }
@@ -560,7 +592,12 @@ pipeline {
                                 sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                                 file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                             ]) {
-                                pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupFixtures'
+                                try {
+                                    pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupFixtures'
+                                } catch (failure) {
+                                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'false'
+                                    throw failure
+                                }
                             }
                         }
                     }
@@ -570,15 +607,44 @@ pipeline {
                                 sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                                 file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                             ]) {
-                                pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupTools'
+                                try {
+                                    pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupTools'
+                                } catch (failure) {
+                                    env.CI_GENERATED_CLEANUP_ELIGIBLE = 'false'
+                                    throw failure
+                                }
                             }
                         }
                     }
                     if (env.CI_ARTIFACTS_READY == 'true') {
+                        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         try {
                             junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml,artifacts/embedding/python.xml,artifacts/control-preflight/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
                         } finally {
                             archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/runtime-browser/**/*.png,artifacts/ecs/verification-evidence.tar.gz,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/runtime-resources/resource-probes.jsonl,artifacts/candidate-build-resources/resource-probes.jsonl,artifacts/fixture-build-resources/*/resource-probes.jsonl,artifacts/runtime-observability/prometheus-image/resource-probes.jsonl,artifacts/runtime-observability/alertmanager-image/resource-probes.jsonl,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                            env.CI_EVIDENCE_ARCHIVED = 'true'
+                        }
+                        }
+                    }
+                    if (params.RECLAIM_OLD_BUILD_OUTPUTS && env.CI_TOOLS_ATTEMPTED == 'true' && fileExists('artifacts/source.tar.gz')) {
+                        // Remote work has ended, but this Jenkins build is still
+                        // executing post. Do not wait for its own final result.
+                        env.CI_TERMINAL_RESULT = currentBuild.currentResult
+                        try {
+                            if (env.CI_EVIDENCE_ARCHIVED == 'true' && env.CI_GENERATED_CLEANUP_ELIGIBLE == 'true') {
+                                catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                                    withCredentials([
+                                        sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                                        file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                                    ]) {
+                                        pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupGeneratedArtifacts'
+                                    }
+                                }
+                            } else {
+                                writeFile file: 'artifacts/generated-cleanup-result.json', text: '{"status":"RETAINED_OUTPUTS_REQUIRE_ACTION","reason":"Original evidence archival or owned remote cleanup is unresolved","generatedLifecycle":true}'
+                            }
+                        } finally {
+                            archiveArtifacts artifacts: 'artifacts/generated-cleanup-*.json,artifacts/generated-cleanup-*.jsonl', allowEmptyArchive: false, fingerprint: true
                         }
                     }
                 }

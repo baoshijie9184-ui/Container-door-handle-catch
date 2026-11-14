@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'CollectExistingEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'PreserveProjectMySql', 'CleanupProjectMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'CollectExistingEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'PreserveProjectMySql', 'CleanupProjectMySql', 'ReclaimBuildOutputs', 'CleanupGeneratedArtifacts', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -317,7 +317,7 @@ if ($env:ACTION -ceq 'reclaim-build-outputs') {
     }
 } elseif ($Action -ceq 'PackageSourceOnly') { throw 'Source-only maintenance packaging requires the explicit reclaim-build-outputs action.' }
 if ($env:ACTION -ceq 'verify-controls') {
-    if ($Action -cnotin @('PackageControls','PrepareTools','Preflight','CleanupTools') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') { throw 'Control verification only packages fixed source, prepares tools, runs the control preflight and cleans its tools.' }
+    if ($Action -cnotin @('PackageControls','PrepareTools','Preflight','CleanupTools','CleanupGeneratedArtifacts') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') { throw 'Control verification only packages fixed source, prepares tools, runs the control preflight and cleans its tools.' }
     foreach ($name in @('LEGACY_SOURCE_SNAPSHOT','LEGACY_SOURCE_ECS_SNAPSHOT','LOCAL_ARTIFACTS_SNAPSHOT','LOCAL_ARTIFACTS_ECS_SNAPSHOT','COLD_STORES_SNAPSHOT','COLD_STORES_ECS_SNAPSHOT','COLD_HISTORY_SNAPSHOT','COLD_HISTORY_ECS_SNAPSHOT','LOCAL_MYSQL_SNAPSHOT','LOCAL_MYSQL_ECS_SNAPSHOT','LOCAL_MYSQL_FIXTURE_SETTINGS','PROJECT_MYSQL_SNAPSHOT','PROJECT_MYSQL_MANIFEST_SHA256','PROJECT_MYSQL_ARCHIVE_SHA256','REMAINING_SYSTEM_DATA_SNAPSHOT','REMAINING_SYSTEM_DATA_ECS_SNAPSHOT','DOORHANDLE_CI_FIXTURE_MANIFEST','DOORHANDLE_CI_FIXTURE_SETTINGS','CANDIDATE_BUILD_TOOLS_ARCHIVE','COMPACT_CUTOVER_SETTINGS','COMPATIBLE_BACKEND_IMAGE','COMPATIBLE_RUNNER_IMAGE','REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
         if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw 'Control verification cannot accept business, fixture, model or release inputs.' }
     }
@@ -511,11 +511,24 @@ if ($env:SSH_TRANSPORT -eq 'tls') {
     $sshOptions += @('-o', $tlsProxy)
 } elseif ($env:SSH_TRANSPORT -ne 'direct') { throw 'SSH_TRANSPORT must be tls or direct' }
 $destination = "$user@$targetHost"
+if ($env:GENERATED_RETENTION_MANIFEST -and $env:GENERATED_ARTIFACTS_ONLY -cne 'true') { throw 'A generated retirement manifest requires generated-only maintenance.' }
+if ($env:GENERATED_ARTIFACTS_ONLY -ceq 'true' -and ($env:ACTION -cne 'reclaim-build-outputs' -or -not $env:GENERATED_RETENTION_MANIFEST)) { throw 'Generated-only maintenance requires its explicit action and approved manifest.' }
+if ($Action -ceq 'CleanupGeneratedArtifacts') {
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Terminal -GeneratedArtifacts -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    return
+}
 if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outputs') {
     # Admission and fresh exclusive remote directories belong to the maintenance
     # controller. Do not execute the generic mkdir or a test preflight first.
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($env:GENERATED_ARTIFACTS_ONLY -ceq 'true') {
+        if ($nativeRetentionPolicy -cne 'FailedNative' -or $failedMysqlDataBuilds -cne '' -or $failedNativeBuildNumber -cne '') { throw 'Generated-only maintenance cannot invoke unrelated retirement policies.' }
+        & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -GeneratedArtifacts -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+        return
+    }
     if ($nativeRetentionPolicy -cin @('SourcePytest16','SourcePytest307308')) {
         & ./script/jenkins/retire-source-pytest.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
         return
@@ -605,7 +618,7 @@ if ($Action -eq 'Preflight') {
         } finally {
             @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;originalExitCode=$originalControlExit;exitCode=$controlExit;transportRecovered=($originalControlExit -eq 255 -and $collected);receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
         }
-        $expected=@('test_source_pytest_retirement','test_source_pytest307308_retirement','test_jenkins_resource_budget','test_jenkins_fixture_admission','test_jenkins_fixture_cgroup_probe','test_derived_mysql_retirement','test_jenkins_ecs_build_cleanup','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compose_container_selection','test_local_fixed_originals_retirement','test_fixed_originals_attestation','test_local_mysql_custody','test_local_mysql_source_classification','test_project_mysql_custody','test_jenkins_suite_evidence','test_jenkins_evidence_recollection','test_jenkins_maven_dependency_cache','test_compact_schema_source','test_control_preflight','test_middleware_fixture','test_observability_fixture','test_semantic_mysql_fixture')
+        $expected=@('test_source_pytest_retirement','test_source_pytest307308_retirement','test_jenkins_resource_budget','test_jenkins_fixture_admission','test_jenkins_fixture_cgroup_probe','test_derived_mysql_retirement','test_jenkins_ecs_build_cleanup','test_generated_artifact_lifecycle','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compose_container_selection','test_local_fixed_originals_retirement','test_fixed_originals_attestation','test_local_mysql_custody','test_local_mysql_source_classification','test_project_mysql_custody','test_jenkins_suite_evidence','test_jenkins_evidence_recollection','test_jenkins_maven_dependency_cache','test_compact_schema_source','test_control_preflight','test_middleware_fixture','test_observability_fixture','test_semantic_mysql_fixture')
         if ($controlExit -ne 0 -or $null -eq $remoteResult -or $remoteResult.status -cne 'CONTROL_PREFLIGHT_PASS' -or $remoteResult.receipt -cne "$remoteOutput/receipt.json" -or $remoteResult.receiptSha256 -cnotmatch '^[a-f0-9]{64}$' -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.fullProjectVerified -ne $false -or $receipt.businessRuntimeStarted -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true -or (@($receipt.selectedModules|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or (@($receipt.modules.PSObject.Properties.Name|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or -not (Test-Path -LiteralPath artifacts/control-preflight/python.xml) -or -not (Test-Path -LiteralPath artifacts/control-preflight/pytest.log)) { throw 'ECS control-script preflight did not pass with complete reports and owned cleanup; native preparation is blocked.' }
         foreach ($module in $expected) { $counts=$receipt.modules.$module; if ($counts.passed -lt 1 -or $counts.failed -ne 0 -or $counts.skipped -ne 0) { throw 'Control preflight omitted or failed a required module.' } }
         @{status='CONTROL_PREFLIGHT_PASS';release=$tag;commit=$commit;sourceSha256=$sha;receiptSha256=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant();fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight-gate.json -Encoding utf8

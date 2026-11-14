@@ -1,12 +1,30 @@
 # 本机 Jenkins → 北京 ECS
 
-## 当前约定（2026-11-06）
+## 当前约定（2026-11-14）
 
 后续单体与微服务 CI/CD 统一使用现有本地 Jenkins 控制器 <http://127.0.0.1:8080/>，账号 `admin`，密码保存在 Git 忽略的 [项目私有登录文档](../../work/jenkins/local-access.md)。当前入口、启动命令和流程以 [本地 Jenkins CI/CD 约定](../../docs/本地Jenkins-CICD.md) 为准。服务已启动并通过浏览器以 `admin` 登录，本地独立节点和统一任务入口已配置；启用任务前须确认 CI 文件已推送到 SCM 分支，最终启用状态以配置回执为准，不据此宣称已完成项目测试或发布验收。
 
-本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins保持运行；ECS在测试前从流水线外启动，测试结束后从流水线外节省停机并回读 `Stopped / StopCharging`，流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
+本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins 和 ECS 保持运行，ECS 由用户自行关闭；流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
 
 Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.cloud.yml` 的阿里云 HTTPS PyPI 镜像 `https://mirrors.aliyun.com/pypi/simple`。安装仍使用隔离 pip、固定版本、禁用缓存、原始 pip 下载摘要报告、`pip check` 和实际版本回读；不增加备用源或绕过 TLS 校验。2 GiB 总增长包络、磁盘保底、容器内存限制及 1,800 秒期限保持不变，真实安装和新增命令回归均由后续固定提交在 ECS 验证。
+
+## 生成物收尾与独立维护
+
+常规流水线默认在 `post always` 停止本轮测试工具、归档原始证据后，执行 `CleanupGeneratedArtifacts`。SUCCESS、UNSTABLE、FAILURE 和 ABORTED 均可进入；不等待当前 Jenkins 构建离开 post，也不以业务测试 PASS 作为回收前提。收尾失败不会跳过原始证据归档。
+
+生成物完成后保留 **0 轮**，异常残留预算 **512 MiB**。每轮归档 `generated-cleanup-plan.json`、`generated-cleanup-receipt.json`、`generated-cleanup-journal.jsonl` 和控制回执；未证明可退役的对象列明路径、原因和 UNKNOWN 容量判断，并令收尾失败，不计入已释放量。实际空间采用回收前后磁盘读数；各阶段磁盘保底继续生效。
+
+历史授权清单通过同一 Jenkins 任务运行：
+
+- `ACTION=reclaim-build-outputs`
+- `GENERATED_ARTIFACTS_ONLY=true`
+- `GENERATED_RETENTION_MANIFEST` 指向本地私有精确清单
+- `NATIVE_RETENTION_POLICY=FailedNative`，两个 `FAILED_*` 参数留空；新选择器直接进入生成物维护，不调用旧 native/MySQL 批次
+- `DOORHANDLE_CI_SCOPE=source`，业务、候选、fixture 输入留空，生产发布关闭
+
+清单独立用 SCP 传输，SSH 参数只携带字节绑定，避免 Windows 命令行长度限制。`configure-local.groovy` 与 Jenkinsfile 同步维护参数。先以 `ACTION=verify-controls`（生成物参数保持默认空值）在 ECS 执行轻量控制回归，不先制造数据库克隆。
+
+可退役内容限于已证明的编译目录、前端 node_modules/npm 缓存、公共工具下载副本及本轮合成 pytest 临时目录。混放内容、证据未闭合、活动引用或无法确认的 socket 明确保留，不整目录清除 checkout、inbox 或 tool-home。业务库、原始 SQL、源码、报告、#266 恢复点、#117 公共层 keeper、共享 Maven 缓存及运行/待上线候选均保留；#57/#59 私有旧 Maven 另需完整共享 keeper 的逐项字节证明。进程扫描范围为执行用户 UID；Docker 引用检查覆盖所有容器，包括已停止但仍挂载目标的容器。
 
 ## 历史实施记录
 

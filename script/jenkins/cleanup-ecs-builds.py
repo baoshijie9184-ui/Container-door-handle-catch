@@ -43,6 +43,13 @@ MAX_TREE_FILES = 100000
 MAX_TREE_ENTRIES = 150000
 FRONTENDS = ('frontend', 'frontend-agent')
 NPM_CACHE_SUFFIX = 'work/tool-home/npm-cache/_cacache'
+GENERATED_REQUEST_KIND = 'doorhandle-generated-artifact-cleanup-request'
+GENERATED_TERMINAL_KIND = 'doorhandle-generated-artifact-terminal'
+GENERATED_PROTECTED_RELEASES = frozenset({'ci-266-f6e062edc7b6'})
+GENERATED_TOOL_KEEPER = 'ci-117-8c898996cc28'
+GENERATED_RETAINED_BUDGET = 512 * 1024 ** 2
+GENERATED_TREE_HELPER = None
+GENERATED_PRIVATE_MAVEN = frozenset({'ci-57-075ae4801851', 'ci-59-68ee188164e8'})
 # These reviewed functions route checkout commands to this one disposable cache.
 # Compare syntax only; never execute an old source or infer ownership by name.
 NPM_ROUTING_AST = {
@@ -185,9 +192,9 @@ def verifier_module(path):
     return module
 
 
-def receipt_catalog(record, verifier):
+def receipt_catalog(record, verifier, *, generated=False):
     args = SimpleNamespace(tag=record['release'], attempt=record['attempt'], commit=record['commit'],
-        source_sha256=record['sourceSha256'], scope='source',
+        source_sha256=record['sourceSha256'], scope=record['scope'] if generated else 'source',
         instance_id=record['identity']['instanceId'], machine_id=record['identity']['machineId'])
     verifier.validate_request(args)
     return verifier.validate_envelope(record, args)
@@ -363,7 +370,7 @@ def npm_cache_provenance(root, source, commit, manifest, inner, catalog, tools, 
             'installArgumentsSha256': arguments_sha}
 
 
-def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools, verifier):
+def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools, verifier, *, generated=False):
     """Prove only synthetic source pytest data, never native migration fixtures."""
     def skipped(reason): return {'status': 'SKIPPED', 'reason': reason}
     commands = inner.get('commands', [])
@@ -373,7 +380,7 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
             or inner.get('fixtureProperties') != [] or 'fixtureManifest' not in inner or inner['fixtureManifest'] is not None
             or 'workerMysqlConfigSha256' not in inner or inner['workerMysqlConfigSha256'] is not None or len(python) != 1
             or not python[0].get('finishedAt') or type(python[0].get('exitCode')) is not int
-            or python[0]['exitCode'] != 0 or not {'reports/python.xml', 'reports/python.log'} <= set(catalog)):
+            or (not generated and python[0]['exitCode'] != 0) or not {'reports/python.xml', 'reports/python.log'} <= set(catalog)):
         return skipped('PYTEST_SOURCE_SCOPE_REQUIRED')
     wanted = {'script/jenkins/verify-ecs.py', 'script/jenkins/ecs-tool-runtime.py'}
     recipes = {}
@@ -426,7 +433,7 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
         expected = inner.get('pythonTests')
         if (not isinstance(expected, dict) or set(expected) != set(tally)
                 or any(type(value) is not int for value in expected.values())
-                or tally != expected or not tally['passed'] or tally['failed']):
+                or tally != expected or not tally['found'] or (not generated and (not tally['passed'] or tally['failed']))):
             return skipped('PYTEST_REPORT_NOT_PASS')
     except (OSError, ValueError, ET.ParseError): return skipped('PYTEST_REPORT_NOT_PASS')
     arguments = ['-B', '-m', 'pytest', 'tests_python', '-q', '--basetemp=' + str(checkout / PYTEST_TMP_SUFFIX),
@@ -438,25 +445,26 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
     if len(matching) != 1: return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
     command = matching[0]; cleaned = command.get('cleanup', {})
     images = manifest.get('images'); image = images.get('python') if isinstance(images, dict) else None
-    if (command.get('status') != 'EXITED' or type(command.get('exitCode')) is not int or command['exitCode'] != 0
+    if (command.get('status') != 'EXITED' or type(command.get('exitCode')) is not int or (not generated and command['exitCode'] != 0)
             or not isinstance(command.get('containerId'), str) or not SHA.fullmatch(command['containerId'])
             or not isinstance(cleaned, dict) or cleaned.get('containerId') != command['containerId']
             or not isinstance(image, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image)
             or cleaned.get('image') != image or type(cleaned.get('pid')) is not int or cleaned['pid'] != 0
-            or type(cleaned.get('exitCode')) is not int or cleaned['exitCode'] != 0 or cleaned.get('removed') is not True):
+            or type(cleaned.get('exitCode')) is not int or cleaned['exitCode'] != command['exitCode']
+            or (not generated and cleaned['exitCode'] != 0) or cleaned.get('removed') is not True):
         return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
     return {'status': 'PROVEN', 'runnerSha256': runner_sha, 'runnerMainAstSha256': main_sha,
             'executorSha256': executor_sha, 'routingAstSha256': routing, 'argumentsSha256': arguments_sha,
             'pythonTests': tally}
 
 
-def evidence_binding(root, custody, identity, verifier):
+def evidence_binding(root, custody, identity, verifier, *, generated=False):
     tag = custody['release']; attempt = owned_chain(root / 'verification' / tag, root, directory=True)
     checkout = owned_chain(attempt / 'checkout', root, directory=True)
     inbox = owned_chain(root / 'inbox' / tag, root, directory=True)
     receipt_path = owned_chain(attempt / 'verification-receipt.json', root, maximum=verifier.MAX_RECEIPT_BYTES)
     require(digest(receipt_path) == custody['verificationReceiptSha256'], 'RETAINED_RECEIPT_DIFFERS_FROM_ECS')
-    record = read_json(receipt_path, verifier.MAX_RECEIPT_BYTES); catalog = receipt_catalog(record, verifier)
+    record = read_json(receipt_path, verifier.MAX_RECEIPT_BYTES); catalog = receipt_catalog(record, verifier, generated=generated)
     require(catalog and any(name.endswith('.xml') for name in catalog), 'NO_ORIGINAL_REPORT_CATALOG')
     require(all(record.get(key) == custody.get(key) for key in ('release', 'commit', 'sourceSha256', 'identity'))
             and record['identity'] == identity and record.get('finishedAt') and not record.get('evidenceOmissions'), 'OLD_BUILD_BINDING_INCOMPLETE')
@@ -482,7 +490,8 @@ def evidence_binding(root, custody, identity, verifier):
         owned_chain(file, root, maximum=verifier.MAX_FILE_BYTES)
         require(file.stat().st_size == row['bytes'] and digest(file) == row['sha256'], 'ECS_ORIGINAL_REPORT_CHANGED')
     inner = read_json(checkout / 'work/ci-evidence/receipt.json', verifier.MAX_RECEIPT_BYTES)
-    require(inner.get('scopeKind') == 'source' and inner.get('finishedAt') and inner.get('status') in ('PASS', 'FAILED'), 'SOURCE_BUILD_NOT_FINISHED')
+    require(inner.get('scopeKind') in (('source', 'mysql') if generated else ('source',))
+            and inner.get('finishedAt') and inner.get('status') in ('PASS', 'FAILED'), 'SOURCE_BUILD_NOT_FINISHED')
     require(inner.get('identity') == identity and isinstance(inner.get('commands'), list)
             and inner['commands'] and all(command.get('finishedAt') and type(command.get('exitCode')) is int
                                           for command in inner['commands']), 'BUILD_HAS_UNSETTLED_COMMANDS')
@@ -508,17 +517,21 @@ def evidence_binding(root, custody, identity, verifier):
     claim_file = owned_chain(attempt / '.verification-claimed/claim.json', root)
     claim = read_json(claim_file)
     require(claim == {'schema': 1, 'kind': 'doorhandle-ci-claim', 'release': tag, 'attempt': record['attempt'],
-            'commit': record['commit'], 'sourceSha256': record['sourceSha256'], 'identity': identity, 'scope': 'source'},
+            'commit': record['commit'], 'sourceSha256': record['sourceSha256'], 'identity': identity,
+            'scope': record['scope'] if generated else 'source'},
             'ORIGINAL_ATTEMPT_OWNER_CLAIM_DIFFERS')
     result = {'checkout': checkout, 'inner': inner, 'token': manifest['token'], 'catalog': catalog,
             'modules': fixed_build_layout(source, record['commit'], verifier), 'evidenceArchive': archive_proof,
             'claimSha256': digest(claim_file), 'toolManifestSha256': manifest_sha}
+    if generated:
+        result['sourceArchive'] = str(source)
+        result['record'] = record
     cache = checkout / NPM_CACHE_SUFFIX
     if cache.exists() or cache.is_symlink():
         result['npmCache'] = npm_cache_provenance(root, source, record['commit'], manifest, inner, catalog, tools, verifier)
     temporary = checkout / PYTEST_TMP_SUFFIX
     if temporary.exists() or temporary.is_symlink():
-        result['pytestTmp'] = pytest_temp_provenance(root, source, record['commit'], manifest, inner, catalog, tools, verifier)
+        result['pytestTmp'] = pytest_temp_provenance(root, source, record['commit'], manifest, inner, catalog, tools, verifier, generated=generated)
     return result
 
 
@@ -556,15 +569,26 @@ def process_reference(raw, checkout):
     return path.is_absolute() and (path == checkout or path.is_relative_to(checkout))
 
 
-def probe_result(status, checkout, pid, uid, nonce, *, include_inbox=False):
+def probe_result(status, checkout, pid, uid, nonce, *, include_inbox=False, inbox_only=False):
     value = {'schema': 1, 'kind': PROCESS_PROBE_KIND, 'status': status,
              'pid': pid, 'uid': uid, 'checkout': str(checkout), 'nonce': nonce}
     if include_inbox: value['inbox'] = str(checked_probe_inbox(checkout))
+    if inbox_only: value['inboxOnly'] = True
     return value
 
 
-def checked_probe_checkout(checkout):
+def checked_probe_checkout(checkout, *, inbox_only=False):
     checkout = Path(checkout)
+    if inbox_only:
+        require(checkout.is_absolute() and '..' not in checkout.parts and checkout.resolve(strict=True) == checkout
+                and TAG.fullmatch(checkout.name) and checkout.parent.name == 'inbox'
+                and len(checkout.parts) > 4 and checkout.parts[1] in ('home', 'srv', 'opt'),
+                'PROCESS_PROBE_INBOX_NOT_CANONICAL')
+        for path in (checkout.parent.parent, checkout.parent, checkout):
+            info = path.lstat()
+            require(stat.S_ISDIR(info.st_mode) and info.st_uid == 1000 and not info.st_mode & 0o022,
+                    'PROCESS_PROBE_INBOX_OWNER_OR_MODE_CHANGED')
+        return checkout
     require(checkout.is_absolute() and '..' not in checkout.parts
             and checkout.resolve(strict=True) == checkout and checkout.name == 'checkout'
             and TAG.fullmatch(checkout.parent.name)
@@ -637,13 +661,14 @@ def confirm_pid_gone(proc_fd, pid):
         raise ValueError('PROCESS_DISAPPEARANCE_NOT_PROVEN')
 
 
-def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc'), include_inbox=False):
+def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc'), include_inbox=False, inbox_only=False):
     """Root-only read-only probe. ``proc`` is internal synthetic-test injection."""
     require(sys.platform == 'linux' and os.geteuid() == 0, 'ROOT_PROCESS_METADATA_MODE_REQUIRED')
     require(type(pid) is int and 0 < pid <= 2 ** 31 - 1 and type(uid) is int and uid == 1000
             and isinstance(nonce, str) and re.fullmatch(r'[a-f0-9]{32}', nonce), 'PROCESS_PROBE_REQUEST_INVALID')
-    checkout = checked_probe_checkout(checkout)
-    require(type(include_inbox) is bool, 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    require(type(inbox_only) is bool and not (inbox_only and include_inbox), 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    checkout = checked_probe_checkout(checkout, inbox_only=True) if inbox_only else checked_probe_checkout(checkout)
+    require(type(include_inbox) is bool and type(inbox_only) is bool and not (include_inbox and inbox_only), 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
     roots = (checkout, checked_probe_inbox(checkout)) if include_inbox else (checkout,)
     def references(raw): return any(process_reference(raw, root) for root in roots)
     proc_fd = os.open(proc, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -653,7 +678,7 @@ def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc'), in
             pid_fd = os.open(str(pid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=proc_fd)
         except (FileNotFoundError, ProcessLookupError):
             confirm_pid_gone(proc_fd, pid)
-            return probe_result('GONE', checkout, pid, uid, nonce, include_inbox=include_inbox)
+            return probe_result('GONE', checkout, pid, uid, nonce, include_inbox=include_inbox, inbox_only=inbox_only)
         before = os.fstat(pid_fd); before_identity = None
         try:
             before_identity = process_identity_at(pid_fd, pid, uid)
@@ -690,17 +715,18 @@ def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc'), in
                     and after_identity == before_identity, 'PROCESS_PID_OR_IDENTITY_REUSED')
         except (FileNotFoundError, ProcessLookupError):
             confirm_pid_gone(proc_fd, pid)
-            return probe_result('GONE', checkout, pid, uid, nonce, include_inbox=include_inbox)
-        return probe_result('QUIESCENT', checkout, pid, uid, nonce, include_inbox=include_inbox)
+            return probe_result('GONE', checkout, pid, uid, nonce, include_inbox=include_inbox, inbox_only=inbox_only)
+        return probe_result('QUIESCENT', checkout, pid, uid, nonce, include_inbox=include_inbox, inbox_only=inbox_only)
     finally:
         if pid_fd is not None: os.close(pid_fd)
         os.close(proc_fd)
 
 
-def privileged_process_probe(checkout, pid, proc, *, include_inbox=False):
+def privileged_process_probe(checkout, pid, proc, *, include_inbox=False, inbox_only=False):
     require(sys.platform == 'linux' and proc == Path('/proc') and os.getuid() == 1000 and os.geteuid() == 1000,
             'PRIVILEGED_PROCESS_PROBE_SCOPE_REFUSED')
-    checkout = checked_probe_checkout(checkout)
+    require(type(inbox_only) is bool and not (inbox_only and include_inbox), 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    checkout = checked_probe_checkout(checkout, inbox_only=True) if inbox_only else checked_probe_checkout(checkout)
     require(type(include_inbox) is bool, 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
     if include_inbox: checked_probe_inbox(checkout)
     require(LOADED_SOURCE is not None and len(LOADED_SOURCE) <= 1024 ** 2, 'FIXED_PROCESS_PROBE_SOURCE_REQUIRED')
@@ -718,6 +744,7 @@ def privileged_process_probe(checkout, pid, proc, *, include_inbox=False):
     command = ['/usr/bin/sudo', '-n', '/usr/bin/python3', '-I', '-B', '-', 'inspect-process',
                '--checkout', str(checkout), '--pid', str(pid), '--uid', '1000', '--nonce', nonce]
     if include_inbox: command.append('--include-inbox')
+    if inbox_only: command.append('--inbox-only')
     result = subprocess.run(command, input=raw, capture_output=True, timeout=20,
                             env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'})
     require(result.returncode == 0 and len(result.stdout) <= 4096 and len(result.stderr) <= 4096,
@@ -730,15 +757,16 @@ def privileged_process_probe(checkout, pid, proc, *, include_inbox=False):
     value = json.loads(result.stdout, object_pairs_hook=unique,
                        parse_constant=lambda unused: require(False, 'NONFINITE_PROCESS_PROBE_FIELD'))
     expected = probe_result(value.get('status') if isinstance(value, dict) else None, checkout, pid, 1000, nonce,
-                            include_inbox=include_inbox)
+                            include_inbox=include_inbox, inbox_only=inbox_only)
     require(isinstance(value, dict) and set(value) == set(expected) and value == expected
             and type(value['schema']) is int and type(value['pid']) is int and type(value['uid']) is int
             and value['status'] in ('QUIESCENT', 'GONE'), 'PROCESS_PROBE_RESPONSE_NOT_BOUND')
 
 
-def process_references(checkout, proc=Path('/proc'), *, include_inbox=False):
+def process_references(checkout, proc=Path('/proc'), *, include_inbox=False, inbox_only=False):
     """Read only cwd/argv/fd paths; root fallback is restricted to one denied PID."""
-    require(type(include_inbox) is bool, 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    require(type(include_inbox) is bool and type(inbox_only) is bool and not (include_inbox and inbox_only), 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    if inbox_only: checkout = checked_probe_checkout(checkout, inbox_only=True)
     roots = (checkout, checked_probe_inbox(checkout)) if include_inbox else (checkout,)
     def references(raw): return any(process_reference(raw, root) for root in roots)
 
@@ -777,7 +805,8 @@ def process_references(checkout, proc=Path('/proc'), *, include_inbox=False):
         except PermissionError:
             if not same_uid or sys.platform != 'linux' or proc != Path('/proc') or os.getuid() != 1000 or os.geteuid() != 1000:
                 raise
-            if include_inbox: privileged_process_probe(checkout, int(entry.name), proc, include_inbox=True)
+            if inbox_only: privileged_process_probe(checkout, int(entry.name), proc, inbox_only=True)
+            elif include_inbox: privileged_process_probe(checkout, int(entry.name), proc, include_inbox=True)
             else: privileged_process_probe(checkout, int(entry.name), proc)
 
 
@@ -895,7 +924,7 @@ def pytest_case_targets(root, binding, *, budget=None):
     return result
 
 
-def target_descriptors(root, binding, *, include_pytest=True, budget=None):
+def target_descriptors(root, binding, *, include_pytest=True, budget=None, generated=False):
     if budget is None: budget = {'remaining': MAX_TARGET_CANONICAL}
     checkout = binding['checkout']; evidence = checkout / 'work/ci-evidence'
     candidates = []
@@ -930,7 +959,8 @@ def target_descriptors(root, binding, *, include_pytest=True, budget=None):
     for target, kind in sorted(candidates):
         relative = target.relative_to(root).as_posix()
         owned_chain(target, root, directory=True)
-        data = tree_inventory(target)
+        if generated and kind == 'NODE_MODULES': kind = 'GENERATED_NODE_MODULES'
+        data = generated_inventory(root, {'path': relative, 'kind': kind}) if generated else tree_inventory(target)
         result.append({'path': relative, 'kind': kind, **data})
     cost = sum(len(canonical(target)) + 1 for target in result)
     require(cost <= budget['remaining'], 'TARGET_CANONICAL_BUDGET_EXCEEDED')
@@ -940,10 +970,12 @@ def target_descriptors(root, binding, *, include_pytest=True, budget=None):
 
 
 @contextmanager
-def attempt_lock(root, tag):
+def attempt_lock(root, tag, *, generated=False):
     """flock the existing attempt directory; planning creates no lock file."""
     import fcntl
-    folder = owned_chain(root / 'verification' / tag, root, directory=True)
+    folder = root / 'verification' / tag
+    if generated and not folder.exists() and not folder.is_symlink(): folder = root / 'inbox' / tag
+    folder = owned_chain(folder, root, directory=True)
     descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         require(metadata(os.fstat(descriptor)) == metadata(folder.lstat()), 'ATTEMPT_DIRECTORY_CHANGED')
@@ -954,7 +986,392 @@ def attempt_lock(root, tag):
         os.close(descriptor)
 
 
+def generated_file_inventory(path):
+    path = owned(path, maximum=MAX_TREE_BYTES)
+    info = path.lstat()
+    row = {'path': '.', 'metadata': metadata(info), 'sha256': digest(path)}
+    require((info.st_dev, info.st_ino) not in locked_inodes(), 'OUTPUT_HAS_HELD_FILE_LOCK')
+    return {'files': 1, 'bytes': info.st_size, 'allocatedBytes': info.st_blocks * 512,
+            'rootMetadata': metadata(info), 'inventorySha256': sha(canonical([row])), 'entries': [row]}
+
+
+def generated_tree_helper():
+    global GENERATED_TREE_HELPER
+    if GENERATED_TREE_HELPER is None:
+        # CLI fixed_helper authenticates this source member before any import.
+        GENERATED_TREE_HELPER = verifier_module(Path(__file__).with_name('retire-source-pytest.py'))
+    return GENERATED_TREE_HELPER
+
+
+def generated_inventory(root, target):
+    path = root / target['path']
+    if target['kind'] in ('GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'):
+        data = generated_tree_helper().inventory(path)
+        # Active socket references cannot be inferred from a pathname or a
+        # stopped build alone; preserve such exceptional roots explicitly.
+        require(not any(stat.S_ISSOCK(item['metadata'][0]) for item in data['entries']), 'GENERATED_SOCKET_REFERENCE_UNRESOLVED')
+        return {key: data[key] for key in ('files','allocatedBytes','rootMetadata','inventorySha256','entries')} | {
+            'bytes': sum(item['metadata'][3] for item in data['entries'] if stat.S_ISREG(item['metadata'][0]))}
+    return generated_file_inventory(path) if target['kind'] == 'GENERATED_IMAGE_ARCHIVE' else tree_inventory(path)
+
+
+def generated_paths(tag):
+    return {'GENERATED_OCI_CACHE': f'inbox/{tag}/candidate-build-tools/official-oci',
+            'GENERATED_IMAGE_ARCHIVE': f'inbox/{tag}/candidate-build-tools/official-image.tar',
+            'NPM_CACHE': f'verification/{tag}/checkout/{NPM_CACHE_SUFFIX}',
+            'RETIRED_PRIVATE_MAVEN': f'verification/{tag}/checkout/work/ecs-maven-repository'}
+
+
+def has_generated_outputs(root, tag):
+    checkout = root / 'verification' / tag / 'checkout'
+    direct = [root / path for kind, path in generated_paths(tag).items() if kind != 'RETIRED_PRIVATE_MAVEN']
+    direct.extend(checkout / frontend / 'node_modules' for frontend in FRONTENDS)
+    direct.append(checkout / PYTEST_TMP_SUFFIX)
+    if any(path.exists() or path.is_symlink() for path in direct): return True
+    evidence = checkout / 'work/ci-evidence'
+    for pattern in ('java-suites/suite-*/*/*', 'source-regression/build/*/*'):
+        if any(path.name in COMPILE_DIRS for path in evidence.glob(pattern)): return True
+    return False
+
+
+def generated_quiescent(root, binding, tag, containers, targets):
+    """A stopped container alone is not a reference to a downloaded input.
+
+    Any mount of the selected bytes still blocks deletion, including stopped
+    containers. All live same-build tools and both CI process roots must be idle.
+    The legacy whole-checkout quiescence contract remains unchanged.
+    """
+    roots = [root / target['path'] for target in targets]
+    for _cid, running, restarting, pid, release, token, mounts in containers:
+        require(not ((release == tag or token and token == binding['token']) and (running or restarting or pid)),
+                'GENERATED_BUILD_TOOL_STILL_RUNNING')
+        for mount in mounts:
+            if mount.get('Type') != 'bind' or not mount.get('Source'): continue
+            source = Path(mount['Source'])
+            require(not any(source == path or source.is_relative_to(path) or path.is_relative_to(source) for path in roots),
+                    'CONTAINER_REFERENCES_GENERATED_TARGET')
+    if binding['checkout'] is None: process_references(binding['inbox'], inbox_only=True)
+    else: process_references(binding['checkout'], include_inbox=True)
+
+
+def generated_source(root, row, verifier):
+    tag = row['release']; commit = row['commit']; checksum = row['sourceSha256']
+    require(COMMIT.fullmatch(commit or '') and tag.endswith('-' + commit[:12]) and SHA.fullmatch(checksum or ''),
+            'GENERATED_FIXED_SOURCE_INVALID')
+    source = owned_chain(root / 'inbox' / tag / 'source.tar.gz', root, maximum=verifier.MAX_SOURCE_ARCHIVE)
+    require(digest(source) == checksum, 'GENERATED_ORIGINAL_SOURCE_CHANGED')
+    with verifier.bounded_tar(source, verifier.MAX_SOURCE_BYTES) as archive:
+        require(archive.pax_headers.get('comment') == commit, 'GENERATED_ORIGINAL_COMMIT_CHANGED')
+        # Iteration completes the bounded reader, but never extracts or executes.
+        for _member in archive: pass
+    return source
+
+
+def generated_terminal(row, current, *, current_post=False):
+    terminal = row.get('terminal', {})
+    require(terminal.get('result') in ('SUCCESS', 'UNSTABLE', 'FAILURE', 'ABORTED', 'NOT_BUILT')
+            and terminal.get('evidenceArchived') is True, 'GENERATED_TERMINAL_EVIDENCE_NOT_ARCHIVED')
+    if terminal.get('kind') == 'CURRENT_POST':
+        require(current_post and row['release'] == current and terminal.get('remoteStagesClosed') is True,
+                'GENERATED_CURRENT_POST_NOT_CLOSED')
+    else:
+        require(terminal.get('kind') in ('JENKINS_HISTORY', 'ENROLLED_POST', 'REMOTE_VERIFICATION')
+                and terminal.get('completed') is True and int(TAG.fullmatch(row['release'])[1]) < int(TAG.fullmatch(current)[1]),
+                'GENERATED_HISTORICAL_BUILD_NOT_TERMINAL')
+    return terminal
+
+
+def generated_binding(root, row, identity, verifier):
+    """Authenticate retained originals, without demanding a business-test PASS."""
+    tag = row['release']; source = generated_source(root, row, verifier)
+    attempt = root / 'verification' / tag
+    checkout = attempt / 'checkout'
+    declared = row.get('targets')
+    public_only = type(declared) is list and all(item.get('kind') in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE') for item in declared)
+    receipt_path = attempt / 'verification-receipt.json'
+    if not public_only and receipt_path.exists():
+        record = read_json(receipt_path, verifier.MAX_RECEIPT_BYTES)
+        custody = {'release': tag, 'commit': row['commit'], 'sourceSha256': row['sourceSha256'], 'identity': identity,
+                   'verificationReceiptSha256': digest(receipt_path),
+                   'reportCatalogSha256': sha(canonical(record['reportFiles'])), 'reportFiles': len(record['reportFiles']),
+                   'reportBytes': sum(item['bytes'] for item in record['reportFiles']), 'originalEvidenceArchive': None}
+        return evidence_binding(root, custody, identity, verifier, generated=True)
+    # Preparation can fail before a test XML exists. Its actual closed resource
+    # report and archived Jenkins terminal metadata are the applicable evidence.
+    require(row['terminal']['kind'] in ('JENKINS_HISTORY', 'CURRENT_POST', 'ENROLLED_POST'),
+            'GENERATED_PREPARATION_NEEDS_CONTROLLER_TERMINAL')
+    directory = root / 'inbox' / tag / 'candidate-build-tools'
+    summary_path = owned_chain(directory / 'resource-summary.json', root, maximum=2 * 1024 ** 2)
+    summary = read_json(summary_path, 2 * 1024 ** 2)
+    require(all(summary.get(key) == row[key] for key in ('release', 'commit', 'sourceSha256'))
+            and summary.get('identity') == identity and summary.get('status') in ('PASS', 'FAILED'),
+            'GENERATED_PREPARATION_RESOURCE_NOT_TERMINAL')
+    return {'checkout': checkout if checkout.exists() else None, 'inbox': root / 'inbox' / tag, 'token': summary.get('ownerToken'), 'catalog': {}, 'inner': {}, 'modules': {},
+            'sourceArchive': str(source), 'resourceSummarySha256': digest(summary_path),
+            'evidenceArchive': None, 'claimSha256': None, 'toolManifestSha256': None}
+
+
+def generated_public_basis(root, binding, row, verifier):
+    directory = root / 'inbox' / row['release'] / 'candidate-build-tools'
+    summary_path = owned_chain(directory / 'resource-summary.json', root, maximum=2 * 1024 ** 2)
+    summary = read_json(summary_path, 2 * 1024 ** 2)
+    require(all(summary.get(key) == row[key] for key in ('release', 'commit', 'sourceSha256'))
+            and summary.get('identity') == row['identity'] and summary.get('status') in ('PASS', 'FAILED'),
+            'GENERATED_PUBLIC_TOOL_RESOURCE_BINDING_INVALID')
+    # This is a shared upstream input, not a generated archive; never delete it.
+    seed_sha = 'f706cb2289c61a04311882a3abbba15d56928a91d3fe9e13b96e1a8d44f378c8'
+    seed = owned_chain(root / 'build-inputs/buildkit-v0.34.2' / (seed_sha + '.tar'), root, maximum=128 * 1024 ** 2)
+    require(seed.stat().st_size == 119889920 and digest(seed) == seed_sha, 'GENERATED_PUBLIC_UPSTREAM_SEED_NOT_PRESERVED')
+    tools_path = directory / 'tools.json'
+    proof = {'seed': {'path': seed.relative_to(root).as_posix(), 'sha256': seed_sha, 'metadata': metadata(seed.lstat())},
+             'summarySha256': digest(summary_path), 'producerMembers': {}}
+    with verifier.bounded_tar(Path(binding['sourceArchive']), verifier.MAX_SOURCE_BYTES) as archive:
+        for member in archive:
+            if member.name in ('script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py'):
+                require(member.isfile() and 0 < member.size <= 1024 ** 2, 'GENERATED_PUBLIC_PRODUCER_INVALID')
+                proof['producerMembers'][member.name] = sha(archive.extractfile(member).read())
+    require(set(proof['producerMembers']) == {'script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py'},
+            'GENERATED_PUBLIC_PRODUCER_NOT_PRESERVED')
+    if tools_path.exists():
+        tools = read_json(owned_chain(tools_path, root))
+        require(all(tools.get(key) == row[key] for key in ('release', 'commit', 'sourceSha256'))
+                and tools.get('identity') == row['identity'] and tools.get('kind') == 'doorhandle-candidate-build-tools'
+                and tools.get('status') == 'PREPARED'
+                and tools.get('helperSha256') == proof['producerMembers']['script/docker/compact-build-resources.py']
+                and tools.get('imageInputsHelperSha256') == proof['producerMembers']['script/docker/compact-image-inputs.py']
+                and tools.get('resourceEvidence') == {'file': str(summary_path), 'sha256': proof['summarySha256']},
+                'GENERATED_PUBLIC_TOOL_OR_PRODUCER_CHANGED')
+        proof['toolsSha256'] = digest(tools_path)
+    else:
+        require(summary['status'] == 'FAILED', 'GENERATED_PUBLIC_TOOLS_MISSING_WITHOUT_FAILURE')
+    return proof
+
+
+def generated_public_target(root, row, target, basis):
+    directory = root / 'inbox' / row['release'] / 'candidate-build-tools'
+    measurement_path = owned_chain(directory / 'official-layer-measurements.json', root, maximum=1024 ** 2)
+    measurement = read_json(measurement_path, 1024 ** 2)
+    config = 'sha256:e164dcf5aa147a29659dea4e2e6b909db541c2dfe0b512dac38a2ffaf063fc18'
+    require(measurement.get('configDigest') == config and measurement.get('imageId') == config,
+            'GENERATED_PUBLIC_IMAGE_PIN_CHANGED')
+    tools_path = directory / 'tools.json'
+    if tools_path.exists():
+        require(read_json(tools_path).get('imageMeasurementSha256') == digest(measurement_path),
+                'GENERATED_PUBLIC_MEASUREMENT_CHANGED')
+    values = [config, measurement.get('manifestDigest')]
+    values += [item.get('blobDigest') for item in measurement.get('layers', [])]
+    require(len(values) >= 3 and all(type(value) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', value) for value in values),
+            'GENERATED_PUBLIC_BLOB_CATALOG_INVALID')
+    allowed = {'blobs/sha256/' + value[7:] for value in values} | {'index.json', 'oci-layout'}
+    def check(name, raw, checksum):
+        require(name in allowed, 'GENERATED_PUBLIC_TARGET_HAS_UNRECOGNIZED_FILE')
+        if name.startswith('blobs/'):
+            require(checksum == name.rsplit('/', 1)[1], 'GENERATED_PUBLIC_BLOB_CHANGED')
+        else:
+            value = json.loads(raw)
+            if name == 'oci-layout': require(value == {'imageLayoutVersion': '1.0.0'}, 'GENERATED_OCI_LAYOUT_CHANGED')
+            else:
+                require(value.get('schemaVersion') == 2 and len(value.get('manifests', [])) == 1
+                        and value['manifests'][0].get('digest') == measurement['manifestDigest'], 'GENERATED_OCI_INDEX_CHANGED')
+    if target['kind'] == 'GENERATED_OCI_CACHE':
+        for item in target['entries']:
+            if 'sha256' not in item:
+                require(item['path'] in ('blobs', 'blobs/sha256'), 'GENERATED_PUBLIC_TARGET_HAS_UNRECOGNIZED_DIRECTORY')
+                continue
+            path = root / target['path'] / item['path']
+            check(item['path'], path.read_bytes() if item['path'] in ('index.json', 'oci-layout') else b'', item['sha256'])
+    else:
+        seen = set()
+        with tarfile.open(root / target['path'], mode='r:') as archive:
+            for member in archive:
+                require(member.isfile() and member.sparse is None and member.name not in seen and member.name in allowed
+                        and 0 <= member.size <= MAX_TREE_BYTES, 'GENERATED_PUBLIC_TAR_MEMBER_INVALID')
+                digest_value = hashlib.sha256(); small = bytearray()
+                stream = archive.extractfile(member)
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest_value.update(block)
+                    if member.name in ('index.json','oci-layout'):
+                        small.extend(block); require(len(small) <= 65536, 'GENERATED_PUBLIC_TAR_CONTROL_BOUND')
+                check(member.name, small, digest_value.hexdigest()); seen.add(member.name)
+        require(seen == allowed, 'GENERATED_PUBLIC_TAR_INCOMPLETE')
+    basis['measurementSha256'] = digest(measurement_path)
+
+
+def generated_maven_basis(root, binding, row, target):
+    require(row['release'] in GENERATED_PRIVATE_MAVEN, 'PRIVATE_MAVEN_NOT_IN_APPROVED_HISTORY')
+    with tarfile.open(binding['sourceArchive'], 'r:gz') as source:
+        member = source.getmember('script/jenkins/verify-ecs.py')
+        require(member.isfile() and member.size <= 1024 ** 2, 'OLD_MAVEN_ROUTING_SOURCE_INVALID')
+        recipe = source.extractfile(member).read()
+        require(b"'-Dmaven.repo.local=' + str(ROOT / 'work' / 'ecs-maven-repository')" in recipe, 'OLD_MAVEN_PRIVATE_ROUTING_NOT_PROVEN')
+    key = 'f13cd293e255d7189142b63cd6f195ef14217810cb755aa017c924ddfd16ada5'
+    keeper = owned_chain(root / 'dependency-cache/maven' / key, root, directory=True)
+    state = read_json(keeper / 'state.json')
+    require(state.get('status') == 'READY' and state.get('scope') == 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES'
+            and state.get('key') == key and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}-[a-f0-9]{12}\.json', state.get('receipt', '')),
+            'SHARED_MAVEN_KEEPER_NOT_READY')
+    receipt_path = owned_chain(keeper / 'receipts' / state['receipt'], root)
+    require(digest(receipt_path) == state.get('receiptSha256'), 'SHARED_MAVEN_KEEPER_RECEIPT_CHANGED')
+    receipt = read_json(receipt_path)
+    require(receipt.get('status') == 'READY' and receipt.get('identity') == row['identity'], 'SHARED_MAVEN_KEEPER_IDENTITY_CHANGED')
+    artifacts = 0
+    for item in target['entries']:
+        path = Path(item['path'])
+        if 'sha256' not in item: continue
+        require(not path.as_posix().startswith('com/ruanzhu/') and (path.name == '_remote.repositories'
+                or path.name.endswith(('.jar', '.pom', '.sha1', '.sha256', '.md5', '.sha512'))),
+                'OLD_MAVEN_CONTAINS_NON_DEPENDENCY_DATA')
+        if path.suffix not in ('.jar', '.pom'): continue
+        original = owned_chain(keeper / 'repository' / path, root, maximum=MAX_TREE_BYTES)
+        require(digest(original) == item['sha256'], 'OLD_MAVEN_ARTIFACT_MISSING_FROM_SHARED_KEEPER')
+        artifacts += 1
+    require(artifacts > 0, 'OLD_MAVEN_HAS_NO_DEPENDENCY_ARTIFACTS')
+    return {'keeper': keeper.relative_to(root).as_posix(), 'receiptSha256': state['receiptSha256'], 'artifacts': artifacts}
+
+
+def discover_generated_request(root, current, commit, source_sha, identity, terminal_result):
+    require(terminal_result in ('SUCCESS', 'UNSTABLE', 'FAILURE', 'ABORTED', 'NOT_BUILT'), 'GENERATED_POST_RESULT_REQUIRED')
+    current_row = {'release': current, 'commit': commit, 'sourceSha256': source_sha, 'targets': 'AUTO',
+                   'terminal': {'kind': 'CURRENT_POST', 'result': terminal_result, 'evidenceArchived': True,
+                                'remoteStagesClosed': True}}
+    candidates = []
+    parent = owned_chain(root / 'inbox', root, directory=True)
+    children = sorted(parent.iterdir(), key=lambda path: path.name)
+    require(len(children) <= 1024, 'GENERATED_ENROLLMENT_SCAN_BOUND_EXCEEDED')
+    for child in children:
+        if not TAG.fullmatch(child.name) or child.name == current: continue
+        marker = child / 'generated-terminal.json'
+        if not marker.exists() and not marker.is_symlink(): continue
+        value = read_json(owned_chain(marker, root))
+        require(value.get('kind') == GENERATED_TERMINAL_KIND and value.get('identity') == identity
+                and value.get('candidate', {}).get('release') == child.name, 'GENERATED_ENROLLMENT_BINDING_INVALID')
+        candidates.append(value['candidate'])
+    # A controls/preparation failure before any checkout or generated files is
+    # genuinely empty, rather than a fabricated successful verification.
+    checkout = root / 'verification' / current / 'checkout'
+    has_current = has_generated_outputs(root, current)
+    if has_current:
+        candidates.append(current_row)
+    marker = parent / current / 'generated-terminal.json'
+    enrolled = {**current_row, 'terminal': {**current_row['terminal'], 'kind': 'ENROLLED_POST', 'completed': True}}
+    value = {'schema': 1, 'kind': GENERATED_TERMINAL_KIND, 'identity': identity, 'candidate': enrolled}
+    if has_current:
+        if marker.exists(): require(read_json(marker) == value, 'GENERATED_TERMINAL_ALREADY_DIFFERS')
+        else: write_json(marker, value)
+    return {'schema': 1, 'kind': GENERATED_REQUEST_KIND, 'currentRelease': current, 'identity': identity,
+            'protectedReleases': sorted(GENERATED_PROTECTED_RELEASES), 'currentPost': True, 'candidates': candidates}
+
+
+def build_generated_plan(root, request, verifier, containers, *, held_releases=()):
+    root = owned(root, directory=True)
+    require(set(request) == {'schema', 'kind', 'currentRelease', 'identity', 'protectedReleases', 'candidates', 'currentPost'}
+            and request['schema'] == 1 and request['kind'] == GENERATED_REQUEST_KIND and type(request['currentPost']) is bool,
+            'GENERATED_REQUEST_SCHEMA_INVALID')
+    current = request['currentRelease']; require(TAG.fullmatch(current or ''), 'CURRENT_RELEASE_INVALID')
+    require(set(request['identity']) == {'instanceId', 'machineId', 'executionLocation'}
+            and request['identity']['executionLocation'] == 'ECS'
+            and re.fullmatch(r'i-[a-z0-9]+', request['identity']['instanceId'])
+            and re.fullmatch(r'[a-f0-9]{32}', request['identity']['machineId']), 'REQUEST_ECS_IDENTITY_INVALID')
+    require(type(request['candidates']) is list and len(request['candidates']) <= 512
+            and type(request['protectedReleases']) is list and all(TAG.fullmatch(tag) for tag in request['protectedReleases']),
+            'GENERATED_CANDIDATE_BOUND_INVALID')
+    protected = set(request['protectedReleases']) | GENERATED_PROTECTED_RELEASES
+    accepted, skipped, absent, unresolved, seen = [], [], [], [], set()
+    budget = {'remaining': MAX_TARGET_CANONICAL}
+    for row in request['candidates']:
+        tag = row.get('release', '')
+        try:
+            require(TAG.fullmatch(tag) and tag not in seen, 'INVALID_OR_REPEATED_CANDIDATE_TAG'); seen.add(tag)
+            require(tag not in protected, 'CURRENT_OR_PROTECTED_BUILD')
+            require(not (root / 'releases' / tag).exists() and not (root / 'releases' / tag).is_symlink(),
+                    'BUILD_HAS_RETAINED_RELEASE_OR_ROLLBACK_ARTIFACTS')
+            for name in ('current-directory', 'previous-directory', 'release-publication.json'):
+                pointer = root / 'state' / name
+                if not pointer.exists() and not pointer.is_symlink(): continue
+                raw = owned_chain(pointer, root).read_text(encoding='utf8')
+                values = [raw.strip()] if not name.endswith('.json') else [json.loads(raw).get(key) for key in ('current', 'previous')]
+                for value in values:
+                    require(type(value) is str and Path(value).is_absolute() and '..' not in Path(value).parts,
+                            'CURRENT_PUBLICATION_POINTER_INVALID')
+                    require(tag not in Path(value).parts, 'GENERATED_BUILD_HAS_PUBLICATION_REFERENCE')
+            generated_terminal(row, current, current_post=request['currentPost'])
+            if row.get('targets') == 'AUTO' and not has_generated_outputs(root, tag):
+                absent.append({'release': tag, 'kind': 'COMPLETED_GENERATED_OUTPUTS', 'path': f'verification/{tag}'})
+                continue
+            with ExitStack() as locks:
+                if tag not in held_releases: locks.enter_context(attempt_lock(root, tag, generated=True))
+                enriched = {**row, 'identity': request['identity']}
+                binding = generated_binding(root, enriched, request['identity'], verifier)
+                declared = row.get('targets')
+                require(declared == 'AUTO' or type(declared) is list and len(declared) <= 128, 'GENERATED_TARGET_SELECTION_INVALID')
+                targets, bases = [], {}
+                if declared == 'AUTO':
+                    # Only this task's enrolled terminal attempts discover new
+                    # generated outputs. Old historical requests stay exact.
+                    require(row['terminal']['kind'] in ('CURRENT_POST', 'ENROLLED_POST'), 'GENERATED_AUTO_REQUIRES_ENROLLED_OWNER')
+                    if binding.get('catalog'):
+                        targets = target_descriptors(root, binding, include_pytest=False, budget=dict(budget), generated=True)
+                        for suffix, proof_key, kind in ((PYTEST_TMP_SUFFIX, 'pytestTmp', 'GENERATED_PYTEST_ROOT'),
+                                                       (NPM_CACHE_SUFFIX, 'npmCache', 'NPM_CACHE')):
+                            path = binding['checkout'] / suffix
+                            if not path.exists() and not path.is_symlink(): continue
+                            proof = binding.get(proof_key, {})
+                            if proof.get('status') != 'PROVEN':
+                                unresolved.append({'release': tag, 'path': path.relative_to(root).as_posix(),
+                                    'reason': proof.get('reason', 'GENERATED_PROVENANCE_UNRESOLVED')})
+                            elif proof_key == 'pytestTmp':
+                                item = {'path': path.relative_to(root).as_posix(), 'kind': kind}
+                                try: targets.append({**item, **generated_inventory(root, item)})
+                                except (OSError, ValueError) as error:
+                                    unresolved.append({'release': tag, **item, 'reason': failure_guard_code(error)})
+                    elif binding['checkout'] is not None and has_generated_outputs(root, tag):
+                        unresolved.append({'release': tag, 'path': str(binding['checkout'].relative_to(root)),
+                            'reason': 'CHECKOUT_OUTPUT_EVIDENCE_INCOMPLETE'})
+                    declared = [{'kind': kind, 'path': path} for kind, path in generated_paths(tag).items()
+                                if kind in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE')]
+                for item in declared:
+                    require(type(item) is dict and set(item) == {'kind', 'path'}
+                            and generated_paths(tag).get(item['kind']) == item['path'], 'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
+                    require(not (tag == GENERATED_TOOL_KEEPER and item['kind'] in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE')),
+                            'EXISTING_PUBLIC_LAYER_KEEPER_PROTECTED')
+                    path = root / item['path']
+                    if not path.exists() and not path.is_symlink():
+                        absent.append({'release': tag, **item}); continue
+                    if item['kind'] == 'NPM_CACHE':
+                        require(binding.get('npmCache', {}).get('status') == 'PROVEN', 'GENERATED_NPM_ROUTING_NOT_PROVEN')
+                    target = {**item, **generated_inventory(root, item)}
+                    if item['kind'].startswith('GENERATED_'):
+                        if 'publicTools' not in bases: bases['publicTools'] = generated_public_basis(root, binding, enriched, verifier)
+                        generated_public_target(root, enriched, target, bases['publicTools'])
+                    elif item['kind'] == 'RETIRED_PRIVATE_MAVEN':
+                        bases['maven'] = generated_maven_basis(root, binding, enriched, target)
+                    targets.append(target)
+                require(len({item['path'] for item in targets}) == len(targets), 'GENERATED_TARGET_REPEATED')
+                generated_quiescent(root, binding, tag, containers, targets)
+                require(sum(len(canonical(item)) + 1 for item in targets) <= budget['remaining'], 'TARGET_CANONICAL_BUDGET_EXCEEDED')
+                budget['remaining'] -= sum(len(canonical(item)) + 1 for item in targets)
+                accepted.append({'release': tag, 'custodySha256': sha(canonical(row)), 'targets': targets, 'bases': bases,
+                                 'evidenceArchive': binding['evidenceArchive'], 'claimSha256': binding['claimSha256'],
+                                 'toolManifestSha256': binding['toolManifestSha256']})
+        except (ValueError, OSError, KeyError, TypeError, ET.ParseError, verifier.VerificationError) as error:
+            skipped.append({'release': tag, 'reason': failure_guard_code(error), 'targets': row.get('targets', 'AUTO')})
+    return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-plan', 'root': str(root), 'currentRelease': current,
+            'identity': request['identity'], 'requestSha256': sha(canonical(request)), 'request': request,
+            'executorSha256': digest(Path(__file__).resolve()), 'verifierSha256': digest(Path(verifier.__file__).resolve()),
+            'candidates': accepted, 'skipped': skipped, 'absent': absent, 'unresolved': unresolved, 'generatedLifecycle': True,
+            'sourceDataDeleted': False, 'sharedMavenCachePreserved': True, 'originalEvidencePreserved': True,
+            'publishedArtifactsPreserved': True, 'oldMavenRepositoriesPreserved': not any(
+                t['kind'] == 'RETIRED_PRIVATE_MAVEN' for c in accepted for t in c['targets']),
+            'unselectedMavenRepositoriesPreserved': True, 'completedGeneratedRetentionCount': 0,
+            'retainedGeneratedBudgetBytes': GENERATED_RETAINED_BUDGET,
+            'referenceScope': {'processScanUid': os.getuid(), 'containers': 'ALL_DOCKER_CONTAINERS'},
+            'candidateBytes': sum(t['bytes'] for c in accepted for t in c['targets']),
+            'candidateAllocatedBytes': sum(t['allocatedBytes'] for c in accepted for t in c['targets'])}
+
+
 def build_plan(root, request, verifier, containers, *, held_releases=()):
+    if request.get('kind') == GENERATED_REQUEST_KIND:
+        return build_generated_plan(root, request, verifier, containers, held_releases=held_releases)
     root = owned(root, directory=True)
     require(set(request) == {'schema', 'kind', 'currentRelease', 'identity', 'protectedReleases', 'candidates'}
             and request['schema'] == 1 and request['kind'] == 'doorhandle-old-build-cleanup-request', 'CLEANUP_REQUEST_SCHEMA_INVALID')
@@ -1025,11 +1442,18 @@ def remove_target(root_fd, target):
     patterns = {'COMPILED_DIRECTORY': build + '(?:' + '|'.join(sorted(COMPILE_DIRS)) + ')',
         'NODE_MODULES': r'verification/ci-[0-9]+-[a-f0-9]{12}/checkout/(?:frontend|frontend-agent)/node_modules',
         'NPM_CACHE': base + re.escape(NPM_CACHE_SUFFIX.removeprefix('work/')),
-        'PYTEST_CASE_DIRECTORY': base + re.escape(PYTEST_TMP_SUFFIX.removeprefix('work/')) + r'/[A-Za-z0-9_.-]{1,180}'}
+        'PYTEST_CASE_DIRECTORY': base + re.escape(PYTEST_TMP_SUFFIX.removeprefix('work/')) + r'/[A-Za-z0-9_.-]{1,180}',
+        'GENERATED_OCI_CACHE': r'inbox/ci-[0-9]+-[a-f0-9]{12}/candidate-build-tools/official-oci',
+        'GENERATED_IMAGE_ARCHIVE': r'inbox/ci-[0-9]+-[a-f0-9]{12}/candidate-build-tools/official-image\.tar',
+        'RETIRED_PRIVATE_MAVEN': r'verification/(?:' + '|'.join(sorted(GENERATED_PRIVATE_MAVEN)) + r')/checkout/work/ecs-maven-repository'}
     require(target.get('kind') in patterns and re.fullmatch(patterns[target['kind']], target.get('path', '')),
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
     require(target.get('kind') != 'PYTEST_CASE_DIRECTORY' or target['path'].rsplit('/', 1)[-1] not in ('.', '..'),
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
+    require(not any('/' + tag + '/' in '/' + target['path'] + '/' for tag in GENERATED_PROTECTED_RELEASES),
+            'PROTECTED_RECOVERY_POINT_MAY_NOT_BE_REMOVED')
+    require(not (target['kind'] in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE')
+                 and '/' + GENERATED_TOOL_KEEPER + '/' in target['path']), 'EXISTING_PUBLIC_LAYER_KEEPER_PROTECTED')
     parts = target['path'].split('/'); stack = [os.dup(root_fd)]
     try:
         device = os.fstat(root_fd).st_dev
@@ -1043,6 +1467,21 @@ def remove_target(root_fd, target):
         entries = {row['path']: row for row in target['entries']}
         require(len(entries) == len(target['entries']) and sha(canonical(target['entries'])) == target['inventorySha256'],
                 'DELETION_INVENTORY_NOT_BOUND')
+        if target['kind'] == 'GENERATED_IMAGE_ARCHIVE':
+            require(set(entries) == {'.'}, 'GENERATED_FILE_INVENTORY_INVALID')
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            try:
+                info = os.fstat(fd)
+                require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and metadata(info) == target['rootMetadata'],
+                        'GENERATED_FILE_CHANGED_AFTER_APPROVAL')
+                checksum = hashlib.sha256()
+                for block in iter(lambda: os.read(fd, 1024 * 1024), b''): checksum.update(block)
+                require(checksum.hexdigest() == entries['.']['sha256']
+                        and metadata(os.fstat(fd)) == metadata(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) == target['rootMetadata'],
+                        'GENERATED_FILE_CHANGED_AFTER_APPROVAL')
+                os.unlink(name, dir_fd=parent_fd)
+            finally: os.close(fd)
+            return
 
         def remove(directory_fd, prefix=''):
             for child in sorted(os.listdir(directory_fd)):
@@ -1106,13 +1545,27 @@ def cleanup_receipt(plan, deleted, before_bytes, after_bytes, journal_sha, failu
     require(failure in (None, 'OSError', 'ValueError') and type(finished) is str and len(finished) <= 32
             and re.fullmatch(r'[0-9T:.+\-Z]+', finished) and type(journal_sha) is str and SHA.fullmatch(journal_sha),
             'CLEANUP_RECEIPT_FIXED_FIELD_BOUND_EXCEEDED')
-    return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-receipt', 'status': 'PARTIAL_FAILURE' if failure else 'REMOVED' if deleted else 'NO_ACTION',
+    result = {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-receipt', 'status': 'PARTIAL_FAILURE' if failure else 'REMOVED' if deleted else 'NO_ACTION',
         'currentRelease': plan['currentRelease'], 'identity': plan['identity'], 'planSha256': sha(canonical(plan)),
         'deleted': deleted, 'skipped': plan['skipped'], 'availableBytesBefore': before_bytes,
         'availableBytesAfter': after_bytes, 'originalEvidencePreserved': True,
         'journalSha256': journal_sha, 'errorType': failure, 'sharedMavenCachePreserved': True,
         'publishedArtifactsPreserved': True, 'oldMavenRepositoriesPreserved': True,
         'businessDataDeleted': False, 'finishedAtUtc': finished}
+    if plan.get('generatedLifecycle') is True:
+        removed = {item['path'] for item in deleted}
+        remaining = [deleted_projection(t) for c in plan['candidates'] for t in c['targets'] if t['path'] not in removed]
+        known_bytes = sum(item['allocatedBytes'] for item in remaining)
+        unresolved = plan.get('unresolved', [])
+        result.update(generatedLifecycle=True, referenceScope=plan['referenceScope'],
+            oldMavenRepositoriesPreserved=not any(item['kind'] == 'RETIRED_PRIVATE_MAVEN' for item in deleted),
+            unselectedMavenRepositoriesPreserved=True,
+            retention={'completedGeneratedRetentionCount': 0, 'budgetBytes': GENERATED_RETAINED_BUDGET,
+                       'remainingTargets': remaining, 'knownRemainingAllocatedBytes': known_bytes,
+                       'unmeasuredCandidates': len(plan['skipped']), 'unresolvedTargets': unresolved, 'alreadyAbsent': plan['absent'],
+                       'status': 'BLOCKED' if failure or remaining or plan['skipped'] or unresolved else 'SATISFIED',
+                       'budgetVerdict': 'UNKNOWN' if plan['skipped'] or unresolved else 'EXCEEDED' if known_bytes > GENERATED_RETAINED_BUDGET else 'WITHIN_BUDGET'})
+    return result
 
 
 def control_growth_budget(plan, *, include_plan, allocation_unit=4096):
@@ -1136,6 +1589,10 @@ def control_growth_budget(plan, *, include_plan, allocation_unit=4096):
     receipt = cleanup_receipt(plan, projected, 2 ** 128 - 1, 2 ** 128 - 1, 'f' * 64,
                               'ValueError', '9999-12-31T23:59:59.999999+00:00')
     receipt_bytes = len(canonical(receipt)) + 1
+    if plan.get('generatedLifecycle'):
+        remaining = cleanup_receipt(plan, [], 2 ** 128 - 1, 2 ** 128 - 1, 'f' * 64,
+                                    'ValueError', '9999-12-31T23:59:59.999999+00:00')
+        receipt_bytes = max(receipt_bytes, len(canonical(remaining)) + 1) + 4096
     require(max(plan_bytes, journal_bytes, receipt_bytes) <= MAX_PLAN, 'CONTROL_PLAN_JOURNAL_OR_RECEIPT_EXCEEDS_LIMIT')
     allocated = lambda size: ((size + allocation_unit - 1) // allocation_unit) * allocation_unit
     growth = (allocated(plan_bytes) if include_plan else 0) + allocated(journal_bytes) + allocated(receipt_bytes) + CONTROL_METADATA_BYTES
@@ -1169,19 +1626,19 @@ def apply_plan(root, request, plan, verifier):
             'requestSha256': sha(canonical(request)), 'request': request,
             'executorSha256': digest(Path(__file__).resolve()), 'verifierSha256': digest(Path(verifier.__file__).resolve())}
         require(all(plan.get(key) == value for key, value in expected.items())
-                and request.get('schema') == 1 and request.get('kind') == 'doorhandle-old-build-cleanup-request',
+                and request.get('schema') == 1 and request.get('kind') in ('doorhandle-old-build-cleanup-request', GENERATED_REQUEST_KIND),
                 'EMPTY_PLAN_FIXED_BINDING_INVALID')
     control_budget = admit_control_growth(root, plan, include_plan=False)
     with cleanup_lock(root), ExitStack() as locks:
         tags = [candidate['release'] for candidate in plan['candidates']]
         require(len(tags) == len(set(tags)) and all(TAG.fullmatch(tag) for tag in tags), 'PLAN_CANDIDATES_INVALID')
         if has_targets:
-            for tag in sorted(tags): locks.enter_context(attempt_lock(root, tag))
+            for tag in sorted(tags): locks.enter_context(attempt_lock(root, tag, generated=bool(plan.get('generatedLifecycle'))))
             fresh = build_plan(root, request, verifier, docker_snapshot(), held_releases=tags)
             require(fresh == plan, 'PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION')
         control_budget = admit_control_growth(root, plan, include_plan=False)
         before = os.statvfs(root); deleted = []; failure = None
-        journal_file = root / 'inbox' / plan['currentRelease'] / 'build-cleanup-journal.jsonl'
+        journal_file = root / 'inbox' / plan['currentRelease'] / ('generated-cleanup-journal.jsonl' if plan.get('generatedLifecycle') else 'build-cleanup-journal.jsonl')
         owned(journal_file.parent, directory=True)
         journal_fd = os.open(journal_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         journal_bytes = 0
@@ -1207,18 +1664,24 @@ def apply_plan(root, request, plan, verifier):
             for candidate in plan['candidates'] if has_targets else ():
                 active_release = candidate['release']; stage = 'EVIDENCE_BINDING'
                 custody = next(item for item in request['candidates'] if item['release'] == candidate['release'])
-                binding = evidence_binding(root, custody, request['identity'], verifier)
+                binding = (generated_binding(root, custody, request['identity'], verifier) if plan.get('generatedLifecycle')
+                           else evidence_binding(root, custody, request['identity'], verifier))
                 stage = 'QUIESCENCE'
-                quiescent(binding, candidate['release'], docker_snapshot())
+                if plan.get('generatedLifecycle'):
+                    generated_quiescent(root, binding, candidate['release'], docker_snapshot(), candidate['targets'])
+                else: quiescent(binding, candidate['release'], docker_snapshot())
                 for target in candidate['targets']:
                     stage = 'TARGET_INVENTORY'
-                    require(tree_inventory(root / target['path']) == {key: target[key] for key in
+                    require((generated_inventory(root, target) if plan.get('generatedLifecycle') else tree_inventory(root / target['path'])) == {key: target[key] for key in
                         ('files', 'bytes', 'allocatedBytes', 'rootMetadata', 'inventorySha256', 'entries')},
                         'TARGET_INVENTORY_CHANGED_NO_DELETION')
                     stage = 'DELETE_START_JOURNAL'
                     journal({'phase': 'DELETE_STARTED', 'path': target['path'], 'inventorySha256': target['inventorySha256']})
                     stage = 'DELETE_TARGET'
-                    remove_target(root_fd, target)
+                    if plan.get('generatedLifecycle') and target['kind'] in ('GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'):
+                        generated_tree_helper().remove_owned_tree(root, target['path'], target, lambda event: None, generated=True)
+                    else:
+                        remove_target(root_fd, target)
                     deleted.append(deleted_projection(target))
                     stage = 'DELETE_FINISH_JOURNAL'
                     journal({'phase': 'DELETE_FINISHED', **deleted[-1]})
@@ -1247,6 +1710,7 @@ def fixed_helper(args, verifier=None, *, executor=None, verifier_path=None):
     verifier_path = Path(verifier_path) if verifier_path else executor.with_name('verify-remote.py')
     wanted = {'script/jenkins/cleanup-ecs-builds.py': executor,
               'script/jenkins/verify-remote.py': verifier_path}
+    if getattr(args, 'generated', False): wanted['script/jenkins/retire-source-pytest.py'] = executor.with_name('retire-source-pytest.py')
     for name, path in wanted.items():
         require(path == inbox / Path(name).name, 'CLEANUP_HELPER_OUTSIDE_CURRENT_INBOX')
         owned_chain(path, root, maximum=1024 ** 2)
@@ -1289,9 +1753,10 @@ def main(argv=None):
         parser.add_argument('--uid', required=True, type=int)
         parser.add_argument('--nonce', required=True)
         parser.add_argument('--include-inbox', action='store_true')
+        parser.add_argument('--inbox-only', action='store_true')
         args = parser.parse_args(argv[1:])
         result = single_process_metadata(Path(args.checkout), args.pid, args.uid, args.nonce,
-                                         include_inbox=args.include_inbox)
+                                         include_inbox=args.include_inbox, inbox_only=args.inbox_only)
         print(json.dumps(result, sort_keys=True)); return
     require(not (sys.platform == 'linux' and os.geteuid() == 0), 'ROOT_PERMITS_ONLY_PROCESS_METADATA_MODE')
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1302,6 +1767,9 @@ def main(argv=None):
     parser.add_argument('--protected-release', action='append', default=[])
     parser.add_argument('--source-archive'); parser.add_argument('--source-sha256'); parser.add_argument('--request')
     parser.add_argument('--request-sha256'); parser.add_argument('--plan'); parser.add_argument('--plan-sha256')
+    parser.add_argument('--generated', action='store_true')
+    parser.add_argument('--terminal-result', choices=('SUCCESS', 'UNSTABLE', 'FAILURE', 'ABORTED', 'NOT_BUILT'))
+    parser.add_argument('--evidence-archived', action='store_true')
     args = parser.parse_args(argv)
     if args.phase == 'custody':
         verifier = verifier_module(Path(__file__).with_name('verify-remote.py'))
@@ -1315,20 +1783,25 @@ def main(argv=None):
         fixed_helper(args)
         verifier = verifier_module(Path(__file__).with_name('verify-remote.py'))
         identity = verifier.ecs_identity(args.instance_id, args.machine_id)
-        expected_output = root / 'inbox' / args.current_tag / ('build-cleanup-plan.json' if args.phase == 'plan' else 'build-cleanup-receipt.json')
+        prefix = 'generated-cleanup' if args.generated else 'build-cleanup'
+        expected_output = root / 'inbox' / args.current_tag / (prefix + ('-plan.json' if args.phase == 'plan' else '-receipt.json'))
         require(Path(args.output) == expected_output, 'CLEANUP_OUTPUT_OUTSIDE_CURRENT_INBOX')
         if args.phase == 'plan':
             if args.request:
                 request_file = owned(Path(args.request)); require(digest(request_file) == args.request_sha256, 'CLEANUP_REQUEST_SHA_DIFFERS')
-                require(request_file == root / 'inbox' / args.current_tag / 'build-cleanup-request.json', 'CLEANUP_REQUEST_OUTSIDE_CURRENT_INBOX')
+                require(request_file == root / 'inbox' / args.current_tag / (prefix + '-request.json'), 'CLEANUP_REQUEST_OUTSIDE_CURRENT_INBOX')
                 request = read_json(request_file)
+            elif args.generated:
+                require(args.evidence_archived and args.terminal_result, 'GENERATED_POST_REQUIRES_ARCHIVED_EVIDENCE')
+                request = discover_generated_request(root, args.current_tag, args.commit, args.source_sha256, identity, args.terminal_result)
             else:
                 request = discover_request(root, args.current_tag, identity, args.protected_release)
+            require((request.get('kind') == GENERATED_REQUEST_KIND) == args.generated, 'GENERATED_MODE_REQUEST_MISMATCH')
             require(request['currentRelease'] == args.current_tag and request['identity'] == identity, 'REQUEST_BELONGS_TO_ANOTHER_BUILD_OR_ECS')
             result = build_plan(root, request, verifier, docker_snapshot())
             control_budget = admit_control_growth(root, result, include_plan=True)
         else:
-            plan, request = admitted_plan(args.plan, expected_output.with_name('build-cleanup-plan.json'),
+            plan, request = admitted_plan(args.plan, expected_output.with_name(prefix + '-plan.json'),
                                          args.plan_sha256, args.current_tag, identity)
             result = apply_plan(root, request, plan, verifier)
             control_budget = control_growth_budget(plan, include_plan=False)

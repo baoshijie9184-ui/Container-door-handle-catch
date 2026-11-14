@@ -176,10 +176,14 @@ def same_metadata(actual, expected, unlinks=None):
     return actual == expected
 
 
-def remove_owned_tree(root, target, planned, journal, unlinks=None):
+def remove_owned_tree(root, target, planned, journal, unlinks=None, *, generated=False):
     """Unlink only the approved synthetic names; chmod directories, never files."""
     root = Path(root); unlinks = {} if unlinks is None else unlinks
-    need(target in {relative_target(tag) for tag in EXACT_RELEASES}, 'DELETION_TARGET_OUTSIDE_EXACT_SCOPE')
+    if generated:
+        match = re.fullmatch(r'verification/(ci-[1-9][0-9]*-[a-f0-9]{12})/checkout/(?:work/ci-evidence/tmp/pytest|(?:frontend|frontend-agent)/node_modules)', target)
+        need(match and match[1] != 'ci-266-f6e062edc7b6', 'DELETION_TARGET_OUTSIDE_GENERATED_SCOPE')
+    else:
+        need(target in {relative_target(tag) for tag in EXACT_RELEASES}, 'DELETION_TARGET_OUTSIDE_EXACT_SCOPE')
     need(planned['inventorySha256'] == hashlib.sha256(encoded(planned['entries'])).hexdigest(),
          'INVENTORY_NOT_BOUND')
     entries = {row['path']: row['metadata'] for row in planned['entries']}

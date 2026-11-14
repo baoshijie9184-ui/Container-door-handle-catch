@@ -88,6 +88,8 @@ if (existingNode == null) ci.addNode(node) else node.save()
 def parameters = [
     new ChoiceParameterDefinition('ACTION', ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs', 'collect-existing-evidence'] as String[], 'collect-existing-evidence only recollects retained original reports without rerunning tests. Compact cutover requires complete source, database and runtime evidence.'),
     new ChoiceParameterDefinition('NATIVE_RETENTION_POLICY', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16', 'SourcePytest307308'] as String[], 'Maintenance only: select one native retention policy; default follows failed runtime builds.'),
+    new BooleanParameterDefinition('GENERATED_ARTIFACTS_ONLY', false, 'Explicit generated-only maintenance; never invokes old native retirement policies.'),
+    new StringParameterDefinition('GENERATED_RETENTION_MANIFEST', '', 'Generated-only maintenance: absolute private approved exact-target manifest.').with { setTrim(true); it },
     new StringParameterDefinition('FAILED_NATIVE_BUILD_NUMBER', '', 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete batch.').with { setTrim(true); it },
     new StringParameterDefinition('FAILED_MYSQL_DATA_BUILDS', '', 'Authorized current-task failed verify/mysql data only; comma-separated exact builds, blank preserves all data.').with { setTrim(true); it },
     new StringParameterDefinition('TRUSTED_COMMIT', '', 'Optional expected complete java-cloud commit; blank pins this SCM checkout.'),
@@ -117,7 +119,7 @@ def parameters = [
     new StringParameterDefinition('PROJECT_MYSQL_ARCHIVE_SHA256', '', 'Explicit SHA-256 of its originals.tar.gz; no production merge or local retirement.'),
     new StringParameterDefinition('REMAINING_SYSTEM_DATA_SNAPSHOT', '', 'Sealed fixed 86-file supplemental data packet; restore only on ECS after verification.'),
     new StringParameterDefinition('REMAINING_SYSTEM_DATA_ECS_SNAPSHOT', '', 'Reuse an already verified supplemental ECS packet; mutually exclusive with local input.'),
-    new BooleanParameterDefinition('RECLAIM_OLD_BUILD_OUTPUTS', true, 'After complete source verification, reclaim only proven terminal reproducible build output; retain business data and evidence.'),
+    new BooleanParameterDefinition('RECLAIM_OLD_BUILD_OUTPUTS', true, 'Archive original evidence, then retire proven generated outputs on success, failure or cancellation; retain business data and protected candidates.'),
     new StringParameterDefinition('DEPLOY_HOST', '', 'Start ECS outside Jenkins, then configure its current verified SSH address.'),
     new StringParameterDefinition('DEPLOY_PORT', '22', 'Verified SSH port.'),
     new ChoiceParameterDefinition('SSH_TRANSPORT', ['direct', 'tls'] as String[], 'Preserve SSH host-key checking; TLS also verifies the existing server certificate.'),
