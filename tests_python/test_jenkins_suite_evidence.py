@@ -68,7 +68,7 @@ def test_warm_source_regression_runs_the_ordinary_reactor_without_fixture_or_sel
     suite = {'javaSelection': ['org.example.RequiredPureTest'], 'fixtureProperties': [], 'fixtureOptions': []}
     arguments = inner.java_maven_arguments(suite, {'MAVEN_CMD': '/fixed/mvn'}, tmp_path,
                                            initial=False, source_regression=True)
-    assert 'verify' in arguments and 'clean' not in arguments and 'test' not in arguments
+    assert 'test' in arguments and 'clean' not in arguments and 'verify' not in arguments
     assert not any(value.startswith('-Dtest=') or 'skipTests' in value for value in arguments)
 
 
@@ -762,7 +762,7 @@ def test_only_grouped_native_commands_fork_a_fresh_serial_jvm_for_each_class(tmp
                                            initial=False, source_regression=source)
     isolation = ['-DforkCount=1', '-DreuseForks=false', '-Djunit.jupiter.execution.parallel.enabled=false']
     assert all((argument in arguments) is (kind == 'native-multi') for argument in isolation)
-    assert 'clean' not in arguments and ('verify' in arguments) is source and ('test' in arguments) is not source
+    assert 'clean' not in arguments and 'test' in arguments and 'verify' not in arguments
     assert not any('skipTests' in argument or argument == '-T' for argument in arguments)
     if not source: assert '-Dtest=' + ','.join(selected) in arguments
 

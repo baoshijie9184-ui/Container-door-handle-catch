@@ -17,10 +17,11 @@ remote = importlib.util.module_from_spec(REMOTE_SPEC)
 REMOTE_SPEC.loader.exec_module(remote)
 JAVA = 'com.ruanzhu.doorhandle.framework.semantic.QdrantSemanticIntegrationTest'
 PYTHON = 'test_real_native_qdrant_keeps_public_id_vector_direction_and_account_filters'
+OBSERVABILITY_JAVA = 'com.ruanzhu.doorhandle.module.app.config.PrometheusScrapeIntegrationTest'
 
 
-def reports(tmp_path, java_issue=None, python_issue=None, java_name=JAVA, python_name=PYTHON):
-    folder = tmp_path / 'java/doorhandle-framework/surefire-reports'
+def reports(tmp_path, java_issue=None, python_issue=None, java_name=JAVA, python_name=PYTHON, java_root='java'):
+    folder = tmp_path / java_root / 'doorhandle-framework/surefire-reports'
     folder.mkdir(parents=True)
     for file, classname, name, issue in ((folder / ('TEST-' + JAVA + '.xml'), java_name, 'nativeSdkCase', java_issue),
             (tmp_path / 'python.xml', 'tests_python.test_memory_qdrant', python_name, python_issue)):
@@ -31,8 +32,9 @@ def reports(tmp_path, java_issue=None, python_issue=None, java_name=JAVA, python
         ET.ElementTree(suite).write(file, encoding='utf8')
 
 
-def test_native_reports_do_not_claim_bge_activation(tmp_path):
-    reports(tmp_path)
+@pytest.mark.parametrize('java_root', ['java', 'source-regression/java'])
+def test_native_reports_do_not_claim_bge_activation(tmp_path, java_root):
+    reports(tmp_path, java_root=java_root)
     proof = verifier.middleware_protocol_reports(tmp_path)
     assert proof == {'status': 'PASS', 'javaNativeCases': 1, 'pythonNativeCases': 1,
                      'embeddingProfile': 'EXPLICIT_TEST_ONLY', 'providerCalls': 0,
@@ -59,12 +61,14 @@ def test_adjacent_java_unit_class_cannot_replace_native_case(tmp_path):
         verifier.middleware_protocol_reports(tmp_path)
 
 
-def observability_reports(tmp_path, issue=None):
-    folder = tmp_path / 'source-regression/java/doorhandle-module-app/surefire-reports'
+def observability_reports(tmp_path, issue=None, java_issue=None, java_root='source-regression/java'):
+    folder = tmp_path / java_root / 'doorhandle-module-app/surefire-reports'
     folder.mkdir(parents=True)
     suite = ET.Element('testsuite')
-    ET.SubElement(suite, 'testcase', classname='com.ruanzhu.doorhandle.module.app.config.PrometheusScrapeIntegrationTest', name='nativeScrape')
-    ET.ElementTree(suite).write(folder / 'TEST-PrometheusScrapeIntegrationTest.xml', encoding='utf8')
+    case = ET.SubElement(suite, 'testcase', classname=OBSERVABILITY_JAVA, name='nativeScrape')
+    if java_issue:
+        ET.SubElement(case, java_issue)
+    ET.ElementTree(suite).write(folder / ('TEST-' + OBSERVABILITY_JAVA + '.xml'), encoding='utf8')
     suite = ET.Element('testsuite')
     case = ET.SubElement(suite, 'testcase', classname='tests_python.test_observability_scrape', name='nativePythonMetrics')
     if issue:
@@ -72,8 +76,9 @@ def observability_reports(tmp_path, issue=None):
     ET.ElementTree(suite).write(tmp_path / 'python.xml', encoding='utf8')
 
 
-def test_observability_native_reports_keep_langfuse_deferred(tmp_path):
-    observability_reports(tmp_path)
+@pytest.mark.parametrize('java_root', ['java', 'source-regression/java'])
+def test_observability_native_reports_keep_langfuse_deferred(tmp_path, java_root):
+    observability_reports(tmp_path, java_root=java_root)
     proof = verifier.observability_protocol_reports(tmp_path)
     assert proof['status'] == 'PASS' and proof['javaNativeCases'] == proof['pythonNativeCases'] == 1
     assert proof['langfuseRuntime'] == 'DEFERRED_BY_USER' and proof['providerCalls'] == 0
@@ -84,6 +89,52 @@ def test_observability_requires_actual_unskipped_python_scrape(tmp_path, issue):
     observability_reports(tmp_path, issue)
     with pytest.raises(RuntimeError, match='missing, failed or skipped'):
         verifier.observability_protocol_reports(tmp_path)
+
+
+@pytest.mark.parametrize('java_root', ['java', 'source-regression/java'])
+@pytest.mark.parametrize('issue', ['failure', 'error', 'skipped'])
+def test_observability_requires_actual_unskipped_java_scrape(tmp_path, java_root, issue):
+    observability_reports(tmp_path, java_issue=issue, java_root=java_root)
+    with pytest.raises(RuntimeError, match='missing, failed or skipped'):
+        verifier.observability_protocol_reports(tmp_path)
+
+
+@pytest.mark.parametrize('kind', ['qdrant', 'observability'])
+@pytest.mark.parametrize('java_root', ['java', 'source-regression/java'])
+def test_python_scratch_bad_xml_does_not_enter_original_protocol_reports(tmp_path, kind, java_root):
+    create = reports if kind == 'qdrant' else observability_reports
+    verify = verifier.middleware_protocol_reports if kind == 'qdrant' else verifier.observability_protocol_reports
+    create(tmp_path, java_root=java_root)
+    scratch = tmp_path / 'tmp/pytest/test_bad_report0/surefire-reports'
+    scratch.mkdir(parents=True)
+    (scratch / 'TEST-invalid.xml').write_text('<intentionally-broken')
+    assert verify(tmp_path)['status'] == 'PASS'
+
+
+@pytest.mark.parametrize('kind', ['qdrant', 'observability'])
+@pytest.mark.parametrize('unowned_root', ['tmp/pytest/test_fake_report0', 'source-regression/java/unowned-nested'])
+def test_only_unowned_nested_pass_cannot_replace_the_original_report(tmp_path, kind, unowned_root):
+    create = reports if kind == 'qdrant' else observability_reports
+    verify = verifier.middleware_protocol_reports if kind == 'qdrant' else verifier.observability_protocol_reports
+    create(tmp_path, java_root=unowned_root)
+    with pytest.raises(RuntimeError, match='missing, failed or skipped'):
+        verify(tmp_path)
+
+
+@pytest.mark.parametrize('kind', ['qdrant', 'observability'])
+@pytest.mark.parametrize('java_root', ['java', 'source-regression/java'])
+def test_broken_original_report_is_not_hidden_by_an_unowned_pass(tmp_path, kind, java_root):
+    create = reports if kind == 'qdrant' else observability_reports
+    verify = verifier.middleware_protocol_reports if kind == 'qdrant' else verifier.observability_protocol_reports
+    module, classname = ('doorhandle-framework', JAVA) if kind == 'qdrant' else ('doorhandle-module-app', OBSERVABILITY_JAVA)
+    create(tmp_path, java_root=java_root)
+    original = tmp_path / java_root / module / 'surefire-reports' / ('TEST-' + classname + '.xml')
+    scratch = tmp_path / 'tmp/pytest/test_fake_report0/surefire-reports'
+    scratch.mkdir(parents=True)
+    (scratch / original.name).write_bytes(original.read_bytes())
+    original.write_text('<intentionally-broken')
+    with pytest.raises(ET.ParseError):
+        verify(tmp_path)
 
 
 @pytest.mark.parametrize('count,issue,accepted', [(14, None, True), (13, None, False), (14, 'skipped', False), (14, 'failure', False)])

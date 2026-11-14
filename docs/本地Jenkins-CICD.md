@@ -6,6 +6,10 @@
 
 ### 当前：16份旧Python测试目录已回收，继续完整复测
 
+固定`ba8f5b580c7a5174efd64fecf8c25a3ccb05fb8a`的 **#308整轮FAILURE，Java/Python测试零失败**：知识库MySQL14项、普通Java949项、Python4,854项全部通过；原条件跳过分别730/24项。随后中间件报告汇总递归读取了Python负例目录中的损坏XML，触发ParseError，前端与临时目录成功收尾尚未执行。修复限定实际Java报告的两个固定目录，不吞解析错误、不采信嵌套伪造报告。184份非应用JAR原件位于`ci-308-raw-receipts`；工具和三类夹具均已停止，**16:45:26（北京时间）**实际回读`Stopped / StopCharging`。
+
+本轮同时去掉ECS源码回归的重复打包：固定源码的完整`package`仍由本地Jenkins先执行，ECS从`verify`改为`test`，完整编译与Surefire测试、原生MySQL和两前端范围不变。已核对全部13个POM及#308执行日志，post-test没有启用额外检查，重复部分只有普通JAR、依赖复制及两次Boot repackage；AI共享test-jar绑定`process-test-classes`，仍会执行。候选运行/发布制品构建不变。这样避免测试机再生成已在本地构建过的应用JAR，降低磁盘峰值与重复耗时。
+
 固定`dc8219bd868f024d600e8cc23dea092b03181afa`的 **#307完整source FAILURE**：知识库真实MySQL14项、普通Java949项通过（730项按原条件跳过）；Prometheus真实Java/Python指标抓取与Alertmanager本轮告警接收均PASS，外部模型调用0次。Python为4,841通过、13失败、24条件跳过，双前端未进入。失败集中在Qdrant切换后仍采用旧Chroma契约的测试夹具，以及依赖清单变化后的运行资源/候选回执夹具；正在集中修复，保留真实服务、权限、并发和资源断言。185份归档中184份非应用JAR原件保全于`ci-307-raw-receipts`，工具和三类夹具收尾完成，**16:21:30（北京时间）**实际回读`Stopped / StopCharging`；本轮失败Python临时目录按原策略保留。
 
 固定`fb08ac518fe1d9005b1f16ae197044bd02c174d0`的 **#306完整source FAILURE**：本地13模块跳测试打包成功，知识库真实MySQL **14项全部通过**；普通Java **941通过、1失败、712条件跳过**，唯一失败为Prometheus抓取测试的已认证请求返回404。Spring Boot测试默认禁用真实指标导出，导致测试上下文未装配Prometheus端点；本轮修复测试的真实可观测装配，保留鉴权、HTTP抓取与PromQL断言。Python/双前端尚未执行。183份归档中182份非应用JAR原件保全于`ci-306-raw-receipts`，工具和三类夹具均已收尾，**15:51:56（北京时间）**实际回读`Stopped / StopCharging`。

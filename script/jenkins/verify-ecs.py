@@ -775,7 +775,10 @@ def java_maven_arguments(suite, tools, build_root, *, initial, source_regression
                  '-Dmaven.repo.local=' + tools.get('MAVEN_REPOSITORY', str(ROOT / 'work' / 'ecs-maven-repository'))]
     if initial:
         arguments.append('clean')
-    arguments.append('test' if suite['fixtureProperties'] else 'verify')
+    # Jenkins already packages the fixed source locally. ECS owns compilation
+    # and Surefire execution, not a second set of repackaged application JARs.
+    # The AI test-jar is bound to process-test-classes and remains available.
+    arguments.append('test')
     if suite['javaSelection'] and not source_regression:
         arguments += ['-Dtest=' + ','.join(suite['javaSelection']), '-Dsurefire.failIfNoSpecifiedTests=false']
         if suite['fixtureProperties'] and len(suite['javaSelection']) > 1:
@@ -793,9 +796,12 @@ def java_maven_arguments(suite, tools, build_root, *, initial, source_regression
 def middleware_protocol_reports(output):
     """Require the actual remote SDK/server cases, not adjacent mock tests."""
     java_name = 'com.ruanzhu.doorhandle.framework.semantic.QdrantSemanticIntegrationTest'
-    java_cases = [case for file in sorted(Path(output).glob('**/surefire-reports/TEST-*.xml'))
-                  for case in ET.parse(file).getroot().iter('testcase')
-                  if case.get('classname') == java_name]
+    java_cases = []
+    for directory in ('java', 'source-regression/java'):
+        file = Path(output) / directory / 'doorhandle-framework/surefire-reports' / ('TEST-' + java_name + '.xml')
+        if file.exists():
+            java_cases.extend(case for case in ET.parse(file).getroot().iter('testcase')
+                              if case.get('classname') == java_name)
     python_cases = [case for case in ET.parse(Path(output) / 'python.xml').getroot().iter('testcase')
                     if case.get('classname') == 'tests_python.test_memory_qdrant'
                     and case.get('name') == 'test_real_native_qdrant_keeps_public_id_vector_direction_and_account_filters']
@@ -808,9 +814,12 @@ def middleware_protocol_reports(output):
 
 def observability_protocol_reports(output):
     java_name = 'com.ruanzhu.doorhandle.module.app.config.PrometheusScrapeIntegrationTest'
-    java_cases = [case for file in sorted(Path(output).glob('**/surefire-reports/TEST-*.xml'))
-                  for case in ET.parse(file).getroot().iter('testcase')
-                  if case.get('classname') == java_name]
+    java_cases = []
+    for directory in ('java', 'source-regression/java'):
+        file = Path(output) / directory / 'doorhandle-module-app/surefire-reports' / ('TEST-' + java_name + '.xml')
+        if file.exists():
+            java_cases.extend(case for case in ET.parse(file).getroot().iter('testcase')
+                              if case.get('classname') == java_name)
     python_cases = [case for case in ET.parse(Path(output) / 'python.xml').getroot().iter('testcase')
                     if case.get('classname') == 'tests_python.test_observability_scrape']
     for cases in (java_cases, python_cases):

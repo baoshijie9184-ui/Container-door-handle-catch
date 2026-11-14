@@ -1748,7 +1748,7 @@
       },
       {
         "module": "tests_python.test_middleware_evidence",
-        "minimumTests": 27,
+        "minimumTests": 47,
         "source": "tests_python/test_middleware_evidence.py",
         "allowedSkippedTests": []
       },
