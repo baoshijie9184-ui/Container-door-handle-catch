@@ -2366,6 +2366,23 @@ def test_268_controls_only_recipe_keeps_both_reviewed_publication_allowlists_clo
     assert retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE == 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
 
 
+def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admission():
+    # The three original LF members in #322's authenticated 344bebd4 archive.
+    reviewed = ('920874a7f6da76a75b369b32e229f58616d947a6c88a8866ea6bb65e58a78f3c',
+                '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
+                '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
+    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed})
+    assert reviewed[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert reviewed[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    assert retirer.database_verification_recipe(reviewed[:2], reviewed[2]) is True
+    assert retirer.database_verification_recipe(reviewed[:2], retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE) is False
+    assert retirer.database_verification_recipe(reviewed[:2], '0' * 64) is False
+    for legacy in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES:
+        assert retirer.database_verification_recipe(legacy, retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE) is True
+        assert retirer.database_verification_recipe(legacy, reviewed[2]) is False
+        assert retirer.database_verification_recipe((legacy[0], reviewed[1]), reviewed[2]) is False
+
+
 @pytest.fixture
 def real_failed_mysql_producer(tmp_path, monkeypatch):
     """Read the retained producer's real code, never import or execute it."""
@@ -2789,19 +2806,32 @@ def test_watched_producer_real_plan_never_downgrades_to_legacy_controls(failed_n
 
 
 @pytest.fixture
-def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch):
+def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch, request):
     s = failed_native_pair_plan; old_sha = s.context['sourceSha256']
+    reviewed = getattr(request, 'param', 'legacy') == 'reviewed'
     archive = s.keeper.parent / 'source.tar.gz'
     with tarfile.open(archive, 'r:gz') as source:
         members = {member.name: source.extractfile(member).read() for member in source}
     recipe = members.pop('script/jenkins/prepare-compact-fixtures.py')
     preparation_source = REVIEWED_PREPARATION_SOURCE.read_bytes()
     assert sha(preparation_source) == retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
+    if reviewed:
+        # Synthetic producer bytes are authenticated but never executed. Keep
+        # this pair outside the legacy/runtime allowlist from the base fixture.
+        preparation_source += b'\n# Synthetic reviewed dependency-reuse producer.\n'
+        for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1'):
+            members[name] += b'\n# Synthetic reviewed database-only recipe.\n'
     members['script/jenkins/prepare-ecs-tools.py'] = preparation_source
     source_archive(SimpleNamespace(keeper=s.keeper), recipe=recipe, publication=members)
     s.context['sourceSha256'] = sha(archive.read_bytes())
     publication = tuple(sha(members[name]) for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1'))
-    monkeypatch.setattr(retirer, 'DATABASE_VERIFY_PUBLICATION_RECIPES', frozenset({publication}))
+    if reviewed:
+        monkeypatch.setattr(retirer, 'DATABASE_VERIFY_REVIEWED_RECIPES',
+                            frozenset({(*publication, sha(preparation_source))}))
+        assert publication not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+        assert publication not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    else:
+        monkeypatch.setattr(retirer, 'DATABASE_VERIFY_PUBLICATION_RECIPES', frozenset({publication}))
     row = s.request['candidates'][0]; row.update(s.context)
     s.request['selectedFailedNativeBuild'] = s.tag.split('-')[1]
     for role, reference in row['controls'].items():
@@ -2827,6 +2857,7 @@ def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch):
     s.transport_path.write_bytes(encoded(transport)); s.transport_path.chmod(0o600)
     s.raw = encoded(s.request); s.options['request_sha256'] = sha(s.raw)
     s.original_archive = archive.read_bytes(); s.database_directory = directory
+    s.preparation_sha = sha(preparation_source)
     return s
 
 
@@ -2861,17 +2892,58 @@ def retire_database_only_native_pair(s):
     assert (s.keeper.parent / 'source.tar.gz').read_bytes() == s.original_archive
 
 
+@pytest.mark.parametrize('database_only_failed_native_pair', ['legacy', 'reviewed'], indirect=True)
 def test_explicit_database_only_native_entry_retires_no_builder_then_exact_mysql_and_two_jars(database_only_failed_native_pair):
     retire_database_only_native_pair(database_only_failed_native_pair)
 
 
 @pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['legacy', 'reviewed'], indirect=True)
 def test_watched_database_only_real_plan_apply_keeps_watch_and_data_originals(database_only_failed_native_pair, failed_native_pair_plan):
     s = database_only_failed_native_pair
     assert s is failed_native_pair_plan and s.watched
     originals = {role: path.read_bytes() for role, path in s.watch_files.items()}
     retire_database_only_native_pair(s)
     assert originals == {role: path.read_bytes() for role, path in s.watch_files.items()}
+
+
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('options', [
+    {'canonical_jar': True, 'failed_native': True},
+    {'canonical_jar': True},
+    {'failed_native': True, 'database_verification': True},
+])
+def test_reviewed_database_recipe_cannot_authorize_other_source_proof_modes(database_only_failed_native_pair, options):
+    s = database_only_failed_native_pair
+    code = ('REVIEWED_DATABASE_NO_BUILDER_SOURCE_REQUIRED' if not options.get('canonical_jar')
+            else 'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED')
+    with pytest.raises(retirer.RetirementError, match=code):
+        retirer.source_proof(s.root, s.tag, s.context['commit'], s.context['sourceSha256'], **options)
+    assert s.commands == [] and s.keeper.read_bytes() == s.copy_path.read_bytes() == s.jar
+    assert s.page.read_bytes() == s.page_bytes and s.data.stat().st_ino == s.data_inode
+
+
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('changed', ['legacy-helper', 'unknown-helper', 'unknown-publication', 'receipt-helper'])
+def test_reviewed_database_builder_absence_rejects_mixed_recipe_or_receipt(database_only_failed_native_pair, changed):
+    s = database_only_failed_native_pair
+    proof = retirer.source_proof(s.root, s.tag, s.context['commit'], s.context['sourceSha256'],
+                                canonical_jar=True, failed_native=True, database_verification=True)
+    assert proof['toolPreparationHelperSha256'] == s.preparation_sha
+    historical = {'context': s.context, 'sourceArchive': proof}
+    code = 'EXPLICIT_REVIEWED_DATABASE_BUILDER_ABSENCE_REQUIRED'
+    if changed == 'legacy-helper':
+        proof['toolPreparationHelperSha256'] = retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
+    elif changed == 'unknown-helper': proof['toolPreparationHelperSha256'] = '0' * 64
+    elif changed == 'unknown-publication': proof['unpublishedPipelineSourceSha256']['script/jenkins/pipeline.ps1'] = '0' * 64
+    else:
+        preparation = json.loads(s.prep_path.read_bytes())
+        preparation['sourceFiles']['script/jenkins/prepare-ecs-tools.py'] = retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
+        s.prep_path.write_bytes(encoded(preparation)); code = 'DATABASE_BUILDER_ABSENCE_ORIGINALS_DIFFER'
+    with pytest.raises(retirer.RetirementError, match=code):
+        retirer.database_builder_absence_controls(s.root, s.request, historical)
+    assert s.commands == [] and s.keeper.read_bytes() == s.copy_path.read_bytes() == s.jar
+    assert s.page.read_bytes() == s.page_bytes and s.data.stat().st_ino == s.data_inode
 
 
 @pytest.mark.parametrize('changed', ['missing', 'changed'])

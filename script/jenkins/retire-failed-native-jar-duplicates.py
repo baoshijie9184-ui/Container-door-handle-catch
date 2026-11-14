@@ -204,6 +204,24 @@ DATABASE_VERIFY_PUBLICATION_RECIPES = frozenset({
 # Original 3502d844/8c898996 LF producer bytes, not the mutable current helper.
 # New middleware preparation does not retroactively change old no-builder proof.
 DATABASE_VERIFY_TOOL_PREPARATION_SOURCE = 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
+# #322's retained 344bebd4 archive: middleware dependency reuse remains inert,
+# and only runtime/cutover requests a candidate builder. Bind all three producer
+# files together; do not admit this pair to ordinary FailedNative/runtime cleanup.
+DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
+    ('920874a7f6da76a75b369b32e229f58616d947a6c88a8866ea6bb65e58a78f3c',
+     '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
+     '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
+})
+
+
+def database_verification_recipe(publication_recipe, preparation_sha):
+    pair = tuple(publication_recipe)
+    return len(pair) == 2 and (
+        (pair in DATABASE_VERIFY_PUBLICATION_RECIPES
+         and preparation_sha == DATABASE_VERIFY_TOOL_PREPARATION_SOURCE)
+        or (*pair, preparation_sha) in DATABASE_VERIFY_REVIEWED_RECIPES)
+
+
 CLOSED_RUNTIME_JARS = {
     'ci-204-24f8eb4b02bf': {
         'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
@@ -781,6 +799,8 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             pair = tuple(publication_shas.get(name) for name in publication_names)
             approved = (pair in FAILED_NATIVE_PUBLICATION_RECIPES if failed_native else
                         canonical_commit(tag) == commit and pair == APPROVED_CANONICAL_SOURCES.get(tag))
+            if failed_native and database_verification:
+                approved = approved or database_verification_recipe(pair, preparation_sha)
             if retired_copy_batch is not None:
                 targets, _ = retired_copy_policy(retired_copy_batch)
                 approved = (not failed_native and targets.get(tag, {}).get('commit') == commit
@@ -790,8 +810,8 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             proof['unpublishedPipelineSourceSha256'] = publication_shas
         if database_verification:
             need(canonical_jar and failed_native and retired_copy_batch is None
-                 and preparation_sha == DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
-                 and tuple(publication_shas.get(name) for name in publication_names) in DATABASE_VERIFY_PUBLICATION_RECIPES,
+                 and database_verification_recipe(
+                     tuple(publication_shas.get(name) for name in publication_names), preparation_sha),
                  'REVIEWED_DATABASE_NO_BUILDER_SOURCE_REQUIRED')
             proof.update(candidateBuilderRequested=False, toolPreparationHelperSha256=preparation_sha)
         if failed_native:
@@ -930,8 +950,10 @@ def database_builder_absence_controls(root, request, historical):
     context = historical['context']; proof = historical['sourceArchive']; tag = context['release']
     need(request.get('selectedFailedNativeBuild') == TAG.fullmatch(tag)[1]
          and proof.get('candidateBuilderRequested') is False
-         and tuple(proof.get('unpublishedPipelineSourceSha256', {}).get(name)
-                   for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1')) in DATABASE_VERIFY_PUBLICATION_RECIPES,
+         and database_verification_recipe(
+             tuple(proof.get('unpublishedPipelineSourceSha256', {}).get(name)
+                   for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1')),
+             proof.get('toolPreparationHelperSha256')),
          'EXPLICIT_REVIEWED_DATABASE_BUILDER_ABSENCE_REQUIRED')
     values, bindings = {}, {}
     for role, name in (('preparation', 'ecs-tool-preparation.json'), ('transport', 'ecs-tool-preparation-transport.json')):

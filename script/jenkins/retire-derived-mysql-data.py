@@ -641,11 +641,11 @@ def task_source_recipe(native, row):
                 need(member.name not in bodies and member.isfile() and 0 < member.size <= MIB,
                      'ORIGINAL_TASK_RECIPE_INVALID')
                 bodies[member.name] = archive.extractfile(member).read(MIB + 1)
-    need(set(bodies) == set(names) and tuple(digest(bodies[name]) for name in names[:2])
-         in native.DATABASE_VERIFY_PUBLICATION_RECIPES and
-         digest(bodies[names[2]]) == native.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE,
+    need(set(bodies) == set(names) and native.database_verification_recipe(
+         tuple(digest(bodies[name]) for name in names[:2]), digest(bodies[names[2]])),
          'REVIEWED_VERIFY_ONLY_TASK_SOURCE_REQUIRED')
-    return {'sourceSha256': digest(raw), 'publicationRecipe': [digest(bodies[name]) for name in names[:2]]}
+    return {'sourceSha256': digest(raw), 'publicationRecipe': [digest(bodies[name]) for name in names[:2]],
+            'toolPreparationHelperSha256': digest(bodies[names[2]])}
 
 
 def task_reports(row, verifier, *, metadata_only=False):
@@ -733,12 +733,13 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
              and owner.get('sourceClone') == 'doorhandle_migration_verify_' + evidence['ownerToken']
              and owner.get('containerId') != owner.get('sourceContainerId')
              and cleanup.get('dataDirectoryRetained') == str(work / 'mysql-data'), 'EXACT_DERIVED_TASK_OWNER_REQUIRED')
+        recipe = task_source_recipe(native, row)
         preparation, transport = local['preparation'], local['transport']
         need(all(document.get(key) == expected for document in (preparation, transport)
                  for key, expected in context.items()) and preparation.get('status') == 'PREPARED'
              and preparation.get('kind') == 'doorhandle-ecs-tool-preparation'
              and preparation.get('identity') == value['identity'] and 'candidateBuilderTools' not in preparation
-             and preparation.get('sourceFiles', {}).get('script/jenkins/prepare-ecs-tools.py') == native.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
+             and preparation.get('sourceFiles', {}).get('script/jenkins/prepare-ecs-tools.py') == recipe['toolPreparationHelperSha256']
              and transport.get('prepareCandidateBuilder') is False and transport.get('status') == 'PREPARED'
              and transport.get('kind') == 'doorhandle-ecs-tool-preparation-transport'
              and type(transport.get('schema')) is int and transport['schema'] == 1
@@ -748,7 +749,6 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
         need(not (ROOT / 'inbox' / tag / 'candidate-build-tools').exists()
              and not (work / 'derived-mysql-retired-task.json').exists()
              and not (ROOT / 'releases' / tag).exists(), 'PUBLISHED_CANDIDATE_OR_RETIRED_TASK_REFUSED')
-        recipe = task_source_recipe(native, row)
         publication = None if metadata_only else native.canonical_publication_refs(ROOT, tag)
         manifest_raw = read(work / 'source-backup/manifest.json'); manifest = json.loads(manifest_raw)
         need(digest(manifest_raw) == owner.get('sourceBackupSha256') and

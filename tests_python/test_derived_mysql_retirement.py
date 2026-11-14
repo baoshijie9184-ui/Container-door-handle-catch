@@ -687,6 +687,46 @@ def test_task_interface_keeps_closed_batches_and_requires_private_authorization(
     assert 'Remove-Item' not in controller and 'rm -' not in controller
 
 
+@pytest.mark.parametrize('recipe_kind', ['legacy', 'current', 'legacy-new-helper', 'current-old-helper',
+                                       'unreviewed-publication', 'unreviewed-helper'])
+def test_task_source_recipe_binds_all_three_reviewed_producers(monkeypatch, recipe_kind):
+    native_spec = importlib.util.spec_from_file_location('task_recipe_native_test', FILE.with_name('retire-failed-native-jar-duplicates.py'))
+    native = importlib.util.module_from_spec(native_spec); native_spec.loader.exec_module(native)
+    names = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
+    old = (b'old reviewed Jenkinsfile', b'old reviewed pipeline', b'old reviewed preparer')
+    new = (b'new reviewed Jenkinsfile', b'new reviewed pipeline', b'new reviewed preparer')
+    old_shas = tuple(retirement.digest(body) for body in old)
+    new_shas = tuple(retirement.digest(body) for body in new)
+    monkeypatch.setattr(native, 'DATABASE_VERIFY_PUBLICATION_RECIPES', frozenset({old_shas[:2]}))
+    monkeypatch.setattr(native, 'DATABASE_VERIFY_TOOL_PREPARATION_SOURCE', old_shas[2])
+    monkeypatch.setattr(native, 'DATABASE_VERIFY_REVIEWED_RECIPES', frozenset({new_shas}))
+    selected = {'legacy': old, 'current': new, 'legacy-new-helper': (*old[:2], new[2]),
+                'current-old-helper': (*new[:2], old[2]),
+                'unreviewed-publication': (new[0], b'unknown pipeline', new[2]),
+                'unreviewed-helper': (*new[:2], b'unknown preparer')}[recipe_kind]
+    row = {'release': 'ci-322-' + 'a' * 12, 'commit': 'a' * 40}
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode='w:gz', format=tarfile.PAX_FORMAT,
+                      pax_headers={'comment': row['commit']}) as archive:
+        for name, body in zip(names, selected):
+            member = tarfile.TarInfo(name); member.size = len(body)
+            archive.addfile(member, io.BytesIO(body))
+    raw = buffer.getvalue(); row['sourceSha256'] = retirement.digest(raw)
+    def read(path, maximum):
+        assert path == retirement.ROOT / 'inbox' / row['release'] / 'source.tar.gz'
+        assert maximum == 128 * retirement.MIB
+        return raw
+    monkeypatch.setattr(retirement, 'read', read)
+    if recipe_kind not in ('legacy', 'current'):
+        with pytest.raises(ValueError, match='REVIEWED_VERIFY_ONLY_TASK_SOURCE_REQUIRED'):
+            retirement.task_source_recipe(native, row)
+    else:
+        proof = retirement.task_source_recipe(native, row)
+        assert proof == {'sourceSha256': row['sourceSha256'],
+                         'publicationRecipe': [retirement.digest(body) for body in selected[:2]],
+                         'toolPreparationHelperSha256': retirement.digest(selected[2])}
+
+
 @pytest.fixture
 def task_keeper_documents(monkeypatch):
     native_spec = importlib.util.spec_from_file_location('task_native_validator_test', FILE.with_name('retire-failed-native-jar-duplicates.py'))
@@ -732,7 +772,9 @@ def task_keeper_documents(monkeypatch):
     value = {'identity': identity, 'candidates': [row]}
     binding = {'tag': 'ci-300-' + 'f' * 12}
     state = SimpleNamespace(documents=documents, owner=owner, manifest=manifest, row=row, value=value, binding=binding,
-                            sql=sql, xml=xml, native=native, reads=[])
+                            sql=sql, xml=xml, native=native, reads=[],
+                            recipe={'sourceSha256': 'b' * 64,
+                                    'toolPreparationHelperSha256': native.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE})
     def refresh():
         raw = {name: retirement.encoded(document) for name, document in documents.items()}
         raw.update({'build.xml': state.xml, 'data.sql': state.sql})
@@ -742,7 +784,7 @@ def task_keeper_documents(monkeypatch):
             return raw[path.name]
         monkeypatch.setattr(retirement, 'read', read)
     refresh(); state.refresh = refresh
-    monkeypatch.setattr(retirement, 'task_source_recipe', lambda *_: {'sourceSha256': 'b' * 64})
+    monkeypatch.setattr(retirement, 'task_source_recipe', lambda *_: state.recipe)
     monkeypatch.setattr(retirement, 'task_reports', lambda *_a, **_k: {'reportFiles': 1})
     monkeypatch.setattr(native, 'canonical_publication_refs', lambda *_: [])
     state.helpers = {'retire-failed-native-jar-duplicates.py': native, 'verify-remote.py': SimpleNamespace()}
@@ -756,6 +798,24 @@ def test_task_keepers_authenticate_originals_without_exposing_password_or_readin
     assert result[0]['sourceSqlSha256'] == state.manifest['data']['sha256']
     assert ('data.sql' in state.reads) is not metadata_only
     assert b'never-output-test-password' not in retirement.encoded(result)
+
+
+@pytest.mark.parametrize('receipt_matches_source', [False, True])
+def test_task_keepers_bind_preparation_receipt_to_authenticated_recipe(task_keeper_documents, receipt_matches_source):
+    state = task_keeper_documents
+    reviewed = next(iter(state.native.DATABASE_VERIFY_REVIEWED_RECIPES))
+    state.recipe.update(publicationRecipe=list(reviewed[:2]), toolPreparationHelperSha256=reviewed[2])
+    if receipt_matches_source:
+        state.documents['ecs-tool-preparation.json']['sourceFiles']['script/jenkins/prepare-ecs-tools.py'] = reviewed[2]
+    state.refresh()
+    if not receipt_matches_source:
+        with pytest.raises(ValueError, match='VERIFY_ONLY_TASK_WITHOUT_CANDIDATE_BUILDER_REQUIRED'):
+            retirement.task_admitted(state.binding, state.value, state.helpers)
+    else:
+        result = retirement.task_admitted(state.binding, state.value, state.helpers)
+        assert result[0]['sourceRecipe'] == state.recipe
+        assert result[0]['sourceSqlSha256'] == state.manifest['data']['sha256']
+        assert result[0]['reports'] == {'reportFiles': 1}
 
 
 @pytest.mark.parametrize('damage', ['runtime', 'success', 'production', 'owner-phase', 'source-container',
