@@ -455,10 +455,12 @@ elif batch=='RetiredCopies':
  need(rel.get('kind')=='doorhandle-maintenance-source' and rel.get('action')=='reclaim-build-outputs' and rel.get('release')==authority_tag and rel.get('commit')==authority_commit and rel.get('sourceSha256')==originals['source.tar.gz'][1] and rel.get('maintenanceOnly') is True and rel.get('testsExecuted') is False and rel.get('applicationBuilt') is False,'RETIRED_AUTHORITY_RELEASE_CONTEXT_DRIFT')
 print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody,'builderFiles':builder_files,'authorityFiles':authority_files,'authorityCustody':authority_custody,'selectedFailedNativeBuild':selected_build}))
 '@
+# Keep the growing custody reader off Windows' bounded command line. Python's
+# stdin entry preserves argv[1:] for both existing and task-data-only callers.
 if ($CollectDataControls) {
-    $local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber,'data-controls-only') | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+    $local=(Invoke-NativeJar $python @('-I','-B','-',$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber,'data-controls-only') -InputText $reader | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
 } else {
-    $local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+    $local=(Invoke-NativeJar $python @('-I','-B','-',$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber) -InputText $reader | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
 }
 if ($CollectDataControls) {
     Require-NativeJar ($Mode -ceq 'Maintenance' -and $CanonicalBatch -ceq 'FailedNative' -and $FailedNativeBuildNumber -cmatch '\A[1-9][0-9]{0,8}\z' -and [long]$FailedNativeBuildNumber -ge 287 -and $env:DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID -ceq '01a1a46b-d37a-7fb2-8638-afe345c73531') 'Data-control collection requires the explicitly authorized task and one earlier failed verification build.'

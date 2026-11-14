@@ -9,6 +9,7 @@ import os
 import re
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tarfile
 from types import SimpleNamespace
@@ -1007,6 +1008,46 @@ def test_task_original_reader_does_not_replay_binary_retirement_or_scan_builds(t
         with pytest.raises(ValueError, match='EXACT_SELECTED_FAILED_NATIVE_BUILD_REQUIRED'):
             exec(compile(reader, 'actual-binary-control-reader', 'exec'), {})
     assert not (originals / 'application.jar').exists()
+
+
+def test_task_original_reader_uses_stdin_in_both_modes_without_changing_positional_inputs():
+    controller = FILE.with_name('retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf-8-sig')
+    calls = re.findall(r'\$local=\(Invoke-NativeJar \$python @\(([^)]*)\)([^|\n]*)\|', controller)
+    expected = ["'-I'", "'-B'", "'-'", '$archive', '$Commit', '$RetainedControlRoot', '$jenkinsHome',
+                '$RemoteRoot', '$Tag', '$CanonicalBatch', '$RetiredCopyBatch', '$FailedNativeBuildNumber']
+    assert len(calls) == 2
+    assert [arguments.split(',') for arguments, _ in calls] == [expected + ["'data-controls-only'"], expected]
+    assert all(transport.strip() == '-InputText $reader' for _, transport in calls)
+    assert not re.search(r"Invoke-NativeJar \$python[^\n]*'-c',\$reader", controller)
+    invoke = controller.split('function Invoke-NativeJar(', 1)[1].split('\nRequire-NativeJar', 1)[0]
+    assert "$PSBoundParameters.ContainsKey('InputText')" in invoke
+    assert '$InputText | & $Executable @Arguments' in invoke
+
+
+def test_task_original_reader_size_does_not_consume_the_windows_process_argument_budget():
+    controller = FILE.with_name('retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf-8-sig')
+    reader = controller.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]
+    windows_limit = 32767
+    oversized_reader = reader + '\n#' + 'x' * windows_limit
+    project = 'D:/AI/lunwen1/DoorHandleCatch'
+    values = {'$archive': project + '/work/jenkins/ci-workspaces/monolith/artifacts/source.tar.gz',
+              '$Commit': 'f' * 40, '$RetainedControlRoot': project + '/work/jenkins/data-residency-20261107',
+              '$jenkinsHome': 'C:/Users/19771/.jenkins', '$RemoteRoot': '/home/ecs-user/doorhandle-ci',
+              '$Tag': 'ci-332-' + 'f' * 12, '$CanonicalBatch': 'FailedNative',
+              '$RetiredCopyBatch': 'retired-195-198-201', '$FailedNativeBuildNumber': '322'}
+    calls = re.findall(r'\$local=\(Invoke-NativeJar \$python @\(([^)]*)\) -InputText \$reader', controller)
+    assert len(calls) == 2
+    for arguments in calls:
+        tokens = arguments.split(',')
+        def argv_for(body):
+            bindings = {**values, '$reader': body}
+            return [project + '/.venv/Scripts/python.exe'] + [
+                token[1:-1] if token.startswith("'") else bindings[token] for token in tokens]
+        argv = argv_for(reader)
+        assert argv == argv_for('') == argv_for(oversized_reader) and reader not in argv
+        assert len(subprocess.list2cmdline(argv).encode('utf-16-le')) // 2 + 1 < windows_limit
+        old_argv = [*argv[:3], '-c', oversized_reader, *argv[4:]]
+        assert len(subprocess.list2cmdline(old_argv).encode('utf-16-le')) // 2 + 1 > windows_limit
 
 
 @pytest.fixture
