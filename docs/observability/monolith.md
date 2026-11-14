@@ -91,7 +91,7 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 - 全Langfuse需先独立资源审核和预检，随后完整栈健康、项目初始化、跨运行追踪查询、OSS上述完整链路、exporter故障不影响业务、组件重启后历史可读。未满足资源不拉镜像、不删业务缓存凑数。
 - 收集脱敏回执、清理本轮自有夹具，由流水线外执行StopInstance/StopCharging并回读；Jenkins继续运行。正式并发/容量压测仍按用户决定后置。
 
-固定提交`7cef30943e928e2fac57001bad2275c23c8faa5a`的#312已在ECS通过指标抓取和下述告警闭环；Jenkins在Windows展开报告时因长路径失败，正在复用完整原tar补收，原构建仍FAILURE。实际OSS兼容性、外部告警送达和真实Langfuse查询仍按上述独立条件验收。
+固定提交`7cef30943e928e2fac57001bad2275c23c8faa5a`的#312已在ECS通过指标抓取和下述告警闭环；Windows长路径收证错误已修复，#315完整补收原265份报告，未重跑项目测试，原#312仍为FAILURE。实际OSS兼容性、外部告警送达和真实Langfuse查询仍按上述独立条件验收。
 
 ### 用真实 Prometheus 验收 Java 和 Python 指标
 

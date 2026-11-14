@@ -56,6 +56,8 @@ Langfuse 的内部表不是 29 张业务表的一部分，但必须纳入实际�
 
 2026-11-14 用户确定本轮先完成 Qdrant、模型故障隔离、OTel、Prometheus 的接入验收；Langfuse 保留完整部署配置，待资源审定后再启用。本轮不拉取或启动 Langfuse，也不增加付费资源。OTel 的真实 SDK/HTTP 协议验收与 Langfuse 实际运行状态分别记录。
 
+2026-11-14实际源码验收：固定`7cef3094`的#312完成真实MySQL14、普通Java949、Python4,968、主站203及Agent前端20项，两套前端构建通过；Qdrant原生SDK、真实Prometheus抓取和Alertmanager触发/分组/解除通过，提供方调用0次。Windows收证长路径错误由固定collector`9fdee33d`的#315完整补收265份原报告解决，原#312 Jenkins FAILURE保留。该结果完成隔离接入验收，不替代前述真实BGE候选、业务合入与正式迁移。详见[当前CI/CD回执](../本地Jenkins-CICD.md)。
+
 ## 固定镜像由本地 Jenkins 中继，不依赖 ECS 访问 Docker Hub
 
 `#297` 在启动测试前访问 Docker Hub 失败；当次镜像尚未下载、导入或创建容器。ECS 到认证和 registry 两个官方域均不可达，而本地既有网络可以到达。后续沿用已有 BuildKit 公共构建输入链：本地 Python 只下载官方固定 OCI 字节，受管 SCP 发布到 ECS，ECS 原量测器验证后才导入。没有增加代理、镜像平台、常驻服务或本地容器。

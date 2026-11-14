@@ -6,13 +6,17 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-### 当前：两份临时目录已回收，ECS测试通过，修复Windows收证路径
+### 当前：两份临时目录已回收，ECS源码验收与补收证据已闭合
+
+**#315补收SUCCESS**：固定collector提交`9fdee33de40d532cf48caf747f76233bc9c15552`完整恢复并核验#312的265份报告，不重跑项目测试、不操作ECS。新回执区分原业务提交`7cef30943e928e2fac57001bad2275c23c8faa5a`与collector提交；原#312 Jenkins FAILURE保留。268份恢复制品29,410,342字节位于`work/jenkins/data-residency-20261107/ci-315-raw-receipts`。同一collector提交的#314控制2,930项全部通过，工具与scratch收尾确认。
+
+本轮必要中间件的**源码接入与隔离组件验收已完成**；真实旧RAG/Mem0候选的BGE重建、业务合入、正式部署和整库切换仍是后续验收，完整Langfuse按用户决定待资源审定。**18:46:14（北京时间）**实际回读ECS为`Running`，未发送停机请求；由用户自行关闭。
 
 固定`7cef30943e928e2fac57001bad2275c23c8faa5a`的 **#310控制SUCCESS**：2,897项全部通过，包括新增两根回收84项和告警fixture22项；控制容器和scratch收尾确认。随后 **#311维护SUCCESS**，精确回收#307/#308两根；净释放916,901,888字节（约0.85GiB），剩余约3.80GiB。9份原件56,151,756字节保全于`ci-311-raw-receipts`；业务库、SQL、源码、报告和#266保留，两根及此前16根批次均不重放。
 
 同提交 **#312在ECS的验证回执PASS，Jenkins整轮FAILURE**：知识库MySQL14、普通Java949、Python4,968、主站203、Agent前端20项全部通过，两套前端构建成功；原条件跳过Java730/Python24。Qdrant、指标抓取、源版本隔离协议均通过；实际告警2条同组，解除后告警/分组清空，resolved接收计数0→2。全部测试工具及三类组件已收尾，Python临时根和两套前端依赖已回收。
 
-本轮失败在Windows收证：第173份报告目标绝对路径261字符，本机`LongPathsEnabled=0`，触发`FileNotFoundError`；完整原tar仍在，未丢失ECS结果。191份Jenkins制品中190份非应用JAR（38,295,853字节）保全于`ci-312-raw-receipts`，含完整tar及部分展开目录。正在修复既有collector并通过固定提交只补收原attempt证据，不重跑已通过的项目测试，也不把原#312改成SUCCESS。整库迁移和生产切换未放行。按用户新决定，ECS保持开启，测试后不再自动关机。
+该轮失败在Windows收证：第173份报告目标绝对路径261字符，本机`LongPathsEnabled=0`，触发`FileNotFoundError`；完整原tar仍在，未丢失ECS结果。191份Jenkins制品中190份非应用JAR（38,295,853字节）保全于`ci-312-raw-receipts`，含完整tar及部分展开目录。后续collector使用已准入目标的Windows扩展路径I/O；#313控制2,929通过、1个旧维护分支定位正则失败，修复后#314全通过，#315完成补收。未修改注册表、未重跑项目测试、未改写#312原结果；整库迁移和生产切换未放行。
 
 固定`dd789b8e97eddb42682c0653721c7089d094c6a0`的 **#309整轮FAILURE**：知识库MySQL14项、普通Java949项、Python4,874项、主站前端203项均通过，主站构建成功；Qdrant原生Java/Python、Prometheus抓取和知识库源版本隔离三份协议汇总均PASS，提供方调用0次。原条件跳过仍为Java730、Python24。Agent前端在依赖安装阶段被外层Semantic MySQL保护检查中止，尚未执行其20项测试及构建。最后工具采样剩2,429,218,816字节，距2.25GiB底线仅13,299,712字节；原回执记录ValueError及保护函数位置，未记录具体guard消息，不将其写成前端业务断言失败。
 
