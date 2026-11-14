@@ -242,7 +242,7 @@ def test_pipeline_requires_the_explicit_closed_batch_and_keeps_old_defaults():
     assert 'batch=$batch;targetCount=$targetCount' in wrapper
     pipeline = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf-8-sig')
     post = pipeline.split('\n    post {\n', 1)[1]
-    maintenance = re.search(r"^                if \(params.ACTION == 'reclaim-build-outputs'\) \{(.*?)"
+    maintenance = re.search(r"^                (?:\} else )?if \(params.ACTION == 'reclaim-build-outputs'\) \{(.*?)"
                             r"^                \} else \{", post, re.MULTILINE | re.DOTALL)
     assert maintenance is not None, 'The dedicated maintenance post branch must exist.'
     archive = re.search(r"archiveArtifacts artifacts: '([^']+)'", maintenance[1])
