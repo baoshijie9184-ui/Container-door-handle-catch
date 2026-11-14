@@ -2,17 +2,25 @@ package com.ruanzhu.doorhandle.module.app.service.impl;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
+import com.ruanzhu.doorhandle.module.app.service.ChatSessionService;
 import com.ruanzhu.doorhandle.module.app.testsupport.WorkspaceMigrationFixture;
+import com.ruanzhu.doorhandle.module.system.security.TenantContext;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** Complete V38 copy and rollback using the actual public schema; never opens or grants a database. */
 @EnabledIfSystemProperty(named="doorhandle.workspace.source.config",matches=".+")
@@ -117,7 +125,7 @@ class WorkspaceMigrationMySqlTest {
         assertThatThrownBy(()->transaction(()->store.hasMutation(1,"Remove_Case","0".repeat(64)))).hasMessageContaining("409");
         assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance",Long.class)).isEqualTo(5);
     }
-    @Test void unresolvedSourceUsesExplicitV2AndRetainsUnknownTimesWithoutAutomaticBoundaryOrReplay()throws Exception{
+    @Test void unresolvedSourceBlocksTimeBoundaryButRetainsTimelessCompletedReceipts(@TempDir Path directory)throws Exception{
         seed();var original=snapshot();String sourceSnapshotSha256=fixture.sourceSnapshotSha256();fixture.migrateUnresolved();
         var store=new WorkspacePersistence(target);var files=store.files(1,"source");
         assertThat(files).singleElement().satisfies(file->{assertThat(file.id()).isEqualTo(FILE);assertThat(file.clockStatus()).isEqualTo("UNRESOLVED");assertThat(file.sourceWallTimes()).containsEntry("created_at","2026-10-17 12:34:56.123456");});
@@ -130,9 +138,34 @@ class WorkspaceMigrationMySqlTest {
         assertThat(manifest.has("sourceUtcOffset")).isFalse();
         assertThatThrownBy(()->transaction(()->store.inheritBefore(1,"source","child",LocalDateTime.of(2030,1,1,0,0))))
                 .hasMessageContaining("历史时区未确认");
-        assertThatThrownBy(()->transaction(()->store.fork(1,"Fork_Case"))).hasMessageContaining("历史时区未确认");
+
+        // These two source tables have no clock columns. Reading their permanent results must not rerun work.
+        assertThat(target.queryForList("SELECT status,created_at,updated_at,finished_at,legacy_clock_json FROM workflow_instance"))
+                .hasSize(5).allSatisfy(receipt->assertThat(receipt).containsEntry("status","COMPLETED")
+                        .containsEntry("created_at",null).containsEntry("updated_at",null)
+                        .containsEntry("finished_at",null).containsEntry("legacy_clock_json",null));
+        target.update("DELETE FROM chat_session WHERE session_id='child'");
+        var targetBefore=new LinkedHashMap<String,List<Map<String,Object>>>();
+        for(String table:List.of("content_asset","content_revision","content_link","workflow_instance","audit_event","chat_session","chat_message"))
+            targetBefore.put(table,target.queryForList("SELECT * FROM "+table+" ORDER BY id"));
+        transaction(()->assertThat(store.fork(1,"Fork_Case")).get().satisfies(fork->{
+            assertThat(fork.sourceSessionId()).isEqualTo("source");assertThat(fork.throughMessageId()).isEqualTo(100);
+            assertThat(fork.resultSessionId()).isEqualTo("child");
+        }));
         String signature=source.queryForObject("SELECT signature FROM agent_workspace_request WHERE id=31",String.class);
-        assertThatThrownBy(()->transaction(()->store.hasMutation(1,"Remove_Case",signature))).hasMessageContaining("历史时区未确认");
+        transaction(()->assertThat(store.hasMutation(1,"Remove_Case",signature)).isTrue());
+        var sessions=mock(ChatSessionService.class);var users=mock(BusinessUserDirectory.class);
+        when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));
+        when(sessions.resolveTenantForSystemCallback("source")).thenReturn(new TenantContext(1L,"alice"));
+        var service=new AgentWorkspaceService(sessions,users,mock(ObjectProvider.class),target,
+                new DataSourceTransactionManager(target.getDataSource()),directory.toString(),1024,2048);
+        var actor=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
+        assertThat(service.fork(actor,"source",100,"Fork_Case")).isEqualTo("child");
+        service.remove(actor,"source",FILE,"Remove_Case");
+        verify(sessions,times(2)).resolveTenantForSystemCallback("source");
+        verify(sessions,times(2)).verifySessionOwner("alice","source");
+        verifyNoMoreInteractions(sessions);
+        targetBefore.forEach((table,rows)->assertThat(target.queryForList("SELECT * FROM "+table+" ORDER BY id")).as(table).isEqualTo(rows));
         assertThat(snapshot()).isEqualTo(original);
         assertThat(target.queryForObject("SELECT COUNT(*) FROM content_link WHERE session_id='child'",Long.class)).isZero();
     }

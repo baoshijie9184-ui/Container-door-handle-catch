@@ -28,9 +28,11 @@
 | `agent_workspace_audit` | 7：id、user_id、session_id、resource_id、action、content_sha256、created_at | `audit_event` WORKSPACE；原行为和摘要字串保留，无当前用户/会话删除外键。 |
 | `agent_workspace_business_ref` | 6：id、user_id、session_id、kind、resource_id、created_at | `content_link` WORKSPACE_BUSINESS；原 kind 和资源字串不改写。 |
 
-V38 的四个 created_at 均为 `DATETIME(6) NOT NULL`。复制要求明确的固定来源 offset，并核对 `CONVERT_TZ` 实际秒差。文件与审计保存原六位微秒文本；引用另保存 `legacy_created_at`/`legacy_utc_offset`，只允许精确两个 V38 引用来源成对使用。目标 created_at 使用 UTC，超范围转换原值返回必须拒绝。
+V38 的四个 created_at 均为 `DATETIME(6) NOT NULL`。来源时区已有证据时，复制要求明确的固定来源 offset，并核对 `CONVERT_TZ` 实际秒差。文件与审计保存原六位微秒文本；引用另保存 `legacy_created_at`/`legacy_utc_offset`，只允许精确两个 V38 引用来源成对使用。目标 created_at 使用 UTC，超范围转换原值返回必须拒绝。来源时区无法确认时，按[历史未知时钟协议](legacy-clock-protocol.md)显式选择 `UNRESOLVED`，保留原墙钟和来源旁证、历史 UTC 投影为 NULL；文件使用 V2 manifest，禁止按这些未知时间自动推导资料继承边界。
 
 原 request/fork 表没有任何时间字段，三项流程时间 `created_at/updated_at/finished_at` 全部保留 NULL。只有精确旧来源与来源键允许该例外；新流程仍写真实 UTC 时刻。fork 原表也没有请求 SHA；新协议使用完整 sourceSessionId/throughMessageId 派生查询摘要，同时保留全部原分量和 resultSessionId，不把派生摘要宣称为源存量字段。
+
+workspace 域选择 `UNRESOLVED` 不会给这些无时间来源制造 `legacy_clock_json`。读取匹配的永久完成回执仍返回原分支结果或已完成变更；这不会创建新分支、复制消息、重新解除引用或追加审计，与禁止未知时钟驱动的自动重执行并不冲突。迁移用例通过真实 `AgentWorkspaceService` 核对：当前子会话已删除时仍返回原结果，文件引用和其他业务记录不变；有未知时钟旁证的执行围栏与资料时间边界拒绝继续保留。
 
 共享目标 id 是新的游标空间，原表自增 id 保留在 legacy_source/id 或 legacy_source/key。脚本不抬高共享序列、不改源序列；源高水位（含已删除高 id）需要存入迁移回执/备份。双 schema 用例会逐表保存原行及 AUTO_INCREMENT 元数据并核对源未改变。
 
