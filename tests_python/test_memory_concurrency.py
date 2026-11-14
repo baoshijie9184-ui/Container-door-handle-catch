@@ -8,6 +8,7 @@ from memory_service import main
 
 def test_extraction_does_not_block_health_or_owned_listing(monkeypatch):
     started, release, completed = threading.Event(), threading.Event(), threading.Event()
+    pages = []
     def add(*args, **kwargs):
         started.set()
         try:
@@ -15,7 +16,9 @@ def test_extraction_does_not_block_health_or_owned_listing(monkeypatch):
             return {"results": []}
         finally:
             completed.set()
-    memory = SimpleNamespace(add=add, vector_store=SimpleNamespace(collection=SimpleNamespace(get=lambda **kw: {"ids": [], "metadatas": []})))
+    def owned_page(user, app, limit, offset):
+        pages.append((user, app, limit, offset)); return []
+    memory = SimpleNamespace(add=add, vector_store=SimpleNamespace(owned_page=owned_page))
     monkeypatch.setattr(main, "memory_instance", memory)
     monkeypatch.setenv("MEM0_BRIDGE_TOKEN", "concurrency-fixture")
     async def exercise():
@@ -26,6 +29,7 @@ def test_extraction_does_not_block_health_or_owned_listing(monkeypatch):
                 assert not completed.is_set()
                 health, listing = await asyncio.wait_for(asyncio.gather(client.get("/health"), client.post("/memories/owned/list", json={"user_id": "doorhandlecatch:user:42", "app_id": "doorhandlecatch"})), 1)
                 assert health.status_code == listing.status_code == 200
+                assert pages == [("doorhandlecatch:user:42", "doorhandlecatch", 51, 0)]
                 assert not completed.is_set(), "List must complete while extraction is still waiting"
             finally:
                 release.set()
@@ -35,10 +39,12 @@ def test_extraction_does_not_block_health_or_owned_listing(monkeypatch):
 
 def test_many_waiting_writes_are_rejected_without_starving_reads(monkeypatch):
     started, release = threading.Event(), threading.Event()
-    calls=[]
+    calls=[];pages=[]
     def add(*args, **kwargs):
         calls.append(kwargs['user_id']);started.set();assert release.wait(5);return {'results': []}
-    memory=SimpleNamespace(add=add,vector_store=SimpleNamespace(collection=SimpleNamespace(get=lambda **kw:{'ids':[],'metadatas':[]})))
+    def owned_page(user,app,limit,offset):
+        pages.append((user,app,limit,offset));return []
+    memory=SimpleNamespace(add=add,vector_store=SimpleNamespace(owned_page=owned_page))
     monkeypatch.setattr(main,'memory_instance',memory);monkeypatch.setenv('MEM0_BRIDGE_TOKEN','concurrency-fixture')
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),base_url='http://test',headers={'X-Doorhandle-Memory-Token':'concurrency-fixture'}) as client:
@@ -50,6 +56,7 @@ def test_many_waiting_writes_are_rejected_without_starving_reads(monkeypatch):
                 assert all(reply.status_code==503 and reply.headers.get('Retry-After')=='2' and 'not started' in reply.json()['detail'] for reply in replies)
                 listing=await asyncio.wait_for(client.post('/memories/owned/list',json={'user_id':payload['user_id'],'app_id':'doorhandlecatch'}),1)
                 assert listing.status_code==200 and calls==[payload['user_id']]
+                assert pages==[(payload['user_id'],'doorhandlecatch',51,0)]
             finally:release.set();assert (await slow).status_code==200
             assert (await client.post('/memories/add',json=payload)).status_code==200
     asyncio.run(exercise())

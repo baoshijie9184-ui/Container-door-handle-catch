@@ -400,10 +400,9 @@ def test_worker_run_write_envelope_is_only_reserved_for_the_verified_missing_dep
     assert len(specifications) == 1
     envelope = next(value for key, value in zip(specifications[0].keys, specifications[0].values)
                     if isinstance(key, ast.Constant) and key.value == 'runWriteEnvelopeBytes')
-    assert isinstance(envelope, ast.IfExp)
-    assert ast.dump(envelope.test) == ast.dump(ast.parse("dependencies['addedNoDeps']", mode='eval').body)
-    assert ast.dump(envelope.body) == ast.dump(ast.parse('64 * resources.MIB', mode='eval').body)
-    assert isinstance(envelope.orelse, ast.Constant) and envelope.orelse.value == 0
+    expected = ast.parse("512 * resources.MIB if dependencies['telemetrySupplementPins'] "
+                         "else 64 * resources.MIB if dependencies['addedNoDeps'] else 0", mode='eval').body
+    assert ast.dump(envelope) == ast.dump(expected)
 
 
 def test_worker_rejects_unpinned_or_duplicate_requirements():
@@ -553,14 +552,18 @@ def test_mem0_reuse_requires_the_reviewed_complete_source_only_dockerfile(damage
     with pytest.raises(ValueError): candidate.mem0_runtime_dockerfile(body, 'sha256:' + 'f' * 64)
 
 
-def test_mem0_source_only_build_has_no_dependency_write_envelope_or_pip_build_arguments():
+def test_mem0_write_envelope_only_covers_tool_base_identity_without_pip_build_arguments():
     import ast
     tree = ast.parse(Path(candidate.__file__).read_text())
     specifications = [node for node in ast.walk(tree) if isinstance(node, ast.Dict)
         and any(isinstance(key, ast.Constant) and key.value == 'service'
             and isinstance(value, ast.Constant) and value.value == 'mem0' for key, value in zip(node.keys, node.values))]
     assert len(specifications) == 1
-    assert {key.value for key in specifications[0].keys} == {'service', 'context', 'tag'}
+    assert {key.value for key in specifications[0].keys} == {'service', 'context', 'tag', 'runWriteEnvelopeBytes'}
+    envelope = next(value for key, value in zip(specifications[0].keys, specifications[0].values)
+                    if isinstance(key, ast.Constant) and key.value == 'runWriteEnvelopeBytes')
+    expected = ast.parse('0 if args.mem0_dependency_image else 8 * resources.MIB', mode='eval').body
+    assert ast.dump(envelope) == ast.dump(expected)
 
 
 @pytest.mark.parametrize('tamper', [False, True])

@@ -260,11 +260,19 @@ def test_real_lifespan_scheduler_only_removes_consented_memories_when_enabled(tm
     monkeypatch.setenv('MEM0_DATA_DIR',str(data));monkeypatch.setenv('MEM0_LIFECYCLE_CLEANUP_ENABLED',str(enabled).lower())
     for name in ['DASHSCOPE_API_KEY','EMBEDDING_API_KEY']:monkeypatch.setenv(name,'fixture')
     monkeypatch.setattr(Memory,'from_config',lambda config:fake)
+    # Storage protocol has its own real Qdrant tests; this fixture owns only
+    # lifecycle scheduling and injects an in-memory native Memory replacement.
+    admitted=[];configured=[]
+    monkeypatch.setattr(main,'admit_collection',lambda config:admitted.append(config.copy()))
+    monkeypatch.setattr(main,'configure_embedding_runtime',lambda memory:configured.append(memory))
     timing=main.bounded_setting
     monkeypatch.setattr(main,'bounded_setting',lambda name,*args:.02 if name=='MEM0_CLEANUP_INTERVAL_SECONDS' else timing(name,*args))
     original=main.memory_writer
     async def exercise():
         async with main.lifespan(main.app):
+            assert admitted==[main.get_memory_config()['vector_store']['config']] and configured==[fake]
+            floor=json.loads((data/'vector-space.json').read_text())
+            assert floor['backend']=='qdrant' and floor['collection']==admitted[0]['collection_name']
             if enabled:
                 async def deleted():
                     while not fake.deleted:await asyncio.sleep(.01)

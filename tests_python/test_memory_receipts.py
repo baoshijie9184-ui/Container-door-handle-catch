@@ -323,11 +323,19 @@ def test_startup_initializes_private_receipt_subdirectory_and_shutdown_releases_
         def with_options(self,**kwargs):return self
     memory=SimpleNamespace(llm=SimpleNamespace(client=Client()),embedding_model=SimpleNamespace(client=Client()),vector_store=SimpleNamespace())
     monkeypatch.setattr(NativeMemory,'from_config',lambda config:memory)
+    # The receipt startup contract uses a fake Memory, not a second remote
+    # Qdrant runtime. Real admission/mapping is covered by test_memory_qdrant.
+    admitted=[];configured=[]
+    monkeypatch.setattr(main,'admit_collection',lambda config:admitted.append(config.copy()))
+    monkeypatch.setattr(main,'configure_embedding_runtime',lambda value:configured.append(value))
     for name in ['DASHSCOPE_API_KEY','EMBEDDING_API_KEY']:monkeypatch.setenv(name,'fixture')
     monkeypatch.setenv('MEM0_DATA_DIR',str(tmp_path/'data'))
     original=main.memory_writer
     async def exercise():
         async with main.lifespan(main.app):
+            assert admitted==[main.get_memory_config()['vector_store']['config']] and configured==[memory]
+            floor=json.loads((tmp_path/'data'/'vector-space.json').read_text())
+            assert floor['backend']=='qdrant' and floor['collection']==admitted[0]['collection_name']
             assert main.memory_writer.store.path==tmp_path/'data'/'bridge_receipts'/'write-receipts.sqlite3'
             assert (await main.health_check())['write_receipts']
         assert main.memory_writer is None

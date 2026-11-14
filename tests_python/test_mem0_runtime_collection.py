@@ -19,6 +19,7 @@ def controlled():
 def test_production_default_uses_the_new_model_specific_collection():
     assert main.memory_collection_name({}) == "doorhandle_memories_bge_m3_v1"
     assert main.memory_collection_name({"UNRELATED_SETTING": "true"}) == "doorhandle_memories_bge_m3_v1"
+    assert main.memory_collection_name({"EMBEDDING_PROFILE": "explicit-openai-compatible"}) == "doorhandle_memories_explicit_test"
 
 
 def test_only_the_matching_controlled_project_can_select_its_independent_collection():
@@ -63,6 +64,7 @@ def builder_environment(monkeypatch, tmp_path):
         "DASHSCOPE_API_KEY": "fixture-not-real", "EMBEDDING_API_KEY": "fixture-not-real",
         "MEM0_LLM_MODEL": "fixture-llm", "EMBEDDING_MODEL": "fixture-embedding",
         "EMBEDDING_PROFILE": "explicit-openai-compatible",
+        "EMBEDDING_DIMENSIONS": "64", "MEM0_QDRANT_COLLECTION": "fixture_deployment_memory",
         "DASHSCOPE_BASE_URL": "https://llm-fixture.invalid/v1", "EMBEDDING_BASE_URL": "https://embed-fixture.invalid/v1",
         "MEM0_DATA_DIR": str(tmp_path / "candidate-memory"),
     }.items():
@@ -73,14 +75,16 @@ def builder_environment(monkeypatch, tmp_path):
 def test_actual_builder_changes_only_collection_and_retains_provider_dimension_and_history_config(builder_environment, monkeypatch):
     instance = main.memory_instance
     original = main.get_memory_config()
-    assert original["vector_store"]["config"]["collection_name"] == "doorhandle_memories"
+    assert original["vector_store"]["provider"] == "qdrant"
+    assert original["vector_store"]["config"]["collection_name"] == "fixture_deployment_memory"
     for key, value in controlled().items():
         monkeypatch.setenv(key, value)
     candidate = main.get_memory_config()
     expected = copy.deepcopy(original)
     expected["vector_store"]["config"]["collection_name"] = COLLECTION
     assert candidate == expected
-    assert "embedding_dims" not in candidate["embedder"]["config"]
+    assert candidate["embedder"]["config"]["embedding_dims"] == 64
+    assert candidate["vector_store"]["config"]["embedding_model_dims"] == 64
     assert candidate["history_db_path"] == str(builder_environment / "history.db")
     assert main.memory_instance is instance
 
@@ -99,4 +103,4 @@ def test_request_fields_cannot_override_the_deployment_collection(builder_enviro
         "run_id": "fixture-run", "query": "fixture text", "collection_name": COLLECTION, "MEM0_RUNTIME_TEST_COLLECTION": COLLECTION})
     assert "collection_name" not in request.model_dump()
     assert "MEM0_RUNTIME_TEST_COLLECTION" not in request.model_dump()
-    assert main.get_memory_config()["vector_store"]["config"]["collection_name"] == "doorhandle_memories"
+    assert main.get_memory_config()["vector_store"]["config"]["collection_name"] == "fixture_deployment_memory"

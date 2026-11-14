@@ -80,7 +80,7 @@ def fixture_build_resources(directory, context, name):
 
 def attach_runtime_resources(directory, context, project, proof, images, fixture_images):
     resource = directory / 'checkout/work/runtime-acceptance'
-    daemons = sorted(set(runtime.SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'})
+    daemons = sorted(runtime.CORE_DAEMON_SERVICES)
     metrics = []
     for index, service in enumerate(daemons, 1):
         image = images.get(service, 'sha256:' + hashlib.sha256(('infra:' + service).encode()).hexdigest())
@@ -90,6 +90,11 @@ def attach_runtime_resources(directory, context, project, proof, images, fixture
             'memoryLimitBytes': runtime.SERVICE_MEMORY_MIB[service] * runtime.MIB,
             'currentBytes': runtime.MIB, 'peakBytes': 2 * runtime.MIB, 'oom': 0, 'oomKills': 0,
             'running': True, 'exitCode': 0})
+    metrics.append({'containerId': 'e' * 64, 'service': 'bge-qdrant',
+        'image': 'sha256:' + hashlib.sha256(b'infra:bge-qdrant').hexdigest(),
+        'memoryLimitBytes': runtime.TRANSIENT_SERVICE_MEMORY_MIB['bge-qdrant'] * runtime.MIB,
+        'currentBytes': 0, 'peakBytes': 2 * runtime.MIB,
+        'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0})
     metrics.append({'containerId': 'f' * 64, 'service': 'bge-verifier', 'image': images['mem0'],
         'memoryLimitBytes': runtime.BGE_VERIFIER_MEMORY, 'currentBytes': 0, 'peakBytes': 4 * runtime.MIB,
         'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0})
@@ -115,7 +120,7 @@ def attach_runtime_resources(directory, context, project, proof, images, fixture
         'memoryFloorBytes': runtime.MEMORY_FLOOR, 'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl',
         'rawProbeSha256': hashlib.sha256(raw).hexdigest(), 'samples': 4,
         'containers': {row['containerId']: row for row in metrics}, 'requiredDaemonServices': daemons,
-        'requiredTransientServices': ['bge-verifier', 'collaboration-browser'], 'minimumDiskAvailableBytes': 8 * runtime.GIB,
+        'requiredTransientServices': ['bge-qdrant', 'bge-verifier', 'collaboration-browser'], 'minimumDiskAvailableBytes': 8 * runtime.GIB,
         'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 104, 'phases': phases, 'phasePlans': plans}
     file = resource / 'resource-summary.json'; write(file, summary)
     reference = {'file': file.relative_to(directory).as_posix(), 'sha256': cutover.sha_file(file)}

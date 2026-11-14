@@ -2,6 +2,9 @@ import copy
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from memory_service import main
+from tests_python.qdrant_fixture import ecs_memory_qdrant
+
+__all__ = ['ecs_memory_qdrant']
 
 
 class FakeMemory:
@@ -131,11 +134,11 @@ def test_edit_validation_and_unknown_outcome_do_not_leak_private_text(monkeypatc
     assert response.status_code==503 and 'PRIVATE_TEXT' not in response.text
 
 
-def test_chroma_paging_digest_matches_native_mem0_get_and_update(monkeypatch,caplog):
-    """Real Chroma + native read/update, with isolated embedder/history and no LLM."""
-    import chromadb
+def test_qdrant_paging_digest_matches_native_mem0_get_and_update(monkeypatch,caplog,ecs_memory_qdrant,request):
+    """Real remote Qdrant + native Mem0 read/update; no provider calls or Chroma fallback."""
     from mem0 import Memory
-    from mem0.vector_stores.chroma import ChromaDB
+    from mem0.vector_stores.qdrant import Qdrant
+    from memory_service.qdrant_store import LogicalQdrantStore
     import mem0.memory.main as native_main
     monkeypatch.setattr(native_main,'capture_event',lambda *a,**k:None)
     if hasattr(native_main,'display_first_run_notice'):
@@ -144,11 +147,13 @@ def test_chroma_paging_digest_matches_native_mem0_get_and_update(monkeypatch,cap
     monkeypatch.setattr(native_main,'lemmatize_for_bm25',lambda text:text)
     memory=Memory.__new__(Memory)
     embeddings=[];history=[]
-    memory.embedding_model=SimpleNamespace(embed=lambda text,action:embeddings.append((text,action)) or [0.5,0.5])
+    memory.embedding_model=SimpleNamespace(embed=lambda text,action:embeddings.append((text,action)) or [0.5,0.5]+[0.]*30)
     memory.db=SimpleNamespace(add_history=lambda *a,**k:history.append(a))
     memory._entity_store=None
-    memory.vector_store=ChromaDB('memory_pagination_test',client=chromadb.EphemeralClient())
-    memory.vector_store.insert(vectors=[[1.,0.],[0.,1.]],ids=['mine','foreign'],payloads=[
+    config,_=ecs_memory_qdrant
+    memory.vector_store=LogicalQdrantStore(Qdrant(**config))
+    request.addfinalizer(memory.vector_store.client.close)
+    memory.vector_store.insert(vectors=[[1.,0.]+[0.]*30,[0.,1.]+[0.]*30],ids=['mine','foreign'],payloads=[
         {'data':'本人正文','user_id':'doorhandlecatch:user:42','agent_id':'doorhandlecatch','run_id':'original-session','created_at':'2026-10-13T12:00:00Z','updated_at':'2026-10-14T12:00:00Z'},
         {'data':'OTHER_PRIVATE_MEMORY','user_id':'doorhandlecatch:user:43','agent_id':'doorhandlecatch'}])
     http,_,headers=client(monkeypatch);monkeypatch.setattr(main,'memory_instance',memory)
@@ -169,11 +174,16 @@ def test_chroma_paging_digest_matches_native_mem0_get_and_update(monkeypatch,cap
     assert http.post('/memories/owned/update',json=payload,headers=headers).status_code==409
 
 
-def test_server_data_directory_keeps_vector_and_history_together(monkeypatch,tmp_path):
+def test_server_uses_remote_vector_storage_and_retains_local_history(monkeypatch,tmp_path):
     for key in ('DASHSCOPE_API_KEY','EMBEDDING_API_KEY'):monkeypatch.setenv(key,'fixture-not-a-real-key')
     monkeypatch.setenv('MEM0_DATA_DIR',str(tmp_path/'memory-volume'))
+    monkeypatch.setenv('QDRANT_HOST','owned-qdrant.invalid');monkeypatch.setenv('QDRANT_PORT','6333')
     config=main.get_memory_config()
-    assert config['vector_store']['config']['path']==str(tmp_path/'memory-volume'/'chroma')
+    assert config['vector_store']['provider']=='qdrant'
+    vector=config['vector_store']['config']
+    assert vector['host']=='owned-qdrant.invalid' and vector['port']==6333 and vector['on_disk'] is True
+    assert 'path' not in vector and 'url' not in vector
+    assert vector['embedding_model_dims']==config['embedder']['config']['embedding_dims']
     assert config['history_db_path']==str(tmp_path/'memory-volume'/'history.db')
 
 
