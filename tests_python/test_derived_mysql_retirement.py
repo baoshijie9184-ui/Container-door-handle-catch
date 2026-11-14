@@ -649,7 +649,17 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
     monkeypatch.setattr(retirement, 'task_fixture_quiescence', lambda *_: None)
     monkeypatch.setattr(retirement, 'task_configuration', lambda *_: retirement.TaskBatch(
         {tag: (states[tag].item['rootMetadata'][1], 'a' * 40) for tag in tags}, {tag: 'b' * 64 for tag in tags}))
-    monkeypatch.setattr(retirement, 'tree', lambda tag, _batch: states[tag].item)
+    def live_inventory(tag, _batch):
+        # Substitute the fixture's UID/device admission, not the live inventory:
+        # task-inventory must observe changes before any container is retired.
+        state = states[tag]; before = state.path.stat()
+        rows = [{'path': path.name, 'metadata': retirement.signature(path.stat())}
+                for path in sorted(state.path.iterdir())]
+        return {'release': tag, 'path': str(state.path), 'rootMetadata': retirement.signature(before),
+                'entries': rows, 'files': len(rows),
+                'allocatedBytes': before.st_blocks * 512 + sum(row['metadata'][9] * 512 for row in rows),
+                'inventorySha256': retirement.digest(retirement.encoded(rows))}
+    monkeypatch.setattr(retirement, 'tree', live_inventory)
     monkeypatch.setattr(retirement, 'lock', lambda _: nullcontext()); monkeypatch.setattr(retirement, 'attempt_lock', lambda _: nullcontext())
     calls = []
     def remove_fixture(candidate, _helpers):
@@ -672,9 +682,13 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
     planned = retirement.run(args); args.phase = 'apply'; args.plan_sha256 = planned['planSha256']
     if changed:
         states[tags[0]].file.write_bytes(b'changed after planning')
-        with pytest.raises(ValueError, match='ENTRY_CHANGED_AFTER_PLAN'): retirement.run(args)
+        with pytest.raises(ValueError, match='TASK_TARGETS_CHANGED_AFTER_PLAN'): retirement.run(args)
         assert all(state.path.exists() for state in states.values())
         assert remaining == (set(tags) if objects != 'absent' else set())
+        assert calls == ['task-inventory', 'task-inventory']
+        receipt = json.loads((output / 'receipt.json').read_bytes())
+        assert receipt['removed'] == receipt['fixtureRetirements'] == []
+        assert receipt['reasonCode'] == 'TASK_TARGETS_CHANGED_AFTER_PLAN'
     elif objects == 'remove-failed':
         with pytest.raises(ValueError, match='TASK_FIXTURE_CHANGED_AFTER_PLAN'): retirement.run(args)
         receipt = json.loads((output / 'receipt.json').read_bytes())
