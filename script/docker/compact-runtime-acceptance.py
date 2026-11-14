@@ -87,7 +87,9 @@ MEMORY_FLOOR = GIB
 SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'qdrant': 512, 'bge-qdrant': 512,
     'detection-worker': 2048, 'higress': 512, 'redis': 256, 'nginx': 64, 'mcp-runner': 256,
     'mcp-egress': 128, 'model-fixture': 128, 'oss-proxy': 128, 'kafka-init': 256,
-    'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128, 'qdrant-storage-init': 64}
+    'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128, 'qdrant-storage-init': 64,
+    'prometheus': 512, 'alertmanager': 128}
+OBSERVABILITY_GROWTH_BYTES = 576 * MIB
 MCP_CHILD_MEMORY = 2 * 256 * MIB
 BGE_VERIFIER_MEMORY = 768 * MIB
 BROWSER_MEMORY = 2 * GIB
@@ -185,6 +187,10 @@ def validate_resource_evidence(summary, raw, context, project):
         require(plan == phase_admission(phase, plan['baselineProbe'], plan['growthEnvelopeBytes'],
                     plan['memoryAdmissionBytes'], plan['measuredInputs']) and plan['status'] == 'MEASUREMENT_ADMITTED',
                 'Runtime phase was not derived from its measured reserve')
+        if summary.get('observabilityRequired') is True:
+            require(plan['measuredInputs'].get('observabilityWritableGrowthEnvelopeBytes') == OBSERVABILITY_GROWTH_BYTES
+                    and plan['growthEnvelopeBytes'] >= OBSERVABILITY_GROWTH_BYTES,
+                    'A runtime phase omitted the continuous monitoring storage envelope')
     last, minimum_disk, minimum_memory, containers = None, None, None, {}
     observed_phases, browser_phase_peak, last_phase = set(), False, -1
     for event in samples:
@@ -230,7 +236,10 @@ def validate_resource_evidence(summary, raw, context, project):
     require(observed_phases == set(expected_phases), 'An admitted runtime phase has no actual raw observation')
     observed = {row['service'] for row in containers.values() if row['peakBytes'] > 0}
     required = set(summary.get('requiredDaemonServices', []))
-    require(required == CORE_DAEMON_SERVICES
+    # Historical receipts remain readable under their original service contract.
+    # Every newly executed runtime explicitly opts into the monitoring contract.
+    expected_daemons = CORE_DAEMON_SERVICES if summary.get('observabilityRequired') is True else CORE_DAEMON_SERVICES - {'prometheus', 'alertmanager'}
+    require((summary.get('observabilityRequired') is None or summary.get('observabilityRequired') is True) and required == expected_daemons
             and required <= observed, 'Some required runtime service peaks were never observed')
     transient = summary.get('requiredTransientServices', [])
     require(transient in ([], ['bge-verifier'], ['bge-qdrant', 'bge-verifier'],
@@ -261,12 +270,18 @@ class RuntimeResources:
             'pollIntervalSeconds': 2, 'diskFloorBytes': DISK_FLOOR, 'memoryFloorBytes': MEMORY_FLOOR,
             'containers': {}, 'phases': [], 'phasePlans': {}, 'samples': 0,
             'requiredDaemonServices': sorted(CORE_DAEMON_SERVICES),
+            'observabilityRequired': True,
             'requiredTransientServices': sorted(TRANSIENT_SERVICE_MEMORY_MIB),
             'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl'}
         self.raw = runtime.directory / 'resource-probes.jsonl'
 
     def admit(self, phase, growth_bytes, measured, memory_bytes=0):
         with self.lock:
+            if getattr(self.runtime, 'config', None) and {'prometheus', 'alertmanager'} <= set(self.runtime.config['services']):
+                growth_bytes += OBSERVABILITY_GROWTH_BYTES
+                measured = {**measured, 'observabilityWritableGrowthEnvelopeBytes': OBSERVABILITY_GROWTH_BYTES,
+                    'observabilityRetentionIsNotPeakPrediction': True,
+                    'observabilityStorageRecovery': 'RETAINED_MONITORING_VOLUMES_ACROSS_BUSINESS_RESTORE'}
             probe = host_probe(self.runtime.directory)
             plan = phase_admission(phase, probe, growth_bytes, memory_bytes, measured)
             file = self.runtime.directory / ('resource-phase-' + str(len(self.summary['phases']) + 1) + '-' + phase + '.json')
@@ -454,6 +469,7 @@ class Runtime:
         self.rehearsal = module('runtime_rehearsal_methods', source / 'script/docker/application-rehearsal.py')
         self.http = module('runtime_http_scenarios', source / 'script/docker/compact-runtime-scenarios.py')
         self.recovery = module('runtime_recovery_scenario', source / 'script/docker/compact-runtime-recovery.py')
+        self.observability = module('runtime_observability', source / 'script/docker/compact-runtime-observability.py')
         self.native = module('runtime_legacy_candidate', source / 'script/jenkins/prepare-legacy-candidate.py')
         self.worker_fence = module('runtime_worker_unknown_result', source / 'script/docker/compact-runtime-worker-fence.py')
         self.browser = module('runtime_collaboration_browser', source / 'script/docker/compact-collaboration-browser.py')
@@ -588,6 +604,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
 
     def validate_config(self, config):
         self.rehearsal.validate_isolation(config, self.project)
+        self.observability.validate(config)
         require('mysql' not in config['services'], 'The runtime may not recreate or relabel the owned fixture MySQL')
         for name, spec in config['services'].items():
             require(spec.get('restart') == 'no' and spec.get('labels', {}).get('io.doorhandle.rehearsal') == self.project,
@@ -759,14 +776,16 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         private = self.directory / 'compose-private'; private.mkdir(mode=0o700)
         vector_private, observability_private = private / 'qdrant', private / 'observability'
         vector_private.mkdir(mode=0o700); observability_private.mkdir(mode=0o700)
+        monitoring_images = self.observability.prepare_images(self)
         environment = dict(os.environ, APP_IMAGE_TAG=self.args.tag, DOORHANDLE_ENV_FILE=str(self.runtime / 'deploy/cloud.env'),
                            DETECTION_BUILD_CONTEXT=str(self.source / 'work/compact-worker-build'),
                            QDRANT_IMAGE=self.qdrant_image, QDRANT_PRIVATE_DIR=str(vector_private),
                            OBSERVABILITY_SECRETS_DIR=str(observability_private), OTEL_ENABLED='false', TELEMETRY_METRICS_ENABLED='false')
-        command = ['compose', '--project-name', 'doorhandlecatch-monolith', '--env-file', str(self.runtime / 'deploy/cloud.env')]
-        for name in ('compose.monolith.yml', 'compose.cloud.yml', 'compose.detection.yml', 'compose.ai-gateway.yml'):
+        command = ['compose', '--project-name', 'doorhandlecatch-monolith', '--profile', 'observability', '--env-file', str(self.runtime / 'deploy/cloud.env')]
+        for name in ('compose.monolith.yml', 'compose.cloud.yml', 'compose.detection.yml', 'compose.ai-gateway.yml', 'compose.observability.monolith.yml'):
             command += ['-f', str(self.source / name)]
         config = json.loads(self.ops.docker(*command, 'config', '--format', 'json', env=environment))
+        config = self.observability.select_overlay(config, monitoring_images)
         # Policy was verified above; this runtime uses a dedicated key volume,
         # never a writable mount or copied production key file in a backup.
         config.pop('secrets', None)
@@ -774,7 +793,8 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
             spec.pop('secrets', None)
             # A rehearsal never receives the production vector key directory.
             spec['volumes'] = [mount for mount in spec.get('volumes', [])
-                               if mount.get('target') not in ('/run/doorhandle-vector', '/run/observability-secrets')]
+                               if mount.get('target') != '/run/doorhandle-vector'
+                               and not (mount.get('target') == '/run/observability-secrets' and mount.get('type') == 'bind')]
         config = self.rehearsal.isolated_config(config, self.project, self.owner['port'], self.images, schema)
         require(all(name in config['services'] for name in ('mcp-runner', 'higress-config', 'higress', 'mcp-egress')),
                 'The fixed-source gateway overlay is required for actual private MCP acceptance')
@@ -900,6 +920,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         config['services']['backend'].setdefault('depends_on', {})['oss-proxy'] = {'condition': 'service_healthy'}
         config['services']['nginx']['networks'].setdefault('doorhandle-network', {}).setdefault('aliases', []).append('ui')
         config = self.stable_identity.enable_required_environment(config)
+        self.observability.enable(config)
         config = bounded_config(config)
         self.validate_config(config)
         return config
@@ -1013,6 +1034,7 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         self.resources.start()
         self.owner['nativeMaterialization'] = self.native.materialize_runtime(self); self.save()
         self.install_key(self.master_key)
+        self.observability.install(self)
         self.dc('create', '--no-build', 'redis', timeout=120)
         network_name = self.config['networks']['doorhandle-network']['name']
         network = json.loads(self.ops.docker('network', 'inspect', network_name))[0]
@@ -1045,6 +1067,7 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         self.owner['mcpPoolId'] = pool
         self.save('RUNNING')
         self.native.verify_runtime(self, 'after-start')
+        self.observability.verify(self, 'after-start')
         self.stable_identity.admit(self)
 
     def restart_backend(self):
@@ -1055,6 +1078,8 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
                 self.clients = {}; self.client('inspector')
                 if 'after-restart' not in self.owner.get('nativeVerifications', {}):
                     self.native.verify_runtime(self, 'after-restart')
+                if 'after-restart' not in self.owner.get('observabilityReadbacks', {}):
+                    self.observability.verify(self, 'after-restart')
                 return
             time.sleep(2)
         raise ValueError('The actual candidate backend did not recover')
@@ -1768,6 +1793,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         self.owner.update(finalFixtureState=state, modelStreamProbeVerification=stream_verification,
                           modelStreamPersistenceVerification=persistence)
         self.save()
+        self.observability.verify(self, 'after-business')
+        monitoring = self.observability.finish(self)
         self.save('ASSERTIONS_PASSED')
         self.cleanup()
         require(self.resources.error is None, 'Runtime resource observation failed; bounded acceptance cannot pass')
@@ -1781,6 +1808,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         native_usage = native_activation_usage(self, activation)
         fixture_builds = self.build_resources.fixture_build_evidence(self, require_pass=True)
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
+            'observability': monitoring,
             'fixtureBuildResources': fixture_builds,
             'browserAcceptance': browser,
             'stableIdentity': stable_identity,
@@ -1798,7 +1826,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
                 'productionDataMaterialized': False, 'productionPromotionAllowed': False, 'semanticActivation': activation,
                 'verifications': self.owner.get('nativeVerifications', {}), 'materialization': self.owner['nativeMaterialization']},
             'loadScope': {'profile': RUNTIME_PROFILE, 'productionPerformanceVerified': False,
-                          'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True},
+                          'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True,
+                          'observabilityRequired': True},
             'resourceEvidence': {'file': (self.directory / 'resource-summary.json').relative_to(self.attempt).as_posix(),
                                  'sha256': sha_file(self.directory / 'resource-summary.json')},
             'migrationReceiptSha256': self.owner['migrationReceiptSha256'],

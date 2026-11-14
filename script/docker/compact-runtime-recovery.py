@@ -285,6 +285,7 @@ def run(ctx):
         readback = business_readback(ctx)
         require(readback == baseline, 'Actual restored application readback differs from the pre-backup business evidence')
         native_readback = ctx.native.verify_runtime(ctx, 'after-volume-restore')
+        monitoring_readback = ctx.observability.verify(ctx, 'after-volume-restore')
         require(m.schema_snapshot(ctx.db.mysql, source, snapshot['tables'])['snapshotSha256'] == snapshot['snapshotSha256']
                 and m.metadata_snapshot(ctx.db.mysql, source)[1] == metadata,
                 'The retained original owned schema changed after application connection recovery')
@@ -298,6 +299,7 @@ def run(ctx):
             'keyReferenceSha256': digest(ctx.key_reference), 'applicationReadback': readback,
             'nativeRecoveryProofSha256': digest(native_backup / 'native-recovery.json'),
             'nativeMaterialization': native_materialization, 'nativeReadback': native_readback,
+            'observabilityReadback': monitoring_readback,
             'originalSourceRetained': True, 'finishedAtUtc': m.utc_now()}
         file = folder / 'recovery-receipt.json'; m.write_json(file, result)
         ctx.owner['postBusinessRecovery'].update(phase='VERIFIED', receiptFile=str(file), receiptSha256=digest(file)); ctx.save('RUNNING')

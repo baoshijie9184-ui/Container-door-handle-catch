@@ -65,7 +65,7 @@ Qdrant 的 Cosine 上传会归一化向量，因此分开保留：
 
 **真实候选段**保留原 Chroma、旧向量、83 条知识及 32 条记忆档案。只合入 30 条业务记忆、30 条历史和 25 条消息；2 条测试记忆、3 条历史、1 条消息单独归档。真实 BGE 重嵌入、原始/归一化证明、独立恢复和业务合入必须有独立回执；费用和调用授权不足时，不激活生产别名或切库。
 
-本轮沿用用户已明确选择的免费 BGE 路线。2026-11-13 核对 [SiliconFlow 官方定价](https://siliconflow.cn/pricing)：精确 `BAAI/bge-m3` 标为免费，`Pro/BAAI/bge-m3` 为另一个收费模型。全部代码整合、构建后，真实候选只能在 Jenkins/ECS 的封闭阶段使用 `https://api.siliconflow.cn/v1` + `BAAI/bge-m3`、已有批准的凭据机制、零 SDK 重试；LLM 调用数必须为 0，禁止 Pro/付费回退。定价不构成免费限流、可用率或延迟保证。
+本轮沿用用户已明确选择的免费 BGE 路线。2026-11-14 再次核对 [SiliconFlow 官方定价](https://www.siliconflow.cn/pricing)：精确 `BAAI/bge-m3` 仍标为免费，`Pro/BAAI/bge-m3` 为另一个收费模型。全部代码整合、构建后，真实候选只能在 Jenkins/ECS 的封闭阶段使用 `https://api.siliconflow.cn/v1` + `BAAI/bge-m3`、已有批准的凭据机制、零 SDK 重试；LLM 调用数必须为 0，禁止 Pro/付费回退。定价不构成免费限流、可用率或延迟保证。
 
 主要配置由根 Compose/环境模板维护；Java 使用 `app.semantic.*`，桥接复用 `mem0.service-url` / `mem0.bridge-token`。Python 使用 `MEM0_VECTOR_BACKEND=qdrant`、`QDRANT_HOST/PORT/TLS/API_KEY_FILE`、`MEM0_QDRANT_COLLECTION`、`MEM0_STORAGE_GENERATION`。真实密钥和真实环境文件不入库、不归档。
 

@@ -1,6 +1,6 @@
 # 企业级集装箱门把手盖多智能体协同缺陷检测平台
 
-2026-11-06 运行约定：本地仅编辑、构建和运行 Jenkins 控制器，业务运行与测试全部在 ECS `172.29.146.74` 执行。ECS 在测试前从流水线外启动，测试结束后从流水线外关闭并确认 `Stopped / StopCharging`；Jenkins 保持运行，CI/CD 不负责 ECS 启停。旧本机运行命令失效，当前入口见 [ECS 运行约定](docs/ECS-only-runtime.md)。
+2026-11-14 运行约定：本地仅编辑、构建和运行 Jenkins 控制器，业务运行与测试全部在 ECS `172.29.146.74` 执行。ECS 保持开启，由用户自行关闭；助手不再自动启停或安排测试后关机。Jenkins 保持运行，CI/CD 不负责 ECS 启停。旧本机运行命令失效，当前入口见 [ECS 运行约定](docs/ECS-only-runtime.md)。
 
 
 本项目面向企业的集装箱门把手盖缺陷检测业务，提供图像采集、模型检测、质检复核、质量追溯和多智能体协同工作台。
@@ -66,7 +66,7 @@ Agent 对话支持安全切点暂停/继续、本人持久消息排队与逐条�
 
 ## 服务器运行与发布
 
-后续 CI/CD 统一使用现有本地 Jenkins 控制器 <http://127.0.0.1:8080/>，由版本库中的自动流水线编排构建、集成验证、制品管理、部署、健康检查和发布失败处置。本地专用节点 `doorhandle-local-ci` 通过已有 SSH/SCP 连接调度已经启动的 ECS，不新增常驻 ECS Jenkins agent。该要求已写入 [项目工作约定](AGENTS.md)。登录信息保存在 Git 忽略的 [私有文档](work/jenkins/local-access.md)，目标流程及当前缺口见 [本地 Jenkins CI/CD 约定](docs/本地Jenkins-CICD.md)。业务运行、预览及所有测试仍在 ECS；ECS 开机与测试后节省停机均在流水线外进行，Jenkins 不随 ECS 关闭。
+后续 CI/CD 统一使用现有本地 Jenkins 控制器 <http://127.0.0.1:8080/>，由版本库中的自动流水线编排构建、集成验证、制品管理、部署、健康检查和发布失败处置。本地专用节点 `doorhandle-local-ci` 通过已有 SSH/SCP 连接调度已经启动的 ECS，不新增常驻 ECS Jenkins agent。该要求已写入 [项目工作约定](AGENTS.md)。登录信息保存在 Git 忽略的 [私有文档](work/jenkins/local-access.md)，目标流程及当前缺口见 [本地 Jenkins CI/CD 约定](docs/本地Jenkins-CICD.md)。业务运行、预览及所有测试仍在 ECS；ECS 保持开启并由用户自行关闭，测试结束只收证和清理本轮临时资源，Jenkins 保持运行。
 
 当前统一入口为 `Jenkinsfile.ecs-monolith`，在本地 `doorhandle-local-ci` 节点执行控制与打包步骤，通过 SSH 在原单体 ECS 的隔离目录测试；旧 `Jenkinsfile` 的 Windows 本地测试流程已退役。启用任务前须确认统一入口及配套 CI 文件已推送到 SCM 分支，配置记录与最终状态见 CI/CD 文档及回执；ECS 离线或连接资料未配置时预检明确失败，不自动开机或无限等待。三机流水线须在部署方案确定后适配，已有发布与回滚背景见 [Jenkins CI/CD](script/jenkins/README.md)。
 

@@ -41,6 +41,35 @@ def test_checked_in_copies_are_reproducible_source_compilation():
         assert 'clock_target.legacy_clock_json<=>' in compiled
 
 
+@pytest.mark.parametrize('expression', [
+    "CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00')",
+    "IF(s.used_at IS NULL,NULL,CONVERT_TZ(s.used_at,@compact_validation_wall_offset,'+00:00'))",
+    "COALESCE(CONVERT_TZ(s.used_at,@compact_validation_wall_offset,'+00:00'),s.created_at)",
+    '@compact_validation_wall_offset',
+])
+@pytest.mark.parametrize('opening,closing', [('', ''), ('(', ')'), ('( ( ', ' ) )')])
+@pytest.mark.parametrize('operator', ['<=>', '=', '<>', '!='])
+def test_target_clock_comparisons_normalize_complete_grouped_rhs(expression, opening, closing, operator):
+    rhs = opening + expression + closing
+    column = 'legacy_utc_offset' if expression == clock.VALIDATION else 'created_at'
+    prefix = 'SELECT 1 FROM workflow_instance t WHERE '
+    comparison = 't.' + column + '<=>' + clock.normalized(rhs)
+    expected = ('NOT(' if operator in ('<>', '!=') else '(') + comparison + ')'
+    assert clock.projection_checks(prefix + 't.' + column + operator + rhs, clock.targets()) == prefix + expected
+
+
+def test_grouped_target_clock_rewrite_preserves_source_guards_raw_times_and_other_columns():
+    conversion = "(CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00'))"
+    source = 'SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_command s WHERE s.created_at<=>' + conversion
+    assert clock.projection_checks(source, clock.targets()) == source
+    for column in ('mcp_source_created_at', 'resource_revision'):
+        statement = 'SELECT 1 FROM workflow_instance t WHERE t.' + column + '<=>' + conversion
+        assert clock.projection_checks(statement, clock.targets()) == statement
+    statement = 'SELECT 1 FROM workflow_instance t WHERE BINARY t.`created_at`<=>BINARY ' + conversion
+    assert clock.projection_checks(statement, clock.targets()) == (
+        'SELECT 1 FROM workflow_instance t WHERE (BINARY t.`created_at`<=>BINARY ' + clock.normalized(conversion) + ')')
+
+
 def test_original_source_catalog_rejects_an_unreviewed_row_shape(monkeypatch, tmp_path):
     value = json.loads(clock.SCHEMA_FILE.read_text('utf8'))
     name = next(iter(value['tables']))

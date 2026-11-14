@@ -45,10 +45,12 @@ def json_file(path):
     return value, digest
 
 
-def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_directory, browser_directory=None, fixture_directory=None):
+def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_directory, browser_directory=None, fixture_directory=None, observability_directory=None):
     proof, _ = json_file(proof_file)
     scope = {'profile': 'bounded-single-ecs-v1', 'productionPerformanceVerified': False,
              'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True}
+    if proof.get('loadScope', {}).get('observabilityRequired') is True:
+        scope['observabilityRequired'] = True
     require(proof.get('loadScope') == scope
             and all(type(proof['loadScope'].get(key)) is bool for key in scope if key != 'profile')
             and proof.get('status') == 'PASS',
@@ -72,6 +74,13 @@ def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_di
     spec = importlib.util.spec_from_file_location('runtime_resource_byte_contract', runtime_file)
     runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
     result = runtime.validate_resource_evidence(summary, raw, context, proof['project'])
+    require(summary.get('observabilityRequired') == scope.get('observabilityRequired'),
+            'Runtime proof and resource observation disagree on required monitoring')
+    if scope.get('observabilityRequired'):
+        spec = importlib.util.spec_from_file_location('runtime_observability_byte_contract',
+            Path(__file__).resolve().parents[1] / 'docker/compact-runtime-observability.py')
+        monitoring = importlib.util.module_from_spec(spec); spec.loader.exec_module(monitoring)
+        result['observability'] = monitoring.validate_files(proof, observability_directory or phase_directory, json_file)
     phases = summary['phases']
     require(len(phases) == 4 and summary.get('requiredTransientServices') == ['bge-qdrant', 'bge-verifier', 'collaboration-browser'],
             'All four runtime phases and actual browser resource observations must be retained')
@@ -109,8 +118,9 @@ def main():
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--browser-directory', required=True, type=Path)
     parser.add_argument('--browser-build-directory', required=True, type=Path)
+    parser.add_argument('--observability-directory', type=Path)
     args = parser.parse_args()
-    result = validate_files(args.proof, args.cleanup, args.summary, args.probes, args.phase_directory, args.browser_directory, args.browser_build_directory)
+    result = validate_files(args.proof, args.cleanup, args.summary, args.probes, args.phase_directory, args.browser_directory, args.browser_build_directory, args.observability_directory)
     print(json.dumps(result, sort_keys=True))
 
 

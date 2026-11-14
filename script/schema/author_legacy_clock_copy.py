@@ -235,10 +235,13 @@ def projection_checks(statement, table_catalog):
         clocks = PROJECTION_CLOCKS[table] if table in PROJECTION_CLOCKS else clock_columns(table_catalog[table])
         for column in clocks | {'legacy_utc_offset', 'mcp_source_utc_offset'}:
             pattern = re.compile(r'(?P<left>(?:BINARY\s+)?' + re.escape(alias) + r'\.`?' + re.escape(column)
-                                 + r'`?\s*)(?P<op><=>|<>|!=|=)\s*(?P<binary>BINARY\s+)?(?P<rhs>(?:CONVERT_TZ|IF|COALESCE)\s*\(|' + re.escape(VALIDATION) + ')', re.I)
+                                 + r'`?\s*)(?P<op><=>|<>|!=|=)\s*(?P<binary>BINARY\s+)?(?P<rhs>(?:\(\s*)*(?:(?:CONVERT_TZ|IF|COALESCE)\s*\(|' + re.escape(VALIDATION) + r'\b))', re.I)
             position = 0
             while match := pattern.search(statement, position):
                 if '(' in match['rhs']:
+                    # Full-row reconciliation wraps source expressions in
+                    # parentheses. Normalize that complete RHS just like the
+                    # INSERT projection, including nested grouping.
                     opening = statement.index('(', match.start('rhs'))
                     end = paren(statement, opening) + 1
                 else:

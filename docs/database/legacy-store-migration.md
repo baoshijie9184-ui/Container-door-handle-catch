@@ -1,6 +1,6 @@
 # 旧 Mem0 与 RAG 的保全、离线候选和验收
 
-本页记录新增迁移工具的边界和准入条件，不代表已完成 ECS 导入、测试或线上切换。入口为 `script/memory/migrate_legacy_stores.py`，复用项目 2026-11-05 准备的 `migrate_legacy_mem0.py`，适配当前单体桥接口。所有数据库读取、向量重建、测试及运行均在已启动的 ECS，经本地 Jenkins 编排。工作站只编辑、构建，并可进行不打开数据库的逐字节快照与 SHA 核对。
+本页记录旧数据保全、候选恢复和上线条件。迁移工具及 Qdrant 协议已随 #312 在 ECS 验证通过，#315 补收完整报告；真实旧数据候选尚未完成，正式切换未执行。入口为 `script/memory/migrate_legacy_stores.py`，复用项目 2026-11-05 准备的 `migrate_legacy_mem0.py`，由 `script/jenkins/prepare-legacy-candidate.py` 接入现有流水线。所有数据库读取、向量重建、测试及运行均在已启动的 ECS，经本地 Jenkins 编排。工作站只编辑、构建；原件的字节保全另按明确授权执行。
 
 ## 必须保留的数据
 
@@ -18,9 +18,9 @@
 
 后续新增 `legacy-stores-with-windows-mcp-and-kafka-v1`，再保全旧 Kafka 的 309 个原始文件、1,184,990,233 B。完整包为 5,599 文件、1,321,785,341 B；实际 gzip 归档 81,841,366 B，私有清单 6,112,609 B，保留全部原件，不启动旧 Windows 环境或重放 Kafka。
 
-完整字节包已在忽略目录中生成；Jenkins #68 因源码测试失败，尚未进入上传阶段。Jenkins 沿用 `LEGACY_SOURCE_SNAPSHOT`，在同构建源码验证通过后上传两个私有文件，重新恢复并逐成员核对。原最小和 MCP profile 上限仍为 512 MiB 原始内容；包含 Kafka 的 profile 允许 2 GiB 逻辑内容、512 MiB 传输归档，成员上限 8,192、私有清单上限 16 MiB。资源准入按完整展开量、传输归档、清单及 2 GiB＋256 MiB 保底空间计算，不能只按压缩包大小估算。公开归档仅含数量和摘要，不含原路径、SDDL或正文。当前 Linux MCP 安装、个人记忆/RAG 在线合入与检索验收各有独立回执，不能用字节恢复回执替代。
+完整字节包已保全到 ECS 的 #110 私有目录；2026-11-14 只读确认原归档及清单仍在。后续用 `LEGACY_SOURCE_ECS_SNAPSHOT` 引用服务器原件，在同构建验证通过后重新独立恢复并逐成员核对，不把原件存在当作本轮恢复成功。原 `LEGACY_SOURCE_SNAPSHOT` 本地输入入口仍保留。原最小和 MCP profile 上限仍为 512 MiB 原始内容；包含 Kafka 的 profile 允许 2 GiB 逻辑内容、512 MiB 传输归档，成员上限 8,192、私有清单上限 16 MiB。资源准入按完整展开量、传输归档、清单及 2 GiB＋256 MiB 保底空间计算，不能只按压缩包大小估算。公开归档仅含数量和摘要，不含原路径、SDDL或正文。当前 Linux MCP 安装、个人记忆/RAG 在线合入与检索验收各有独立回执，不能用字节恢复回执替代。
 
-本地完全清退还需补齐两类路径：一是后续 CI 直接引用已核验的 ECS 私有封存包并在服务器重新独立恢复，避免继续依赖本地业务包；二是完整包之外的历史模型、备份、日志和上传路径。已另行逐 SHA 盘点其中 36 文件、465,240,718 B，仍处于新增封存接线开发阶段。扩大文件名盘点还发现旧测试数据库、重复模型及归档候选，须继续按来源和摘要核实，不能把上述 36 文件视为项目全部剩余数据。无 ECS 恢复回执、实际业务检索或所需路径证明时，均不得宣称本地清退完成。
+本地完全清退仍须依据各类数据的恢复和使用证明。CI 已支持直接引用 ECS 私有封存包并在服务器重新独立恢复；完整包之外的历史模型、备份、日志和上传路径另按各自清单验收。早期另盘点的 36 文件、465,240,718 B 只是其中一个子集，不能视为项目全部剩余数据。无 ECS 恢复回执、实际业务检索或所需路径证明时，不删除本地原件，也不宣称清退完成。
 
 全局 `.mem0` 根中的 `config.json` 不在原业务清单内，可能包含供应商凭据。仅对 `legacy_history` 明确允许排除此名称，并在私有 manifest 记录理由、大小和流式 SHA；不解析、解码、输出或归档配置正文。任何新增数据库 sidecar（WAL/SHM）、其他额外文件、缺失文件、原 SHA 或原修改时间变化仍会阻止封存。
 
@@ -38,7 +38,7 @@
 
 每个源账号都必须有明确 import/archive 决定及理由。旧调用代码的用户名传参、原账号证明和原始 source/agent 元数据是归属依据，不能通过新建测试账号接管未知记忆。实际导入前必须刷新当前 ECS 账号证明，绑定实例、machine-id、核实时间和清单 SHA；CLI 拒绝超过 2 小时的账号证明。
 
-RAG 没有账号字段。83 条须逐 ID 明确 import/archive，并绑定固定集合、导出 SHA、项目归属证据、当前嵌入配置与应用提交号。带其他 agent 或 user_id 的记录拒绝作为全局项目知识导入。默认保持旧 ID；冲突时必须审核并提供显式 oldId → targetId 映射，不能覆盖 ECS 现有同 ID 内容。
+RAG 没有账号字段。83 条须逐 ID 明确 import/archive，并绑定固定集合、导出 SHA、项目归属证据、当前嵌入配置与应用提交号。带其他 agent 或 user_id 的记录拒绝作为全局项目知识导入。默认保持旧 ID；冲突时必须审核并提供显式 oldId → targetId 映射，不能覆盖 ECS 现有同 ID 内容。83 条 RAG 和 30 条业务记忆是旧数据增量，候选还须合并当前云端有效数据，不能将这两个数量当作最终集合总数。
 
 ## 当前 Qdrant 目标
 
@@ -89,15 +89,15 @@ history/messages、回执、生命周期和模型配置仍为单写者 SQLite；
 }
 ```
 
-RAG 的 scope 改为 `rag-offline-candidate`。当前卷恢复回执必须真实取得，至少包含 `status=RESTORED_VERIFIED`、相同 `archiveSha256`、`identity={instanceId,machineId}`、`fullVolume=true`。工具会回读并核对实际备份文件 SHA；只有 marker 的声明不够。**完整当前卷冻结、备份、恢复演练、候选容器接线及切换仍需接入 Jenkins；此工具不会替外部步骤生成成功证明。**
+RAG 的 scope 改为 `rag-offline-candidate`。当前卷恢复回执必须真实取得，至少包含 `status=RESTORED_VERIFIED`、相同 `archiveSha256`、`identity={instanceId,machineId}`、`fullVolume=true`。工具会回读并核对实际备份文件 SHA；只有 marker 的声明不够。现有 `prepare-legacy-candidate.py` 已接入完整当前卷冻结、备份、独立恢复和候选准备；`verify-runtime/mysql` 验证候选，正式物化由 `compact-cutover` 门禁控制。运行前必须具备同轮有效的完整 MySQL 迁移与双恢复回执，源码协议通过不能替代它。
 
 远端文件只含 `backend=qdrant`、`baseUrl`、`apiKeyFile`，密钥不能进入数据 payload。候选同 ID 正文、归属或历史冲突不覆盖；生命周期墓碑不自动复活。已有写入 receipt 的未知操作不重放，整轮重建使用新的受管候选并保留原输出。候选新增后必须逐 ID 读回并真实向量检索。
 
 ## ECS 验收和切换条件
 
-本轮测试源码覆盖旧文件保全、账号/历史、模型拒绝、真实 ECS Qdrant 归一化读回，以及独立恢复和回滚门控。协议替身只证明守卫逻辑，不能记作真实引擎恢复。当前只完成静态检查，尚未统一运行；旧 Chroma 测试回执不作为新 Qdrant 通过证据。
+旧文件保全、账号/历史、模型拒绝、Qdrant 归一化读回、独立恢复和回滚门控的源码及协议验证已随 #312 通过，完整报告在 #315 补收。真实 Qdrant 合成数据协议与迁移守卫已验证；真实旧数据的 BGE 重嵌入、候选合入和完整恢复仍待执行，两者分别记录。
 
-Jenkins 还必须完成：固定提交构建、原始快照传输后 SHA 回读、当前卷冻结/完整备份与恢复、运行本文件测试、独立候选导入、实际候选服务启动、认证/角色与桥接口验证、应用启动后 RAG HTTP 验证、正式切换及恢复回执归档。生产门禁不得因源码齐备或单元测试通过而解锁。
+下一步沿既有 Jenkins 入口完成同轮完整 MySQL 迁移、源/目标双恢复，再执行原始快照恢复、当前卷冻结与完整备份恢复、独立候选导入、实际候选启动、认证/角色与桥接口验证、RAG 检索和恢复。#295 的 6 项报告工作流测试失败尚须修复验证；#312/#315 的源码结果不满足这项迁移前置。候选通过后仍须单独完成正式切换准入及回执归档，生产门禁不因源码齐备或单元测试通过而解锁。
 
 隔离应用使用空的四个测试专属集合、内部 mock 嵌入与 `qdrant-explicit-test-v1`，不挂真实 BGE manifest。真实 83 条 RAG/30 条记忆在独立恢复的 BGE 桥接与 Qdrant 上验证，包括受保护共享 `/internal/embeddings`、实际来源检索和跨账号拒绝。回执明确 `verificationSubject=INDEPENDENT_REAL_BGE_CANDIDATE`、`appRuntimeValidationMode=ISOLATED_MOCK_QDRANT_RUNTIME`，不能互相替代。
 
@@ -105,4 +105,4 @@ Jenkins 还必须完成：固定提交构建、原始快照传输后 SHA 回读�
 
 恢复使用 Qdrant 1.20 的 collection snapshot API、只读本地 `file://` 输入及 `priority=snapshot`；返回 checksum 时交由目标节点复核。目标必须是另一个空节点，避免 API 覆盖已有集合。[官方恢复 API](https://api.qdrant.tech/api-reference/snapshots/recover-from-snapshot)
 
-本工具不验证工作区、uploads、模型、MySQL、Kafka、MCP journal 已齐全。这些仍须由各自的数据清单、目标路径和摘要回执核对。此前本地 uploads 的 6 个小文件尚未与云端逐路径比对；不能据此删除。所有私档/账号证明/provider 配置/bridge token 留在 Git 忽略的私有目录，不提交或作为公开 Jenkins 制品。测试结束按既有约定从流水线外停止 ECS 并回读 StopCharging，Jenkins 保持运行。
+本工具不验证工作区、uploads、模型、MySQL、Kafka、MCP journal 已齐全。这些仍须由各自的数据清单、目标路径和摘要回执核对。此前本地 uploads 的 6 个小文件尚未与云端逐路径比对；不能据此删除。所有私档/账号证明/provider 配置/bridge token 留在 Git 忽略的私有目录，不提交或作为公开 Jenkins 制品。按 2026-11-14 最新约定，ECS 保持开启，由用户自行关闭；助手只收集证据并清理本轮拥有的临时测试资源，不安排启停，Jenkins 保持运行。

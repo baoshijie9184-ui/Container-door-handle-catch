@@ -70,4 +70,6 @@ OTLP 使用官方 HTTP/protobuf exporter，Basic public key / secret key 和 `x-
 
 Prometheus 不使用 task、run、trace、owner、session、模型动态 ID 作为 label。结构化事件仅含固定 service/operation/outcome 和 trace/span ID，异步有界队列输出。
 
-完整代码整合后，由本地 Jenkins 在 ECS 统一运行 `tests_python/test_runtime_telemetry.py`、已有 Worker golden/receipt 测试以及新增 header/commit 顺序测试；再验证 Prometheus 带机器鉴权抓取、无鉴权拒绝、exporter 故障不影响业务，以及一次无付费模型调用的真实 Langfuse trace 查询。业务库和正式模型调用不用于该验收。本地未运行这些测试。
+固定应用提交`7cef3094`的#312已由本地Jenkins在ECS执行完整Python回归，其中`test_runtime_telemetry.py`的23项、真实Prometheus鉴权抓取1项全部通过，既有Worker golden/receipt及header/commit顺序测试随整轮通过。OTel使用真实SDK向测试专属HTTP接收端导出，覆盖脱敏、队列和故障隔离；不调用正式模型。原始报告已在#315完整补收，见[当前CI/CD回执](../本地Jenkins-CICD.md)。
+
+用户已将完整Langfuse实际部署延后至资源审定。其真实trace查询仍留在后续完整栈验收，不能由上述SDK协议结果替代；当前不因此拉取或启动Langfuse。本地未运行任何测试。

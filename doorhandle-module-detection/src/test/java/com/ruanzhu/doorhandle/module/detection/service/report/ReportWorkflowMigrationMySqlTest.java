@@ -100,8 +100,20 @@ class ReportWorkflowMigrationMySqlTest {
         assertThat(confirmation.createdAt()).isNull();assertThat(confirmation.updatedAt()).isNull();
         assertThat(confirmation.finishedAt()).isNull();assertThat(confirmation.status()).isEqualTo("PENDING");
         assertThat(confirmation.expiresAt()).isEqualTo(utc.plusHours(2));
+        var retained=jdbc.queryForMap("SELECT * FROM workflow_instance WHERE kind='REPORT_CONFIRMATION'");
+        // Removing only the source violates the source/key pair and both
+        // unknown-time exceptions; any of those exact CHECKs may reject first.
         assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET legacy_source=NULL WHERE kind='REPORT_CONFIRMATION'"),
-                "ck_workflow_legacy", "ck_legacy_clock_binding_workflow_instance");
+                "ck_workflow_legacy", "ck_workflow_created_time", "ck_workflow_updated_time");
+        // Isolate each contract too, so a different rejecting CHECK cannot
+        // conceal a missing source binding or either required live timestamp.
+        assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET legacy_source=NULL,created_at=?,updated_at=? WHERE kind='REPORT_CONFIRMATION'",utc,utc),
+                "ck_workflow_legacy");
+        assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET legacy_source=NULL,legacy_key=NULL,updated_at=? WHERE kind='REPORT_CONFIRMATION'",utc),
+                "ck_workflow_created_time");
+        assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET legacy_source=NULL,legacy_key=NULL,created_at=? WHERE kind='REPORT_CONFIRMATION'",utc),
+                "ck_workflow_updated_time");
+        assertThat(jdbc.queryForMap("SELECT * FROM workflow_instance WHERE kind='REPORT_CONFIRMATION'")).isEqualTo(retained);
         assertThat(legacy.queryForObject("SELECT used_at FROM detection_report_confirmation",LocalDateTime.class)).isNull();
     }
     @ParameterizedTest
@@ -246,6 +258,10 @@ class ReportWorkflowMigrationMySqlTest {
     }
     @Test void unknownHistoryIsReadableWithoutManufacturedTimesAndNewDeliveryStillWorks()throws Exception{
         fixture.copyUnresolved();var reports=new ReportWorkflowRepository(jdbc,json);var repository=new ReportEventRepository(jdbc);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE legacy_clock_json IS NOT NULL",Long.class)).isEqualTo(5);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE created_at IS NOT NULL OR updated_at IS NOT NULL OR finished_at IS NOT NULL OR expires_at IS NOT NULL OR next_attempt_at IS NOT NULL OR lease_expires_at IS NOT NULL",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT occurred_at FROM audit_event WHERE kind='QUALITY_REPORT'",LocalDateTime.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT updated_at FROM runtime_state WHERE namespace='REPORT_EVENT_STATE'",LocalDateTime.class)).isNull();
         assertThat(reports.events(report)).singleElement().satisfies(view->{assertThat(view.deliveryStatus()).isEqualTo("DELIVERED");assertThat(view.clockStatus()).isEqualTo("UNRESOLVED");assertThat(view.nextAttemptAt()).isNull();assertThat(view.deliveredAt()).isNull();assertThat(view.consumedAt()).isNull();assertThat(view.sourceWallTimes()).containsEntry("created_at","2026-10-14 16:30:00");});
         assertThat(reports.audit(report)).singleElement().satisfies(view->{assertThat(view.createdAt()).isNull();assertThat(view.clockStatus()).isEqualTo("UNRESOLVED");assertThat(view.sourceWallTimes()).containsEntry("created_at","2026-10-14 16:30:00");});
         var next=new ReportLifecycleEvent(UUID.randomUUID().toString(),report,1,"APPROVED",3,1);String body=json.writeValueAsString(next);

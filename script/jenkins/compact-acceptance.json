@@ -1693,6 +1693,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_compact_runtime_observability",
+        "minimumTests": 26,
+        "source": "tests_python/test_compact_runtime_observability.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_legacy_preservation_profiles",
         "minimumTests": 42,
         "source": "tests_python/test_legacy_preservation_profiles.py",

@@ -77,12 +77,12 @@ def test_native_usage_rejects_unverified_counts_or_foreign_activation(tmp_path, 
     with pytest.raises(ValueError): runtime.native_activation_usage(ctx, reference)
 
 
-def evidence(include_browser=False):
+def evidence(include_browser=False, observability=True):
     context = {'schemaVersion': 1, 'kind': 'doorhandle-compact-runtime-acceptance', 'release': 'ci-58-' + 'a' * 12,
         'commit': 'a' * 40, 'sourceSha256': 'b' * 64, 'identity': {'instanceId': 'i-test', 'machineId': 'c' * 32},
         'acceptanceProfileSha256': 'd' * 64, 'candidateBuildSha256': 'e' * 64}
     project = 'doorhandle-rehearsal-' + 'f' * 12
-    daemons = sorted(runtime.CORE_DAEMON_SERVICES)
+    daemons = sorted(runtime.CORE_DAEMON_SERVICES if observability else runtime.CORE_DAEMON_SERVICES - {'prometheus', 'alertmanager'})
     metrics = [{'containerId': format(index + 1, '064x'), 'service': name, 'image': 'sha256:' + '1' * 64,
         'memoryLimitBytes': runtime.SERVICE_MEMORY_MIB[name] * runtime.MIB, 'currentBytes': 128,
         'peakBytes': 256, 'oom': 0, 'oomKills': 0, 'running': True, 'exitCode': 0} for index, name in enumerate(daemons)]
@@ -101,7 +101,9 @@ def evidence(include_browser=False):
     for index, phase in enumerate(phase_names, 1):
         baseline = {'capturedAtUnix': 100 + index, 'diskTotalBytes': 40 * runtime.GIB,
             'diskAvailableBytes': 8 * runtime.GIB, 'memoryAvailableBytes': 12 * runtime.GIB}
-        plans[phase] = runtime.phase_admission(phase, baseline, runtime.GIB, 0, {'actualBytes': 100})
+        measured = {'actualBytes': 100}
+        if observability: measured['observabilityWritableGrowthEnvelopeBytes'] = runtime.OBSERVABILITY_GROWTH_BYTES
+        plans[phase] = runtime.phase_admission(phase, baseline, runtime.GIB, 0, measured)
         phases.append({'phase': phase, 'file': 'checkout/work/runtime-acceptance/resource-phase-' + str(index) + '-' + phase + '.json',
                        'sha256': str(index) * 64})
         samples.append({'probe': {**baseline, 'phase': phase, 'hostDiskLossUpperBoundBytes': 0,
@@ -115,6 +117,7 @@ def evidence(include_browser=False):
         'requiredDaemonServices': daemons, 'minimumDiskAvailableBytes': 8 * runtime.GIB,
         'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 100+len(phase_names), 'phases': phases, 'phasePlans': plans}
     if include_browser: summary['requiredTransientServices'] = ['bge-qdrant', 'bge-verifier', 'collaboration-browser']
+    if observability: summary['observabilityRequired'] = True
     return summary, samples, context, project
 
 
@@ -123,7 +126,7 @@ def test_bounded_profile_changes_real_cgroups_jvm_heaps_and_keeps_source_unchang
                              for name in set(runtime.SERVICE_MEMORY_MIB) - set(runtime.TRANSIENT_SERVICE_MEMORY_MIB)}}
     bounded = runtime.bounded_config(original)
     assert original['services']['backend']['mem_limit'] == 10 * runtime.GIB
-    assert sum(v['mem_limit'] for v in bounded['services'].values()) == (8448 + runtime.SERVICE_MEMORY_MIB['qdrant-storage-init']) * runtime.MIB
+    assert sum(v['mem_limit'] for v in bounded['services'].values()) == (8448 + runtime.SERVICE_MEMORY_MIB['qdrant-storage-init'] + 640) * runtime.MIB
     assert 'chroma' not in bounded['services'] and 'bge-qdrant' not in bounded['services']
     assert bounded['services']['qdrant']['mem_limit'] == 512 * runtime.MIB
     assert all(v['mem_limit'] == v['memswap_limit'] for v in bounded['services'].values())
@@ -569,7 +572,7 @@ def test_mem0_write_envelope_only_covers_tool_base_identity_without_pip_build_ar
 @pytest.mark.parametrize('tamper', [False, True])
 def test_file_evidence_binds_runtime_cleanup_raw_and_original_phase_plans(tmp_path, tamper):
     validator = load('bounded_runtime_file_contract', 'script/jenkins/validate-runtime-resources.py')
-    summary, samples, context, project = evidence(include_browser=True)
+    summary, samples, context, project = evidence(include_browser=True, observability=False)
     def write(name, value):
         path = tmp_path / name
         path.write_bytes((json.dumps(value, indent=2) + '\n').encode())

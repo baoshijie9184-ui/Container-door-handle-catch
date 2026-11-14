@@ -1160,6 +1160,30 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or $file.Length -ne $length -or
                 (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Digest) { throw 'Original browser bytes changed during collection.' }
     }
+    function Receive-RuntimeObservability($Proof) {
+        New-Item -ItemType Directory -Force -Path artifacts/runtime-observability | Out-Null
+        # This collector consumes a new VerifyRuntime/CompactCutover execution,
+        # not historical evidence. Legacy compatibility belongs to the byte validator.
+        if (-not $Proof.loadScope.PSObject.Properties['observabilityRequired'] -or
+            $Proof.loadScope.observabilityRequired -isnot [bool] -or
+            $Proof.loadScope.observabilityRequired -ne $true -or $Proof.observability.status -cne 'PASS') { throw 'Required candidate monitoring did not pass.' }
+        $phases = @('after-start','after-restart','after-volume-restore','after-business')
+        if (@($Proof.observability.readbacks.PSObject.Properties).Count -ne $phases.Count) { throw 'Candidate monitoring phase evidence is incomplete.' }
+        foreach ($phase in $phases) {
+            $reference = $Proof.observability.readbacks.$phase
+            $name = "observability-$phase.json"
+            if ($reference.file -cne "checkout/work/runtime-acceptance/$name") { throw 'Monitoring evidence escaped its owned directory.' }
+            Receive-RuntimeBrowserFile "$remoteRoot/verification/$tag/$($reference.file)" "artifacts/runtime-observability/$name" $reference.sha256 262144
+        }
+        foreach ($component in @('prometheus','alertmanager')) {
+            $reference = $Proof.observability.images.$component
+            $expected = "checkout/work/observability-fixture/$component-image/image.json"
+            if ($reference.file -cne $expected -or $reference.resourceSummarySha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Monitoring image proof differs from this source acceptance.' }
+            Receive-RuntimeBrowserFile "$remoteRoot/verification/$tag/$expected" "artifacts/runtime-observability/$component-image/image.json" $reference.sha256 262144
+            $summary = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/observability-fixture/$component-image" "artifacts/runtime-observability/$component-image"
+            if (-not $summary -or $summary.status -cne 'PASS' -or (Get-FileHash -LiteralPath "artifacts/runtime-observability/$component-image/resource-summary.json" -Algorithm SHA256).Hash.ToLowerInvariant() -cne $reference.resourceSummarySha256) { throw 'Monitoring image resource evidence changed.' }
+        }
+    }
     function Receive-RuntimeCollaboration($CleanupEvidence, [string]$CleanupFile, [string]$ProofFile = '') {
         $references = [ordered]@{}
         foreach ($entry in @($CleanupEvidence.stableIdentityEvidence.PSObject.Properties)) {
@@ -1537,6 +1561,7 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     $cleanupEvidence = Get-Content -LiteralPath $cleanupFile.FullName -Raw | ConvertFrom-Json
     Receive-RuntimeBrowser $cleanupEvidence $cleanupFile.FullName 'artifacts/runtime-acceptance.json'
     Receive-RuntimeCollaboration $cleanupEvidence $cleanupFile.FullName 'artifacts/runtime-acceptance.json'
+    Receive-RuntimeObservability $runtimeProof
     if ($cleanupEvidence.status -ne 'STOPPED' -or $cleanupEvidence.unresolved.Count -ne 0 -or $cleanupEvidence.stoppedContainers.Count -eq 0 -or $cleanupEvidence.sourceResourcesChanged -ne $false -or $cleanupEvidence.commit -ne $commit -or $cleanupEvidence.release -ne $tag -or $cleanupEvidence.sourceSha256 -ne $sha -or $cleanupEvidence.candidateBuildSha256 -ne $candidateSha -or $cleanupEvidence.project -ne $runtimeProof.project) { throw 'Runtime cleanup did not prove this build owned resources were stopped.' }
     $resourceReference = $runtimeProof.resourceEvidence
     if ($resourceReference.file -ne 'checkout/work/runtime-acceptance/resource-summary.json' -or $resourceReference.sha256 -notmatch '^[a-f0-9]{64}$' -or $cleanupEvidence.resourceEvidence.file -ne $resourceReference.file -or $cleanupEvidence.resourceEvidence.sha256 -ne $resourceReference.sha256) { throw 'Runtime resources and cleanup lack a common bound evidence reference.' }
@@ -1559,7 +1584,8 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
         '--probes', (Resolve-Path artifacts/runtime-resources/resource-probes.jsonl).Path,
         '--phase-directory', (Resolve-Path artifacts/runtime-resources).Path,
         '--browser-directory', (Resolve-Path artifacts/runtime-browser).Path,
-        '--browser-build-directory', (Resolve-Path artifacts/fixture-build-resources/browser).Path)
+        '--browser-build-directory', (Resolve-Path artifacts/fixture-build-resources/browser).Path,
+        '--observability-directory', (Resolve-Path artifacts/runtime-observability).Path)
     $resourceVerdict = ($validatedResources | Select-Object -Last 1) | ConvertFrom-Json
     if ($resourceVerdict.status -ne 'VERIFIED' -or $resourceVerdict.productionCapacityVerified -ne $false -or $resourceVerdict.resourceSummarySha256 -ne $resourceReference.sha256) { throw 'Bounded runtime resources did not pass independent byte-level validation.' }
     $resourceVerdict | ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-resources/validated.json -Encoding utf8

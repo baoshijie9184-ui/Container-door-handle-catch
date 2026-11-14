@@ -89,7 +89,7 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 - Java：脱敏、安全快照、异步导出故障/容量释放、Agent原生关联、机器采集鉴权、原ModelCircuit/Redis/额度/路由回归及新增Bulkhead取消/拒绝；Python：真实SDK假HTTP摄入、无敏感内容、队列满、停机、metrics授权、Worker golden/commit顺序、资源门边界。
 - ECS有限合成烟测：真实Prometheus抓取、401/405拒绝、告警实际触发/解除和Alertmanager分组；配置外部通知后才验证送达。
 - 全Langfuse需先独立资源审核和预检，随后完整栈健康、项目初始化、跨运行追踪查询、OSS上述完整链路、exporter故障不影响业务、组件重启后历史可读。未满足资源不拉镜像、不删业务缓存凑数。
-- 收集脱敏回执、清理本轮自有夹具，由流水线外执行StopInstance/StopCharging并回读；Jenkins继续运行。正式并发/容量压测仍按用户决定后置。
+- 收集脱敏回执、清理本轮自有夹具；按2026-11-14用户更新，ECS保持开启并由用户自行关闭，助手及流水线不执行启停。Jenkins继续运行，正式并发/容量压测仍按用户决定后置。
 
 固定提交`7cef30943e928e2fac57001bad2275c23c8faa5a`的#312已在ECS通过指标抓取和下述告警闭环；Windows长路径收证错误已修复，#315完整补收原265份报告，未重跑项目测试，原#312仍为FAILURE。实际OSS兼容性、外部告警送达和真实Langfuse查询仍按上述独立条件验收。
 
@@ -107,6 +107,18 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 `prepare()` 返回五项 `DOORHANDLE_` 环境变量：`TEST_PROMETHEUS_URL`、`TEST_ALERTMANAGER_URL`、`TEST_OBSERVABILITY_TARGETS`、`TEST_OBSERVABILITY_TOKEN_FILE`、`REQUIRE_OBSERVABILITY_TESTS=true`。令牌只存私有文件，不进入容器命令行、环境变量值或安全回执。
 
 `stop()` 即使指标验收失败也逐个停止自己的容器，保全实际 inspect、stdout/stderr、查询和告警原件后再移除容器；仅清理本轮令牌及合成 TSDB/静默数据。安全回执区分 `metricsAcceptance` 与 `cleanupConfirmed`，清理成功不能冒充指标通过；镜像导入终态未知时保留原件并拒绝确认完成。查询原件留在本轮 `work/observability-fixture/evidence`，通用归档仅收录安全 `observability-fixture.json` 引用。
+
+### 候选运行验收抓取实际三项应用
+
+`compact-runtime-acceptance.py` 在既有单体候选栈合并观测 overlay，只保留 Prometheus/Alertmanager；同构建源码验收已经导入的固定镜像通过原始 image/resource 回执和 Docker 实际身份重新准入，不再拉取镜像。Langfuse 服务、卷及凭据不会进入候选，运行追踪仍明确关闭。
+
+后端、检测 Worker、Mem0 与 Prometheus 只读挂载本轮随机采集令牌。配置、令牌、TSDB 和 Alertmanager 数据使用四个独立 owned volumes，既不绑定正式凭据目录，也不新增宿主端口。应用启动、后端重启、业务卷恢复、业务场景完成后，分别读取实际三个 target 的最新抓取、三个 `up=1`、JVM 堆字节与 Worker/Mem0 readiness，并核对六条既有规则的实际求值健康、Alertmanager 目的地址和分组配置。#312 已完成的合成告警触发/解除闭环不重复搭建。
+
+两观测容器增加640MiB内存限额；原四个运行阶段各保留576MiB观测可写增长包络，原磁盘2.25GiB/内存1GiB底线不变。候选将TSDB保留目标缩为2小时/64MB，但该目标不是WAL/head/压缩峰值，也不是实际目录硬限额。资源监视器继续观察真实cgroup和文件系统余量，触底即失败。
+
+业务恢复期间观测卷保持连续运行，不伪称已克隆或恢复TSDB历史；恢复后核对相同卷与新一轮实际抓取。统一收尾只停止本轮owned容器，按原恢复保全合同保留卷，不停止业务服务或ECS。四阶段API原件和镜像准入证据归档到`artifacts/runtime-observability`，新运行回执与资源回执均要求`observabilityRequired=true`；历史回执仍按原合同读取。
+
+当前这项候选接入为**代码已整合、尚待ECS统一验证**。独立源码指标/告警通过不代替该结果；完整运行仍须先取得同构建整库迁移、双恢复和真实旧档候选回执，并满足实际资源门。
 
 ### ECS统一Python工具镜像包含完整运行依赖
 

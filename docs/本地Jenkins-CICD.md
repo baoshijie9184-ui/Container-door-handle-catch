@@ -6,6 +6,12 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
+### 当前代码：报告迁移修复与候选观测已整合，运行验收待容量决定
+
+2026-11-14 19:20，本地13模块离线跳测试打包成功（2分25秒），包含全部测试源码编译，未运行本地测试。#295 的报告迁移失败已修复：生成器为带括号的时间对账表达式保留 `UNRESOLVED → NULL`，并分别验证来源绑定及创建/更新时间约束；DDL未放宽。原61项Java用例保留，新增49项Python回归待ECS验证。
+
+实际候选栈已接入Prometheus/Alertmanager，新增26项控制回归及启动、重启、业务恢复、业务完成四阶段的真实三应用抓取、规则和收证。#312/#315的源码验收仍有效，但不替代此次新增运行验证。当前80GiB原盘实余约3.48GiB，现成候选回收约0.33GiB仍不足完整恢复；原盘在线扩至100GiB及7天快照的方案待用户决定，见[资源预算](database/ecs-acceptance-resources.md)。尚未触发新ECS构建、扩盘或停机。
+
 ### 当前：两份临时目录已回收，ECS源码验收与补收证据已闭合
 
 **#315补收SUCCESS**：固定collector提交`9fdee33de40d532cf48caf747f76233bc9c15552`完整恢复并核验#312的265份报告，不重跑项目测试、不操作ECS。新回执区分原业务提交`7cef30943e928e2fac57001bad2275c23c8faa5a`与collector提交；原#312 Jenkins FAILURE保留。268份恢复制品29,410,342字节位于`work/jenkins/data-residency-20261107/ci-315-raw-receipts`。同一collector提交的#314控制2,930项全部通过，工具与scratch收尾确认。
