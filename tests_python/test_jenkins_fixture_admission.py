@@ -383,8 +383,11 @@ def test_actual_profile_batches_all_64_classes_and_original_paths_without_proper
     requirements, provisioned = provisioned_profile()
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
-    assert len(requirements) == 64 and sum(item['minimumTests'] for item in requirements) == 761
-    assert next(item for item in requirements if item['id'] == 'QualityKnowledgeMySqlTest')['minimumTests'] == 15
+    assert len(requirements) == 64 and sum(item['minimumTests'] for item in requirements) == 760
+    knowledge = next(item for item in requirements if item['id'] == 'QualityKnowledgeMySqlTest')
+    assert knowledge['minimumTests'] == 14
+    # Nine existing cases plus five semantic-index cases, not six.
+    assert (SOURCE.parents[2] / knowledge['source']).read_text(encoding='utf8').count('@Test void ') == knowledge['minimumTests']
     assert len(groups) == 14 and groups[0] == provisioned[0]
     assert groups[0]['javaTests'] == [requirements[0]['className']]
     original = {item['javaTests'][0]: item['fixtureProperties'] for item in provisioned}

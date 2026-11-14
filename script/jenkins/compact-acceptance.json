@@ -703,7 +703,7 @@
         "doorhandle.feature.mysql.config"
       ],
       "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/knowledge/QualityKnowledgeMySqlTest.java",
-      "minimumTests": 15,
+      "minimumTests": 14,
       "coverage": [
         "workspace, chat, inbox, knowledge and memory persistence"
       ]

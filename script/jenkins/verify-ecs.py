@@ -826,8 +826,8 @@ def semantic_mysql_protocol_reports(output):
     # SQL flags and cannot replace this explicit disposable-database suite.
     cases = [case for file in sorted((Path(output) / 'java').glob('*/surefire-reports/TEST-*.xml'))
              for case in ET.parse(file).getroot().iter('testcase') if case.get('classname') == name]
-    if len(cases) < 15 or any(case.find(tag) is not None for case in cases for tag in ('failure', 'error', 'skipped')):
-        raise RuntimeError('Semantic source fencing requires all 15 actual isolated MySQL cases')
+    if len(cases) < 14 or any(case.find(tag) is not None for case in cases for tag in ('failure', 'error', 'skipped')):
+        raise RuntimeError('Semantic source fencing requires all 14 actual isolated MySQL cases')
     return {'status': 'PASS', 'nativeCases': len(cases), 'sourceData': 'SYNTHETIC_ONLY',
             'wholeDatabaseMigrationVerified': False}
 

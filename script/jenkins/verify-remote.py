@@ -634,7 +634,7 @@ def run_verification(args):
             record['observabilityProtocol'] = protocol
         if semantic_mysql_fixture is not None:
             protocol = result.get('semanticMysqlProtocol', {})
-            require(protocol.get('status') == 'PASS' and protocol.get('nativeCases', 0) >= 15
+            require(protocol.get('status') == 'PASS' and protocol.get('nativeCases', 0) >= 14
                     and result.get('sourceRegression', {}).get('status') == 'PASS',
                     'Current-source fencing lacks its actual native MySQL cases')
             record['semanticMysqlProtocol'] = protocol

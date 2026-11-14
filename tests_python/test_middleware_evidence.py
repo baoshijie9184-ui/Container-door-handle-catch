@@ -86,7 +86,7 @@ def test_observability_requires_actual_unskipped_python_scrape(tmp_path, issue):
         verifier.observability_protocol_reports(tmp_path)
 
 
-@pytest.mark.parametrize('count,issue,accepted', [(15, None, True), (14, None, False), (15, 'skipped', False), (15, 'failure', False)])
+@pytest.mark.parametrize('count,issue,accepted', [(14, None, True), (13, None, False), (14, 'skipped', False), (14, 'failure', False)])
 def test_mysql_fence_proof_requires_all_native_cases_not_source_skips(tmp_path, count, issue, accepted):
     folder = tmp_path / 'java/doorhandle-module-app/surefire-reports'
     folder.mkdir(parents=True)
@@ -98,9 +98,9 @@ def test_mysql_fence_proof_requires_all_native_cases_not_source_skips(tmp_path, 
     ET.ElementTree(suite).write(folder / 'TEST-QualityKnowledgeMySqlTest.xml', encoding='utf8')
     if accepted:
         proof = verifier.semantic_mysql_protocol_reports(tmp_path)
-        assert proof['nativeCases'] == 15 and proof['wholeDatabaseMigrationVerified'] is False
+        assert proof['nativeCases'] == 14 and proof['wholeDatabaseMigrationVerified'] is False
     else:
-        with pytest.raises(RuntimeError, match='all 15 actual isolated MySQL cases'):
+        with pytest.raises(RuntimeError, match='all 14 actual isolated MySQL cases'):
             verifier.semantic_mysql_protocol_reports(tmp_path)
 
 

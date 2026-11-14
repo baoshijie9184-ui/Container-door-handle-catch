@@ -3,7 +3,7 @@ package com.ruanzhu.doorhandle.module.app.config;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.framework.observability.ObservabilityProperties;
-import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +11,7 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration;
 import org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
@@ -33,6 +34,8 @@ import static org.assertj.core.api.Assertions.*;
 
 /** ECS-only real Spring/Actuator/Micrometer -> owned Prometheus; no business scan or database. */
 @EnabledIfEnvironmentVariable(named="DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS",matches="true")
+// SpringBootTest otherwise disables real metric exporters and supplies only SimpleMeterRegistry.
+@AutoConfigureObservability(metrics=true,tracing=false)
 @SpringBootTest(classes=PrometheusScrapeIntegrationTest.MinimalApplication.class,
         webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties={"server.address=127.0.0.1","management.endpoints.web.exposure.include=health,prometheus","management.tracing.enabled=false",
@@ -47,7 +50,7 @@ class PrometheusScrapeIntegrationTest {
         }
     }
     @LocalServerPort int port;
-    @Autowired MeterRegistry meters;
+    @Autowired PrometheusMeterRegistry meters;
     @Autowired ObjectMapper json;
     private final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).followRedirects(HttpClient.Redirect.NEVER).build();
     private static String required(String name){String value=System.getenv(name);if(value==null||value.isBlank())throw new IllegalStateException("Required owned observability fixture is missing");return value;}
