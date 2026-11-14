@@ -4,7 +4,11 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-### 当前：16份旧Python测试目录已回收，继续完整复测
+### 当前：16份已回收，最后Agent前端阶段受空间保护阻断
+
+固定`dd789b8e97eddb42682c0653721c7089d094c6a0`的 **#309整轮FAILURE**：知识库MySQL14项、普通Java949项、Python4,874项、主站前端203项均通过，主站构建成功；Qdrant原生Java/Python、Prometheus抓取和知识库源版本隔离三份协议汇总均PASS，提供方调用0次。原条件跳过仍为Java730、Python24。Agent前端在依赖安装阶段被外层Semantic MySQL保护检查中止，尚未执行其20项测试及构建。最后工具采样剩2,429,218,816字节，距2.25GiB底线仅13,299,712字节；原回执记录ValueError及保护函数位置，未记录具体guard消息，不将其写成前端业务断言失败。
+
+本轮已自动清理本轮Python临时文件572,919,106字节和两套前端依赖，工具及三类夹具均已停止；188份非应用JAR原件在`ci-309-raw-receipts`，**17:13:00（北京时间）**实际回读`Stopped / StopCharging`。本地Jenkins继续运行。原16根维护已消费，不重复执行；已申请把#307/#308两份新增合成Python临时根按原条件回收，待用户确认。业务数据、原始SQL、源码、报告与#266继续保留，不扩盘。完整source尚未通过，生产发布及整库迁移验收仍不放行。
 
 固定`ba8f5b580c7a5174efd64fecf8c25a3ccb05fb8a`的 **#308整轮FAILURE，Java/Python测试零失败**：知识库MySQL14项、普通Java949项、Python4,854项全部通过；原条件跳过分别730/24项。随后中间件报告汇总递归读取了Python负例目录中的损坏XML，触发ParseError，前端与临时目录成功收尾尚未执行。修复限定实际Java报告的两个固定目录，不吞解析错误、不采信嵌套伪造报告。184份非应用JAR原件位于`ci-308-raw-receipts`；工具和三类夹具均已停止，**16:45:26（北京时间）**实际回读`Stopped / StopCharging`。
 
