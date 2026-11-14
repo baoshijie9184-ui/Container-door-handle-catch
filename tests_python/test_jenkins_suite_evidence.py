@@ -229,15 +229,13 @@ def test_assertion_batching_never_turns_executor_or_resource_failure_into_a_test
 def test_assertion_batching_rechecks_inputs_and_compilation_before_advancing(java_workspace, mutation, monkeypatch):
     state = java_workspace; suite, entry, profile = assertion_group(state)
     compiled = state.compiled; error = inner.VerificationCommandFailure('java-suite-002', 1)
-    def stop(_command): return {'cleanup': {'status': 'STOPPED', 'remaining': []}}
+    def stop(_command): return {'cleanup': {'status': 'FAILED_OR_UNKNOWN' if mutation == 'cleanup-unknown' else 'STOPPED', 'remaining': []}}
     if mutation == 'no-compiled-baseline': compiled = None
     elif mutation == 'signal-exit': error = inner.VerificationCommandFailure('java-suite-002', 137)
     elif mutation == 'unknown-failure': error = RuntimeError('executor admission failed')
     elif mutation == 'wrong-command': error = inner.VerificationCommandFailure('java-another-suite', 1)
     elif mutation == 'source-drift': (state.root / 'module/src/main/java/A.java').write_bytes(b'changed source')
     elif mutation == 'compiled-drift': (state.build / 'module/classes/A.class').write_bytes(b'changed compiled bytes')
-    elif mutation == 'cleanup-unknown':
-        def stop(_command): return {'cleanup': {'status': 'FAILED_OR_UNKNOWN', 'remaining': []}}
     elif mutation == 'private-input-drift':
         monkeypatch.setattr(inner, 'require_unchanged_inputs', lambda inputs: (_ for _ in ()).throw(ValueError('private input drift')))
     with pytest.raises((RuntimeError, ValueError)):
@@ -750,6 +748,119 @@ def test_collector_keeps_the_closed_member_set_and_receipt_bound(tmp_path, monke
     args, _, _, _, _ = collector_archive(tmp_path, mutation=mutation)
     monkeypatch.chdir(tmp_path)
     with pytest.raises(remote.VerificationError, match=message): remote.collect(args)
+
+
+@pytest.mark.parametrize('system,path,expected', [
+    ('Windows', 'D:\\owned\\report.xml', '\\\\?\\D:\\owned\\report.xml'),
+    ('Windows', '\\\\server\\share\\owned\\report.xml', '\\\\?\\UNC\\server\\share\\owned\\report.xml'),
+    ('Linux', '/owned/report.xml', '/owned/report.xml'),
+])
+def test_collector_uses_extended_windows_io_without_changing_evidence_names(monkeypatch, system, path, expected):
+    monkeypatch.setattr(remote.platform, 'system', lambda: system)
+    assert remote.collection_io_name(path) == expected
+
+
+@pytest.mark.parametrize('path', ['relative.xml', 'D:relative.xml', '\\rooted.xml', '\\\\.\\device\\report.xml', 'D:\\owned\\..\\report.xml'])
+def test_windows_collector_io_does_not_admit_relative_traversal_or_device_names(monkeypatch, path):
+    monkeypatch.setattr(remote.platform, 'system', lambda: 'Windows')
+    with pytest.raises(remote.VerificationError): remote.collection_io_name(path)
+
+
+def test_collector_preserves_a_long_original_java_report_path_and_all_bytes(tmp_path, monkeypatch):
+    args, record, _, _, report_bytes = collector_archive(tmp_path)
+    report_name = 'reports/source-regression/java/doorhandle-module-detection/surefire-reports/TEST-org.example.' + 'LongClass' * 17 + '.xml'
+    record['reportFiles'] = [{'path': report_name, 'bytes': len(report_bytes), 'sha256': hashlib.sha256(report_bytes).hexdigest()}]
+    receipt_bytes = json.dumps(record).encode()
+    with tarfile.open(args.archive, 'w:gz') as package:
+        for name, raw in (('verification-receipt.json', receipt_bytes), (report_name, report_bytes)):
+            entry = tarfile.TarInfo(name); entry.size = len(raw); package.addfile(entry, io.BytesIO(raw))
+    assert len(str(Path(args.output) / report_name)) > 260
+    monkeypatch.chdir(tmp_path)
+    assert remote.collect(args) == 0
+    assert (Path(args.output) / report_name).read_bytes() == report_bytes
+    assert (Path(args.output) / 'verification-receipt.json').read_bytes() == receipt_bytes
+
+
+def recollection_fixture(tmp_path, monkeypatch, damage=None):
+    original, record, _, report_name, report_bytes = collector_archive(tmp_path)
+    root = tmp_path / 'retained'; folder = root / 'ci-90-raw-receipts'; (folder / 'ecs').mkdir(parents=True)
+    monkeypatch.setattr(remote, 'RECOLLECTION_ROOT', root)
+    monkeypatch.chdir(tmp_path)
+    commit = 'e' * 40
+    args = SimpleNamespace(existing_build='90', collector_commit=commit, collector_release='ci-91-' + commit[:12],
+                           instance_id=original.instance_id, machine_id=original.machine_id)
+    git_calls = []
+    def git(command, **kwargs):
+        git_calls.append(command)
+        return SimpleNamespace(returncode=1 if damage=='dirty-collector' and command[1]=='diff' else 0,
+            stdout=((('f'*40) if damage=='different-collector' else commit)+'\n').encode())
+    monkeypatch.setattr(remote.subprocess, 'run', git)
+    profile = b'{"originalAcceptanceProfile":true}\n'
+    record['acceptanceProfileSha256'] = hashlib.sha256(profile).hexdigest()
+    with tarfile.open(folder / 'source.tar.gz', 'w:gz', format=tarfile.PAX_FORMAT,
+                      pax_headers={'comment': 'f'*40 if damage=='source-commit' else original.commit}) as package:
+        name = 'another.json' if damage=='missing-profile' else 'script/jenkins/compact-acceptance.json'
+        entry = tarfile.TarInfo(name); entry.size = len(profile); package.addfile(entry, io.BytesIO(profile))
+    source_sha = hashlib.sha256((folder / 'source.tar.gz').read_bytes()).hexdigest()
+    record['sourceSha256'] = source_sha
+    if damage=='profile-differs': record['acceptanceProfileSha256'] = '0'*64
+    if damage=='attempt-differs': record['attempt'] = '9'*32
+    if damage=='remote-failed': record['status'] = 'FAILED'; record['verificationExitCode'] = 1
+    request = {'release': original.tag, 'commit': original.commit, 'sourceSha256': source_sha,
+        'scope': original.scope, 'attempt': original.attempt, 'instanceId': original.instance_id, 'machineId': original.machine_id}
+    if damage=='foreign-machine': request['machineId'] = 'f'*32
+    if damage=='mysql-scope': request['scope'] = 'mysql'
+    release = {name: request[name] for name in ('release', 'commit', 'sourceSha256')}
+    for name, value in (('ecs-verification-request.json', request), ('release.json', release)):
+        (folder / name).write_bytes(json.dumps(value).encode())
+    raw_receipt = json.dumps(record, indent=1).encode()+b'\n'
+    archive = folder / 'ecs/verification-evidence.tar.gz'
+    with tarfile.open(archive, 'w:gz') as package:
+        entries = [('verification-receipt.json', raw_receipt)]
+        if damage!='missing-report': entries.append((report_name, report_bytes))
+        for name, raw in entries:
+            entry = tarfile.TarInfo(name); entry.size = len(raw); package.addfile(entry, io.BytesIO(raw))
+    manifest = {'build': 90, 'commit': original.commit, 'result': 'SUCCESS' if damage=='not-failed-jenkins' else 'FAILURE',
+        'files': [{'path': name, 'bytes': (folder / name).stat().st_size,
+                   'sha256': hashlib.sha256((folder / name).read_bytes()).hexdigest()}
+                  for name in ('source.tar.gz','ecs-verification-request.json','release.json','ecs/verification-evidence.tar.gz')]}
+    (folder / 'preservation.json').write_text(json.dumps(manifest))
+    if damage=='archive-bytes':
+        with archive.open('ab') as stream: stream.write(b'changed')
+    return args, folder, raw_receipt, report_name, report_bytes, git_calls
+
+
+def test_recollection_consumes_the_old_complete_tar_with_distinct_fixed_collector_identity(tmp_path, monkeypatch):
+    args, folder, raw_receipt, report_name, report_bytes, calls = recollection_fixture(tmp_path, monkeypatch)
+    before = {name: (folder / name).read_bytes() for name in ('preservation.json','ecs/verification-evidence.tar.gz')}
+    assert remote.recollect(args) == 0
+    output = tmp_path / 'artifacts/ecs/recovered-ci-90'
+    assert (output / 'verification-receipt.json').read_bytes() == raw_receipt
+    assert (output / report_name).read_bytes() == report_bytes
+    proof = json.loads((tmp_path / 'artifacts/evidence-recollection.json').read_bytes())
+    assert proof['status'] == 'PASS' and proof['originalJenkinsResult'] == 'FAILURE'
+    assert proof['original']['commit'] == 'a'*40 and proof['collector']['commit'] == 'e'*40
+    assert proof['original']['attempt'] == 'b'*32 and proof['collectedReportFiles'] == 1
+    assert proof['testsExecuted'] is proof['ecsOperationsPerformed'] is proof['productionReleaseAllowed'] is False
+    assert (tmp_path / 'artifacts/ecs/recovered-ci-90.tar.gz').read_bytes() == before['ecs/verification-evidence.tar.gz']
+    assert {name: (folder / name).read_bytes() for name in before} == before
+    assert calls == [['git', 'rev-parse', 'HEAD'], ['git', 'diff', '--quiet', 'HEAD', '--']]
+    with pytest.raises(remote.VerificationError, match='fresh recovery outputs'): remote.recollect(args)
+
+
+@pytest.mark.parametrize('damage', ['dirty-collector','different-collector','source-commit','missing-profile',
+    'profile-differs','attempt-differs','remote-failed','foreign-machine','mysql-scope','missing-report',
+    'not-failed-jenkins','archive-bytes'])
+def test_recollection_never_relaxes_original_identity_profile_bytes_or_complete_catalog(tmp_path, monkeypatch, damage):
+    args, folder, _, _, _, calls = recollection_fixture(tmp_path, monkeypatch, damage)
+    original = (folder / 'preservation.json').read_bytes()
+    with pytest.raises(remote.VerificationError): remote.recollect(args)
+    assert (folder / 'preservation.json').read_bytes() == original
+    assert all(command[0] == 'git' for command in calls)
+    if damage == 'missing-report':
+        proof = json.loads((tmp_path / 'artifacts/evidence-recollection.json').read_bytes())
+        assert proof['status'] == 'FAILED' and proof['originalJenkinsResult'] == 'FAILURE'
+        assert 'collectedReportFiles' not in proof
 
 
 @pytest.mark.parametrize('kind', ['native-single', 'native-multi', 'source-regression'])

@@ -86,11 +86,12 @@ node.getNodeProperties().replace(new EnvironmentVariablesNodeProperty(entries))
 if (existingNode == null) ci.addNode(node) else node.save()
 
 def parameters = [
-    new ChoiceParameterDefinition('ACTION', ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'] as String[], 'verify-controls runs only ECS control checks without building Java or preparing databases. Compact cutover requires complete source, database and runtime evidence.'),
+    new ChoiceParameterDefinition('ACTION', ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs', 'collect-existing-evidence'] as String[], 'collect-existing-evidence only recollects retained original reports without rerunning tests. Compact cutover requires complete source, database and runtime evidence.'),
     new ChoiceParameterDefinition('NATIVE_RETENTION_POLICY', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16', 'SourcePytest307308'] as String[], 'Maintenance only: select one native retention policy; default follows failed runtime builds.'),
     new StringParameterDefinition('FAILED_NATIVE_BUILD_NUMBER', '', 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete batch.').with { setTrim(true); it },
     new StringParameterDefinition('FAILED_MYSQL_DATA_BUILDS', '', 'Authorized current-task failed verify/mysql data only; comma-separated exact builds, blank preserves all data.').with { setTrim(true); it },
     new StringParameterDefinition('TRUSTED_COMMIT', '', 'Optional expected complete java-cloud commit; blank pins this SCM checkout.'),
+    new StringParameterDefinition('EXISTING_EVIDENCE_BUILD', '', 'collect-existing-evidence only: one earlier preserved build number, never a directory; TRUSTED_COMMIT must explicitly pin the collector.').with { setTrim(true); it },
     new ChoiceParameterDefinition('DOORHANDLE_CI_SCOPE', ['source', 'mysql'] as String[], 'source is ordinary verification; mysql requires explicit ECS fixtures.'),
     new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_MANIFEST', '', 'mysql only: absolute private manifest inside the current ECS checkout/work.'),
     new BooleanParameterDefinition('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', false, 'mysql only: prepare independent owned ECS fixtures using this fixed source build.'),

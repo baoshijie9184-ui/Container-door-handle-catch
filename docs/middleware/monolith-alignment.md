@@ -83,4 +83,4 @@ foreach ($component in 'qdrant','prometheus','alertmanager') {
 
 成功导入后保留共享原始包、官方原始 manifest、层量测、engine config/manifest ID、资源采样和安全传输回执，仅清理本轮拥有的上传暂存及派生拷贝。导入终态未知时保全原件并阻止完成。原始 OCI 包不放入 Jenkins `artifacts`，三个有界的 `<component>-image-input-transport.json` 记录下载、同文件传输、发布和清理结果。
 
-当前单体 ECS 为 16 GiB 内存；完整生产 Langfuse 栈的资源预检必须先于其任何镜像拉取，当前主机达不到既定生产内存门槛。ECS 启停仍在流水线之外，测试后必须实际回读 `Stopped / StopCharging`；保留的云盘仍计存储费。
+当前单体 ECS 为 16 GiB 内存；完整生产 Langfuse 栈的资源预检必须先于其任何镜像拉取，当前主机达不到既定生产内存门槛。2026-11-14用户更新：ECS保持开启，由用户自行关闭；验收结束仅收证和清理本轮临时资源，不自动启停ECS。

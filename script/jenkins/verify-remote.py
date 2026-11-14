@@ -12,11 +12,13 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import ntpath
 import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -26,6 +28,7 @@ import traceback
 import uuid
 import xml.etree.ElementTree as ET
 from urllib.request import ProxyHandler, Request, build_opener
+from types import SimpleNamespace
 
 
 MAX_SOURCE_ARCHIVE = 128 * 1024 * 1024
@@ -980,7 +983,9 @@ def collect(args):
                     destination.write(receipt_bytes)
                 continue
             require(name in catalog and entry.size == catalog[name]["bytes"], "Unlisted evidence archive entry")
-            target = output.joinpath(*relative.parts)
+            # Admission/catalog names stay unchanged. Only Windows filesystem I/O
+            # uses the extended namespace, independent of LongPathsEnabled.
+            target = Path(collection_io_name(output.joinpath(*relative.parts)))
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             check = hashlib.sha256()
             remaining = entry.size
@@ -1000,13 +1005,141 @@ def collect(args):
     return 0 if passed else 1
 
 
+def collection_io_name(path):
+    value = os.fspath(path)
+    if platform.system() != 'Windows':
+        return value
+    drive, tail = ntpath.splitdrive(value)
+    require(bool(drive) and tail.startswith('\\') and '\x00' not in value
+            and not value.startswith(('\\\\?\\', '\\\\.\\'))
+            and all(part not in ('.', '..') for part in tail.split('\\')),
+            'Collector I/O requires an admitted absolute Windows path')
+    return '\\\\?\\UNC\\' + value[2:] if value.startswith('\\\\') else '\\\\?\\' + value
+
+
+RECOLLECTION_ROOT = Path('D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107')
+
+
+def recollect(args):
+    """Re-admit one preserved attempt; never rerun its verifier or project tests."""
+    build = str(args.existing_build or '')
+    require(re.fullmatch(r'[1-9][0-9]{0,8}', build) is not None
+            and COMMIT.fullmatch(args.collector_commit or '') and TAG.fullmatch(args.collector_release or '')
+            and args.collector_release.endswith('-' + args.collector_commit[:12])
+            and int(build) < int(args.collector_release.split('-')[1]), 'Invalid fixed evidence recollection identity')
+    cwd = Path.cwd().resolve()
+    for command in (['git', 'rev-parse', 'HEAD'], ['git', 'diff', '--quiet', 'HEAD', '--']):
+        result = subprocess.run(command, capture_output=True, timeout=30)
+        require(result.returncode == 0 and (command[1] != 'rev-parse'
+                or result.stdout.decode().strip() == args.collector_commit), 'Recollection collector must match its clean fixed commit')
+    folder = RECOLLECTION_ROOT / ('ci-' + build + '-raw-receipts')
+    require(folder.resolve(strict=True) == folder and not any(path.is_symlink() for path in (folder, *folder.parents)),
+            'Preserved evidence root is redirected')
+    manifest_file = folder / 'preservation.json'
+    regular_file(manifest_file, 2 * 1024 * 1024)
+    manifest = json.loads(manifest_file.read_bytes())
+    require(type(manifest.get('build')) is int and manifest['build'] == int(build)
+            and manifest.get('result') == 'FAILURE' and isinstance(manifest.get('files'), list),
+            'Recollection requires the retained failed Jenkins build, without rewriting its result')
+    catalog = {}
+    for entry in manifest['files']:
+        name = entry.get('path')
+        require(isinstance(name, str) and name not in catalog, 'Preservation contains duplicate evidence entries')
+        catalog[name] = entry
+
+    def preserved(name, maximum):
+        path = folder / name
+        require(path.resolve(strict=True) == path and not any(parent.is_symlink() for parent in path.parents),
+                'Preserved input is redirected')
+        regular_file(path, maximum)
+        row = catalog.get(name, {})
+        require(type(row.get('bytes')) is int and path.stat().st_size == row['bytes']
+                and digest(path) == row.get('sha256'), 'Preserved input differs from its original Jenkins bytes')
+        return path
+
+    request = json.loads(preserved('ecs-verification-request.json', MAX_RECEIPT_BYTES).read_bytes())
+    release = json.loads(preserved('release.json', MAX_RECEIPT_BYTES).read_bytes())
+    original = SimpleNamespace(tag=request.get('release'), commit=request.get('commit'),
+        source_sha256=request.get('sourceSha256'), attempt=request.get('attempt'), scope=request.get('scope'),
+        instance_id=request.get('instanceId'), machine_id=request.get('machineId'))
+    validate_request(original)
+    require(original.tag == 'ci-' + build + '-' + original.commit[:12] and original.scope == 'source'
+            and original.instance_id == args.instance_id and original.machine_id == args.machine_id
+            and manifest.get('commit') == original.commit
+            and all(release.get(key) == request.get(key) for key in ('release', 'commit', 'sourceSha256')),
+            'Preserved request, source release or admitted ECS identity differs')
+    source = preserved('source.tar.gz', MAX_SOURCE_ARCHIVE)
+    require(catalog['source.tar.gz']['sha256'] == original.source_sha256, 'Preserved source archive identity differs')
+    profile = None
+    with bounded_tar(source, MAX_SOURCE_BYTES) as package:
+        for entry in package:
+            if entry.name != 'script/jenkins/compact-acceptance.json':
+                continue
+            require(profile is None and entry.isfile() and 0 < entry.size <= 1024 * 1024,
+                    'Original source acceptance profile is missing, repeated or oversized')
+            profile = package.extractfile(entry).read(1024 * 1024 + 1)
+            require(len(profile) == entry.size, 'Original source acceptance profile is truncated')
+        require(package.pax_headers.get('comment') == original.commit, 'Preserved source commit metadata differs')
+    require(profile is not None, 'Original source acceptance profile is missing')
+    profile_sha = hashlib.sha256(profile).hexdigest()
+    archive = preserved('ecs/verification-evidence.tar.gz', MAX_EVIDENCE_ARCHIVE)
+    original_archive = catalog['ecs/verification-evidence.tar.gz']
+    with bounded_tar(archive, MAX_EVIDENCE_BYTES + 16 * 1024 * 1024) as package:
+        first = next(iter(package))
+        require(first.name == 'verification-receipt.json' and first.isfile() and first.size <= MAX_RECEIPT_BYTES,
+                'Preserved evidence does not begin with its bounded original receipt')
+        raw_receipt = package.extractfile(first).read(MAX_RECEIPT_BYTES + 1)
+        require(len(raw_receipt) == first.size, 'Original verification receipt is truncated')
+        record = json.loads(raw_receipt)
+        validate_envelope(record, original)
+        require(record.get('status') == 'PASS' and record.get('verificationExitCode') == 0
+                and record.get('acceptanceProfileSha256') == profile_sha and not record.get('evidenceOmissions'),
+                'Original completed attempt or fixed acceptance profile did not pass')
+        # Consume every archive member here; collect below authenticates all bytes.
+        for _ in package:
+            pass
+    output = cwd / 'artifacts/ecs' / ('recovered-ci-' + build)
+    copied = cwd / 'artifacts/ecs' / ('recovered-ci-' + build + '.tar.gz')
+    receipt_file = cwd / 'artifacts/evidence-recollection.json'
+    require(not output.exists() and not copied.exists() and not receipt_file.exists(),
+            'Evidence recollection requires fresh recovery outputs')
+    copied.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    require(copied.parent.resolve() == copied.parent, 'Recovery output parent is redirected')
+    proof = {'schemaVersion': 1, 'kind': 'doorhandle-existing-evidence-recollection', 'status': 'FAILED',
+        'originalJenkinsBuild': int(build), 'originalJenkinsResult': 'FAILURE',
+        'original': {'release': original.tag, 'commit': original.commit, 'sourceSha256': original.source_sha256,
+            'attempt': original.attempt, 'scope': original.scope, 'identity': record['identity'],
+            'acceptanceProfileSha256': profile_sha, 'verificationReceiptSha256': hashlib.sha256(raw_receipt).hexdigest()},
+        'originalArchive': {'bytes': original_archive['bytes'], 'sha256': original_archive['sha256']},
+        'collector': {'release': args.collector_release, 'commit': args.collector_commit,
+            'scriptSha256': digest(Path(__file__).resolve())},
+        'output': output.relative_to(cwd).as_posix(),
+        'testsExecuted': False, 'ecsOperationsPerformed': False, 'productionReleaseAllowed': False}
+    try:
+        with archive.open('rb') as stream, copied.open('xb') as destination:
+            shutil.copyfileobj(stream, destination)
+        require(copied.stat().st_size == original_archive['bytes'] and digest(copied) == original_archive['sha256'],
+                'Recovered evidence archive differs from its preserved original')
+        original.archive = str(copied); original.output = str(output)
+        require(collect(original) == 0, 'Recovered original attempt did not pass complete evidence admission')
+        require((output / 'verification-receipt.json').read_bytes() == raw_receipt, 'Collected original receipt bytes changed')
+        proof.update(status='PASS', collectedReportFiles=len(record['reportFiles']))
+    except BaseException as error:
+        proof['errorType'] = type(error).__name__
+        raise
+    finally:
+        write_json(receipt_file, proof)
+    print(json.dumps(proof), flush=True)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", nargs="?", choices=("run", "collect", "observe"), default="run")
+    parser.add_argument("mode", nargs="?", choices=("run", "collect", "observe", "recollect"), default="run")
     parser.add_argument("--root")
-    parser.add_argument("--tag", required=True)
-    parser.add_argument("--source-sha256", required=True)
-    parser.add_argument("--commit", required=True)
+    parser.add_argument("--tag")
+    parser.add_argument("--source-sha256")
+    parser.add_argument("--commit")
     parser.add_argument("--instance-id", required=True)
     parser.add_argument("--machine-id", required=True)
     parser.add_argument("--scope", choices=("source", "mysql"), default="source")
@@ -1014,6 +1147,9 @@ def main():
     parser.add_argument("--attempt", default=uuid.uuid4().hex)
     parser.add_argument("--archive")
     parser.add_argument("--output")
+    parser.add_argument("--existing-build")
+    parser.add_argument("--collector-commit")
+    parser.add_argument("--collector-release")
     args = parser.parse_args()
 
     def interrupted(_number, _frame):
@@ -1026,6 +1162,11 @@ def main():
             # SSH hangup is a transport event. Explicit TERM/INT still cancel.
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
+        if args.mode == 'recollect':
+            require(not any((args.root, args.tag, args.commit, args.source_sha256, args.archive, args.output,
+                             args.fixture_manifest)) and args.scope == 'source',
+                    'Recollection derives original inputs from its fixed retained build only')
+            return recollect(args)
         if args.mode == "collect":
             require(args.archive and args.output, "Collect requires archive and output")
             return collect(args)

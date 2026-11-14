@@ -1,12 +1,18 @@
 // Local Windows control node; all tests and runtime stay on ECS over SSH.
 // ECS start/stop is managed outside CI/CD, with no cloud lifecycle calls here.
 def configureVerificationInputs() {
-    if (!(params.ACTION in ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'])) error('Unsupported pipeline action')
+    if (!(params.ACTION in ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs', 'collect-existing-evidence'])) error('Unsupported pipeline action')
     env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'
     if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16', 'SourcePytest307308'])) error('Unsupported native retention policy')
     if (env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs') error('An explicit retired-copy policy requires source-only build maintenance')
     env.FAILED_NATIVE_BUILD_NUMBER = params.FAILED_NATIVE_BUILD_NUMBER?.trim() ?: ''
     env.FAILED_MYSQL_DATA_BUILDS = params.FAILED_MYSQL_DATA_BUILDS?.trim() ?: ''
+    env.EXISTING_EVIDENCE_BUILD = params.EXISTING_EVIDENCE_BUILD?.trim() ?: ''
+    if (params.ACTION == 'collect-existing-evidence') {
+        if (!(env.EXISTING_EVIDENCE_BUILD ==~ /[1-9][0-9]{0,8}/) || !(env.BUILD_NUMBER ==~ /[1-9][0-9]{0,8}/)
+            || env.EXISTING_EVIDENCE_BUILD.toLong() >= env.BUILD_NUMBER.toLong()) error('Evidence recollection requires one canonical earlier build number')
+        if (!params.TRUSTED_COMMIT?.trim() || params.TRUSTED_COMMIT.trim() != env.GIT_COMMIT) error('Evidence recollection requires the explicit fixed collector commit')
+    } else if (env.EXISTING_EVIDENCE_BUILD) error('An existing evidence build is accepted only by collect-existing-evidence')
     if (env.FAILED_MYSQL_DATA_BUILDS) {
         if (params.ACTION != 'reclaim-build-outputs' || env.NATIVE_RETENTION_POLICY != 'FailedNative' || env.DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID != '01a1a46b-d37a-7fb2-8638-afe345c73531') error('Failed MySQL data retirement requires this task authorization and exact FailedNative maintenance')
         if (!(env.FAILED_MYSQL_DATA_BUILDS ==~ /[1-9][0-9]{0,8}(,[1-9][0-9]{0,8}){0,15}/)) error('Provide one bounded explicit comma-separated failed-build selection')
@@ -22,7 +28,7 @@ def configureVerificationInputs() {
     }
     if (env.DOORHANDLE_ECS_INSTANCE_ID != 'i-2zeieuov2aum486jm1ek' || !(env.DOORHANDLE_ECS_MACHINE_ID ==~ /[a-f0-9]{32}/)) error('Configure the admitted ECS instance and machine identity on the control node')
     env.DEPLOY_HOST = params.DEPLOY_HOST?.trim() ?: ''
-    if (!env.DEPLOY_HOST) {
+    if (!env.DEPLOY_HOST && params.ACTION != 'collect-existing-evidence') {
         currentBuild.result = 'NOT_BUILT'
         currentBuild.description = 'Waiting for externally started ECS and verified connection settings; no tests executed.'
         error('Start ECS outside Jenkins and configure its verified current address first')
@@ -53,7 +59,7 @@ def configureVerificationInputs() {
     env.REMAINING_SYSTEM_DATA_SNAPSHOT = params.REMAINING_SYSTEM_DATA_SNAPSHOT?.trim() ?: ''
     env.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT = params.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT?.trim() ?: ''
     env.CANDIDATE_BUILD_TOOLS_ARCHIVE = params.CANDIDATE_BUILD_TOOLS_ARCHIVE?.trim() ?: ''
-    if (params.ACTION in ['reclaim-build-outputs', 'verify-controls']) {
+    if (params.ACTION in ['reclaim-build-outputs', 'verify-controls', 'collect-existing-evidence']) {
         def businessInputs = [env.LEGACY_SOURCE_SNAPSHOT, env.LEGACY_SOURCE_ECS_SNAPSHOT,
             env.LOCAL_ARTIFACTS_SNAPSHOT, env.LOCAL_ARTIFACTS_ECS_SNAPSHOT,
             env.COLD_STORES_SNAPSHOT, env.COLD_STORES_ECS_SNAPSHOT,
@@ -68,10 +74,12 @@ def configureVerificationInputs() {
             || env.CANDIDATE_BUILD_TOOLS_ARCHIVE || params.PRODUCTION_RELEASE_ENABLED || params.REHEARSAL_KEEP
             || env.LOCAL_ARTIFACTS_PROFILE != 'additional-local-artifacts-v1' || env.COLD_STORES_PROFILE != 'cold-store-originals-v1'
             || env.DOORHANDLE_COMPACT_RELEASE_READY == 'true' || env.DOORHANDLE_COMPACT_REHEARSAL_READY == 'true') {
-            error('Independent control verification or build maintenance accepts only fixed source and ECS connection inputs; business, fixture, model and release inputs are forbidden')
+            error('Independent control verification, build maintenance or evidence recollection forbids business, fixture, model and release inputs')
         }
         env.CI_ECS_VERIFIED = 'false'
-        currentBuild.description = params.ACTION == 'verify-controls'
+        currentBuild.description = params.ACTION == 'collect-existing-evidence'
+            ? "Evidence recollection only: original #${env.EXISTING_EVIDENCE_BUILD}; no builds, tests, ECS operations or deployment."
+            : params.ACTION == 'verify-controls'
             ? 'Control verification only: pinned source and ECS control-script tests; no Java build, databases or business verification.'
             : 'Maintenance only: pinned source and proven old build outputs; no project tests or application runtime.'
     }
@@ -128,11 +136,12 @@ pipeline {
     }
     triggers { pollSCM('H/5 * * * *') }
     parameters {
-        choice(name: 'ACTION', choices: ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'], description: 'verify-controls仅运行ECS控制脚本预检；verify-embedding独立验证免费向量模型；verify-runtime验收隔离应用；reclaim-build-outputs仅维护旧构建输出；切库仍须完整证据')
+        choice(name: 'ACTION', choices: ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs', 'collect-existing-evidence'], description: 'collect-existing-evidence仅补收已保全原回执，不重跑测试；verify-controls仅运行ECS控制脚本预检；verify-runtime验收隔离应用；切库仍须完整证据')
         choice(name: 'NATIVE_RETENTION_POLICY', choices: ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16', 'SourcePytest307308'], description: 'Maintenance only: choose one native retention policy; default FailedNative follows failed runtime builds')
         string(name: 'FAILED_NATIVE_BUILD_NUMBER', defaultValue: '', trim: true, description: 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete failed-native batch')
         string(name: 'FAILED_MYSQL_DATA_BUILDS', defaultValue: '', trim: true, description: '本任务已授权的失败verify/mysql临时库编号，如287,289；空值保持原保留策略，正式库/候选/#266/SQL/报告不动')
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
+        string(name: 'EXISTING_EVIDENCE_BUILD', defaultValue: '', trim: true, description: '仅 collect-existing-evidence：一个已保全的旧构建号，不接受目录；同时明确指定本次收证代码 TRUSTED_COMMIT')
         choice(name: 'DOORHANDLE_CI_SCOPE', choices: ['source', 'mysql'], description: 'source 记录可选套件跳过；mysql 要求显式隔离夹具及所有选择用例实际执行')
         string(name: 'DOORHANDLE_CI_FIXTURE_MANIFEST', defaultValue: '', trim: true, description: '仅 mysql：本次远端 checkout/work 内预先准备的绝对私有清单路径；source 必须留空')
         booleanParam(name: 'DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', defaultValue: false, description: 'mysql：用本次固定提交制品，在 ECS 自动准备独立数据库和完整验收清单')
@@ -219,11 +228,11 @@ pipeline {
             }
         }
         stage('Build locally without tests') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls', 'collect-existing-evidence']) } }
             steps { pwsh '& ./script/jenkins/build-local.ps1' }
         }
         stage('Package pinned source') {
-            when { expression { params.ACTION != 'rollback' } }
+            when { expression { !(params.ACTION in ['rollback', 'collect-existing-evidence']) } }
             steps {
                 script {
                     if (params.ACTION == 'reclaim-build-outputs') {
@@ -234,6 +243,12 @@ pipeline {
                         pwsh '& ./script/jenkins/pipeline.ps1 -Action Package'
                     }
                 }
+            }
+        }
+        stage('Collect existing verification evidence') {
+            when { expression { params.ACTION == 'collect-existing-evidence' } }
+            steps {
+                pwsh '& ./script/jenkins/pipeline.ps1 -Action CollectExistingEvidence'
             }
         }
         stage('Maintain proven old build outputs') {
@@ -248,7 +263,7 @@ pipeline {
             }
         }
         stage('Prepare temporary ECS tools') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'collect-existing-evidence']) } }
             steps {
                 script { env.CI_TOOLS_ATTEMPTED = 'true' }
                 withCredentials([
@@ -274,7 +289,7 @@ pipeline {
             }
         }
         stage('Prepare isolated ECS fixtures') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls', 'collect-existing-evidence']) && params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES } }
             steps {
                 script { env.CI_FIXTURE_PREPARATION_ATTEMPTED = 'true' }
                 withCredentials([
@@ -302,7 +317,7 @@ pipeline {
             }
         }
         stage('Verify on ECS over SSH') {
-            when { expression { !(params.ACTION in ['rollback', 'verify-controls', 'verify-embedding', 'reclaim-build-outputs']) } }
+            when { expression { !(params.ACTION in ['rollback', 'verify-controls', 'verify-embedding', 'reclaim-build-outputs', 'collect-existing-evidence']) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -486,7 +501,13 @@ pipeline {
     post {
         always {
             script {
-                if (params.ACTION == 'reclaim-build-outputs') {
+                if (params.ACTION == 'collect-existing-evidence') {
+                    // These are original reports, not tests executed by this build.
+                    // Keep them as evidence rather than publishing duplicate junit results.
+                    if (env.CI_ARTIFACTS_READY == 'true') {
+                        archiveArtifacts artifacts: 'artifacts/evidence-recollection.json,artifacts/ecs/recovered-ci-*/**/*,artifacts/ecs/recovered-ci-*.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                    }
+                } else if (params.ACTION == 'reclaim-build-outputs') {
                     if (env.CI_ARTIFACTS_READY == 'true') {
                         archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/derived-mysql-*.json,artifacts/source-pytest16/*,artifacts/source-pytest307308/*,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.json,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.json,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/native-python-build-cache-*.json,artifacts/native-python-build-cache-*.jsonl,artifacts/native-python-build-cache-inspect/*.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }

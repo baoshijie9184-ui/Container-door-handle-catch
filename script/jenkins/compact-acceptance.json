@@ -1490,8 +1490,14 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 173,
+        "minimumTests": 195,
         "source": "tests_python/test_jenkins_suite_evidence.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_evidence_recollection",
+        "minimumTests": 11,
+        "source": "tests_python/test_jenkins_evidence_recollection.py",
         "allowedSkippedTests": []
       },
       {

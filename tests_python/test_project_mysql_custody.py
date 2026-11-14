@@ -377,7 +377,7 @@ def test_complete_top_level_stage_order_restores_sql_before_expanding_legacy_byt
     names = [name for name, _body in matches]
     assert names == [
         'Trusted checkout', 'Configuration gate', 'Build locally without tests', 'Package pinned source',
-        'Maintain proven old build outputs', 'Prepare temporary ECS tools', 'Preflight control scripts on ECS',
+        'Collect existing verification evidence', 'Maintain proven old build outputs', 'Prepare temporary ECS tools', 'Preflight control scripts on ECS',
         'Prepare isolated ECS fixtures', 'Verify free embedding component on ECS', 'Verify on ECS over SSH',
         'Repair registered prior CI evidence permissions', 'Reclaim proven old build outputs',
         'Recover approved local MySQL export on ECS', 'Recover approved three-schema MySQL packet on ECS',

@@ -10,7 +10,7 @@
 - 先完成代码开发和本地构建，再由本地专用 Jenkins 节点 `doorhandle-local-ci` 通过 SSH/SCP 调度已启动的 ECS 执行测试和部署，不新增常驻 ECS Jenkins agent 或为此安装额外 JRE。所有业务运行、测试及数据都在 ECS，当前单体目标为 `172.29.146.74`；实例和执行身份校验遵循 ECS 运行文档。
 - 发布以已提交推送的固定提交及对应流水线制品为依据，保留提交号、构建号、摘要、测试报告和部署回执；不使用未提交工作区作为发布源。测试失败或必要证据缺失时阻止发布。
 - 自动部署按已配置的分支和环境规则执行，不绕过流水线直接手工发布。排障可以执行必要的只读检查；修复后应通过流水线验证。
-- Jenkins 控制器保持运行。ECS 启停在 Jenkins CI/CD 流水线之外操作：测试前先启动 ECS 并确认就绪，测试结束收集证据、清理本轮拥有的测试资源后，再从流水线外调用 `StopInstance`、指定 `StoppedMode=StopCharging`，实际回读 `Status=Stopped` 和 `StoppedMode=StopCharging`。流水线只检查目标连通性与身份，不自动开机、关机或安排限时停止任务；实例未就绪时应明确失败。不能用操作系统 shutdown 替代节省停机，保留云盘仍计存储费。
+- Jenkins 控制器保持运行。2026-11-14 用户更新：ECS 保持开启，由用户自行关闭；不再由助手在测试前后自动启停，也不安排验收后的关机任务。测试结束仍收集证据并清理本轮拥有的临时测试资源，不停止业务服务或 ECS。流水线只检查目标连通性与身份，实例未就绪时明确失败并告知用户；云端启停仍不属于 CI/CD。此项取代此前“测试结束后由助手 StopCharging”的约定。
 - 登录资料保存在 Git 忽略的 `work/jenkins/local-access.md`，流水线使用 Jenkins Credentials；不将密码、私钥或真实环境文件提交或归档。不查询 ECS 账单或卡券。
 
 当前统一入口为 `Jenkinsfile.ecs-monolith`，在本地 `doorhandle-local-ci` 节点执行控制步骤；旧 `Jenkinsfile` 的 Windows 本地测试流程及原 ECS 常驻 agent 方案已替换。启用项目任务前须确认统一入口及配套 CI 脚本已提交推送到任务的 SCM 分支；配置操作与最终状态以 CI/CD 文档和回执为准，不把配置完成视为真实测试已通过。ECS 云端启停不属于流水线待开发功能。数据库重构和迁移尚未验收，不启用生产发布或旧库演练；机器环境门禁 `DOORHANDLE_COMPACT_RELEASE_READY` / `DOORHANDLE_COMPACT_REHEARSAL_READY` 默认不设置，不得仅修改 Jenkins 页面参数绕过。

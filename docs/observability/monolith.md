@@ -91,7 +91,7 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 - 全Langfuse需先独立资源审核和预检，随后完整栈健康、项目初始化、跨运行追踪查询、OSS上述完整链路、exporter故障不影响业务、组件重启后历史可读。未满足资源不拉镜像、不删业务缓存凑数。
 - 收集脱敏回执、清理本轮自有夹具，由流水线外执行StopInstance/StopCharging并回读；Jenkins继续运行。正式并发/容量压测仍按用户决定后置。
 
-当前新增源码和夹具尚待整合构建及ECS统一验收；资源/实际OSS兼容性、告警送达和真实Langfuse查询不能由配置存在替代。
+固定提交`7cef30943e928e2fac57001bad2275c23c8faa5a`的#312已在ECS通过指标抓取和下述告警闭环；Jenkins在Windows展开报告时因长路径失败，正在复用完整原tar补收，原构建仍FAILURE。实际OSS兼容性、外部告警送达和真实Langfuse查询仍按上述独立条件验收。
 
 ### 用真实 Prometheus 验收 Java 和 Python 指标
 
@@ -102,7 +102,7 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 - Java `PrometheusScrapeIntegrationTest.realPrometheusScrapesAuthenticatedActuatorCountersAndHistogram` 启动最小 Spring/Actuator 应用，不扫描业务模块或连接数据库。真实计数器和直方图经原 `/actuator/prometheus` 机器认证端点被 Prometheus 抓取。
 - Python `tests_python.test_observability_scrape.test_real_prometheus_scrapes_authenticated_python_counter_and_histogram` 使用共享 `RuntimeTelemetry` 的真实 HTTP 服务和指标注册表，不创建模型客户端。
 - 两端都必须实测缺失/错误令牌401、正确令牌200，经 file-SD 登记随机端点，并从真实 Prometheus API 读到 `up`、计数器及直方图。最终收尾再次独立查询历史样本。
-- 告警闭环使用同一 attempt 的两条合成告警，核对真实 Prometheus 规则状态与 Alertmanager 的两条告警、一个分组；随后只修改本轮规则并重载自有 Prometheus。只有规则变为 inactive、Alertmanager 告警和分组消失，且实际 resolved 接收计数至少增加2，才记为解除成功。每阶段保留实际 HTTP 响应，不以容器停止或自然过期充当解除证明。该闭环代码随下一固定提交统一验收。
+- 告警闭环使用同一 attempt 的两条合成告警，核对真实 Prometheus 规则状态与 Alertmanager 的两条告警、一个分组；随后只修改本轮规则并重载自有 Prometheus。只有规则变为 inactive、Alertmanager 告警和分组消失，且实际 resolved 接收计数至少增加2，才记为解除成功。每阶段保留实际 HTTP 响应，不以容器停止或自然过期充当解除证明。#312实际完成两条同组告警及解除，接收计数从0增至2，`alertLifecycle.status=PASS`。
 
 `prepare()` 返回五项 `DOORHANDLE_` 环境变量：`TEST_PROMETHEUS_URL`、`TEST_ALERTMANAGER_URL`、`TEST_OBSERVABILITY_TARGETS`、`TEST_OBSERVABILITY_TOKEN_FILE`、`REQUIRE_OBSERVABILITY_TESTS=true`。令牌只存私有文件，不进入容器命令行、环境变量值或安全回执。
 
