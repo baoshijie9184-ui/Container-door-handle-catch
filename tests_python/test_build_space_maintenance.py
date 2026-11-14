@@ -77,6 +77,7 @@ def metadata_env(tmp_path, monkeypatch):
     raw = source_bytes()
     context = {'root': str(root), 'tag': TAG, 'commit': COMMIT,
         'sourceSha256': hashlib.sha256(raw).hexdigest(), 'sourceBytes': len(raw), 'mode': 'Maintenance',
+        'evidencePrefix': 'build-cleanup', 'generated': False,
         'instanceId': 'i-synthetic', 'machineId': 'c' * 32,
         'helpers': {name: {'bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
                     for name, content in HELPERS.items()}}

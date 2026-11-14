@@ -1388,7 +1388,7 @@
       },
       {
         "module": "tests_python.test_mysql_snapshot_session",
-        "minimumTests": 12,
+        "minimumTests": 14,
         "source": "tests_python/test_mysql_snapshot_session.py",
         "allowedSkippedTests": []
       },

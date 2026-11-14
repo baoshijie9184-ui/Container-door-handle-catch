@@ -276,7 +276,7 @@ class Mysql:
         port = connection['port'] if self.kind == 'native' or config['scope'] == 'ecs-disposable-migration' else 3306
         self.options = ('[client]\nprotocol=tcp\nhost=127.0.0.1\nport=' + str(port)
                         + '\nuser=' + ini(connection['username']) + '\npassword=' + ini(connection['password'])
-                        + '\nconnect-timeout=10\n').encode('utf8')
+                        + '\n[mysql]\nconnect-timeout=10\n').encode('utf8')
         if self.kind == 'native':
             require(set(client) == {'kind', 'executable', 'mysqldump'}, 'Native client also needs an existing mysqldump')
             self.dump_program = executable(client['mysqldump'])

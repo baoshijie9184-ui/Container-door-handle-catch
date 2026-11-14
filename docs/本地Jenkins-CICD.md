@@ -6,17 +6,19 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-### 当前：#334 原生 MySQL 全通过，源码扫描与收尾修复待复验
+### 当前：#337 Java 全通过，整库备份与 Python 夹具修复待复验
 
-固定 `1fe6697e9735ea89f78669e97e270da1875b4b7d` 的 **#334 `verify/mysql` 为 FAILURE**：64 类原生 MySQL **1,072 项全部通过**，包括 `WorkspaceMigration` 29 项及 `ReportWorkflow` 61 项。普通 Java 共 1,654 项，**941 通过、1 错误、712 条件跳过**；唯一错误来自 `ConfigurationTopologyContractTest` 从项目根执行 `Files.walk`，误入受保护的 `work/compact-fixtures/mysql-data`。Python、131→29 整库迁移与双恢复、旧 45 表及三库恢复、5,599 份旧文件恢复均未执行；正式切库及候选运行尚未验收。
+固定 `1918c12cd4419670896cf07e88378c81ea03123a` 的 **#337 `verify/mysql` 为 FAILURE**：64 类原生 MySQL **1,072 项全部通过**；完整普通 Java 共 1,679 项，**949 通过、730 条件跳过，零失败/错误**，此前配置扫描误入测试库的问题已解决。Python **5,169 通过、25 失败、15 错误、1 条件跳过**，后续双前端及历史恢复尚未完成。
 
-扫描修复只遍历 Maven 模块的 `src/main/java`，保留原禁用项和生产行为；11 模块离线跳测试打包 **BUILD SUCCESS，53.182 秒**，日志 `work/topology334-build/compile-package.log`，未运行本地测试。生成物收尾另因把 **328,994 字节内层报告误套 262,144 字节外层限制**而阻断，#334 生成物仍保留；修复按已认证目录中的报告大小读取，外层限制、权限、摘要及无引用条件不变，新增 4 项控制回归待 ECS 验证。
+整库迁移已完成 **131 表来源观察**，随后备份命令报 `mysqldump: unknown variable 'connect-timeout=10'`；备份为零字节、目标库未创建、复制步骤为 0，7 项依赖目标库的时钟测试因此报 `ERROR 1049`。已将连接超时选项从公共 `[client]` 移入 `[mysql]`，保持 mysql 超时而不传给 mysqldump，新增 2 项回归待 ECS 验证。原始诊断位于 `work/middleware-alignment-20261113/ci-337-migration-diagnostics/`。**131→29 整库迁移、双恢复、旧 45 表及三库恢复、5,599 份旧文件恢复、正式切库和候选运行均未验收完成。**
 
-本轮工具与 fixture 均已 `STOPPED`，工具 `remaining=[]`。**383 份非 JAR 原件、53,315,254 字节**保全于 `work/jenkins/data-residency-20261107/ci-334-raw-receipts`。**11 月 15 日 04:51:53（北京时间）**在流水线外实际回读原 ECS 为 **`Stopped / StopCharging`**；Jenkins 控制器运行，项目任务暂禁自动触发且无排队。停机回执为 `work/jenkins/data-residency-20261107/ci-334-external-stop-readback.json`。
+Python 的 15 项 worker 准备错误来自夹具按文件名后缀划分触发器 SQL，已改为使用编译器的 `GUARD_RESOURCES` 并核对完整触发器集合。另 17 项失败集中于维护测试 context 缺少字段、临时目录继承组可写父目录；本轮集中修复夹具，不放宽权限及来源安全门。整合后再由固定提交统一复验。
 
-#327/#333 已分别按条件回收失败 #322 的两份 JAR 和派生 MySQL 数据，实际分配共 **1,127,428,096 字节（约 1.05 GiB）**；原件分别保全于 `ci-327-raw-receipts`、`ci-333-raw-receipts`，这批不重放。#333 后实余 **6,295,760,896 字节（约 5.86 GiB）**，读回见 `work/middleware-alignment-20261113/after333-capacity-readback.json`；这是 #334 运行前的历史值，不能作为当前余量。
+本轮工具与 fixture 均已 `STOPPED`，工具 `remaining=[]`。生成物收尾当前仅因 MySQL 范围的 `tmp/pytest` 按原边界保留而为 `BLOCKED`，不是此前大报告读取失败。**400 份非 JAR 原件、56,596,981 字节**保全于 `work/jenkins/data-residency-20261107/ci-337-raw-receipts`。**11 月 15 日 07:44:37（北京时间）**在流水线外实际回读原 ECS 为 **`Stopped / StopCharging`**；Jenkins 控制器运行，项目任务暂禁自动触发且无排队。停机回执为 `work/jenkins/data-residency-20261107/ci-337-external-stop-readback.json`。
 
-用户已批准 #219/#147/#183 的 **6 个精确 SOURCE 包输出**按条件回收，实测 **2,321,580,032 字节（约 2.16 GiB）**，尚未执行删除。现有实现已随 #332 的 **3,036 项控制全部通过**；本轮报告边界修复仍需复验。私有清单为 `work/middleware-alignment-20261113/source-package-retirement-input-20261114.json`，不覆盖已消费批次，不包括 #83、#225/#229 或此前 7 项权限拒绝对象。仍按用户要求在数据库验收后回收，不将候选量计为已释放。
+#335 **3,040 项控制全部通过**，大报告修复已验证，并实际清理 #334 的 **56 个生成目录、26,468,352 字节**。#336 随后按条件退役 #334 两份 JAR 及派生 MySQL 数据，维护成功；#322、#334 的已消费批次不重放。#336 后实余 **5,989,416,960 字节（约 5.58 GiB）**，读回见 `work/middleware-alignment-20261113/after336-capacity-readback.json`；这是 #337 运行前的历史值，不能作为当前余量。
+
+用户已批准 #219/#147/#183 的 **6 个精确 SOURCE 包输出**按条件回收，实测 **2,321,580,032 字节（约 2.16 GiB）**，尚未执行删除。私有清单为 `work/middleware-alignment-20261113/source-package-retirement-input-20261114.json`，不覆盖已消费批次，不包括 #83、#225/#229 或此前 7 项权限拒绝对象。仍按用户要求在数据库验收后回收，不将候选量计为已释放。
 
 ### 已完成：生成物生命周期验证与第一批历史回收
 
@@ -28,7 +30,7 @@
 
 本轮先完成开发和静态构建再统一验证。此前 2026-11-14 19:20 本地 13 模块离线跳测试打包成功（2 分 25 秒），包含全部测试源码编译，未运行本地测试。#295 报告迁移修复保留带括号时间对账表达式的 `UNRESOLVED → NULL`、来源绑定及创建/更新时间约束，DDL 未放宽；原 61 项 Java 用例保留，新增 49 项 Python 回归已整合。候选栈 Prometheus/Alertmanager 及启动、重启、业务恢复、业务完成四阶段观测已接线，但真实候选运行仍待验收。
 
-**下一步由固定提交在 ECS 统一验证本轮修复，再按既有条件回收失败 #334 的自有派生资源，继续完整 MySQL 迁移验收。** #334 原生通过及既有源码证据不替代整库迁移、旧 RAG/Mem0 业务合入、候选运行或正式切库。当前原盘仍 **80 GiB**，本轮未扩盘、未新增快照；后续按各阶段新鲜余量准入。盘点、保留原因和回收量见[资源预算](database/ecs-acceptance-resources.md)。
+**下一步完成本轮备份与夹具修复整合，按既有授权处理 #337 自有派生资源，再通过固定提交在 ECS 统一复验。** Java 通过不替代整库迁移、旧 RAG/Mem0 业务合入、候选运行或正式切库。当前原盘仍 **80 GiB**，本轮未扩盘、未新增快照；后续按各阶段新鲜余量准入。盘点、保留原因和回收量见[资源预算](database/ecs-acceptance-resources.md)。
 
 ### 此前：两份临时目录已回收，ECS源码验收与补收证据已闭合
 

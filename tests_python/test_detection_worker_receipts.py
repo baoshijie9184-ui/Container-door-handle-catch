@@ -116,13 +116,19 @@ def mysql_connect():
             spec.loader.exec_module(compiler)
             for part in compiler.PARTS:
                 text = compiler.without_comments((root / 'sql/mysql/compact/baseline' / part).read_text('utf-8'))
-                statements = text.split('$$') if part.endswith('-guards.sql') else compiler.split_top_level(text, ';')
+                # Clock guards are registered resources too; their file names
+                # do not end in '-guards.sql' and their bodies contain semicolons.
+                statements = text.split('$$') if part in compiler.GUARD_RESOURCES else compiler.split_top_level(text, ';')
                 for statement in statements:
                     if statement.strip():
                         cursor.execute(statement)
             cursor.execute('SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema=DATABASE()')
             if cursor.fetchone()['table_count'] != 29:
                 raise ValueError('Expected the full compact 29-table target')
+            cursor.execute('SELECT TRIGGER_NAME AS name FROM information_schema.triggers WHERE trigger_schema=DATABASE()')
+            expected_guards = {name for _, guards in compiler.GUARD_RESOURCES.values() for name in guards}
+            if {row['name'] for row in cursor.fetchall()} != expected_guards:
+                raise ValueError('Expected every reviewed compact persistence guard')
         connection.commit()
     finally:
         connection.close()

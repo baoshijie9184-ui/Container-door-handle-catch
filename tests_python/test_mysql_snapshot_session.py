@@ -1,11 +1,15 @@
 """Verify snapshot query sessions on ECS; no local database or local test run."""
 import importlib.util
+import configparser
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import stat
 import unittest
 from unittest.mock import patch
 import tempfile
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +19,37 @@ import sys
 sys.path.insert(0, str(ROOT / 'script/schema'))
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
+
+
+@pytest.mark.parametrize('kind', ['native', 'docker'])
+def test_mysql_only_timeout_is_not_in_shared_dump_options(tmp_path, monkeypatch, kind):
+    (tmp_path / 'private').mkdir(mode=0o700)
+    container = 'a' * 64
+    client = {'kind': kind, 'executable': '/synthetic/' + ('mysql' if kind == 'native' else 'docker')}
+    client.update({'mysqldump': '/synthetic/mysqldump'} if kind == 'native' else {'containerId': container})
+    config = {'client': client, 'scope': 'production-migration',
+              'connection': {'host': '127.0.0.1', 'port': 3306, 'username': 'fixture', 'password': 'fixture-only'}}
+    monkeypatch.setattr(runtime, 'executable', Path)
+    def inspect(command, **kwargs):
+        assert command == ['/synthetic/docker', 'inspect', container]
+        return SimpleNamespace(stdout=json.dumps([{'Id': container, 'State': {'Running': True}}]).encode())
+    monkeypatch.setattr(runtime.subprocess, 'run', inspect)
+    mysql = runtime.Mysql(config, tmp_path)
+    options = configparser.ConfigParser(interpolation=None)
+    options.read_string(mysql.options.decode('utf8'))
+    assert options.sections() == ['client', 'mysql']
+    assert set(options['client']) == {'protocol', 'host', 'port', 'user', 'password'}
+    assert options['mysql'] == {'connect-timeout': '10'}
+    for dump in (False, True):
+        command, prefix = mysql.command('fixture_schema', dump=dump, table_names=['fixture_table'])
+        assert 'fixture-only' not in ' '.join(command)
+        if kind == 'native':
+            assert command[0] == '/synthetic/' + ('mysqldump' if dump else 'mysql')
+            assert prefix == b'' and mysql.option_file.read_bytes() == mysql.options
+            assert stat.S_IMODE(mysql.option_file.stat().st_mode) == 0o600
+        else:
+            assert prefix == mysql.options
+            assert ('mysqldump' if dump else 'mysql') + ' --defaults-file="$f"' in command[-1]
 
 
 class SnapshotSessionTests(unittest.TestCase):

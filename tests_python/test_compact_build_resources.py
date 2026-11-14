@@ -15,6 +15,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -177,6 +179,14 @@ def evidence(directory):
 
 
 class CompactBuildResourceTests(unittest.TestCase):
+    archive_base = None  # Preserve the direct unittest entry's original temp-root selection.
+
+    @pytest.fixture(autouse=True)
+    def private_archive_base(self, tmp_path):
+        # Use the admitted pytest tree, not the shared tool-home TMPDIR whose
+        # ancestor may be group-writable. Keep the real gate.
+        self.archive_base = tmp_path
+
     def test_optional_archive_arguments_keep_the_original_default_and_exact_cache_contract(self):
         args = SimpleNamespace(root='/home/ecs-user/ci', prepare_candidate_builder=False)
         self.assertIsNone(RES.buildkit_input(args))
@@ -198,7 +208,7 @@ class CompactBuildResourceTests(unittest.TestCase):
 
     def test_official_archive_preserves_raw_manifest_config_blobs_and_real_diffid_measurement(self):
         members, image, diff, checksum, size = official_oci_fixture()
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum,
+        with tempfile.TemporaryDirectory(dir=self.archive_base) as temporary, mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum,
                 IMAGE_ID=image, BUILDKIT_LAYER_BYTES=size):
             root = Path(temporary); binding = cache_archive(root, tar_bytes(list(members.items())))
             actor = archive_actor(root / 'output'); destination = actor.directory / 'official-oci'
@@ -211,6 +221,17 @@ class CompactBuildResourceTests(unittest.TestCase):
 
     def test_archive_rejects_wrong_pins_extra_graph_metadata_types_and_blob_changes(self):
         members, image, _diff, checksum, size = official_oci_fixture()
+        reasons = {'wrong-pin': 'BuildKit OCI index is not the pinned upstream manifest',
+                   'wrong-config': 'Pinned BuildKit config or original layer bytes differ',
+                   'extra-index': 'Single pinned BuildKit OCI index is required',
+                   'index-bool': 'Single pinned BuildKit OCI index is required',
+                   'size-bool': 'BuildKit OCI index is not the pinned upstream manifest',
+                   'duplicate-json': 'Duplicate OCI metadata field',
+                   'extra-blob': 'BuildKit OCI member closure differs',
+                   'missing-blob': 'BuildKit OCI member closure differs',
+                   'corrupt-blob': 'BuildKit OCI member bytes differ',
+                   'short-blob': 'BuildKit OCI member closure differs',
+                   'duplicate-member': 'Duplicate or extended BuildKit OCI archive member'}
         for change in ('wrong-pin', 'wrong-config', 'extra-index', 'index-bool', 'size-bool', 'duplicate-json',
                        'extra-blob', 'missing-blob', 'corrupt-blob', 'short-blob', 'duplicate-member'):
             altered = copy.deepcopy(members); index = json.loads(altered['index.json']); layers = json.loads(altered['blobs/sha256/' + checksum[7:]])['layers']
@@ -226,26 +247,36 @@ class CompactBuildResourceTests(unittest.TestCase):
             if change == 'short-blob': altered[layer] = altered[layer][:-1]
             entries = list(altered.items())
             if change == 'duplicate-member': entries.append(('oci-layout', altered['oci-layout']))
-            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary, \
+            with self.subTest(change=change), tempfile.TemporaryDirectory(dir=self.archive_base) as temporary, \
                     mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + ('sha256:' + 'f' * 64 if change == 'wrong-pin' else checksum),
                                         IMAGE_ID='sha256:' + 'f' * 64 if change == 'wrong-config' else image, BUILDKIT_LAYER_BYTES=size):
                 root = Path(temporary); binding = cache_archive(root, tar_bytes(entries)); actor = archive_actor(root / 'output')
-                with self.assertRaises(ValueError): RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
+                with self.assertRaisesRegex(ValueError, reasons[change]):
+                    RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
 
     def test_raw_archive_header_gate_precedes_pax_sparse_and_link_dispatch(self):
         for kind in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_SPARSE, tarfile.SYMTYPE, tarfile.LNKTYPE):
             header = tarfile.TarInfo('index.json'); header.type = kind; header.size = 2 * RES.GIB
             raw = header.tobuf(format=tarfile.USTAR_FORMAT) + b'\0' * 1024
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(dir=self.archive_base) as temporary:
                 root = Path(temporary); binding = cache_archive(root, raw); actor = archive_actor(root / 'output')
                 with mock.patch.object(tarfile.TarInfo, '_proc_pax', side_effect=AssertionError('PAX must not allocate')), \
                         mock.patch.object(tarfile.TarInfo, '_proc_gnusparse_00', side_effect=AssertionError('Sparse must not dispatch')):
-                    with self.assertRaises(ValueError): RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
+                    with self.assertRaisesRegex(ValueError, 'Foreign BuildKit OCI archive header'):
+                        RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
 
     def test_archive_transport_and_owned_cache_freshness_are_independent(self):
         members, _image, _diff, _checksum, _size = official_oci_fixture(); raw = tar_bytes(list(members.items()))
+        reasons = {'sha': 'BuildKit archive original bytes changed',
+                   'size': 'Private bounded BuildKit archive is required',
+                   'mode': 'Private bounded BuildKit archive is required',
+                   'hardlink': 'Private bounded BuildKit archive is required',
+                   'symlink': 'Canonical unlinked build path required',
+                   'parent-write': 'BuildKit archive ancestor is not owned and immutable',
+                   'fifo': 'Private bounded BuildKit archive is required',
+                   'held-metadata': 'BuildKit archive original bytes changed'}
         for change in ('sha', 'size', 'mode', 'hardlink', 'symlink', 'parent-write', 'fifo', 'held-metadata'):
-            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+            with self.subTest(change=change), tempfile.TemporaryDirectory(dir=self.archive_base) as temporary:
                 root = Path(temporary); binding = cache_archive(root, raw); path = Path(binding['file'])
                 if change == 'sha': path.write_bytes(b'x' + raw[1:])
                 if change == 'size': path.write_bytes(raw[:-1])
@@ -254,7 +285,7 @@ class CompactBuildResourceTests(unittest.TestCase):
                 if change == 'symlink': path.rename(path.with_suffix('.original')); path.symlink_to(path.with_suffix('.original'))
                 if change == 'parent-write': path.parent.chmod(0o777)
                 if change == 'fifo': path.unlink(); os.mkfifo(path, 0o600)
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, reasons[change]):
                     if change == 'held-metadata':
                         with RES.buildkit_archive_source(root, binding, lambda: None):
                             before = path.stat(); os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
@@ -263,16 +294,18 @@ class CompactBuildResourceTests(unittest.TestCase):
     def test_archive_rejects_nonzero_tail_and_missing_tar_terminator(self):
         members, image, _diff, checksum, size = official_oci_fixture(); raw = tar_bytes(list(members.items()))
         end = sum(512 + ((len(value) + 511) // 512) * 512 for value in members.values())
-        for changed in (raw + b'nonzero-tail', raw[:end]):
-            with self.subTest(size=len(changed)), tempfile.TemporaryDirectory() as temporary, \
+        for changed, reason in ((raw + b'nonzero-tail', 'Nonzero BuildKit OCI archive tail'),
+                                (raw[:end], 'Truncated BuildKit OCI archive terminator')):
+            with self.subTest(size=len(changed)), tempfile.TemporaryDirectory(dir=self.archive_base) as temporary, \
                     mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum, IMAGE_ID=image, BUILDKIT_LAYER_BYTES=size):
                 root = Path(temporary); binding = cache_archive(root, changed); actor = archive_actor(root / 'output')
-                with self.assertRaises(ValueError): RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
+                with self.assertRaisesRegex(ValueError, reason):
+                    RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
 
     def test_offline_preparation_keeps_real_load_bootstrap_version_stop_and_current_original_checks(self):
         members, image, _diff, checksum, size = official_oci_fixture()
         for backend, failure in [(backend, failure) for backend in ('classic', 'containerd') for failure in (None, 'load', 'version', 'original-drift')]:
-            with self.subTest(backend=backend, failure=failure), tempfile.TemporaryDirectory() as temporary, \
+            with self.subTest(backend=backend, failure=failure), tempfile.TemporaryDirectory(dir=self.archive_base) as temporary, \
                     mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum, IMAGE_ID=image, BUILDKIT_LAYER_BYTES=size):
                 root = Path(temporary); binding = cache_archive(root, tar_bytes(list(members.items())))
                 inbox = root / 'inbox' / CONTEXT['release']; inbox.mkdir(mode=0o700, parents=True)
@@ -310,7 +343,9 @@ class CompactBuildResourceTests(unittest.TestCase):
                         mock.patch.object(RES, 'host_diff_ids', return_value=set()), mock.patch.object(RES, 'bootstrap_builder', side_effect=bootstrap), \
                         mock.patch.object(RES, 'registry_layout', side_effect=AssertionError('Offline input may not fetch the network')):
                     if failure is not None:
-                        with self.assertRaises(ValueError): RES.prepare_tools(args, CONTEXT['identity'], recipe)
+                        reason = {'load': 'Fixture load failed', 'version': 'Actual BuildKit version differs',
+                                  'original-drift': 'Private bounded BuildKit archive is required'}[failure]
+                        with self.assertRaisesRegex(ValueError, reason): RES.prepare_tools(args, CONTEXT['identity'], recipe)
                         self.assertFalse((actor.directory / 'tools.json').exists()); self.assertEqual(['FAILED'], actor.finishes)
                     else:
                         result = RES.prepare_tools(args, CONTEXT['identity'], recipe)
