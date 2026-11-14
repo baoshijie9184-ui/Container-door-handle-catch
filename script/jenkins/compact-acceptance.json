@@ -1442,7 +1442,7 @@
       },
       {
         "module": "tests_python.test_control_preflight",
-        "minimumTests": 68,
+        "minimumTests": 83,
         "source": "tests_python/test_control_preflight.py",
         "allowedSkippedTests": []
       },

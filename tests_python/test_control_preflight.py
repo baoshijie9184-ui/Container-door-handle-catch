@@ -117,7 +117,9 @@ def test_owned_scratch_cleanup_preserves_external_symlink_target(tmp_path):
     assert not path.exists() and external.read_bytes() == b'retained external original'
 
 
-def test_owned_scratch_cleanup_handles_own_readonly_directories_without_changing_external_permissions(tmp_path):
+@pytest.mark.parametrize('nested_mode', [0o500, 0o775, 0o777])
+def test_owned_scratch_cleanup_handles_synthetic_directory_modes_without_changing_external_permissions(
+        tmp_path, nested_mode):
     path, expected = source_tree(tmp_path)
     nested = path / 'readonly'; nested.mkdir(mode=0o700)
     (nested / 'owned').write_bytes(b'temporary fixture')
@@ -125,7 +127,7 @@ def test_owned_scratch_cleanup_handles_own_readonly_directories_without_changing
     (external / 'keep').write_bytes(b'original external data')
     (path / 'outside').symlink_to(external, target_is_directory=True)
     original_mode = stat.S_IMODE(external.stat().st_mode)
-    nested.chmod(0o500); path.chmod(0o500)
+    nested.chmod(nested_mode); path.chmod(0o500)
     try:
         preflight.remove_owned_tree(path, expected)
         assert not path.exists()
@@ -241,12 +243,12 @@ def execution(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def recovery301(tmp_path, monkeypatch):
+def recovery_attempt(tmp_path, monkeypatch, old_build):
     args = SimpleNamespace(root=str(tmp_path), tag='ci-999-' + 'a' * 12, commit='a' * 40,
                            source_sha256='b' * 64, tool_manifest_sha256='c' * 64,
                            instance_id='i-fixture', machine_id='d' * 32)
     identity = {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}
-    old = preflight.SCRATCH_301
+    old, receipt_sha = preflight.SCRATCH_REPAIRS[old_build]
     inbox = tmp_path / 'inbox' / old['release']; base = inbox / 'control-preflight'
     output = base / 'output'; output.mkdir(parents=True, mode=0o700)
     source = inbox / 'source.tar.gz'; source.write_bytes(b'retained original source archive'); source.chmod(0o600)
@@ -266,7 +268,7 @@ def recovery301(tmp_path, monkeypatch):
     scratches = [base / 'control-checkout', output / 'scratch', output / 'home']
     for path in scratches:
         path.mkdir(mode=0o700); (path / 'owned').write_bytes(b'temporary control fixture')
-    hashes = {receipt: preflight.SCRATCH_301_RECEIPT, source: old['sourceSha256']}
+    hashes = {receipt: receipt_sha, source: old['sourceSha256']}
     real_digest = preflight.digest
     monkeypatch.setattr(preflight, 'digest', lambda path: hashes[Path(path)] if Path(path) in hashes else real_digest(path))
     live = [False]; containers = []
@@ -281,27 +283,31 @@ def recovery301(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, 'boot_id', lambda: 'a' * 36)
     monkeypatch.setattr(preflight, 'docker', docker)
     return SimpleNamespace(root=tmp_path, args=args, identity=identity, base=base, output=output,
-        source=source, receipt=receipt, scratches=scratches, hashes=hashes, live=live,
+        source=source, receipt=receipt, scratches=scratches, hashes=hashes, live=live, build=old_build,
         containers=containers, modules={'verifier': SimpleNamespace(supervisor_start=start)})
 
 
-def test_fixed_control_301_recovery_removes_only_its_owned_scratch_and_preserves_original_failure(recovery301):
-    state = recovery301
+@pytest.mark.parametrize('old_build', [301, 302])
+def test_fixed_control_recovery_removes_only_its_owned_scratch_and_preserves_original_failure(recovery_attempt, old_build):
+    state = recovery_attempt
+    assert state.build == old_build
     before = {path: path.read_bytes() for path in (state.source, state.receipt,
               state.output / 'python.xml', state.output / 'pytest.log')}
-    result = preflight.recover_control_301(state.root, state.args, state.modules, state.identity)
+    result = preflight.recover_control_scratch(state.root, state.args, state.modules, state.identity, state.build)
     assert result['status'] == 'COMPLETE' and len(result['removed']) == 3
     assert all(not path.exists() for path in state.scratches)
     assert all(path.read_bytes() == raw for path, raw in before.items())
     marker = (state.base / 'scratch-recovery.json').read_bytes()
-    again = preflight.recover_control_301(state.root, state.args, state.modules, state.identity)
+    again = preflight.recover_control_scratch(state.root, state.args, state.modules, state.identity, state.build)
     assert again['status'] == 'ALREADY_COMPLETE'
     assert (state.base / 'scratch-recovery.json').read_bytes() == marker
 
 
 @pytest.mark.parametrize('damage', ['receipt', 'source', 'report', 'live-process', 'container', 'mount', 'link', 'claim'])
-def test_fixed_control_301_recovery_refuses_changed_or_active_ownership_before_deletion(recovery301, damage):
-    state = recovery301
+@pytest.mark.parametrize('old_build', [301, 302])
+def test_fixed_control_recovery_refuses_changed_or_active_ownership_before_deletion(recovery_attempt, damage, old_build):
+    state = recovery_attempt
+    assert state.build == old_build
     if damage == 'receipt': state.hashes[state.receipt] = '0' * 64
     elif damage == 'source': state.hashes[state.source] = '0' * 64
     elif damage == 'report': (state.output / 'pytest.log').write_bytes(b'changed original')
@@ -314,18 +320,26 @@ def test_fixed_control_301_recovery_refuses_changed_or_active_ownership_before_d
         target.rename(outside); target.symlink_to(outside, target_is_directory=True)
     else: (state.base / 'scratch-recovery-claim.json').write_bytes(b'prior unresolved recovery')
     with pytest.raises((ValueError, OSError)):
-        preflight.recover_control_301(state.root, state.args, state.modules, state.identity)
+        preflight.recover_control_scratch(state.root, state.args, state.modules, state.identity, state.build)
     assert all((path / 'owned').read_bytes() == b'temporary control fixture' for path in state.scratches)
     assert not (state.base / 'scratch-recovery.json').exists()
 
 
-def test_fixed_control_301_recovery_runs_only_after_all_new_controls_and_owned_cleanup_pass():
+@pytest.mark.parametrize('build', [225, 266, 303, True])
+def test_control_recovery_does_not_authorize_other_builds_or_future_scratch(tmp_path, build):
+    with pytest.raises(ValueError, match='CONTROL_SCRATCH_RECOVERY_UNKNOWN'):
+        preflight.recover_control_scratch(tmp_path, None, None, None, build)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fixed_control_recovery_runs_only_after_all_new_controls_and_owned_cleanup_pass():
     source = (ROOT / 'script/jenkins/control-preflight.py').read_text(encoding='utf8')
     run = source.split('\ndef run(args):', 1)[1].split('\ndef main():', 1)[0]
     gate = "if error is None and receipt['containerCleanupConfirmed'] and receipt['sourceScratchCleanupConfirmed'] and not receipt.get('cleanupErrors'):"
     assert run.index('tally_report(output') < run.index('for path in scratches: remove_owned_tree')
-    assert run.index('for path in scratches: remove_owned_tree') < run.index(gate) < run.index('recover_control_301(')
-    assert run.index('recover_control_301(') < run.index("receipt['status'] = 'CONTROL_PREFLIGHT_PASS'")
+    assert run.index('for path in scratches: remove_owned_tree') < run.index(gate) < run.index('recover_control_scratch(')
+    assert run.index('recover_control_scratch(') < run.index("receipt['status'] = 'CONTROL_PREFLIGHT_PASS'")
+    assert set(preflight.SCRATCH_REPAIRS) == {301, 302}
 
 
 def test_observer_returns_the_same_completed_original_and_exact_receipt(execution):
