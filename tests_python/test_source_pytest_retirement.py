@@ -881,7 +881,7 @@ def test_source_pytest_policy_returns_before_ordinary_or_failed_native_maintenan
     maintenance = pipeline.split(
         "if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outputs') {", 1
         )[1].split("if ($Action -eq 'Preflight')", 1)[0]
-    selector = "if ($nativeRetentionPolicy -ceq 'SourcePytest16') {"
+    selector = "if ($nativeRetentionPolicy -cin @('SourcePytest16','SourcePytest307308')) {"
     exact = maintenance.split(selector, 1)[1].split('\n    }', 1)[0]
     assert re.fullmatch(r'\s*& ./script/jenkins/retire-source-pytest\.ps1[^\n]+\n\s*return\s*', exact)
     assert maintenance.index(selector) < maintenance.index('reclaim-build-outputs.ps1 -Mode Maintenance')
@@ -894,7 +894,7 @@ def test_pinned_source_helpers_and_original_plan_journals_are_bound_without_appl
     package = re.search(r"(?ms)^if \(\$Action -ceq 'PackageSourceOnly'\) \{\n(.*?)^\}\n", pipeline)
     assert package, 'The source-only archive must be produced by its standalone action block'
     package = package[1]
-    assert "if ($nativeRetentionPolicy -ceq 'SourcePytest16') { $maintenancePaths += 'script/jenkins/retire-source-pytest.py' }" in package
+    assert "if ($nativeRetentionPolicy -cin @('SourcePytest16','SourcePytest307308')) { $maintenancePaths += 'script/jenkins/retire-source-pytest.py' }" in package
     assert "'--output=artifacts/source.tar.gz', $commit) + $maintenancePaths" in package
     controller = (ROOT / 'script/jenkins/retire-source-pytest.ps1').read_text(encoding='utf-8')
     assert "foreach($name in @('retire-source-pytest.py','cleanup-ecs-builds.py','verify-remote.py'))" in controller
@@ -940,5 +940,7 @@ def test_retirement_choices_and_archive_preserve_public_controls_but_not_private
     assert '$local=\'artifacts/source-pytest16\'' in controller
     auth_transfers = [line for line in controller.splitlines() if 'scp.exe' in line and '$authorization' in line]
     assert len(auth_transfers) == 1
-    assert '"${Destination}:$remote/source-pytest16-authorization.json"' in auth_transfers[0]
+    assert '"${Destination}:$remote/$authorizationName"' in auth_transfers[0]
+    assert "$authorizationName='source-pytest16-authorization.json'" in controller
+    assert "$authorizationName='source-pytest307308-authorization.json'" in controller
     assert '$local' not in auth_transfers[0]

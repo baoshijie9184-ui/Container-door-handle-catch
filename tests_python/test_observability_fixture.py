@@ -47,6 +47,8 @@ class ObservabilityFixtureTests(unittest.TestCase):
             if args[0]=='stop':rows[component]['State'].update(Running=False,Pid=0);return b''
             if args[0]=='rm':present.remove(component);return b''
             if args[0]=='start':return b''
+            if args[0]=='kill':
+                self.assertEqual(('kill','--signal','HUP',rows['prometheus']['Id']),args);return b''
             raise AssertionError(args)
         value.docker=docker
         with mock.patch.object(fixture.importlib.util,'spec_from_file_location',return_value=spec), \
@@ -54,6 +56,27 @@ class ObservabilityFixtureTests(unittest.TestCase):
                 mock.patch.object(fixture,'free_port',side_effect=[35001,35002]),mock.patch.object(value,'check'):
             environment=value.prepare()
         return value,rows,present,calls,environment
+
+    def alert_snapshot(self,value,firing=True,resolved=0):
+        labels=[{'attempt':value.token,'source':'source-fixture','probe':probe} for probe in fixture.ALERT_PROBES]
+        alerts=[{'labels':{**item,'alertname':fixture.ALERT_NAME},'status':{'state':'active'},
+                 'fingerprint':str(index)*16,'receivers':[{'name':'owned-null'}]} for index,item in enumerate(labels,1)]
+        rules={'status':'success','data':{'groups':[{'name':'owned-source','rules':[
+            {'name':fixture.ALERT_NAME,'type':'alerting','labels':item,'health':'ok',
+             'query':'vector(1)' if firing else 'vector(0) > 0','state':'firing' if firing else 'inactive',
+             'alerts':[{'labels':{**item,'alertname':fixture.ALERT_NAME},'state':'firing'}] if firing else []}
+            for item in labels]}]}}
+        groups=[{'labels':{'alertname':fixture.ALERT_NAME,'attempt':value.token},
+                 'receiver':{'name':'owned-null'},'alerts':deepcopy(alerts)}]
+        return rules,alerts if firing else [],groups if firing else [],resolved
+
+    def alert_http(self,value):
+        firing=(value.folder/'rules.yml').read_text()==fixture.alert_rules(value.token)
+        rules,alerts,groups,count=self.alert_snapshot(value,firing,0 if firing else 2)
+        return {'/api/v1/rules?type=alert':json.dumps(rules,indent=1).encode()+b'\n',
+            '/api/v2/alerts':json.dumps(alerts,indent=1).encode()+b'\n',
+            '/api/v2/alerts/groups':json.dumps(groups,indent=1).encode()+b'\n',
+            '/metrics':b'# actual raw counter\nalertmanager_alerts_received_total{status="resolved",version="v2"} '+str(count).encode()+b'\n'}
 
     def test_real_recipe_uses_bounded_nonroot_hostnetwork_with_only_loopback_listeners_and_null_receiver(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -69,6 +92,11 @@ class ObservabilityFixtureTests(unittest.TestCase):
             config=(value.folder/'alertmanager.yml').read_text();self.assertIn('owned-null',config)
             self.assertNotIn('webhook_configs',config);self.assertNotIn('email_configs',config)
             self.assertNotIn('langfuse',' '.join(map(str,calls)))
+            rules=(value.folder/'rules.yml').read_text()
+            self.assertEqual(2,rules.count('alert: '+fixture.ALERT_NAME))
+            for probe in fixture.ALERT_PROBES:self.assertIn('probe: '+probe,rules)
+            self.assertIn('group_by: [alertname, attempt]',config)
+            self.assertNotIn('--web.enable-lifecycle',' '.join(map(str,calls)))
 
     def test_wrong_owner_or_unbounded_container_is_not_admitted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -95,28 +123,166 @@ class ObservabilityFixtureTests(unittest.TestCase):
 
     def test_independent_prometheus_and_alert_readbacks_are_required_before_acceptance_pass(self):
         with tempfile.TemporaryDirectory() as directory:
-            value,_,present,_,_=self.configured(Path(directory).resolve())
+            value,_,present,calls,_=self.configured(Path(directory).resolve())
+            inode=(value.folder/'rules.yml').stat().st_ino
+            firing_http=self.alert_http(value)
             for runtime in ('java','python'):
                 fixture.preserve(value.folder/('evidence/'+runtime+'-scrape.json'),json.dumps({
                     'schemaVersion':1,'runtime':runtime,'status':'PASS','missingTokenStatus':401,
                     'wrongTokenStatus':401,'authenticatedStatus':200,'providerCalls':0}))
             def request(component,route):
-                if route=='/api/v2/alerts':return [{'labels':{'alertname':'DoorhandleOwnedFixtureAlert','attempt':value.token},
-                    'status':{'state':'active'},'receivers':[{'name':'owned-null'}]}]
                 if route=='/api/v1/targets':return {'status':'success','data':{'activeTargets':[]}}
                 self.assertEqual('prometheus',component);self.assertTrue(route.startswith('/api/v1/query?'))
                 return {'status':'success','data':{'result':[{'metric':{'attempt':value.token},'value':[1,'3']}]}}
             with mock.patch.object(value,'check'),mock.patch.object(value,'request',side_effect=request), \
+                    mock.patch.object(value,'request_raw',side_effect=lambda component,route:self.alert_http(value)[route]), \
                     mock.patch.object(fixture.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=b'original',stderr=b'')):
                 result=value.stop()
             self.assertEqual('PASS',result['metricsAcceptance']);self.assertTrue(result['alertmanagerReceivedOwnedAlert'])
+            self.assertEqual('PASS',result['alertLifecycle']['status'])
+            self.assertEqual(2,result['alertLifecycle']['firing']['ownedAlertCount'])
+            self.assertEqual(1,result['alertLifecycle']['firing']['ownedGroupCount'])
+            self.assertEqual(0,result['alertLifecycle']['resolved']['ownedAlertCount'])
+            self.assertEqual(0,result['alertLifecycle']['resolved']['ownedGroupCount'])
+            self.assertEqual(2,result['alertLifecycle']['resolvedReceiptIncrease'])
+            self.assertEqual(inode,(value.folder/'rules.yml').stat().st_ino)
+            self.assertEqual(1,len([call for call in calls if call[0]=='kill']))
+            self.assertEqual(firing_http['/api/v2/alerts/groups'],(value.folder/'evidence/alert-firing-groups.json').read_bytes())
+            self.assertEqual(self.alert_http(value)['/metrics'],(value.folder/'evidence/alert-resolved-received.txt').read_bytes())
             self.assertTrue(result['cleanupConfirmed']);self.assertFalse(present)
             evidence=json.loads((value.folder/'evidence/prometheus-readback.json').read_text())
             self.assertEqual({'javaUp','javaCounter','javaHistogram','pythonUp','pythonCounter','pythonHistogram'},set(evidence))
             with mock.patch.object(value,'request',side_effect=AssertionError('Stopped services must not be queried again')):
                 retry=value.stop()
             self.assertEqual('PASS',retry['metricsAcceptance']);self.assertEqual(result['evidence'],retry['evidence'])
+            self.assertEqual(result['alertLifecycle'],retry['alertLifecycle'])
             self.assertEqual(b'original',(value.folder/'prometheus.stdout.log').read_bytes())
+
+    def test_http_original_is_kept_as_received_not_reserialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,_,_,_=self.configured(Path(directory).resolve())
+            response=mock.MagicMock();response.status=200;response.read.return_value=b' [ ] \n'
+            response.__enter__.return_value=response
+            with mock.patch.object(value.opener,'open',return_value=response) as opened:
+                self.assertEqual(b' [ ] \n',value.request_raw('alertmanager','/api/v2/alerts'))
+                self.assertEqual([],value.request('alertmanager','/api/v2/alerts'))
+            self.assertTrue(all(call.args[0].startswith('http://127.0.0.1:35002/') for call in opened.call_args_list))
+
+    def test_grouping_requires_two_distinct_unsuppressed_owned_members_and_the_real_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value=self.build(Path(directory).resolve())
+            for damage in ('foreign-attempt','single-alert','wrong-receiver','suppressed','split-groups',
+                           'foreign-group','wrong-fingerprint','unhealthy-rule','absent-rules','pending-rule'):
+                rules,alerts,groups,count=self.alert_snapshot(value)
+                if damage=='foreign-attempt':alerts[0]['labels']['attempt']='foreign'
+                elif damage=='single-alert':alerts.pop()
+                elif damage=='wrong-receiver':alerts[0]['receivers']=[{'name':'other'}]
+                elif damage=='suppressed':alerts[0]['status']['state']='suppressed'
+                elif damage=='split-groups':groups.append(deepcopy(groups[0]))
+                elif damage=='foreign-group':groups[0]['labels']['attempt']='foreign'
+                elif damage=='wrong-fingerprint':groups[0]['alerts'][0]['fingerprint']='0'*16
+                elif damage=='unhealthy-rule':rules['data']['groups'][0]['rules'][0]['health']='err'
+                elif damage=='absent-rules':rules['data']['groups']=[]
+                elif damage=='pending-rule':rules['data']['groups'][0]['rules'][0]['state']='pending'
+                with self.subTest(damage=damage):
+                    self.assertFalse(fixture.alert_phase_matches(value.token,'firing',rules,alerts,groups,count,0))
+
+    def test_resolution_needs_inactive_original_rules_empty_views_and_two_new_received_resolutions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value=self.build(Path(directory).resolve())
+            for damage in ('none','old-counter','one-resolution','still-active','still-grouped','removed-rules','old-expression'):
+                rules,alerts,groups,count=self.alert_snapshot(value,False,7)
+                if damage=='old-counter':count=5
+                elif damage=='one-resolution':count=6
+                elif damage=='still-active':alerts=self.alert_snapshot(value)[1]
+                elif damage=='still-grouped':groups=self.alert_snapshot(value)[2]
+                elif damage=='removed-rules':rules['data']['groups'][0]['rules']=[]
+                elif damage=='old-expression':rules['data']['groups'][0]['rules'][0]['query']='vector(1)'
+                with self.subTest(damage=damage):
+                    self.assertEqual(damage=='none',fixture.alert_phase_matches(value.token,'resolved',rules,alerts,groups,count,5))
+
+    def test_resolved_counter_requires_exact_v2_series_and_finite_nonnegative_integral_value(self):
+        self.assertEqual(2,fixture.resolved_received(b'alertmanager_alerts_received_total{version="v2",status="resolved"} 2\n'))
+        for raw in (b'',b'alertmanager_alerts_received_total{status="firing",version="v2"} 2\n',
+                    *[b'alertmanager_alerts_received_total{status="resolved",version="v2"} '+value+b'\n'
+                      for value in (b'NaN',b'Inf',b'-1',b'1.5')]):
+            with self.subTest(raw=raw),self.assertRaises(ValueError):fixture.resolved_received(raw)
+
+    def test_grouping_waits_for_actual_readback_and_preserves_only_the_final_http_bodies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,_,_,_=self.configured(Path(directory).resolve());evidence=[];calls=[]
+            def raw(component,route):
+                calls.append(route)
+                if len(calls)<=4 and route=='/api/v2/alerts/groups':return b'[]'
+                return self.alert_http(value)[route]
+            with mock.patch.object(value,'request_raw',side_effect=raw),mock.patch.object(value,'check'),mock.patch.object(fixture.time,'sleep') as sleep:
+                result=value.observe_alert_phase('firing',evidence)
+            self.assertEqual(2,result['polls']);sleep.assert_called_once_with(.2)
+            self.assertEqual(4,len(evidence))
+            self.assertEqual(self.alert_http(value)['/api/v2/alerts/groups'],(value.folder/'evidence/alert-firing-groups.json').read_bytes())
+
+    def test_grouping_timeout_preserves_observation_and_still_stops_both_containers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,present,_,_=self.configured(Path(directory).resolve())
+            def raw(component,route):return b'[]' if route=='/api/v2/alerts/groups' else self.alert_http(value)[route]
+            with mock.patch.object(value,'request_raw',side_effect=raw),mock.patch.object(value,'check'), \
+                    mock.patch.object(fixture.time,'monotonic',side_effect=[0,61]), \
+                    mock.patch.object(fixture.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=b'original',stderr=b'')):
+                result=value.stop()
+            self.assertEqual('FAILED',result['metricsAcceptance']);self.assertEqual('FAILED',result['alertLifecycle']['status'])
+            self.assertTrue(result['cleanupConfirmed']);self.assertFalse(present)
+            self.assertEqual(b'[]',(value.folder/'evidence/alert-firing-groups.json').read_bytes())
+
+    def test_failed_reload_cannot_claim_resolution_or_prevent_owned_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,present,_,_=self.configured(Path(directory).resolve());docker=value.docker
+            def fail_reload(*args):
+                if args[0]=='kill':raise ValueError('reload failed')
+                return docker(*args)
+            with mock.patch.object(value,'request_raw',side_effect=lambda component,route:self.alert_http(value)[route]), \
+                    mock.patch.object(value,'check'),mock.patch.object(value,'docker',side_effect=fail_reload), \
+                    mock.patch.object(fixture.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=b'original',stderr=b'')):
+                result=value.stop()
+            self.assertEqual('FAILED',result['metricsAcceptance']);self.assertEqual('FAILED',result['alertLifecycle']['status'])
+            self.assertNotIn('resolved',result['alertLifecycle']);self.assertTrue(result['cleanupConfirmed']);self.assertFalse(present)
+
+    def test_unreceived_resolution_fails_acceptance_but_cleanup_still_completes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,present,_,_=self.configured(Path(directory).resolve())
+            def raw(component,route):
+                if route=='/metrics':return b'alertmanager_alerts_received_total{status="resolved",version="v2"} 0\n'
+                return self.alert_http(value)[route]
+            with mock.patch.object(value,'request_raw',side_effect=raw),mock.patch.object(value,'check'), \
+                    mock.patch.object(fixture.time,'monotonic',side_effect=[0,0,61]), \
+                    mock.patch.object(fixture.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=b'original',stderr=b'')):
+                result=value.stop()
+            self.assertEqual('FAILED',result['metricsAcceptance']);self.assertEqual('FAILED',result['alertLifecycle']['status'])
+            self.assertEqual('PASS',result['alertLifecycle']['firing']['status']);self.assertNotIn('resolved',result['alertLifecycle'])
+            self.assertTrue(result['cleanupConfirmed']);self.assertFalse(present)
+            self.assertEqual(b'[]\n',(value.folder/'evidence/alert-resolved-alerts.json').read_bytes())
+
+    def test_old_pass_without_alert_lifecycle_is_not_reused_and_does_not_block_container_stops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,present,_,_=self.configured(Path(directory).resolve())
+            fixture.preserve(value.folder/'metrics-acceptance.json',json.dumps({**CONTEXT,'ownerToken':value.token,
+                'images':value.images,'metricsAcceptance':'PASS','evidence':[]}))
+            with mock.patch.object(value,'request_raw',side_effect=AssertionError('Do not rerun a retained acceptance')), \
+                    mock.patch.object(fixture.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=b'original',stderr=b'')):
+                result=value.stop()
+            self.assertEqual('FAILED',result['metricsAcceptance']);self.assertFalse(present)
+            self.assertFalse(result['cleanupConfirmed'])
+            self.assertEqual('acceptance-original',result['cleanupErrors'][0]['component'])
+
+    def test_changed_or_linked_synthetic_rules_never_signal_the_container(self):
+        for damage in ('changed','symlink','hardlink'):
+            with self.subTest(damage=damage),tempfile.TemporaryDirectory() as directory:
+                value,_,_,calls,_=self.configured(Path(directory).resolve());path=value.folder/'rules.yml'
+                if damage=='changed':path.write_text('unreviewed rules')
+                elif damage=='symlink':
+                    original=value.folder/'retained.yml';path.rename(original);path.symlink_to(original)
+                else:(value.folder/'retained.yml').hardlink_to(path)
+                with self.assertRaises(ValueError):value.resolve_alert_rules([])
+                self.assertFalse([call for call in calls if call[0]=='kill'])
 
     def test_one_logs_failure_still_stops_other_container_and_can_retry_without_overwriting_originals(self):
         with tempfile.TemporaryDirectory() as directory:

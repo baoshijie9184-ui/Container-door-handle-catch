@@ -1,4 +1,4 @@
-"""Retire only the explicitly approved sixteen old synthetic pytest roots.
+"""Retire only one explicitly approved, closed batch of synthetic pytest roots.
 
 No target payload is read. Original source/reports are re-admitted by the mature
 source cleanup helper. ECS lifecycle stays outside Jenkins and this controller.
@@ -42,6 +42,30 @@ ALWAYS_PRESERVE = ['FORMAL_BUSINESS_DATABASE', 'ORIGINAL_SQL', 'SOURCE_CODE_AND_
 EXACT_RELEASES = tuple(row["release"] for row in APPROVED_ENTRIES)
 
 
+AUTHORIZATION_NAME = 'source-pytest16-authorization.json'
+RETIRED_MARKER_NAME = 'source-pytest16-retired.json'
+BATCHES = {BATCH: {'answer': USER_ANSWER, 'builds': EXACT_BUILDS, 'entries': APPROVED_ENTRIES,
+    'authorization': AUTHORIZATION_NAME, 'marker': RETIRED_MARKER_NAME},
+    'source-pytest307308-20261114': {
+        'answer': '允许按原条件回收这两份（推荐）', 'builds': [307, 308],
+        'entries': [{'release': 'ci-307-dc8219bd868f', 'path': '/home/ecs-user/doorhandle-ci/verification/ci-307-dc8219bd868f/checkout/work/ci-evidence/tmp/pytest', 'sourceProof': {'commit': 'dc8219bd868f024d600e8cc23dea092b03181afa', 'sourceSha256': '9106c2589a4810542c5b07b538d78470fe8c52839e099892352e132b9cdb4b8d', 'verificationReceiptSha256': 'd701f7052386242eb04d9489ae73523b33069d9a56448cfb69534d53617a87ac', 'reportCatalogSha256': '77c1c02583b726755488df1cc1a25b060aea66016da4b32a5ac23ea02735ff92', 'claimSha256': '309f3eb48f65f6518ce4f320e4cb503a697fea811ff923a7abdf980530e693cd', 'toolManifestSha256': 'e647c02bddcdf7bb5147116f8d42e3a5805af5ea33e847c28a0a80fd831a80b7'}}, {'release': 'ci-308-ba8f5b580c7a', 'path': '/home/ecs-user/doorhandle-ci/verification/ci-308-ba8f5b580c7a/checkout/work/ci-evidence/tmp/pytest', 'sourceProof': {'commit': 'ba8f5b580c7a5174efd64fecf8c25a3ccb05fb8a', 'sourceSha256': '772f4832d5c6c819fbe2f6845695fe1163a6c5ad00d8b2ca33a98daaf02313c0', 'verificationReceiptSha256': '5f36511f757c293d78fec0e2b9640427aa0cd2ff1c654dbb9d99d99f1e6b42e9', 'reportCatalogSha256': '259f5007720c89f00faafb0bbbbc6cc28708a0bcfaff93f2360f1cdbbde0274f', 'claimSha256': '47f34d8318d0c2fada8f2671463de56385628d44954f095fffb4a5c5bedd3281', 'toolManifestSha256': 'cddd0ae6c883c0ef46f6520f1a3a0cd1fd6956281bccdcd96d55f8ef6f551ebf'}}],
+        'authorization': 'source-pytest307308-authorization.json', 'marker': 'source-pytest307308-retired.json'}}
+REVIEWED_SEMANTIC_RECIPES = {
+    'script/jenkins/verify-ecs.py': 'ae1e2234fbe7bdd0c817d8e39d3157f8df6bda0f433695c052816a9d57a7bca8',
+    'script/jenkins/ecs-tool-runtime.py': '6fa7092716463af9603522c1c2c19ba4625b90adf4590b275811aa772622c64c',
+    'script/jenkins/verify-remote.py': '715069c950eb283388cafe2f0a6ab5dacd23469e07cbc4914f274d65a87a7706',
+    'script/jenkins/semantic-mysql-fixture.py': '30a1b093b35a21f691edcd0da77aa9aebe558777fd2cd5e57d32c1e510ea8247'}
+
+
+def select_batch(name):
+    global BATCH, USER_ANSWER, EXACT_BUILDS, APPROVED_ENTRIES, EXACT_RELEASES, AUTHORIZATION_NAME, RETIRED_MARKER_NAME
+    need(type(name) is str and name in BATCHES, 'UNAPPROVED_PYTEST_BATCH')
+    selected = BATCHES[name]
+    BATCH = name; USER_ANSWER = selected['answer']; EXACT_BUILDS = selected['builds']
+    APPROVED_ENTRIES = selected['entries']; EXACT_RELEASES = tuple(row['release'] for row in APPROVED_ENTRIES)
+    AUTHORIZATION_NAME = selected['authorization']; RETIRED_MARKER_NAME = selected['marker']
+
+
 def need(value, code):
     if not value: raise ValueError(code)
 
@@ -79,7 +103,7 @@ def validate_authorization(value):
     need(value.get('requiredConditions') == REQUIRED_CONDITIONS
          and value.get('alwaysPreserve') == ALWAYS_PRESERVE, 'PRESERVATION_CONDITIONS_CHANGED')
     rows = value.get('entries')
-    need(type(rows) is list and len(rows) == 16, 'EXACT_SIXTEEN_TARGETS_REQUIRED')
+    need(type(rows) is list and len(rows) == len(APPROVED_ENTRIES), 'EXACT_TARGET_COUNT_REQUIRED')
     selected = [{key: row.get(key) for key in ('release', 'path', 'sourceProof')} for row in rows]
     need(selected == APPROVED_ENTRIES, 'EXACT_SOURCE_TARGETS_CHANGED')
     return selected
@@ -297,10 +321,47 @@ def fixed_modules(args):
     verifier = load('approved_source_verifier', wanted['script/jenkins/verify-remote.py'])
     need(verifier.ecs_identity(IDENTITY['instanceId'], IDENTITY['machineId']) == IDENTITY, 'ORIGINAL_ECS_REQUIRED')
     for path in (ROOT, ROOT / 'inbox', ROOT / 'verification', inbox): cleanup.owned(path, directory=True)
-    auth = inbox / 'source-pytest16-authorization.json'
+    auth = inbox / AUTHORIZATION_NAME
     need(digest(auth) == args.authorization_sha256, 'AUTHORIZATION_SHA_CHANGED')
     validate_authorization(read_json(auth))
     return inbox, cleanup, verifier
+
+
+def require_source_scope(inner, entry, semantic=None):
+    need(inner.get('javaOnly') is False and inner.get('wholeMigrationRequested') is False
+         and inner.get('workerMysqlRequested') is False and inner.get('fixtureManifest') is None
+         and inner.get('workerMysqlConfigSha256') is None, 'SYNTHETIC_SOURCE_ONLY_REQUIRED')
+    if BATCH == 'source-pytest16-20261114':
+        need(inner.get('fixtureProperties') == [], 'SYNTHETIC_SOURCE_ONLY_REQUIRED')
+        return
+    # Only the separately approved #307/#308 batch ran this native component.
+    # Its authenticated originals live in work/semantic-mysql-fixture, never
+    # work/ci-evidence/tmp/pytest. The original runner/executor bytes are checked
+    # below; no fixture path or arbitrary property is admitted by the caller.
+    need(BATCH == 'source-pytest307308-20261114' and entry in APPROVED_ENTRIES
+         and inner.get('fixtureProperties') == ['doorhandle.feature.mysql.config']
+         and inner.get('semanticMysqlComponentRequested') is True,
+         'EXACT_SEMANTIC_SOURCE_SCOPE_REQUIRED')
+    suites = inner.get('javaSuites')
+    need(type(suites) is list and len(suites) == 1
+         and suites[0].get('javaSelection') == ['com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeMySqlTest']
+         and suites[0].get('fixtureProperties') == ['doorhandle.feature.mysql.config']
+         and suites[0].get('status') == 'PASS'
+         and suites[0].get('javaTests') == {'found': 14, 'passed': 14, 'failed': 0, 'skipped': 0},
+         'EXACT_NATIVE_QUALITY_SUITE_REQUIRED')
+    need(type(semantic) is dict and semantic.get('kind') == 'doorhandle-semantic-mysql-fixture'
+         and semantic.get('sourceData') == 'SYNTHETIC_ONLY' and semantic.get('status') == 'STOPPED'
+         and semantic.get('cleanupConfirmed') is True and semantic.get('ready') is True
+         and semantic.get('providerCalls') == 0 and semantic.get('productionPromotionAllowed') is False
+         and semantic.get('identity') == IDENTITY
+         and all(semantic.get(key) == value for key, value in
+                 (('release', entry['release']), ('commit', entry['sourceProof']['commit']),
+                  ('sourceSha256', entry['sourceProof']['sourceSha256']))),
+         'SEMANTIC_COMPONENT_CUSTODY_REQUIRED')
+    originals = semantic.get('privateOriginals')
+    need(type(originals) is list and originals
+         and all(type(name) is str and Path(name).parts[:2] == ('work', 'semantic-mysql-fixture')
+                 and '..' not in Path(name).parts for name in originals), 'SEMANTIC_COMPONENT_OUTSIDE_PYTEST_REQUIRED')
 
 
 def source_binding(entry, cleanup, verifier):
@@ -317,10 +378,16 @@ def source_binding(entry, cleanup, verifier):
     need(binding['claimSha256'] == proof['claimSha256'] and binding['toolManifestSha256'] == proof['toolManifestSha256'],
          'ORIGINAL_SOURCE_OWNER_CHANGED')
     inner = binding['inner']
-    need(inner.get('javaOnly') is False and inner.get('wholeMigrationRequested') is False
-         and inner.get('workerMysqlRequested') is False and inner.get('fixtureProperties') == []
-         and inner.get('fixtureManifest') is None and inner.get('workerMysqlConfigSha256') is None,
-         'SYNTHETIC_SOURCE_ONLY_REQUIRED')
+    semantic = None
+    if BATCH == 'source-pytest307308-20261114':
+        component_ref = record.get('semanticMysqlFixture', {})
+        catalog_proof = binding['catalog'].get('reports/semantic-mysql-fixture.json', {})
+        need(component_ref.get('required') is True and component_ref.get('status') == 'STOPPED'
+             and component_ref.get('cleanupConfirmed') is True
+             and component_ref.get('evidenceSha256') == catalog_proof.get('sha256') and catalog_proof.get('sha256'),
+             'SEMANTIC_COMPONENT_REPORT_NOT_BOUND')
+        semantic = cleanup.read_json(binding['checkout'] / 'work/ci-evidence/semantic-mysql-fixture.json', MIB)
+    require_source_scope(inner, entry, semantic)
     command = [row for row in inner['commands'] if row.get('label') == 'python']
     need(len(command) == 1 and command[0].get('finishedAt') and command[0].get('exitCode') in (0, 1),
          'ORIGINAL_PYTEST_COMMAND_NOT_TERMINAL')
@@ -330,15 +397,23 @@ def source_binding(entry, cleanup, verifier):
     manifest = cleanup.read_json(ROOT / 'inbox' / tag / 'tool-runtime/manifest.json', MIB)
     recipes = {}
     names = {'script/jenkins/verify-ecs.py', 'script/jenkins/ecs-tool-runtime.py'}
+    if BATCH == 'source-pytest307308-20261114': names = set(REVIEWED_SEMANTIC_RECIPES)
     with verifier.bounded_tar(ROOT / 'inbox' / tag / 'source.tar.gz', verifier.MAX_SOURCE_BYTES) as package:
         for member in package:
             if member.name not in names: continue
             need(member.isfile() and 0 < member.size <= MIB and member.name not in recipes, 'PYTEST_RECIPE_INVALID')
             recipes[member.name] = package.extractfile(member).read()
+    recipe_hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in recipes.items()}
+    if BATCH == 'source-pytest307308-20261114':
+        need(recipe_hashes == REVIEWED_SEMANTIC_RECIPES
+             and cleanup.digest(binding['checkout'] / 'script/jenkins/semantic-mysql-fixture.py')
+                 == recipe_hashes['script/jenkins/semantic-mysql-fixture.py']
+             and cleanup.digest(ROOT / 'inbox' / tag / 'verify-remote.py')
+                 == recipe_hashes['script/jenkins/verify-remote.py'], 'REVIEWED_SEMANTIC_RECIPE_REQUIRED')
     need(set(recipes) == names
          and cleanup.digest(binding['checkout'] / 'script/jenkins/verify-ecs.py')
-             == hashlib.sha256(recipes['script/jenkins/verify-ecs.py']).hexdigest()
-         and manifest['files'].get('executor.py') == hashlib.sha256(recipes['script/jenkins/ecs-tool-runtime.py']).hexdigest()
+             == recipe_hashes['script/jenkins/verify-ecs.py']
+         and manifest['files'].get('executor.py') == recipe_hashes['script/jenkins/ecs-tool-runtime.py']
          and cleanup.digest(Path(manifest['directory']) / 'executor.py') == manifest['files']['executor.py'],
          'PYTEST_SOURCE_OR_EXECUTOR_CHANGED')
     rows = [row for row in tools.get('commands', []) if row.get('tool') == 'python'
@@ -560,7 +635,7 @@ def reference_probe(release, tree, cleanup):
                           if stat.S_ISSOCK(row['metadata'][0])})
     request = {'release': release, 'keys': [list(key) for key in keys],
                'socketKeys': [list(key) for key in socket_keys], 'nonce': secrets.token_hex(16)}
-    payload = LOADED_SOURCE + b'\nprint(json.dumps(probe_processes(json.loads(' + repr(encoded(request).decode()).encode() + b'))))\n'
+    payload = LOADED_SOURCE + b'\nselect_batch(' + repr(BATCH).encode() + b')\nprint(json.dumps(probe_processes(json.loads(' + repr(encoded(request).decode()).encode() + b'))))\n'
     need(len(payload) <= 8 * MIB, 'PROCESS_PROBE_PAYLOAD_BOUND_EXCEEDED')
     command = ['/usr/bin/sudo', '-n', '/usr/bin/timeout', '--signal=TERM', '--kill-after=2s', '60s',
                sys.executable, '-I', '-B', '-c',
@@ -595,7 +670,7 @@ def admit_growth(growth):
 
 
 def marker_path(release):
-    return ROOT / 'verification' / release / 'source-pytest16-retired.json'
+    return ROOT / 'verification' / release / RETIRED_MARKER_NAME
 
 
 def retained_marker(entry):
@@ -664,7 +739,7 @@ def process_start(pid):
 
 def apply(args, folder, plan, cleanup, verifier):
     current = context(args)
-    need(all(plan.get(k) == v for k, v in current.items()) and len(plan.get('targets', [])) == 16,
+    need(all(plan.get(k) == v for k, v in current.items()) and len(plan.get('targets', [])) == len(APPROVED_ENTRIES),
          'PLAN_BELONGS_TO_ANOTHER_ATTEMPT')
     need(digest(folder / 'plan.json') == args.plan_sha256, 'PLAN_SHA_CHANGED')
     claim = {'pid': os.getpid(), 'startTicks': process_start(os.getpid()), **current}
@@ -719,7 +794,7 @@ def apply(args, folder, plan, cleanup, verifier):
         code = error.args[0] if isinstance(error, ValueError) and error.args and re.fullmatch(r'[A-Z][A-Z0-9_]{0,127}', str(error.args[0])) else 'RETIREMENT_FAILED'
     usage = os.statvfs(ROOT)
     result = {'schema': 1, 'kind': 'doorhandle-source-pytest-retirement-receipt', **current,
-        'status': 'COMPLETE' if error_type is None and len(settled) == 16 else 'PARTIAL_FAILURE',
+        'status': 'COMPLETE' if error_type is None and len(settled) == len(APPROVED_ENTRIES) else 'PARTIAL_FAILURE',
         'settled': settled, 'errorType': error_type, 'guardCode': code,
         'planSha256': args.plan_sha256, 'availableBytesBefore': before,
         'availableBytesAfter': usage.f_bavail * usage.f_frsize,
@@ -774,7 +849,9 @@ def main():
     for name in ('tag', 'commit', 'source-sha256', 'authorization-sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--plan-sha256')
+    parser.add_argument('--batch', choices=tuple(BATCHES), default='source-pytest16-20261114')
     args = parser.parse_args()
+    select_batch(args.batch)
     need(os.geteuid() != 0, 'ROOT_TARGET_MUTATIONS_REFUSED')
     inbox, cleanup, verifier = fixed_modules(args)
     folder = inbox / 'source-pytest-retirement'

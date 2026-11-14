@@ -280,7 +280,7 @@ function Send-CandidateBuildToolsArchive {
 
 $nativeRetentionPolicy=$env:NATIVE_RETENTION_POLICY
 if ([string]::IsNullOrWhiteSpace($nativeRetentionPolicy)) {$nativeRetentionPolicy='FailedNative'}
-if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredCopies203','PublicCaches221224235','DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283','SourcePytest16')) { throw 'Unsupported native retention policy.' }
+if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredCopies203','PublicCaches221224235','DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283','SourcePytest16','SourcePytest307308')) { throw 'Unsupported native retention policy.' }
 if ($nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs') { throw 'An explicit retired-copy policy requires source-only build maintenance.' }
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
 $failedNativeBuildNumber=[string]$env:FAILED_NATIVE_BUILD_NUMBER
@@ -413,7 +413,7 @@ if ($Action -ceq 'PackageSourceOnly') {
     } elseif ($failedMysqlDataBuilds -cne '') {
         $maintenancePaths += 'script/jenkins/retire-derived-mysql-data.py'
     }
-    if ($nativeRetentionPolicy -ceq 'SourcePytest16') { $maintenancePaths += 'script/jenkins/retire-source-pytest.py' }
+    if ($nativeRetentionPolicy -cin @('SourcePytest16','SourcePytest307308')) { $maintenancePaths += 'script/jenkins/retire-source-pytest.py' }
     $archiveArguments = @('-c', 'core.autocrlf=false', 'archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', $commit) + $maintenancePaths
     Invoke-Checked 'git.exe' $archiveArguments
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -510,7 +510,7 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     # controller. Do not execute the generic mkdir or a test preflight first.
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($nativeRetentionPolicy -ceq 'SourcePytest16') {
+    if ($nativeRetentionPolicy -cin @('SourcePytest16','SourcePytest307308')) {
         & ./script/jenkins/retire-source-pytest.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
         return
     }
@@ -599,7 +599,7 @@ if ($Action -eq 'Preflight') {
         } finally {
             @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;originalExitCode=$originalControlExit;exitCode=$controlExit;transportRecovered=($originalControlExit -eq 255 -and $collected);receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
         }
-        $expected=@('test_source_pytest_retirement','test_jenkins_resource_budget','test_jenkins_fixture_admission','test_jenkins_fixture_cgroup_probe','test_derived_mysql_retirement','test_jenkins_ecs_build_cleanup','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compose_container_selection','test_local_fixed_originals_retirement','test_fixed_originals_attestation','test_local_mysql_custody','test_local_mysql_source_classification','test_project_mysql_custody','test_jenkins_suite_evidence','test_jenkins_maven_dependency_cache','test_compact_schema_source','test_control_preflight','test_middleware_fixture','test_observability_fixture','test_semantic_mysql_fixture')
+        $expected=@('test_source_pytest_retirement','test_source_pytest307308_retirement','test_jenkins_resource_budget','test_jenkins_fixture_admission','test_jenkins_fixture_cgroup_probe','test_derived_mysql_retirement','test_jenkins_ecs_build_cleanup','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compose_container_selection','test_local_fixed_originals_retirement','test_fixed_originals_attestation','test_local_mysql_custody','test_local_mysql_source_classification','test_project_mysql_custody','test_jenkins_suite_evidence','test_jenkins_maven_dependency_cache','test_compact_schema_source','test_control_preflight','test_middleware_fixture','test_observability_fixture','test_semantic_mysql_fixture')
         if ($controlExit -ne 0 -or $null -eq $remoteResult -or $remoteResult.status -cne 'CONTROL_PREFLIGHT_PASS' -or $remoteResult.receipt -cne "$remoteOutput/receipt.json" -or $remoteResult.receiptSha256 -cnotmatch '^[a-f0-9]{64}$' -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.fullProjectVerified -ne $false -or $receipt.businessRuntimeStarted -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true -or (@($receipt.selectedModules|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or (@($receipt.modules.PSObject.Properties.Name|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or -not (Test-Path -LiteralPath artifacts/control-preflight/python.xml) -or -not (Test-Path -LiteralPath artifacts/control-preflight/pytest.log)) { throw 'ECS control-script preflight did not pass with complete reports and owned cleanup; native preparation is blocked.' }
         foreach ($module in $expected) { $counts=$receipt.modules.$module; if ($counts.passed -lt 1 -or $counts.failed -ne 0 -or $counts.skipped -ne 0) { throw 'Control preflight omitted or failed a required module.' } }
         @{status='CONTROL_PREFLIGHT_PASS';release=$tag;commit=$commit;sourceSha256=$sha;receiptSha256=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant();fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight-gate.json -Encoding utf8

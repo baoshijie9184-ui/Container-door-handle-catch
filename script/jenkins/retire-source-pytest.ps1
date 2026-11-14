@@ -9,7 +9,7 @@ param(
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
-if($env:ACTION -cne 'reclaim-build-outputs' -or $env:NATIVE_RETENTION_POLICY -cne 'SourcePytest16' -or
+if($env:ACTION -cne 'reclaim-build-outputs' -or $env:NATIVE_RETENTION_POLICY -cnotin @('SourcePytest16','SourcePytest307308') -or
    $env:DOORHANDLE_CI_SCOPE -cne 'source' -or $env:CI_ECS_VERIFIED -cne 'false' -or
    $env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -or $RemoteRoot -cne '/home/ecs-user/doorhandle-ci' -or
    $env:DOORHANDLE_ECS_INSTANCE_ID -cne 'i-2zeieuov2aum486jm1ek' -or
@@ -22,21 +22,30 @@ if($env:ACTION -cne 'reclaim-build-outputs' -or $env:NATIVE_RETENTION_POLICY -cn
 }
 $authorization=$env:DOORHANDLE_SOURCE_PYTEST16_AUTHORIZATION_FILE
 $expected='D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107/source-pytest16-retention-authorization-20261114.json'
+$numbers=@(100,102,103,104,105,107,109,110,114,120,122,150,178,180,215,217)
+$batch='source-pytest16-20261114';$authorizationName='source-pytest16-authorization.json'
+$local='artifacts/source-pytest16'
+if($env:NATIVE_RETENTION_POLICY -ceq 'SourcePytest307308'){
+ $authorization=$env:DOORHANDLE_SOURCE_PYTEST307308_AUTHORIZATION_FILE
+ $expected='D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107/source-pytest307308-retention-authorization-20261114.json'
+ $numbers=@(307,308);$batch='source-pytest307308-20261114';$authorizationName='source-pytest307308-authorization.json'
+ $local='artifacts/source-pytest307308'
+}
 if(-not $authorization -or [IO.Path]::GetFullPath($authorization) -ine [IO.Path]::GetFullPath($expected) -or
    -not (Test-Path -LiteralPath $authorization -PathType Leaf)) {throw 'The original exact user authorization is required.'}
 $auth=Get-Content -LiteralPath $authorization -Raw -Encoding utf8 | ConvertFrom-Json
-$numbers=@(100,102,103,104,105,107,109,110,114,120,122,150,178,180,215,217)
 if($auth.kind -cne 'doorhandle-exact-source-pytest-temporary-retirement-authorization' -or
    $auth.source -cne 'USER_EXPLICIT_MESSAGE' -or $auth.job -cne 'doorhandle-java' -or $auth.branch -cne 'java-cloud' -or
    ($auth.exactBuilds -join ',') -cne ($numbers -join ',') -or $auth.allowArbitraryPath -ne $false -or
    $auth.allowFutureBuilds -ne $false -or $auth.allowRootTargetMutations -ne $false -or
    $auth.allowOwnerWriteForOwnedTargetDirectories -ne $true -or $auth.authorizationEndsWhenExactTargetsConsumed -ne $true) {
- throw 'User authorization differs from the closed sixteen roots.'
+ throw 'User authorization differs from the selected closed pytest batch.'
 }
 $authSha=(Get-FileHash -LiteralPath $authorization -Algorithm SHA256).Hash.ToLowerInvariant()
 $remote="$RemoteRoot/inbox/$Tag";$helper="$remote/retire-source-pytest.py";$directory="$remote/source-pytest-retirement"
 $binding="--tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --authorization-sha256 '$authSha'"
-$local='artifacts/source-pytest16';if(Test-Path -LiteralPath $local){throw 'Fresh retirement evidence directory required.'}
+$binding+=" --batch '$batch'"
+if(Test-Path -LiteralPath $local){throw 'Fresh retirement evidence directory required.'}
 New-Item -ItemType Directory -Path $local | Out-Null
 $failure=$null;$plan=$null;$receipt=$null;$issued=$false;$helperSha=$null
 function Invoke-ExactSsh([string]$Command){
@@ -49,7 +58,7 @@ function Copy-ExactEvidence([string]$Name){
  if($LASTEXITCODE -ne 0){return $null}
  if((Get-Item -LiteralPath "$local/$Name").Length -gt 33554432){throw 'Retirement control exceeds its bounded size.'}
  $value=Get-Content -LiteralPath "$local/$Name" -Raw|ConvertFrom-Json
- if($value.batch -cne 'source-pytest16-20261114' -or $value.release -cne $Tag -or $value.commit -cne $Commit -or
+ if($value.batch -cne $batch -or $value.release -cne $Tag -or $value.commit -cne $Commit -or
     $value.sourceSha256 -cne $SourceSha256 -or $value.authorizationSha256 -cne $authSha -or
     $value.identity.instanceId -cne $env:DOORHANDLE_ECS_INSTANCE_ID -or $value.identity.machineId -cne $env:DOORHANDLE_ECS_MACHINE_ID -or
     $value.identity.executionLocation -cne 'ECS' -or $value.sourceSqlAndReportsRetained -ne $true -or
@@ -71,9 +80,9 @@ try {
   & scp.exe @SshOptions -P $PortText $inputFile "${Destination}:$remote/$name"
   if($LASTEXITCODE -ne 0){throw 'Fixed retirement helper transfer failed.'}
  }
- & scp.exe @SshOptions -P $PortText $authorization "${Destination}:$remote/source-pytest16-authorization.json"
+ & scp.exe @SshOptions -P $PortText $authorization "${Destination}:$remote/$authorizationName"
  if($LASTEXITCODE -ne 0){throw 'Exact authorization transfer failed.'}
- $null=Invoke-ExactSsh "chmod 600 '$remote/cleanup-source.tar.gz' '$helper' '$remote/cleanup-ecs-builds.py' '$remote/verify-remote.py' '$remote/source-pytest16-authorization.json'"
+ $null=Invoke-ExactSsh "chmod 600 '$remote/cleanup-source.tar.gz' '$helper' '$remote/cleanup-ecs-builds.py' '$remote/verify-remote.py' '$remote/$authorizationName'"
  $guard="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && python3 -I -B '$helper'"
  & ssh.exe @SshOptions -p $PortText $Destination "$guard plan $binding"
  $planExit=$LASTEXITCODE
@@ -87,7 +96,7 @@ try {
   if($null -eq $original -or $original.planTerminal -ne $true -or $original.status -cne 'PLANNED'){throw 'Original planning has not completed successfully; do not replay it.'}
  } elseif($planExit -ne 0){throw 'Exact pytest planning refused; no apply issued.'}
  $plan=Copy-ExactEvidence 'plan.json'
- if($null -eq $plan -or $plan.status -cne 'PLANNED' -or @($plan.targets).Count -ne 16){throw 'Complete closed plan required.'}
+ if($null -eq $plan -or $plan.status -cne 'PLANNED' -or @($plan.targets).Count -ne $numbers.Count){throw 'Complete closed plan required.'}
  $planSha=(Get-FileHash "$local/plan.json" -Algorithm SHA256).Hash.ToLowerInvariant()
  $issued=$true
  & ssh.exe @SshOptions -p $PortText $Destination "$guard apply $binding --plan-sha256 '$planSha'"
@@ -102,7 +111,7 @@ try {
   if($null -eq $original -or $original.terminal -ne $true -or $original.status -cne 'COMPLETE'){throw 'Original apply is not complete; do not replay deletion.'}
  } elseif($applyExit -ne 0){throw 'Exact pytest retirement failed; preserve original partial evidence.'}
  $receipt=Copy-ExactEvidence 'receipt.json'
- if($null -eq $receipt -or $receipt.status -cne 'COMPLETE' -or $receipt.planSha256 -cne $planSha -or @($receipt.settled).Count -ne 16){throw 'Complete original retirement receipt required.'}
+ if($null -eq $receipt -or $receipt.status -cne 'COMPLETE' -or $receipt.planSha256 -cne $planSha -or @($receipt.settled).Count -ne $numbers.Count){throw 'Complete original retirement receipt required.'}
 } catch {$failure=$_} finally {
  try {
   if($null -eq $plan){$plan=Copy-ExactEvidence 'plan.json'}
@@ -136,9 +145,9 @@ try {
   }
  }
  $ok=$null -eq $failure -and $originalsComplete -and $null -ne $receipt -and $receipt.status -ceq 'COMPLETE'
- @{status=$(if($ok){'COMPLETE'}else{'FAILED_OR_UNKNOWN'});batch='source-pytest16-20261114';release=$Tag;commit=$Commit;
+ @{status=$(if($ok){'COMPLETE'}else{'FAILED_OR_UNKNOWN'});batch=$batch;release=$Tag;commit=$Commit;
    sourceSha256=$SourceSha256;authorizationSha256=$authSha;applyIssued=$issued;planCollected=($null -ne $plan);
    receiptCollected=($null -ne $receipt);sourceSqlAndReportsRetained=$true;businessDatabaseUntouched=$true;
    ecsLifecycle='EXTERNAL_TO_JENKINS';testsExecuted=$false}|ConvertTo-Json|Set-Content "$local/controller.json" -Encoding utf8
 }
-if(-not $ok){throw 'Exact sixteen-root retirement did not complete with original evidence.'}
+if(-not $ok){throw 'Exact selected pytest batch did not complete with original evidence.'}

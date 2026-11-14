@@ -75,7 +75,7 @@ Qdrant 的 Cosine 上传会归一化向量，因此分开保留：
 
 测试服务器以 UID 1000、1 GiB 内存上限和只读根文件系统运行；数据目录在本轮 checkout 的 `work/semantic-mysql-fixture/data`，容器内外实际路径相同。随机非 3306 端口只发布到本机回环。随机密码通过私有文件传入，FeatureMySql 配置保持 0600，不进入命令行或公开制品。
 
-Java 的 `CompactMySqlFixture` 在空库安装当前 29 表结构。流水线先显式执行 `QualityKnowledgeMySqlTest` 的 15 个真实 MySQL 用例，要求 XML 中无跳过、失败或错误，再执行不带 SQL 配置的普通源码回归。它验证当前版本与归档的并发 source fence、授权和空段落处理；该结果不替代旧数据迁移对账或真实 BGE 验证。
+Java 的 `CompactMySqlFixture` 在空库安装当前 29 表结构。流水线先显式执行 `QualityKnowledgeMySqlTest` 的 14 个真实 MySQL 用例，要求 XML 中无跳过、失败或错误，再执行不带 SQL 配置的普通源码回归。它验证当前版本与归档的并发 source fence、授权和空段落处理；该结果不替代旧数据迁移对账或真实 BGE 验证。
 
 监督器先移除本轮测试工具容器，再停止该 MySQL。停止前后保留原始 inspect 和有界完整日志，确认容器已停止并移除、其他容器无祖先或子路径挂载引用、合成数据全部由 UID 1000 持有且无链接或特殊文件后，才清理本轮数据与密码。未知归属、UID 999 或仍有引用时保留数据并报告清理失败，不申请管理员递归删除。
 

@@ -6,6 +6,7 @@ does not start Langfuse, a business app, or a model/provider client.
 from __future__ import annotations
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -28,6 +29,64 @@ ENVIRONMENT = frozenset({'DOORHANDLE_TEST_PROMETHEUS_URL','DOORHANDLE_TEST_ALERT
 # + Alert128MiB + host1GiB. MySQL is the existing single source fixture.
 RUNTIME_RESERVE = 9 * GIB + 128 * MIB
 STARTUP_DISK_RESERVE = 3 * GIB
+ALERT_NAME = 'DoorhandleOwnedFixtureAlert'
+ALERT_PROBES = ('first', 'second')
+
+
+def alert_rules(token, firing=True):
+    expression = 'vector(1)' if firing else 'vector(0) > 0'
+    return 'groups:\n  - name: owned-source\n    rules:\n' + ''.join(f'''      - alert: {ALERT_NAME}
+        expr: {expression}
+        for: 2s
+        labels:
+          attempt: {token}
+          source: source-fixture
+          probe: {probe}
+''' for probe in ALERT_PROBES)
+
+
+def resolved_received(raw):
+    values=[]
+    for labels,value in re.findall(rb'(?m)^alertmanager_alerts_received_total\{([^\n}]+)\}\s+([^\s]+)\s*$',raw):
+        if dict(re.findall(rb'([a-z_]+)="([^"]*)"',labels))=={b'status':b'resolved',b'version':b'v2'}:
+            values.append(float(value))
+    require(len(values)==1 and math.isfinite(values[0]) and values[0]>=0 and values[0].is_integer(),
+            'Alertmanager resolved-receipt counter is missing or invalid')
+    return int(values[0])
+
+
+def alert_phase_matches(token, phase, rules, alerts, groups, resolved, baseline):
+    """Read the live rules and both AM views; absence alone is not resolution."""
+    # Alertmanager 0.35 omits resolved alerts from both API views. Its v2
+    # received-resolved counter also has to advance: expiry is not delivery.
+    firing=phase=='firing'
+    expected=[{'attempt':token,'source':'source-fixture','probe':probe} for probe in ALERT_PROBES]
+    rule_groups=rules.get('data',{}).get('groups',[])
+    if rules.get('status')!='success' or len(rule_groups)!=1 or rule_groups[0].get('name')!='owned-source':return False
+    actual=rule_groups[0].get('rules',[])
+    if len(actual)!=2 or sorted([row.get('labels',{}) for row in actual],key=lambda row:row.get('probe',''))!=expected:return False
+    for row in actual:
+        if (row.get('name')!=ALERT_NAME or row.get('health')!='ok' or row.get('type')!='alerting'
+                or row.get('query')!=('vector(1)' if firing else 'vector(0) > 0')
+                or row.get('state')!=('firing' if firing else 'inactive')):return False
+        instances=row.get('alerts')
+        if firing:
+            if not isinstance(instances,list) or len(instances)!=1 or instances[0].get('state')!='firing' \
+                    or instances[0].get('labels')!={**row['labels'],'alertname':ALERT_NAME}:return False
+        elif instances!=[]:return False
+    if not isinstance(alerts,list) or not isinstance(groups,list):return False
+    if not firing:return alerts==[] and groups==[] and resolved>=baseline+2
+    expected_alerts=[{**labels,'alertname':ALERT_NAME} for labels in expected]
+    if len(alerts)!=2 or sorted([row.get('labels',{}) for row in alerts],key=lambda row:row.get('probe',''))!=expected_alerts:return False
+    if any(row.get('status',{}).get('state')!='active' or row.get('receivers')!=[{'name':'owned-null'}] for row in alerts):return False
+    fingerprints={row.get('fingerprint','') for row in alerts}
+    if len(fingerprints)!=2 or any(not re.fullmatch('[a-f0-9]{16}',value) for value in fingerprints):return False
+    if len(groups)!=1 or groups[0].get('labels')!={'alertname':ALERT_NAME,'attempt':token} \
+            or groups[0].get('receiver')!={'name':'owned-null'}:return False
+    members=groups[0].get('alerts',[])
+    return len(members)==2 and {row.get('fingerprint') for row in members}==fingerprints \
+        and sorted([row.get('labels',{}) for row in members],key=lambda row:row.get('probe',''))==expected_alerts \
+        and all(row.get('status',{}).get('state')=='active' for row in members)
 
 def require(value, message):
     if not value: raise ValueError(message)
@@ -65,11 +124,15 @@ class Fixture:
         require(result.returncode==0 and len(result.stdout)<=2*MIB,'Owned observability Docker operation failed')
         return result.stdout
 
-    def request(self,component,route):
+    def request_raw(self,component,route):
         require(component in ('prometheus','alertmanager') and route.startswith('/') and '\n' not in route,'Invalid observability readback')
         with self.opener.open('http://127.0.0.1:'+str(self.ports[component])+route,timeout=3) as response:
             raw=response.read(2*MIB+1)
             require(response.status==200 and len(raw)<=2*MIB,'Observability endpoint readback failed')
+        return raw
+
+    def request(self,component,route):
+        raw=self.request_raw(component,route)
         return json.loads(raw) if raw else {}
 
     def owned(self,component):
@@ -160,16 +223,7 @@ scrape_configs:
     label_limit: 20
     label_value_length_limit: 128
 '''
-        rules=f'''groups:
-  - name: owned-source
-    rules:
-      - alert: DoorhandleOwnedFixtureAlert
-        expr: vector(1)
-        for: 2s
-        labels:
-          attempt: {self.token}
-          source: source-fixture
-'''
+        rules=alert_rules(self.token)
         alertmanager='''route:
   receiver: owned-null
   group_by: [alertname, attempt]
@@ -229,6 +283,52 @@ receivers:
         require('owned-null' in status.get('config',{}).get('original',''),'Alertmanager null receiver differs')
         fs=os.statvfs(self.folder);require(fs.f_bavail*fs.f_frsize>=2*GIB+256*MIB,'Observability disk reserve exhausted')
 
+    def observe_alert_phase(self,phase,evidence,baseline=0):
+        require(phase in ('firing','resolved'),'Invalid owned alert phase')
+        endpoints=(('prometheus','/api/v1/rules?type=alert','rules'),
+            ('alertmanager','/api/v2/alerts','alerts'),('alertmanager','/api/v2/alerts/groups','groups'),
+            ('alertmanager','/metrics','received'))
+        deadline=time.monotonic()+60;originals={};polls=0
+        try:
+            while True:
+                polls+=1;originals={}
+                for component,route,name in endpoints:
+                    originals[name]=self.request_raw(component,route)
+                count=resolved_received(originals['received'])
+                if alert_phase_matches(self.token,phase,*[json.loads(originals[name]) for name in ('rules','alerts','groups')],count,baseline):
+                    self.check()
+                    return {'status':'PASS','polls':polls,'ownedAlertCount':2 if phase=='firing' else 0,
+                        'ownedGroupCount':1 if phase=='firing' else 0,'resolvedReceipts':count}
+                require(time.monotonic()<deadline,'Owned alert grouping or resolution was not observed')
+                time.sleep(.2)
+        finally:
+            # Keep the exact final HTTP bodies even when a phase fails. Intermediate
+            # polling is bounded in memory; it cannot grow an on-disk sample stream.
+            for component,route,name in endpoints:
+                if name not in originals:continue
+                path=self.folder/'evidence'/('alert-'+phase+'-'+name+('.txt' if name=='received' else '.json'))
+                preserve(path,originals[name])
+                evidence.append({'file':str(path),'kind':'actual-alert-lifecycle-http','phase':phase,
+                                 'component':component,'route':route,'httpStatus':200})
+
+    def resolve_alert_rules(self,evidence):
+        row=self.owned('prometheus')
+        require(row['State']['Running'] and not row['State'].get('OOMKilled'),'Owned Prometheus stopped before rule reload')
+        path=self.folder/'rules.yml';before=alert_rules(self.token).encode();after=alert_rules(self.token,False).encode()
+        require(path.resolve(strict=True)==path,'Owned synthetic rule file was redirected')
+        # Retain the bind-mounted inode. Replacing the pathname would leave Docker
+        # reading the old file. Prometheus 3.16 preserves alert state on reload
+        # by name/labels, so only the expressions change, not the two identities.
+        with os.fdopen(os.open(path,os.O_RDWR|os.O_NOFOLLOW),'r+b') as stream:
+            info=os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==os.getuid()
+                    and stat.S_IMODE(info.st_mode)==0o600 and stream.read()==before,'Owned synthetic rule file changed')
+            for phase,raw in (('firing',before),('resolved',after)):
+                original=self.folder/'evidence'/('alert-'+phase+'-rules.yml');preserve(original,raw)
+                evidence.append({'file':str(original),'kind':'owned-synthetic-rule-input','phase':phase})
+            stream.seek(0);stream.write(after);stream.truncate();stream.flush();os.fsync(stream.fileno())
+        self.docker('kill','--signal','HUP',row['Id'])
+
     def stop(self):
         for component in self.image_attempts:
             path=self.folder/(component+'-image/resource-summary.json')
@@ -251,7 +351,9 @@ receivers:
                 require(prior.get('ownerToken')==self.token and prior.get('images')==self.images
                     and all(prior.get(key)==self.context[key] for key in ('release','commit','sourceSha256','identity')),
                     'Observability acceptance belongs to another attempt')
-                public.update({key:prior[key] for key in ('metricsAcceptance','evidence','alertmanagerReceivedOwnedAlert','acceptanceErrorType') if key in prior})
+                public.update({key:prior[key] for key in ('metricsAcceptance','evidence','alertmanagerReceivedOwnedAlert','alertLifecycle','acceptanceErrorType') if key in prior})
+                require(public['metricsAcceptance']!='PASS' or public.get('alertLifecycle',{}).get('status')=='PASS',
+                        'Observability acceptance lacks the owned alert lifecycle')
             except Exception as error:
                 # A damaged readback cannot bypass stopping the in-memory owned objects.
                 # Do not replace this original or reuse its acceptance claim.
@@ -260,17 +362,18 @@ receivers:
         if prior is None and len(self.started)==2:
             try:
                 public['metricsAcceptance']='FAILED'
-                self.check();alerts=self.request('alertmanager','/api/v2/alerts')
+                self.check()
+                public['alertLifecycle']={'status':'FAILED'}
+                firing=self.observe_alert_phase('firing',public['evidence'])
+                public['alertmanagerReceivedOwnedAlert']=True
+                public['alertLifecycle']['firing']=firing
+                self.resolve_alert_rules(public['evidence'])
+                resolved=self.observe_alert_phase('resolved',public['evidence'],firing['resolvedReceipts'])
+                public['alertLifecycle'].update(status='PASS',resolved=resolved,
+                    resolvedReceiptIncrease=resolved['resolvedReceipts']-firing['resolvedReceipts'])
                 targets=self.request('prometheus','/api/v1/targets')
                 preserve(self.folder/'evidence/prometheus-targets.json',json.dumps(targets,sort_keys=True))
                 public['evidence'].append({'file':str(self.folder/'evidence/prometheus-targets.json'),'kind':'actual-target-discovery'})
-                firing=[row for row in alerts if row.get('labels',{}).get('alertname')=='DoorhandleOwnedFixtureAlert'
-                    and row.get('labels',{}).get('attempt')==self.token and row.get('status',{}).get('state')=='active'
-                    and {item['name'] for item in row.get('receivers',[])}=={'owned-null'}]
-                public['alertmanagerReceivedOwnedAlert']=bool(firing)
-                preserve(self.folder/'evidence/alertmanager-alerts.json',json.dumps(alerts,sort_keys=True))
-                public['evidence'].append({'file':str(self.folder/'evidence/alertmanager-alerts.json'),'kind':'actual-alertmanager-readback','ownedAlertCount':len(firing)})
-                require(firing,'Alertmanager has not received the owned synthetic firing alert')
                 observations={}
                 expressions={
                     'javaUp':'max_over_time(up{fixture="java"}[1h])',

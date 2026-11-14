@@ -1,6 +1,14 @@
 # ECS 隔离验收的资源预算
 
-## 当前：16份旧Python测试目录已回收（2026-11-14）
+## 当前：已批准精确回收新增两份Python临时目录（2026-11-14）
+
+用户已批准仅回收`#307`、`#308`各自的`checkout/work/ci-evidence/tmp/pytest`，不扩盘。两构建的原始源码、Java/Python报告及失败回执已保全；#307的Python有13项失败，#308的Python全部通过但后续报告汇总失败，原结果不改写。实际目录身份、全UID活动引用和释放量仍须在ECS由固定提交的Jenkins维护核定。
+
+本批沿用已有回收状态机，独立绑定两份授权与来源；不扩大已消费的16根批次，不删除真实组件数据、业务库、SQL、源码、报告或#266。完成维护后读回空间，再执行必要中间件完整source验收。#309已通过Java、Python、主站和三份中间件协议，Agent前端安装在磁盘接近2.25GiB底线时被保护检查中止；同轮Python临时根及两套前端依赖已自动清理，不重复计为待回收量。最新完整状态见[本地Jenkins回执](../本地Jenkins-CICD.md)。
+
+授权问答保存在`work/middleware-alignment-20261113/pytest307308-user-authorization.json`，执行授权与来源绑定为`work/jenkins/data-residency-20261107/source-pytest307308-retention-authorization-20261114.json`。当前尚未执行本批删除。
+
+## 此前：16份旧Python测试目录已回收（2026-11-14）
 
 本地Jenkins **#303维护SUCCESS**，批准的16根全部回收，业务库、原始SQL、源码、报告和#266保留。可用空间从2,344,284,160增至4,778,614,784字节，净增约2.27GiB；37份计划、逐根日志及回执保全于`work/jenkins/data-residency-20261107/ci-303-raw-receipts`。这是实际回收结果，下方旧只读区间不再作为待回收预算。本批已经消费，不重复执行。后续完整验收仍按各阶段新鲜容量准入，不降低门槛或扩盘。
 

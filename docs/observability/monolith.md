@@ -101,7 +101,8 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 
 - Java `PrometheusScrapeIntegrationTest.realPrometheusScrapesAuthenticatedActuatorCountersAndHistogram` 启动最小 Spring/Actuator 应用，不扫描业务模块或连接数据库。真实计数器和直方图经原 `/actuator/prometheus` 机器认证端点被 Prometheus 抓取。
 - Python `tests_python.test_observability_scrape.test_real_prometheus_scrapes_authenticated_python_counter_and_histogram` 使用共享 `RuntimeTelemetry` 的真实 HTTP 服务和指标注册表，不创建模型客户端。
-- 两端都必须实测缺失/错误令牌401、正确令牌200，经 file-SD 登记随机端点，并从真实 Prometheus API 读到 `up`、计数器及直方图。最终收尾再次独立查询历史样本，并从真实 Alertmanager API 确认该 attempt 的合成告警已接收。
+- 两端都必须实测缺失/错误令牌401、正确令牌200，经 file-SD 登记随机端点，并从真实 Prometheus API 读到 `up`、计数器及直方图。最终收尾再次独立查询历史样本。
+- 告警闭环使用同一 attempt 的两条合成告警，核对真实 Prometheus 规则状态与 Alertmanager 的两条告警、一个分组；随后只修改本轮规则并重载自有 Prometheus。只有规则变为 inactive、Alertmanager 告警和分组消失，且实际 resolved 接收计数至少增加2，才记为解除成功。每阶段保留实际 HTTP 响应，不以容器停止或自然过期充当解除证明。该闭环代码随下一固定提交统一验收。
 
 `prepare()` 返回五项 `DOORHANDLE_` 环境变量：`TEST_PROMETHEUS_URL`、`TEST_ALERTMANAGER_URL`、`TEST_OBSERVABILITY_TARGETS`、`TEST_OBSERVABILITY_TOKEN_FILE`、`REQUIRE_OBSERVABILITY_TESTS=true`。令牌只存私有文件，不进入容器命令行、环境变量值或安全回执。
 
