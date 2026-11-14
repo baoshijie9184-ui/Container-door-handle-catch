@@ -1387,6 +1387,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_source_pytest_retirement",
+        "minimumTests": 146,
+        "source": "tests_python/test_source_pytest_retirement.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_derived_mysql_retirement",
         "minimumTests": 179,
         "source": "tests_python/test_derived_mysql_retirement.py",

@@ -3,7 +3,7 @@
 def configureVerificationInputs() {
     if (!(params.ACTION in ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'])) error('Unsupported pipeline action')
     env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'
-    if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283'])) error('Unsupported native retention policy')
+    if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16'])) error('Unsupported native retention policy')
     if (env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs') error('An explicit retired-copy policy requires source-only build maintenance')
     env.FAILED_NATIVE_BUILD_NUMBER = params.FAILED_NATIVE_BUILD_NUMBER?.trim() ?: ''
     env.FAILED_MYSQL_DATA_BUILDS = params.FAILED_MYSQL_DATA_BUILDS?.trim() ?: ''
@@ -129,7 +129,7 @@ pipeline {
     triggers { pollSCM('H/5 * * * *') }
     parameters {
         choice(name: 'ACTION', choices: ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'], description: 'verify-controls仅运行ECS控制脚本预检；verify-embedding独立验证免费向量模型；verify-runtime验收隔离应用；reclaim-build-outputs仅维护旧构建输出；切库仍须完整证据')
-        choice(name: 'NATIVE_RETENTION_POLICY', choices: ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283'], description: 'Maintenance only: choose one native retention policy; default FailedNative follows failed runtime builds')
+        choice(name: 'NATIVE_RETENTION_POLICY', choices: ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16'], description: 'Maintenance only: choose one native retention policy; default FailedNative follows failed runtime builds')
         string(name: 'FAILED_NATIVE_BUILD_NUMBER', defaultValue: '', trim: true, description: 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete failed-native batch')
         string(name: 'FAILED_MYSQL_DATA_BUILDS', defaultValue: '', trim: true, description: '本任务已授权的失败verify/mysql临时库编号，如287,289；空值保持原保留策略，正式库/候选/#266/SQL/报告不动')
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
@@ -488,7 +488,7 @@ pipeline {
             script {
                 if (params.ACTION == 'reclaim-build-outputs') {
                     if (env.CI_ARTIFACTS_READY == 'true') {
-                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/derived-mysql-*.json,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.json,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.json,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/native-python-build-cache-*.json,artifacts/native-python-build-cache-*.jsonl,artifacts/native-python-build-cache-inspect/*.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/derived-mysql-*.json,artifacts/source-pytest16/*,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.json,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.json,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/native-python-build-cache-*.json,artifacts/native-python-build-cache-*.jsonl,artifacts/native-python-build-cache-inspect/*.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }
                 } else {
                     // A cutover can fail after runtime acceptance and its owned

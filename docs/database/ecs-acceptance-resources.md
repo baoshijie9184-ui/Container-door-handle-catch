@@ -1,6 +1,6 @@
 # ECS 隔离验收的资源预算
 
-## 当前：旧Python测试目录待批准回收（2026-11-14）
+## 当前：16份旧Python测试目录已获条件回收授权（2026-11-14）
 
 原盘仍为已授权的80GiB，没有新增扩容或快照。单体必要中间件的#300已实际完成依赖制品复用、Qdrant镜像导入与服务ready、合成MySQL服务ready及清理、Prometheus/Alertmanager镜像导入；项目测试尚未启动，正式库仍131表，目标29表未切换。
 
@@ -13,9 +13,11 @@
 - `#225`仅部分统计，`#229`尚未统计，保留两者，不按零占用推断。`#150`首批部分统计已由第二批完整结果替代，未重复相加。
 - 统计中的完整根均为UID1000，未遇权限拒绝或跨文件系统对象；本阶段不做删除用的活动引用判定，不将UNKNOWN写成无引用。
 
-已向用户申请仅对上述16根增加精确条件回收授权，尚未收到批准。若批准，仍须由本地Jenkins先核来源、源码/报告保全、对象身份及无活动引用；只调整这些测试目录必要的所有者写权限并回收确认的临时数据。业务库、原始SQL、源码、报告、#266及另两根保持。实际释放量和后续阶段准入以新鲜磁盘读回为准，不扩大到整个checkout/work或任意target目录。
+用户已明确批准仅对上述16根按条件回收。仍须由本地Jenkins先核来源、源码/报告保全、对象身份及无活动引用；只调整这些测试目录必要的所有者写权限并回收确认的临时数据。业务库、原始SQL、源码、报告、#266及另两根保持。实际释放量和后续阶段准入以新鲜磁盘读回为准，不扩大到整个checkout/work或任意target目录。授权原文与16个原始来源绑定保存在Git忽略的`work/jenkins/data-residency-20261107/source-pytest16-retention-authorization-20261114.json`，不授权后续任意构建或扩盘。
 
-原件在Git忽略目录`work/middleware-alignment-20261113/source-pytest-capacity-300/`，包括`capacity-summary.json`、两批原始统计和各自实际执行脚本。只读窗口已结束，**03:40:44（北京时间）**实际回读`Stopped / StopCharging`，Jenkins保持运行且任务disabled、无队列。批准前不启动下一轮测试或执行删除。
+原件在Git忽略目录`work/middleware-alignment-20261113/source-pytest-capacity-300/`，包括`capacity-summary.json`、两批原始统计和各自实际执行脚本。只读窗口结束时，**03:40:44（北京时间）**实际回读`Stopped / StopCharging`。**12:40**原实例短暂出现`financial`及`financial-recycling`操作锁，原80GiB系统盘仍绑定原实例。用户处理后，**12:44**已实际清除锁定、开机到`Running`并验证原SSH身份；未执行测试或删除。
+
+电脑**12:38**重启导致本地Jenkins退出，已复用原WAR、Home和JRE恢复`127.0.0.1:8080`及在线`doorhandle-local-ci`节点，原任务仍为#300终态、disabled、无队列。为避免代码整合期间空转，**12:53:55**从流水线外再次实际回读原ECS为`Stopped / StopCharging`，原件`work/middleware-alignment-20261113/unlock-readiness-stop-readback.json`。回收代码整合和本地静态检查继续，完整就绪后再启动固定提交的Jenkins回收与ECS验收。
 
 ## 历史容量与预算依据（2026-11-12）
 

@@ -75,6 +75,7 @@ def variables = [
     'DOORHANDLE_COMPACT_RELEASE_READY': 'false',
     'DOORHANDLE_COMPACT_REHEARSAL_READY': 'false',
     'DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID': dataTaskId,
+    'DOORHANDLE_SOURCE_PYTEST16_AUTHORIZATION_FILE': new File(project, 'work/jenkins/data-residency-20261107/source-pytest16-retention-authorization-20261114.json').path,
     'CANDIDATE_BUILD_INPUT_CACHE_ROOT': new File(project, 'work/jenkins/build-deps').path,
     'PATH+DOORHANDLE': settings.extraPath
 ]
@@ -85,7 +86,7 @@ if (existingNode == null) ci.addNode(node) else node.save()
 
 def parameters = [
     new ChoiceParameterDefinition('ACTION', ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'] as String[], 'verify-controls runs only ECS control checks without building Java or preparing databases. Compact cutover requires complete source, database and runtime evidence.'),
-    new ChoiceParameterDefinition('NATIVE_RETENTION_POLICY', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283'] as String[], 'Maintenance only: select one native retention policy; default follows failed runtime builds.'),
+    new ChoiceParameterDefinition('NATIVE_RETENTION_POLICY', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16'] as String[], 'Maintenance only: select one native retention policy; default follows failed runtime builds.'),
     new StringParameterDefinition('FAILED_NATIVE_BUILD_NUMBER', '', 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete batch.').with { setTrim(true); it },
     new StringParameterDefinition('FAILED_MYSQL_DATA_BUILDS', '', 'Authorized current-task failed verify/mysql data only; comma-separated exact builds, blank preserves all data.').with { setTrim(true); it },
     new StringParameterDefinition('TRUSTED_COMMIT', '', 'Optional expected complete java-cloud commit; blank pins this SCM checkout.'),

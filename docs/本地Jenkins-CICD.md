@@ -4,15 +4,19 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-### 当前：依赖复用及组件准备已消费，先审定实际磁盘余量
+### 当前：16份旧Python测试目录已授权条件回收，正在整合流水线
 
 本轮按用户确定的范围调整单体通用中间件：Qdrant/BGE-M3适配、模型调用故障隔离、OpenTelemetry、Prometheus与Alertmanager实际抓取验收。完整自建Langfuse只保留部署配置，待资源审定后再启用；不启动微服务专属组件。方案与验收边界见[单体中间件调整](middleware/monolith-alignment.md)。
 
 固定`8acf8ca306199c1580df20b2eeb47eeba63f9456`的 **#300实际FAILURE**，项目测试尚未启动。22项依赖制品已真实复用：`pipExecutedThisAttempt=false`，原始producer完整证明通过，新metadata容器从未启动且已删除；Qdrant固定OCI完整量测、Docker导入及真实服务ready通过，合成MySQL8.4服务ready与安全清理通过。Prometheus/Alertmanager两个镜像均已量测导入，但观测fixture在创建容器前出现ValueError，指标抓取、SQL业务用例和完整回归均未执行。
 
-原回执没有保留该ValueError的源位置，不能把它直接写成某一业务断言失败；已补仅含源码相对路径/行号的诊断，以及镜像前后实际容量、原门值与固定错误码。清理后实余3,054,800,896字节（约2.845GiB），已低于观测启动3GiB门，后续还有源码构建占用，不能盲重试或降低安全门。现有成熟SOURCE规则覆盖的42轮旧编译目录和npm缓存均已有实际清理证明，可再回收量为0；正在对18个旧Python负例残留根做限定只读物理量测，不把稀疏文件逻辑大小当可回收量，不删除业务或恢复数据。
+原回执没有保留该ValueError的源位置，不能把它直接写成某一业务断言失败；已补仅含源码相对路径/行号的诊断，以及镜像前后实际容量、原门值与固定错误码。清理后实余3,054,800,896字节（约2.845GiB），低于观测启动3GiB门，后续还有源码构建占用，不能盲重试或降低安全门。42轮旧编译目录和npm缓存均已有实际清理证明，可再回收量为0。限定只读量测完成16个旧Python合成测试临时根，其物理占用区间约1.383–2.316GiB；#225部分统计、#229未统计，不按零推断，且不在本次回收范围。
 
-#300的24份原归档中23份非应用JAR、17,984,489字节及原`build.xml`位于`ci-300-raw-receipts`；全部本轮工具与三类fixture安全收尾，**03:14:54（北京时间）**实际回读`Stopped / StopCharging`（`ci-300-external-stop-readback.json`）。当前保持停机，Jenkins继续运行；取得真实容量处置依据后再开测试窗口，不为仅重现容量门重复整轮构建。
+#300的24份原归档中23份非应用JAR、17,984,489字节及原`build.xml`位于`ci-300-raw-receipts`；全部本轮工具与三类fixture安全收尾，**03:14:54（北京时间）**实际回读`Stopped / StopCharging`（`ci-300-external-stop-readback.json`）。用户随后明确批准16根按来源、原件、所有权及无活动引用条件回收，保留业务库、原始SQL、源码、报告、#266及另两根；当前正在整合回收实现，尚未执行删除。范围及资源依据见[当前资源方案](database/ecs-acceptance-resources.md)。
+
+用户解除原实例财务/回收锁后，**12:44**已按要求实际开机并验证身份。电脑**12:38**重启使Jenkins退出，已复用既有启动入口恢复本地`8080`控制器和在线专用节点；任务仍disabled、#300终态且无队列。源码整合期间不让ECS空转，**12:53:55**已在流水线外实际回读`Stopped / StopCharging`。全部代码及本地构建完成后，再开机通过固定提交的Jenkins执行条件回收和统一ECS验证。
+
+本次回收沿用统一流水线：同一固定提交先执行`verify-controls`，通过后执行`ACTION=reclaim-build-outputs`、`NATIVE_RETENTION_POLICY=SourcePytest16`、`DOORHANDLE_CI_SCOPE=source`；两个`FAILED_*`选择器留空，生产发布保持关闭。它只消费已批准的16根，不进入通用回收或数据库恢复。原plan、逐根journal、receipt与控制器结果归档到`artifacts/source-pytest16/`。回收完成后读回实际空间，再执行本轮必要中间件的完整`verify/source`；全部测试和业务数据库切换是不同验收结果，不混记成功。
 
 固定`e9b0977f97e64b7504922d0502901cdcbc465d87`的 **#299实际FAILURE**：13模块跳测试打包成功，三个固定OCI包全部从已发布共享缓存复用；新增严格解析误拒原#297已合法保全的Docker长提示，工具准备仍未进入容器创建或测试。已恢复原commit/create/cleanup读取契约，严格列表校验只用于新增候选发现；原completion、源码、依赖和层校验保留，直接回归源码67项。11份原归档中10份非应用JAR、17,967,234字节及失败前无容器证据已保全；**03:02:29（北京时间）**实际回读`Stopped / StopCharging`（`ci-299-external-stop-readback.json`），待下一固定提交统一验证。
 
