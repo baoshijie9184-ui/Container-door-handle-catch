@@ -48,13 +48,14 @@ $authorizationSha=Read-TaskDataAuthorization
 $identity=@{instanceId=$env:DOORHANDLE_ECS_INSTANCE_ID;machineId=$env:DOORHANDLE_ECS_MACHINE_ID;executionLocation='ECS'}
 $request=[ordered]@{schemaVersion=1;kind='doorhandle-authorized-failed-mysql-data-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=$identity;
     authorization=@{taskThreadId=$task;sourceSha256=$authorizationSha;endsWithTask=$true;allowArbitraryPath=$false};builds=$numbers;candidates=@()}
-$uploads=@()
+$uploads=@();$originalCustody=@()
 $names=@{buildXml='build.xml';release='release.json';localBuild='local-build.json';fixtureCleanupPublic='fixture-cleanup.json'}
 foreach($number in $numbers){
     # This new entry returns before upload/capture/retirement. The original APIs are unchanged.
     $local=& (Join-Path $PSScriptRoot 'retire-failed-native-jar-duplicates.ps1') -Mode Maintenance -CanonicalBatch FailedNative -CollectDataControls -FailedNativeBuildNumber $number -SshOptions $SshOptions -Destination $Destination -PortText $PortText -RemoteRoot $RemoteRoot -Tag $Tag -Commit $Commit -SourceSha256 $SourceSha256 | ConvertFrom-Json -AsHashtable
     $row=$local.rows[0]
     Require-TaskData ($row.release -cmatch '\Aci-[1-9][0-9]*-[a-f0-9]{12}\z' -and $row.release.Split('-')[1] -ceq $number -and $row.commit -cmatch '\A[a-f0-9]{40}\z' -and $row.release.EndsWith('-'+$row.commit.Substring(0,12))) 'The original failed Jenkins build does not match its canonical tag.'
+    $originalCustody+=@{release=$row.release;commit=$row.commit;sourceSha256=$row.sourceSha256;custody=$local.custody;builderFiles=$local.builderFiles}
     $controls=@{}
     foreach($role in $names.Keys){$file=$row.files[$role];Require-TaskData ($file.file -ceq $names[$role]) 'Unknown original task control file.';$controls[$role]=@{bytes=$file.bytes;sha256=$file.sha256};$uploads+=@{source=$file.source;release=$row.release;file=$file.file;bytes=$file.bytes;sha256=$file.sha256}}
     foreach($pair in @(@('preparation','ecs-tool-preparation.json'),@('transport','ecs-tool-preparation-transport.json'))){
@@ -65,7 +66,8 @@ foreach($number in $numbers){
     $request.candidates+=@{release=$row.release;commit=$row.commit;sourceSha256=$row.sourceSha256;controls=$controls}
 }
 $remote="$RemoteRoot/inbox/$Tag";$directory="$remote/derived-failed-mysql-retirement";$helper="$remote/retire-derived-mysql-data.py"
-foreach($name in @('derived-mysql-request.json','derived-mysql-plan.json','derived-mysql-receipt.json','derived-mysql-controller.json')){Require-TaskData (-not(Test-Path -LiteralPath "artifacts/$name")) 'Fresh task-data evidence is required.'}
+foreach($name in @('derived-mysql-request.json','derived-mysql-plan.json','derived-mysql-receipt.json','derived-mysql-controller.json','derived-mysql-original-custody.json')){Require-TaskData (-not(Test-Path -LiteralPath "artifacts/$name")) 'Fresh task-data evidence is required.'}
+@{schemaVersion=1;kind='doorhandle-task-data-original-custody';release=$Tag;commit=$Commit;sourceSha256=$SourceSha256;taskThreadId=$task;authorizationSha256=$authorizationSha;candidates=$originalCustody}|ConvertTo-Json -Depth 24|Set-Content -LiteralPath artifacts/derived-mysql-original-custody.json -Encoding utf8
 $request|ConvertTo-Json -Depth 16 -Compress|Set-Content -LiteralPath artifacts/derived-mysql-request.json -Encoding utf8
 $requestSha=(Get-FileHash -LiteralPath artifacts/derived-mysql-request.json -Algorithm SHA256).Hash.ToLowerInvariant()
 $prepare="umask 077; test ! -e '$directory' && test ! -L '$directory' && test ! -e '$helper' && test ! -L '$helper' && mkdir '$directory' && mkdir '$remote/failed-mysql-data-controls'"

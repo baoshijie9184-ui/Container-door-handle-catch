@@ -1009,6 +1009,122 @@ def test_task_original_reader_does_not_replay_binary_retirement_or_scan_builds(t
     assert not (originals / 'application.jar').exists()
 
 
+@pytest.fixture
+def task_retained_original_reader(tmp_path, monkeypatch):
+    controller = FILE.with_name('retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf-8-sig')
+    reader = controller.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]
+    jhome = tmp_path / 'jhome'; builds = jhome / 'jobs/doorhandle-java/builds'
+    build = builds / '287'; build.mkdir(parents=True)
+    originals = build / 'archive/artifacts'
+    retained = tmp_path / 'retained'; folder = retained / 'ci-287-raw-receipts'; folder.mkdir(parents=True)
+    old_source = b'preserved historical source; controller reads metadata only'
+    context = {'release': 'ci-287-' + 'a' * 12, 'commit': 'a' * 40,
+               'sourceSha256': retirement.digest(old_source)}
+    xml = _task_flow_xml(context); (build / 'build.xml').write_bytes(xml); (folder / 'build.xml').write_bytes(xml)
+    documents = {
+        'release.json': {**context, 'applicationJarSha256': 'c' * 64},
+        'local-build.json': {'kind': 'synthetic local build'},
+        'fixture-cleanup.json': {'status': 'STOPPED', 'release': context['release'], 'commit': context['commit']},
+        'ecs-tool-preparation.json': {**context, 'status': 'PREPARED'},
+        'ecs-tool-preparation-transport.json': {**context, 'status': 'PREPARED',
+                                              'prepareCandidateBuilder': False, 'finalExitCode': 0},
+    }
+    raw_files = {name: retirement.encoded(value) for name, value in documents.items()}
+    raw_files['source.tar.gz'] = old_source
+    manifest = {'build': 287, 'commit': context['commit'], 'result': 'FAILURE',
+                'buildXmlSha256': retirement.digest(xml), 'files': []}
+    for name, raw in raw_files.items():
+        (folder / name).write_bytes(raw)
+        manifest['files'].append({'path': name, 'original': str(originals / name),
+            'preserved': str(folder / name), 'bytes': len(raw), 'sha256': retirement.digest(raw)})
+    def preserve(): (folder / 'preservation.json').write_bytes(retirement.encoded(manifest))
+    preserve()
+    source = tmp_path / 'current-source.tar.gz'
+    with tarfile.open(source, 'w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': 'f' * 40}) as archive:
+        for name in ('script/jenkins/retire-failed-native-jar-duplicates.py', 'script/jenkins/cleanup-ecs-builds.py',
+                     'script/jenkins/verify-remote.py', 'script/docker/compact-build-resources.py'):
+            member = tarfile.TarInfo(name); member.size = 1; archive.addfile(member, io.BytesIO(b'x'))
+    original_open, original_iterdir = Path.open, Path.iterdir
+    def no_big_original_reads(path, *args, **kwargs):
+        assert path not in (folder / 'source.tar.gz', folder / 'application.jar', originals / 'application.jar')
+        return original_open(path, *args, **kwargs)
+    def no_build_scan(path):
+        assert path != builds, 'An explicit data selector must not discover other builds'
+        return original_iterdir(path)
+    monkeypatch.setattr(Path, 'open', no_big_original_reads)
+    monkeypatch.setattr(Path, 'iterdir', no_build_scan)
+    arguments = ['reader', str(source), 'f' * 40, str(retained), str(jhome), '/home/ecs-user/doorhandle-ci',
+                 'ci-300-' + 'f' * 12, 'FailedNative', 'retired-195-198-201', '287', 'data-controls-only']
+    monkeypatch.setattr(sys, 'argv', arguments)
+    return SimpleNamespace(reader=reader, arguments=arguments, build=build, originals=originals, folder=folder,
+                           context=context, manifest=manifest, preserve=preserve, raw_files=raw_files)
+
+
+@pytest.mark.parametrize('state', ['archive-expired', 'build-expired', 'member-bytes', 'source-origin',
+                                 'preserved-path', 'xml-binding', 'existing-c-differs', 'ordinary-native'])
+def test_task_original_reader_uses_one_bound_preserved_bundle_only_for_explicit_data_cleanup(
+        task_retained_original_reader, capsys, state):
+    fixture = task_retained_original_reader
+    if state == 'build-expired':
+        (fixture.build / 'build.xml').unlink(); fixture.build.rmdir()
+    elif state == 'member-bytes':
+        path = fixture.folder / 'ecs-tool-preparation.json'; path.write_bytes(path.read_bytes() + b' ')
+    elif state == 'source-origin':
+        next(row for row in fixture.manifest['files'] if row['path'] == 'source.tar.gz')['original'] = str(
+            fixture.originals.parent / 'another-build/source.tar.gz')
+        fixture.preserve()
+    elif state == 'preserved-path':
+        next(row for row in fixture.manifest['files'] if row['path'] == 'release.json')['preserved'] = str(
+            fixture.folder.parent / 'ci-266-protected/release.json')
+        fixture.preserve()
+    elif state == 'xml-binding':
+        fixture.manifest['buildXmlSha256'] = '0' * 64; fixture.preserve()
+    elif state == 'existing-c-differs':
+        fixture.originals.mkdir(parents=True)
+        (fixture.originals / 'release.json').write_bytes(fixture.raw_files['release.json'] + b' ')
+    elif state == 'ordinary-native': fixture.arguments.pop()
+    if state not in ('archive-expired', 'build-expired'):
+        reason = {'member-bytes': 'TASK_DATA_CUSTODY_MEMBER_BYTES_DIFFER',
+                  'source-origin': 'TASK_DATA_CUSTODY_MEMBER_ORIGIN_DIFFERS',
+                  'preserved-path': 'TASK_DATA_CUSTODY_MEMBER_ORIGIN_DIFFERS',
+                  'xml-binding': 'TASK_DATA_TERMINAL_CUSTODY_DIFFERS',
+                  'existing-c-differs': 'TASK_DATA_C_AND_D_ORIGINALS_DIFFER',
+                  'ordinary-native': 'EXACT_SELECTED_FAILED_NATIVE_BUILD_REQUIRED'}[state]
+        with pytest.raises(ValueError, match='^' + reason + '$'):
+            exec(compile(fixture.reader, 'actual-preserved-data-control-reader', 'exec'), {})
+        assert capsys.readouterr().out == ''
+        return
+    exec(compile(fixture.reader, 'actual-preserved-data-control-reader', 'exec'), {})
+    result = json.loads(capsys.readouterr().out)
+    assert result['skipped'] == [] and len(result['rows']) == 1 and len(result['builderFiles']) == 2
+    row = result['rows'][0]
+    assert {key: row[key] for key in fixture.context} == fixture.context
+    assert {value['source'] for value in row['files'].values()} == {
+        str(fixture.folder / name) for name in ('build.xml', 'release.json', 'local-build.json', 'fixture-cleanup.json')}
+    assert {value['source'] for value in result['builderFiles']} == {
+        str(fixture.folder / name) for name in ('ecs-tool-preparation.json', 'ecs-tool-preparation-transport.json')}
+    proof = (fixture.folder / 'preservation.json').read_bytes()
+    custody = result['custody'][0]
+    assert custody['preservationSha256'] == retirement.digest(proof)
+    descriptors = custody['preservedOriginals']
+    assert set(descriptors) == {'origin', 'preservation', 'sourceArchive', 'files'}
+    assert descriptors['origin'] == 'PRESERVED_JENKINS_TASK_DATA_ORIGINAL'
+    assert descriptors['preservation'] == {'source': str(fixture.folder / 'preservation.json'),
+                                         'bytes': len(proof), 'sha256': retirement.digest(proof)}
+    source_descriptor = next(item for item in fixture.manifest['files'] if item['path'] == 'source.tar.gz')
+    assert descriptors['sourceArchive'] == {'source': source_descriptor['preserved'],
+                                           'original': source_descriptor['original'],
+                                           'bytes': len(fixture.raw_files['source.tar.gz']),
+                                           'sha256': fixture.context['sourceSha256']}
+    assert set(descriptors['files']) == {'build.xml', *fixture.raw_files.keys()} - {'source.tar.gz'}
+    for name, descriptor in descriptors['files'].items():
+        body = (fixture.folder / name).read_bytes()
+        original = fixture.build / 'build.xml' if name == 'build.xml' else fixture.originals / name
+        assert descriptor == {'source': str(fixture.folder / name), 'original': str(original),
+                              'bytes': len(body), 'sha256': retirement.digest(body)}
+    assert not (fixture.folder / 'application.jar').exists() and not (fixture.originals / 'application.jar').exists()
+
+
 @pytest.mark.parametrize('when', ['before-load', 'after-load'])
 def test_task_real_cleanup_root_probe_keeps_authenticated_archive_bytes(tmp_path, monkeypatch, when):
     tag = 'ci-300-' + 'f' * 12; root = tmp_path / 'ci'; inbox = root / 'inbox' / tag; inbox.mkdir(parents=True)
@@ -1146,6 +1262,21 @@ def test_task_mysql_original_streams_are_archived_by_the_existing_maintenance_en
     pipeline = (FILE.parents[2] / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf-8-sig')
     assert 'artifacts/derived-mysql-*.json' in pipeline
     assert 'artifacts/derived-mysql-*.txt' in pipeline
+
+
+def test_task_mysql_original_custody_is_retained_before_any_remote_staging():
+    controller = TASK_DIAGNOSTIC_CONTROLLER
+    assert 'custody=$local.custody;builderFiles=$local.builderFiles' in controller
+    freshness = controller.index("foreach($name in @('derived-mysql-request.json'")
+    output = controller.index('Set-Content -LiteralPath artifacts/derived-mysql-original-custody.json')
+    remote = controller.index('& ssh.exe @SshOptions -p $PortText $Destination $prepare')
+    assert freshness < output < remote
+    guard = controller[freshness:output]
+    assert "'derived-mysql-original-custody.json'" in guard
+    assert 'Require-TaskData (-not(Test-Path -LiteralPath "artifacts/$name"))' in guard
+    assert "kind='doorhandle-task-data-original-custody'" in guard
+    assert 'release=$Tag;commit=$Commit;sourceSha256=$SourceSha256' in guard
+    assert 'taskThreadId=$task;authorizationSha256=$authorizationSha;candidates=$originalCustody' in guard
 
 
 @pytest.mark.parametrize('message,expected', [
