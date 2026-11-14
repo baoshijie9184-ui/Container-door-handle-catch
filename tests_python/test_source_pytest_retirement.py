@@ -54,6 +54,25 @@ def tree(tmp_path):
     return SimpleNamespace(root=root, target=target)
 
 
+@pytest.fixture
+def readonly_directory():
+    """Retain fixture-only directory FDs so even a failed assertion can restore cleanup access."""
+    descriptors = []
+    fchmod = os.fchmod
+    def restrict(path):
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        info = os.fstat(descriptor)
+        assert info.st_uid == os.getuid() and stat.S_ISDIR(info.st_mode)
+        descriptors.append((descriptor, stat.S_IMODE(info.st_mode)))
+        fchmod(descriptor, stat.S_IMODE(info.st_mode) & ~stat.S_IWUSR)
+    try:
+        yield restrict
+    finally:
+        for descriptor, mode in reversed(descriptors):
+            try: fchmod(descriptor, mode | stat.S_IWUSR)
+            finally: os.close(descriptor)
+
+
 def metadata_rows(path):
     paths = [path] + list(path.rglob('*'))
     return {item.relative_to(path).as_posix(): item.lstat() for item in paths}
@@ -97,7 +116,8 @@ def test_metadata_preserves_original_nine_field_contract(tree):
         info.st_mtime_ns, info.st_ino, info.st_dev, info.st_ctime_ns, info.st_nlink]
 
 
-def test_inventory_covers_regular_sparse_hardlinks_links_fifo_socket_and_readonly_directory(tree, tmp_path):
+def test_inventory_covers_regular_sparse_hardlinks_links_fifo_socket_and_readonly_directory(
+        tree, tmp_path, readonly_directory):
     external = put(tmp_path / 'outside-original', b'outside original', 0o400)
     os.link(external, tree.target / 'hardlink-one')
     os.link(external, tree.target / 'hardlink-two')
@@ -113,7 +133,7 @@ def test_inventory_covers_regular_sparse_hardlinks_links_fifo_socket_and_readonl
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
             # /proc/self/fd avoids the AF_UNIX path-length limit of pytest roots.
             endpoint.bind('/proc/self/fd/' + str(descriptor) + '/socket')
-            regular.parent.chmod(0o500)
+            readonly_directory(regular.parent)
             expected = metadata_rows(tree.target)
             value = retirement.inventory(tree.target)
     finally:
@@ -152,15 +172,15 @@ def test_inventory_and_removal_never_read_temporary_object_bodies(tree, monkeypa
 
 
 def test_removal_adds_write_only_to_owned_target_directories_and_preserves_external_links(
-        tree, tmp_path, monkeypatch):
+        tree, tmp_path, monkeypatch, readonly_directory):
     external_dir = tmp_path / 'outside'
     external = put(external_dir / 'original', b'preserved external bytes', 0o400)
-    external_dir.chmod(0o500)
+    readonly_directory(external_dir)
     owned = put(tree.target / 'readonly/owned-file', mode=0o400)
     os.link(external, owned.parent / 'outside-hardlink')
     (tree.target / 'outside-link').symlink_to(external_dir, target_is_directory=True)
-    owned.parent.chmod(0o500)
-    tree.target.chmod(0o500)
+    readonly_directory(owned.parent)
+    readonly_directory(tree.target)
     external_before = external.lstat()
     external_dir_before = external_dir.lstat()
     parent_before = tree.target.parent.lstat()
@@ -324,11 +344,12 @@ def test_inventory_refuses_a_symbolic_link_as_its_root(tree):
     assert payload.read_bytes() == b'outside data'
 
 
-def test_partial_deletion_keeps_success_journal_and_restores_remaining_directory_modes(tree, monkeypatch):
+def test_partial_deletion_keeps_success_journal_and_restores_remaining_directory_modes(
+        tree, monkeypatch, readonly_directory):
     first = put(tree.target / 'readonly/a', mode=0o400)
     second = put(tree.target / 'readonly/b', mode=0o400)
-    first.parent.chmod(0o500)
-    tree.target.chmod(0o500)
+    readonly_directory(first.parent)
+    readonly_directory(tree.target)
     modes = {path: stat.S_IMODE(path.stat().st_mode) for path in (tree.target, first.parent)}
     planned = retirement.inventory(tree.target)
     original_unlink = os.unlink
@@ -870,8 +891,9 @@ def test_source_pytest_policy_returns_before_ordinary_or_failed_native_maintenan
 
 def test_pinned_source_helpers_and_original_plan_journals_are_bound_without_apply_replay():
     pipeline = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf-8')
-    package = pipeline.split("if ($Action -ceq 'PackageSourceOnly') {", 1)[1].split(
-        "if ($Action -ceq 'PackageControls')", 1)[0]
+    package = re.search(r"(?ms)^if \(\$Action -ceq 'PackageSourceOnly'\) \{\n(.*?)^\}\n", pipeline)
+    assert package, 'The source-only archive must be produced by its standalone action block'
+    package = package[1]
     assert "if ($nativeRetentionPolicy -ceq 'SourcePytest16') { $maintenancePaths += 'script/jenkins/retire-source-pytest.py' }" in package
     assert "'--output=artifacts/source.tar.gz', $commit) + $maintenancePaths" in package
     controller = (ROOT / 'script/jenkins/retire-source-pytest.ps1').read_text(encoding='utf-8')

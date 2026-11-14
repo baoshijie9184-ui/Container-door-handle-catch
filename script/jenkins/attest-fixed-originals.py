@@ -417,7 +417,7 @@ def model_resource(path, maximum):
         need(not parent.is_symlink() and not getattr(parent.lstat(), 'st_file_attributes', 0) & 0x400,
              'PHYSICAL_MODEL_LINK_REFUSED')
     admitted = path.lstat()
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb', buffering=0) as stream:
         before = os.fstat(stream.fileno())
         need(stat.S_ISREG(before.st_mode) and before.st_uid in MODEL_ALLOWED_UIDS and before.st_nlink == 1
              and not before.st_mode & 0o022 and 0 < before.st_size <= maximum
@@ -456,11 +456,13 @@ def observe_model_files(*, expected_worker=None):
                 total += len(block); need(total <= MODEL_BYTES, 'PHYSICAL_MODEL_GREW'); checksum.update(block)
             need(total == MODEL_BYTES and checksum.hexdigest() == MODEL_SHA256, 'PHYSICAL_MODEL_FULL_SHA_DIFFERS')
         full_sha()
-        # Repeat both raw reads while the admitted descriptors remain open.
-        model_stream.seek(0); full_sha(); manifest_stream.seek(0)
-        need(manifest_stream.read(65537) == manifest_raw, 'MODEL_MANIFEST_CHANGED_AT_FINAL_READ')
         if expected_worker is not None:
             need(observe_worker() == expected_worker, 'WORKER_MODEL_CONFIGURATION_CHANGED_DURING_HASH')
+        # Repeat both raw reads while the admitted descriptors remain open.
+        # Do this after the external worker observation: a same-size update in
+        # that interval need not produce a distinct filesystem timestamp.
+        model_stream.seek(0); full_sha(); manifest_stream.seek(0)
+        need(manifest_stream.read(65537) == manifest_raw, 'MODEL_MANIFEST_CHANGED_AT_FINAL_READ')
         basic = lambda info: {'bytes': info.st_size, 'ownerUid': info.st_uid, 'device': info.st_dev,
                               'inode': info.st_ino, 'mode': stat.S_IMODE(info.st_mode), 'links': info.st_nlink}
         model = {'sourcePath': str(MODEL_SOURCE), 'containerPath': '/models/best_stg2.pth', 'sha256': MODEL_SHA256,

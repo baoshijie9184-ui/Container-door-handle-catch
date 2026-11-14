@@ -589,7 +589,7 @@ if ($Action -eq 'Preflight') {
             if ($receipt.kind -cne 'doorhandle-control-preflight' -or $receipt.release -cne $tag -or $receipt.commit -cne $commit -or $receipt.sourceSha256 -cne $sha -or $receipt.identity.instanceId -cne $instance -or $receipt.identity.machineId -cne $machine -or $receipt.toolManifestSha256 -cne $tools.manifestSha256) { throw 'Control receipt belongs to another source, build, tool image or ECS.' }
             foreach ($entry in $receipt.reports.PSObject.Properties) {
                 $name=$entry.Name; $binding=$entry.Value
-                $maximum=if ($name -ceq 'python.xml') {2MB} elseif ($name -ceq 'pytest.log') {8MB} else {throw 'Control report escaped its fixed catalog.'}
+                $maximum=if ($name -cin @('python.xml','control-scratch301-recovery.json')) {2MB} elseif ($name -ceq 'pytest.log') {8MB} else {throw 'Control report escaped its fixed catalog.'}
                 if ($binding.file -cne $name -or $binding.bytes -lt 0 -or $binding.bytes -gt $maximum -or $binding.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Control report lacks bounded original byte identity.' }
                 $local="artifacts/control-preflight/$name"
                 Invoke-Checked 'scp.exe' ($sshOptions+@('-P',$portText,"${destination}:$remoteOutput/$name",$local))

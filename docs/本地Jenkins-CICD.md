@@ -6,6 +6,8 @@
 
 ### 当前：16份旧Python测试目录已授权条件回收，正在整合流水线
 
+固定`cfc056762f1f9fb41fd58196e5bdf63badbc20cf`的 **#301控制验证FAILURE**：2,700项通过、53项失败；新增回收模块145项通过、1项源码定位断言失败，真实AF_UNIX正反例通过。其余失败涉及旧producer源码契约、分组最低数及模型末尾内容复核，正在集中修复。测试容器已移除，负例目录权限导致本轮scratch收尾失败，原目录和报告保留，16根实际删除尚未执行。15份原件位于`ci-301-raw-receipts`；确认原测试进程终止后，**14:34:29（北京时间）**实际回读`Stopped / StopCharging`，Jenkins继续运行。下一固定提交先在ECS统一复测，成功后通过原控制入口续清本轮scratch并执行已批准16根维护；不改写本轮失败回执。
+
 本轮按用户确定的范围调整单体通用中间件：Qdrant/BGE-M3适配、模型调用故障隔离、OpenTelemetry、Prometheus与Alertmanager实际抓取验收。完整自建Langfuse只保留部署配置，待资源审定后再启用；不启动微服务专属组件。方案与验收边界见[单体中间件调整](middleware/monolith-alignment.md)。
 
 固定`8acf8ca306199c1580df20b2eeb47eeba63f9456`的 **#300实际FAILURE**，项目测试尚未启动。22项依赖制品已真实复用：`pipExecutedThisAttempt=false`，原始producer完整证明通过，新metadata容器从未启动且已删除；Qdrant固定OCI完整量测、Docker导入及真实服务ready通过，合成MySQL8.4服务ready与安全清理通过。Prometheus/Alertmanager两个镜像均已量测导入，但观测fixture在创建容器前出现ValueError，指标抓取、SQL业务用例和完整回归均未执行。

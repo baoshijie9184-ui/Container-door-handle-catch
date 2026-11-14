@@ -42,6 +42,10 @@ MIB = 1024 ** 2
 MEMORY = 2 * 1024 ** 3
 TIMEOUT = 360
 LABEL = 'io.doorhandle.control-preflight'
+SCRATCH_301 = {'release': 'ci-301-cfc056762f1f', 'commit': 'cfc056762f1f9fb41fd58196e5bdf63badbc20cf',
+    'sourceSha256': 'd99156ca7a1b910e6480637ba9a9488bfef04206c4f9622cedb2b704608785e8',
+    'toolManifestSha256': '1830b1ee2d7b2c6a0e007f198d355870041f37b2ca751de8c4bd0127ce22909b'}
+SCRATCH_301_RECEIPT = '6ab66872b08040511d6afade650be7654a0d7b0f57f6bb9a7e5cc03527be996f'
 REFUSAL_CODES = frozenset({
     'BOUNDED_CONTROL_XML_REQUIRED', 'CANONICAL_CONTROL_PATH_REQUIRED',
     'CONTROL_CONTAINER_DID_NOT_STOP', 'CONTROL_CONTAINER_ID_REQUIRED',
@@ -53,6 +57,7 @@ REFUSAL_CODES = frozenset({
     'CONTROL_PYTEST_FAILED_OR_OOM', 'CONTROL_PYTHON_IMAGE_DIFFERS', 'CONTROL_RECEIPT_BOUND_EXCEEDED',
     'CONTROL_REQUIRED_TEST_PROFILE_INCOMPLETE', 'CONTROL_SCRATCH_CLEANUP_UNKNOWN',
     'CONTROL_SCRATCH_IDENTITY_CHANGED', 'CONTROL_SOURCE_AND_SCRATCH_RESERVE_REQUIRED',
+    'CONTROL_SCRATCH_RECOVERY_UNKNOWN',
     'CONTROL_SOURCE_CHANGED_DURING_ADMISSION', 'CONTROL_SOURCE_COMMIT_DIFFERS',
     'CONTROL_SOURCE_EXPANSION_EXCEEDED', 'CONTROL_SOURCE_MEMBER_BOUND_EXCEEDED', 'CONTROL_SOURCE_SHA_DIFFERS',
     'CONTROL_FORMAL_VERIFICATION_PATH_OCCUPIED',
@@ -196,8 +201,122 @@ def remove_owned_tree(path, expected):
     path = owned(path, directory=True); info = path.lstat()
     need([info.st_dev, info.st_ino, info.st_uid] == expected and shutil.rmtree.avoids_symlink_attacks,
          'CONTROL_SCRATCH_IDENTITY_CHANGED')
+    count = [0]
+    def allow_directory(descriptor, depth=0):
+        current = os.fstat(descriptor); count[0] += 1
+        need(depth <= 128 and count[0] <= 100000 and current.st_uid == 1000
+             and current.st_dev == expected[0] and not current.st_mode & 0o022,
+             'CONTROL_SCRATCH_IDENTITY_CHANGED')
+        with os.scandir(descriptor) as children:
+            for child in children:
+                before = child.stat(follow_symlinks=False)
+                if not stat.S_ISDIR(before.st_mode): continue
+                fd = os.open(child.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             dir_fd=descriptor)
+                try:
+                    after = os.fstat(fd)
+                    need((before.st_dev, before.st_ino) == (after.st_dev, after.st_ino),
+                         'CONTROL_SCRATCH_IDENTITY_CHANGED')
+                    allow_directory(fd, depth + 1)
+                finally: os.close(fd)
+        if not current.st_mode & stat.S_IWUSR:
+            os.fchmod(descriptor, stat.S_IMODE(current.st_mode) | stat.S_IWUSR)
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        held = os.fstat(descriptor)
+        need([held.st_dev, held.st_ino, held.st_uid] == expected, 'CONTROL_SCRATCH_IDENTITY_CHANGED')
+        allow_directory(descriptor)
+    finally: os.close(descriptor)
+    current = path.lstat()
+    need([current.st_dev, current.st_ino, current.st_uid] == expected, 'CONTROL_SCRATCH_IDENTITY_CHANGED')
     shutil.rmtree(path)
     need(not path.exists() and not path.is_symlink(), 'CONTROL_SCRATCH_CLEANUP_UNKNOWN')
+
+
+def recover_control_301(root, args, modules, identity):
+    """Continue only #301's already-owned cleanup, after the new controls pass.
+
+    Preserve its original failure, reports and source archive. This fixed repair
+    is separate from the sixteen historical pytest-root retirement authority.
+    """
+    inbox = root / 'inbox' / SCRATCH_301['release']; base = inbox / 'control-preflight'
+    if not base.exists() and not base.is_symlink(): return {'status': 'NOT_PRESENT', **SCRATCH_301}
+    owned(base, directory=True)
+    receipt_path = owned(base / 'output/receipt.json', maximum=2 * MIB)
+    need(digest(receipt_path) == SCRATCH_301_RECEIPT, 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    original = json.loads(receipt_path.read_bytes())
+    need(all(original.get(key) == value for key, value in SCRATCH_301.items())
+         and original.get('identity') == identity and original.get('kind') == 'doorhandle-control-preflight'
+         and original.get('status') == 'FAILED_OR_UNKNOWN' and original.get('containerCleanupConfirmed') is True
+         and original.get('sourceScratchCleanupConfirmed') is False and original.get('fullProjectVerified') is False
+         and original.get('businessRuntimeStarted') is False, 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    source = owned(inbox / 'source.tar.gz')
+    need(digest(source) == SCRATCH_301['sourceSha256'], 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    for name, limit in (('python.xml', 2 * MIB), ('pytest.log', 8 * MIB)):
+        path = owned(base / 'output' / name, maximum=limit); proof = original['reports'][name]
+        need(proof['file'] == name and path.stat().st_size == proof['bytes'] and digest(path) == proof['sha256'],
+             'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    old_args = argparse.Namespace(**{**vars(args), 'tag': SCRATCH_301['release'],
+        'commit': SCRATCH_301['commit'], 'source_sha256': SCRATCH_301['sourceSha256'],
+        'tool_manifest_sha256': SCRATCH_301['toolManifestSha256']})
+    claim = json.loads(owned(base / 'execution.json', maximum=64 * 1024).read_bytes())
+    expected = execution_context(old_args, identity)
+    need(set(claim) == set(expected) | {'supervisor'}
+         and all(claim.get(key) == value for key, value in expected.items()), 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    supervisor = claim['supervisor']
+    need(set(supervisor) == {'pid', 'startTicks', 'bootId'} and type(supervisor['pid']) is int
+         and supervisor['pid'] > 1 and type(supervisor['startTicks']) is str and supervisor['startTicks'].isdigit()
+         and type(supervisor['bootId']) is str and re.fullmatch(r'[a-f0-9-]{36}', supervisor['bootId']),
+         'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    if supervisor['bootId'] == boot_id():
+        try: active = modules['verifier'].supervisor_start(supervisor['pid']) == supervisor['startTicks']
+        except (FileNotFoundError, ProcessLookupError): active = False
+        need(not active, 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    identifiers = docker('ps', '-aq', '--no-trunc').decode().split()
+    need(len(identifiers) <= 4096 and all(SHA.fullmatch(value) for value in identifiers),
+         'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    if identifiers:
+        rows = json.loads(docker('inspect', *identifiers))
+        need(type(rows) is list and {row['Id'] for row in rows} == set(identifiers), 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+        for row in rows:
+            need(row['Id'] != original.get('containerId')
+                 and (row['Config'].get('Labels') or {}).get('io.doorhandle.release') != SCRATCH_301['release'],
+                 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+            for mount in row.get('Mounts', []):
+                if mount.get('Type') != 'bind' or not mount.get('Source'): continue
+                path = Path(mount['Source'])
+                need(not (path == base or path.is_relative_to(base) or base.is_relative_to(path)),
+                     'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+    paths = [base / 'control-checkout', base / 'output/scratch', base / 'output/home']
+    marker = base / 'scratch-recovery.json'
+    if marker.exists() or marker.is_symlink():
+        previous = json.loads(owned(marker, maximum=2 * MIB).read_bytes())
+        need(previous.get('status') == 'COMPLETE' and previous.get('original') == SCRATCH_301
+             and previous.get('originalReceiptSha256') == SCRATCH_301_RECEIPT
+             and previous.get('identity') == identity
+             and all(not path.exists() and not path.is_symlink() for path in paths), 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+        return {**previous, 'status': 'ALREADY_COMPLETE'}
+    selected = []
+    for path in paths:
+        if not path.exists() and not path.is_symlink(): selected.append((path, None)); continue
+        owned(path, directory=True); info = path.lstat()
+        selected.append((path, [info.st_dev, info.st_ino, info.st_uid]))
+    write(base / 'scratch-recovery-claim.json', {'original': SCRATCH_301,
+        'originalReceiptSha256': SCRATCH_301_RECEIPT, 'current': execution_context(args, identity)})
+    result = {'schemaVersion': 1, 'kind': 'doorhandle-control-301-scratch-recovery',
+        'status': 'FAILED_OR_UNKNOWN', 'original': SCRATCH_301, 'originalReceiptSha256': SCRATCH_301_RECEIPT,
+        'identity': identity, 'current': execution_context(args, identity), 'removed': [], 'alreadyAbsent': [],
+        'originalFailureAndReportsPreserved': True, 'sourceArchivePreserved': True}
+    try:
+        for path, expected_id in selected:
+            if expected_id is None: result['alreadyAbsent'].append(str(path)); continue
+            remove_owned_tree(path, expected_id)
+            result['removed'].append({'path': str(path), 'identity': expected_id})
+        need(digest(receipt_path) == SCRATCH_301_RECEIPT, 'CONTROL_SCRATCH_RECOVERY_UNKNOWN')
+        disk = os.statvfs(root); result['freshAvailableBytes'] = disk.f_bavail * disk.f_frsize
+        result['status'] = 'COMPLETE'
+    finally: write(marker, result)
+    return result
 
 
 def admit_context(args):
@@ -396,7 +515,16 @@ def run(args):
                     receipt['reports'][name] = {'file': name, 'bytes': path.stat().st_size, 'sha256': digest(path)}
                 except Exception: receipt.setdefault('cleanupErrors', []).append('CONTROL_REPORT_INVALID')
         if error is None and receipt['containerCleanupConfirmed'] and receipt['sourceScratchCleanupConfirmed'] and not receipt.get('cleanupErrors'):
-            receipt['status'] = 'CONTROL_PREFLIGHT_PASS'
+            try:
+                recovered = recover_control_301(root, args, modules, identity)
+                recovery_path = output / 'control-scratch301-recovery.json'
+                write(recovery_path, recovered)
+                receipt['reports'][recovery_path.name] = {'file': recovery_path.name,
+                    'bytes': recovery_path.stat().st_size, 'sha256': digest(recovery_path)}
+                receipt['status'] = 'CONTROL_PREFLIGHT_PASS'
+            except Exception as caught:
+                receipt['failure'] = safe_failure(caught)
+                receipt.setdefault('cleanupErrors', []).append('CONTROL_SCRATCH_RECOVERY_UNKNOWN')
         write(output / 'receipt.json', receipt)
     return receipt, output / 'receipt.json'
 

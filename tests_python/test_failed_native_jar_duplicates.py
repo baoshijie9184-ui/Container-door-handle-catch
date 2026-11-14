@@ -23,6 +23,10 @@ import pytest
 
 
 MODULE = Path(__file__).resolve().parents[1] / 'script/jenkins/retire-failed-native-jar-duplicates.py'
+# Read-only original LF source from 3502d8448ffd5c31c5750293d3377d47db87d8c1;
+# never import or execute the historical helper in a regression fixture.
+REVIEWED_PREPARATION_SOURCE = (MODULE.parents[2] / 'tests_python/fixtures/ci-producer-3502d844'
+                              / 'prepare-ecs-tools.py.txt')
 SPEC = importlib.util.spec_from_file_location('failed_native_jar_retirement_tests', MODULE)
 retirer = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = retirer
@@ -2791,7 +2795,8 @@ def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch):
     with tarfile.open(archive, 'r:gz') as source:
         members = {member.name: source.extractfile(member).read() for member in source}
     recipe = members.pop('script/jenkins/prepare-compact-fixtures.py')
-    preparation_source = (MODULE.parent / 'prepare-ecs-tools.py').read_bytes()
+    preparation_source = REVIEWED_PREPARATION_SOURCE.read_bytes()
+    assert sha(preparation_source) == retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
     members['script/jenkins/prepare-ecs-tools.py'] = preparation_source
     source_archive(SimpleNamespace(keeper=s.keeper), recipe=recipe, publication=members)
     s.context['sourceSha256'] = sha(archive.read_bytes())
@@ -2867,6 +2872,23 @@ def test_watched_database_only_real_plan_apply_keeps_watch_and_data_originals(da
     originals = {role: path.read_bytes() for role, path in s.watch_files.items()}
     retire_database_only_native_pair(s)
     assert originals == {role: path.read_bytes() for role, path in s.watch_files.items()}
+
+
+@pytest.mark.parametrize('changed', ['missing', 'changed'])
+def test_database_no_builder_source_requires_the_original_preparation_bytes(database_only_failed_native_pair, changed):
+    s = database_only_failed_native_pair; archive = s.keeper.parent / 'source.tar.gz'
+    with tarfile.open(archive, 'r:gz') as source:
+        members = {member.name: source.extractfile(member).read() for member in source}
+    recipe = members.pop('script/jenkins/prepare-compact-fixtures.py')
+    name = 'script/jenkins/prepare-ecs-tools.py'
+    if changed == 'missing': members.pop(name)
+    else: members[name] += b'\n# Changed producer bytes cannot inherit the historical admission.\n'
+    source_archive(SimpleNamespace(keeper=s.keeper), recipe=recipe, publication=members)
+    with pytest.raises(retirer.RetirementError, match='REVIEWED_DATABASE_NO_BUILDER_SOURCE_REQUIRED'):
+        retirer.source_proof(s.root, s.tag, s.context['commit'], sha(archive.read_bytes()),
+            canonical_jar=True, failed_native=True, database_verification=True)
+    assert s.commands == [] and s.keeper.read_bytes() == s.copy_path.read_bytes() == s.jar
+    assert s.page.read_bytes() == s.page_bytes and s.data.stat().st_ino == s.data_inode
 
 
 def test_explicit_database_only_cli_keeps_request_selection_and_all_four_original_phases(database_only_failed_native_pair, monkeypatch, capsys):

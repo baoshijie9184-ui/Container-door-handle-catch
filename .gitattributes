@@ -9,3 +9,4 @@
 *.yaml text working-tree-encoding=UTF-8
 *.md text working-tree-encoding=UTF-8
 /deploy/buildkit/LICENSE -text
+/tests_python/fixtures/ci-producer-3502d844/*.txt text eol=lf

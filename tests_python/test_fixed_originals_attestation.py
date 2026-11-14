@@ -6,7 +6,6 @@ import io
 import json
 import os
 from pathlib import Path
-import sys
 import tarfile
 from types import SimpleNamespace
 
@@ -730,6 +729,14 @@ def test_fresh_worker_projection_requires_actual_role_two_config_keys_and_exact_
 @pytest.mark.parametrize('damage', ['worker-id', 'image', 'model-id-raw', 'manifest-bytes', 'model-bytes'])
 def test_worker_and_open_resource_identities_are_checked_again_at_the_end(physical_state, monkeypatch, damage):
     original = attest.observe_worker; calls = []
+    if damage in ('manifest-bytes', 'model-bytes'):
+        # Equal/coarse timestamp observations cannot stand in for the last raw
+        # content read. Keep that metadata unchanged while changing real bytes.
+        metadata = attest.resource_metadata
+        original_metadata = {(path.stat().st_dev, path.stat().st_ino): metadata(path.stat())
+                             for path in (physical_state.model, physical_state.manifest)}
+        monkeypatch.setattr(attest, 'resource_metadata',
+                            lambda info: original_metadata[(info.st_dev, info.st_ino)])
     def observed():
         value = original(); calls.append(True)
         if len(calls) == 2:
@@ -740,7 +747,11 @@ def test_worker_and_open_resource_identities_are_checked_again_at_the_end(physic
             else: physical_state.model.write_bytes(b'x' * len(physical_state.raw))
         return value
     monkeypatch.setattr(attest, 'observe_worker', observed)
-    with pytest.raises(attest.AttestationError): attest.physical_model_proof()
+    reason = ('PHYSICAL_MODEL_FULL_SHA_DIFFERS' if damage == 'model-bytes' else
+              'MODEL_MANIFEST_CHANGED_AT_FINAL_READ' if damage == 'manifest-bytes' else
+              'WORKER_MODEL_CONFIGURATION_CHANGED_DURING_HASH')
+    with pytest.raises(attest.AttestationError, match=reason): attest.physical_model_proof()
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize('damage', ['missing', 'different-member', 'different-source', 'different-sha', 'different-size', 'duplicate'])

@@ -201,6 +201,8 @@ DATABASE_VERIFY_PUBLICATION_RECIPES = frozenset({
     ('31d4a8061813784632ad90ce02325e457c50042519e36ab52e8f5a5e0f212195',
      '07e143cd9c88c3b2af8be3749303d17759c3317e2b7d34e2d5cf4056b1e4cb00'),
 })
+# Original 3502d844/8c898996 LF producer bytes, not the mutable current helper.
+# New middleware preparation does not retroactively change old no-builder proof.
 DATABASE_VERIFY_TOOL_PREPARATION_SOURCE = 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
 CLOSED_RUNTIME_JARS = {
     'ci-204-24f8eb4b02bf': {

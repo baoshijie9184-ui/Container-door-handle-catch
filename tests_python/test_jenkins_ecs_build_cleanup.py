@@ -22,6 +22,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Original LF source bytes from 3502d8448ffd5c31c5750293d3377d47db87d8c1.
+# These archived recipes are read/parsed, never imported or executed.
+REVIEWED_SOURCE_FIXTURES = ROOT / 'tests_python/fixtures/ci-producer-3502d844'
 
 
 def load(name, filename):
@@ -277,12 +280,15 @@ def test_reviewed_npm_routing_fingerprints_still_match_the_fixed_executor_source
     assert actual == cleanup.NPM_ROUTING_AST
 
 
-def add_pytest_cases(state, monkeypatch, damage=None):
+def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy'):
     """Bind real archived routing code to synthetic, completed Python evidence."""
-    runner = (ROOT / 'script/jenkins/verify-ecs.py').read_bytes()
+    runner = ((REVIEWED_SOURCE_FIXTURES / 'verify-ecs.py.txt') if recipe == 'legacy'
+              else (ROOT / 'script/jenkins/verify-ecs.py')).read_bytes()
     executor = (ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
     main = next(node for node in ast.parse(runner).body if isinstance(node, ast.FunctionDef) and node.name == 'main')
-    assert cleanup.routing_ast_sha(main) in cleanup.PYTEST_RUNNER_MAIN_AST
+    expected_main = ('e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
+                     if recipe == 'legacy' else cleanup.PYTEST_MIDDLEWARE_RUNNER_MAIN_AST)
+    assert cleanup.routing_ast_sha(main) == expected_main
     if damage == 'changed-runner':
         changed = runner.replace(b'def main():', b'def main():\n    unreviewed_fixture_routing = True', 1)
         assert changed != runner; runner = changed
@@ -317,6 +323,7 @@ def add_pytest_cases(state, monkeypatch, damage=None):
     inner.update(status='PASS', javaOnly=False, fixtureProperties=[], fixtureManifest=None,
         wholeMigrationRequested=False, workerMysqlRequested=False, workerMysqlConfigSha256=None,
         pythonTests=counts.copy(), selectedPythonSuites={'tests_python.test_synthetic_pytest': counts.copy()})
+    if recipe == 'middleware': inner['semanticMysqlComponentRequested'] = False
     inner['commands'][0]['exitCode'] = 0
     python_command = {'label': 'python', 'exitCode': 0, 'finishedAt': '2026-11-07T00:00:00+00:00'}
     inner['commands'].append(python_command)
@@ -365,8 +372,9 @@ def add_pytest_cases(state, monkeypatch, damage=None):
                            runner_sha=cleanup.sha(runner), executor_sha=cleanup.sha(executor))
 
 
-def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temporary_roots_remain(state, monkeypatch):
-    cases = add_pytest_cases(state, monkeypatch); before = preserved_bytes(state)
+@pytest.mark.parametrize('recipe', ['legacy', 'middleware'])
+def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temporary_roots_remain(state, monkeypatch, recipe):
+    cases = add_pytest_cases(state, monkeypatch, recipe=recipe); before = preserved_bytes(state)
     value = plan(state); candidate = value['candidates'][0]
     proof = candidate['pytestTmp']
     assert proof['status'] == 'PROVEN' and proof['runnerSha256'] == cases.runner_sha
@@ -380,6 +388,21 @@ def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temp
     assert not cases.first.exists() and not cases.second.exists()
     assert sum(row['kind'] == 'PYTEST_CASE_DIRECTORY' for row in result['deleted']) == 2
     assert preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('flag', [None, True, 0, 'false'], ids=['missing', 'enabled', 'integer', 'string'])
+def test_middleware_pytest_recipe_requires_explicit_nonsemantic_mysql_scope(state, monkeypatch, flag):
+    cases = add_pytest_cases(state, monkeypatch, recipe='middleware')
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    if flag is None: inner.pop('semanticMysqlComponentRequested')
+    else: inner['semanticMysqlComponentRequested'] = flag
+    put_json(state.evidence / 'receipt.json', inner); seal(state)
+    before = preserved_bytes(state); value = plan(state); candidate = value['candidates'][0]
+    assert candidate['pytestTmp'] == {'status': 'SKIPPED', 'reason': 'PYTEST_SOURCE_SCOPE_REQUIRED'}
+    assert all(row['kind'] != 'PYTEST_CASE_DIRECTORY' for row in candidate['targets'])
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and cases.first.is_dir() and cases.second.is_dir()
+    assert not state.classes.exists() and preserved_bytes(state) == before
 
 
 @pytest.mark.parametrize('damage,reason', [

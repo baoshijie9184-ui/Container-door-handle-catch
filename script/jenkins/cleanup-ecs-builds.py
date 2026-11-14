@@ -54,7 +54,11 @@ PYTEST_TMP_SUFFIX = 'work/ci-evidence/tmp/pytest'
 # Reviewed source runners: 392ae841c2ab, 7a024fc1f02f and the source-only
 # temporary cleanup revision. The main function
 # includes its nested execute callback, source environment and exact basetemp.
+PYTEST_MIDDLEWARE_RUNNER_MAIN_AST = 'd19221763b3a72097db8a78a317667d793c56d18b98d74dcd85826142d98f09f'
 PYTEST_RUNNER_MAIN_AST = {
+    # bb38f0fc adds opt-in synthetic middleware protocols, not a new basetemp.
+    # Its semantic MySQL opt-in is excluded below; legacy receipts lack that flag.
+    PYTEST_MIDDLEWARE_RUNNER_MAIN_AST,
     # Native assertion collection/module dispatch (1663a568/3502d844); the
     # source scope, Python command and explicit pytest basetemp are unchanged.
     'e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3',
@@ -387,6 +391,9 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
                  and node.name == 'main']
         main_sha = routing_ast_sha(mains[0]) if len(mains) == 1 and isinstance(mains[0], ast.FunctionDef) else None
         if main_sha not in PYTEST_RUNNER_MAIN_AST: return skipped('PYTEST_RUNNER_NOT_REVIEWED')
+        if (main_sha == PYTEST_MIDDLEWARE_RUNNER_MAIN_AST
+                and inner.get('semanticMysqlComponentRequested') is not False):
+            return skipped('PYTEST_SOURCE_SCOPE_REQUIRED')
         routing = {}
         for node in ast.parse(executor).body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NPM_ROUTING_AST:
