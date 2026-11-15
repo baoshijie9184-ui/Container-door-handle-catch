@@ -153,7 +153,7 @@ if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
         $historicalOutputsAuthorization=@{taskThreadId=$approval.taskThreadId;scope=$approval.scope;sourceSha256=(Get-FileHash -LiteralPath $authPath -Algorithm SHA256).Hash.ToLowerInvariant()}
     }
     $kindMap = @{OFFICIAL_OCI='GENERATED_OCI_CACHE';OFFICIAL_IMAGE_TAR='GENERATED_IMAGE_ARCHIVE';NPM_CACACHE='NPM_CACHE';OLD_PRIVATE_MAVEN='RETIRED_PRIVATE_MAVEN';SOURCE_DEPENDENCIES='GENERATED_SOURCE_DEPENDENCIES';SOURCE_JAR='GENERATED_SOURCE_JAR'}
-    if ($null -ne $historicalOutputsAuthorization) { $kindMap.COMPILED_DIRECTORY='COMPILED_DIRECTORY'; $kindMap.NODE_MODULES='GENERATED_NODE_MODULES'; $kindMap.SOURCE_PYTEST='GENERATED_PYTEST_ROOT' }
+    if ($null -ne $historicalOutputsAuthorization) { $kindMap.COMPILED_DIRECTORY='COMPILED_DIRECTORY'; $kindMap.NODE_MODULES='GENERATED_NODE_MODULES'; $kindMap.SOURCE_PYTEST='GENERATED_PYTEST_ROOT'; $kindMap.SYNTHETIC_PYTEST_CASE='GENERATED_SYNTHETIC_PYTEST_CASE' }
     $rows = @()
     foreach ($row in $inputManifest.rows) {
         Require-Reclaim ($row.release -cmatch '^ci-[0-9]+-[a-f0-9]{12}$' -and $row.commit -cmatch '^[a-f0-9]{40}$' -and

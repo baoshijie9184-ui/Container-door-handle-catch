@@ -60,6 +60,32 @@ NPM_ROUTING_AST = {
 }
 NPM_INSTALL_ARGUMENTS = ['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund']
 PYTEST_TMP_SUFFIX = 'work/ci-evidence/tmp/pytest'
+# Reviewed native runs contain ordinary synthetic control-test copies as well
+# as native diagnostics. Only explicitly selected PASS case directories from
+# these fixed sources may use the ordinary (no links/specials) tree primitive.
+# The source-only whole-root policy and automatic native retention stay intact.
+SYNTHETIC_PYTEST_CASE_LIMIT = 1536
+SYNTHETIC_PYTEST_SOURCES = {
+    'ci-337-1918c12cd441': ('1918c12cd4419670896cf07e88378c81ea03123a', 'fe062e06868fd588319e7975d38de5b4c569383bde3a131d458ae11908206b2c'),
+    'ci-341-46c1dd6b1079': ('46c1dd6b107914d2d000cefbb6372fba8f7fdd97', '4d8cb28ce15c380db020d7694119cd3d116406410101bc13260f60fd73d2e498'),
+    'ci-366-2fb71393e3a3': ('2fb71393e3a3c0f1412040633c04db180b2fd2da', 'c628f6efc5e2c23764e9f2886b6dd9796e2fc5a46c697925da6bd226382fadd6'),
+}
+SYNTHETIC_PYTEST_MODULES = frozenset('tests_python/' + name + '.py' for name in (
+    'test_cold_store_custody', 'test_collaboration_browser_evidence', 'test_compact_cutover',
+    'test_compact_runtime_resources', 'test_compact_schema_source', 'test_derived_mysql_retirement',
+    'test_failed_native_jar_duplicates', 'test_fixed_originals_attestation', 'test_generated_artifact_lifecycle',
+    'test_generated_public_image_archive_retirement', 'test_historical_python_build_cache_retirement',
+    'test_jenkins_ecs_build_cleanup', 'test_jenkins_ecs_tool_runtime', 'test_jenkins_legacy_source_reuse',
+    'test_jenkins_maven_dependency_cache', 'test_jenkins_suite_evidence', 'test_legacy_bge_activation',
+    'test_legacy_preservation_profiles', 'test_local_artifact_custody', 'test_local_mysql_custody',
+    'test_project_mysql_custody', 'test_public_buildkit_layer_retirement',
+))
+SYNTHETIC_PYTEST_SUPPORT = frozenset({
+    'tests_python/test_historical_builder_retirement.py',
+    'tests_python/test_historical_mysql_fixture_retirement.py',
+    'tests_python/browser_evidence_fixture.py', 'tests_python/collaboration_evidence_fixture.py',
+    'tests_python/fixtures/ci-producer-3502d844/prepare-ecs-tools.py.txt',
+})
 # Reviewed source runners: 392ae841c2ab, 7a024fc1f02f and the source-only
 # temporary cleanup revision. The main function
 # includes its nested execute callback, source environment and exact basetemp.
@@ -1390,13 +1416,83 @@ def historical_outputs_authorized(request):
     return True
 
 
-def historical_generated_target(root, binding, row, item):
+def synthetic_pytest_case_provenance(root, binding, row, path, verifier):
+    """Admit one reviewed synthetic producer, not the native pytest namespace."""
+    require(SYNTHETIC_PYTEST_SOURCES.get(row['release']) == (row['commit'], row['sourceSha256']),
+            'SYNTHETIC_PYTEST_FIXED_SOURCE_NOT_REVIEWED')
+    parent = binding['checkout'] / PYTEST_TMP_SUFFIX
+    require(path.parent == parent and re.fullmatch(r'test_[A-Za-z0-9_]{1,40}[0-9]+', path.name),
+            'SYNTHETIC_PYTEST_EXACT_CASE_REQUIRED')
+    if 'syntheticPytest' not in binding:
+        require(native_pytest_preservation(root, binding, row['release'], parent) is not None,
+                'SYNTHETIC_PYTEST_NATIVE_COMMAND_NOT_BOUND')
+        wanted = SYNTHETIC_PYTEST_MODULES | SYNTHETIC_PYTEST_SUPPORT | {
+            'tests_python/conftest.py', 'script/jenkins/verify-ecs.py', 'script/jenkins/ecs-tool-runtime.py'}
+        members = {}
+        with verifier.bounded_tar(Path(binding['sourceArchive']), verifier.MAX_SOURCE_BYTES) as archive:
+            for member in archive:
+                if member.name not in wanted: continue
+                require(member.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and member.sparse is None
+                        and member.name not in members and 0 < member.size <= 1024 ** 2,
+                        'SYNTHETIC_PYTEST_SOURCE_MEMBER_INVALID')
+                members[member.name] = archive.extractfile(member).read()
+            require(archive.pax_headers.get('comment') == row['commit'], 'PINNED_SOURCE_COMMIT_DIFFERS')
+        require(set(members) == wanted, 'SYNTHETIC_PYTEST_SOURCE_CLOSURE_MISSING')
+        functions = {}
+        for name, raw in members.items():
+            actual = owned_chain(binding['checkout'] / name, root, maximum=1024 ** 2)
+            require(digest(actual) == sha(raw), 'SYNTHETIC_PYTEST_CHECKOUT_SOURCE_CHANGED')
+            if name in SYNTHETIC_PYTEST_MODULES:
+                functions[name] = {node.name for node in ast.parse(raw).body if isinstance(node, ast.FunctionDef)
+                                   and node.name.startswith('test_')}
+        executor_sha = sha(members['script/jenkins/ecs-tool-runtime.py'])
+        manifest = binding['toolManifest']
+        require(manifest.get('files', {}).get('executor.py') == executor_sha
+                and digest(owned_chain(Path(manifest['directory']) / 'executor.py', root, maximum=1024 ** 2)) == executor_sha,
+                'SYNTHETIC_PYTEST_EXECUTOR_CHANGED')
+        report = owned_chain(binding['checkout'] / 'work/ci-evidence/python.xml', root, maximum=verifier.MAX_FILE_BYTES)
+        raw = report.read_bytes(); reference = binding['catalog']['reports/python.xml']
+        require(len(raw) == reference['bytes'] and sha(raw) == reference['sha256']
+                and b'<!DOCTYPE' not in raw and b'<!ENTITY' not in raw, 'SYNTHETIC_PYTEST_REPORT_CHANGED')
+        prefixes = {}
+        for case in ET.fromstring(raw).iter('testcase'):
+            name = case.get('name', ''); module = case.get('classname', '').replace('.', '/') + '.py'
+            # pytest's reviewed tmp_path factory sanitizes node.name, truncates
+            # to 30 characters, then appends the numbered directory suffix.
+            prefix = re.sub(r'[\W]', '_', name)[:30]
+            passed = all(case.find(tag) is None for tag in ('failure', 'error', 'skipped'))
+            approved = module in functions and name.split('[', 1)[0] in functions[module]
+            prefixes.setdefault(prefix, []).append((module, passed and approved))
+        binding['syntheticPytest'] = {'prefixes': prefixes, 'reportSha256': reference['sha256']}
+    proof = binding['syntheticPytest']
+    matches = [case for prefix, cases in proof['prefixes'].items()
+               if prefix and path.name.startswith(prefix) and re.fullmatch(r'[0-9]+', path.name[len(prefix):])
+               for case in cases]
+    require(matches and all(passed for _, passed in matches) and len({module for module, _ in matches}) == 1,
+            'SYNTHETIC_PYTEST_CASE_NOT_UNAMBIGUOUS_PASS')
+    return {'producerModule': matches[0][0], 'matchingPassedCases': len(matches),
+            'pythonReportSha256': proof['reportSha256'], 'sourceSha256': row['sourceSha256']}
+
+
+def generated_target_selection(declared, historical):
+    if declared == 'AUTO': return
+    require(type(declared) is list, 'GENERATED_TARGET_SELECTION_INVALID')
+    synthetic_only = historical and declared and all(type(item) is dict
+        and item.get('kind') == 'GENERATED_SYNTHETIC_PYTEST_CASE' for item in declared)
+    require(len(declared) <= (SYNTHETIC_PYTEST_CASE_LIMIT if synthetic_only else 128),
+            'GENERATED_TARGET_SELECTION_INVALID')
+
+
+def historical_generated_target(root, binding, row, item, verifier):
     """The same recorded Maven/npm leaves as automatic cleanup, selected exactly."""
     require(set(item) == {'kind', 'path'}, 'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
     checkout = binding['checkout']; path = root / item['path']; evidence = checkout / 'work/ci-evidence'
     require(path.is_relative_to(root) and path.relative_to(root).as_posix() == item['path'],
             'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
-    if item['kind'] == 'COMPILED_DIRECTORY':
+    proof = {}
+    if item['kind'] == 'GENERATED_SYNTHETIC_PYTEST_CASE':
+        proof = synthetic_pytest_case_provenance(root, binding, row, path, verifier)
+    elif item['kind'] == 'COMPILED_DIRECTORY':
         suites = [evidence / 'java-suites' / suite['id'] for suite in binding['inner'].get('javaSuites', [])
                   if re.fullmatch(r'suite-[0-9]{3}', suite.get('id', ''))]
         if binding['inner'].get('sourceRegression'): suites.append(evidence / 'source-regression/build')
@@ -1419,7 +1515,7 @@ def historical_generated_target(root, binding, row, item):
                for name in binding['catalog']]
     require(not any(report == path or report.is_relative_to(path) for report in reports), 'GENERATED_TARGET_CONTAINS_ORIGINAL_REPORT')
     owned_chain(path, root, directory=True)
-    return {'recordedSuiteAndModule': item['kind'] == 'COMPILED_DIRECTORY', 'originalReportOverlap': False}
+    return {'recordedSuiteAndModule': item['kind'] == 'COMPILED_DIRECTORY', 'originalReportOverlap': False, **proof}
 
 
 def build_generated_plan(root, request, verifier, containers, *, held_releases=()):
@@ -1466,7 +1562,7 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                 enriched = {**row, 'identity': request['identity']}
                 binding = generated_binding(root, enriched, request['identity'], verifier)
                 declared = row.get('targets')
-                require(declared == 'AUTO' or type(declared) is list and len(declared) <= 128, 'GENERATED_TARGET_SELECTION_INVALID')
+                generated_target_selection(declared, historical)
                 targets, bases, retained_evidence = [], {}, []
                 if declared == 'AUTO':
                     # Only this task's enrolled terminal attempts discover new
@@ -1497,9 +1593,9 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                     declared = [{'kind': kind, 'path': path} for kind, path in generated_paths(tag).items()
                                 if kind in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE') or kind in GENERATED_SOURCE_PACKAGE_KINDS]
                 for item in declared:
-                    explicit_leaf = historical and type(item) is dict and item.get('kind') in ('COMPILED_DIRECTORY', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT')
+                    explicit_leaf = historical and type(item) is dict and item.get('kind') in ('COMPILED_DIRECTORY', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT', 'GENERATED_SYNTHETIC_PYTEST_CASE')
                     if explicit_leaf:
-                        bases[item['path']] = historical_generated_target(root, binding, enriched, item)
+                        bases[item['path']] = historical_generated_target(root, binding, enriched, item, verifier)
                     else:
                         require(type(item) is dict and set(item) == {'kind', 'path'}
                                 and generated_paths(tag).get(item['kind']) == item['path'], 'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')

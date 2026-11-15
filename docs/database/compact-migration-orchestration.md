@@ -87,7 +87,7 @@ python3 -B script/schema/migrate_compact.py verify \
   --output /ecs/checkout/work/attempt/readback
 ```
 
-`observe` 在冻结源锁内读取所有表、所有列、原 NULL、微秒时间、原密文/文本字节、索引、完整 DDL 和 AUTO_INCREMENT，生成逐行 SHA 链及完整源快照。`migrate` 再次读取并要求与已复核观察完全一致，保存可恢复源备份后创建候选，先装表及完整保护触发器，再按依赖实际运行全部 SQL 和 Workbench Java。外键统一延后到所有领域复制结束添加，逐条实际校验；始终保持 `FOREIGN_KEY_CHECKS=1`，孤儿会阻止完成。
+`observe` 在冻结源锁内读取所有表、所有列、原 NULL、微秒时间、原密文/文本字节、索引、完整 DDL 和 AUTO_INCREMENT，生成逐行 SHA 链及完整源快照。`migrate` 再次读取并要求与已复核观察完全一致，保存可恢复源备份后创建候选，先装表及完整保护触发器，再按依赖实际运行全部 SQL 和 Workbench Java。目标声明的外键统一延后到所有领域复制结束添加，逐条实际校验；始终保持 `FOREIGN_KEY_CHECKS=1`，违反这些关系的孤儿会阻止完成。目标领用历史父 ID 和检测任务历史 `session_id` 不添加父外键；已核实无对应来源外键的历史悬空 ID 原样复制、快照核对并随备份恢复，不能为安装新关系而丢弃或改写。具体来源分支及有外键版本的目标行为变化见 [核心复制契约](compact-core-copy.md)。
 
 V65 日报固定保存 run 原 15 字段、command 原 5 字段和 audit 全部原 detail JSON 文本。原 snapshot JSON 和 SHA、原 request SHA 均保留；NULL 发生时间不使用导入时间替代，源微秒直接保留。新的 typed payload 只供新协议读取，不能替代完整原记录。已结束运行残留 claim/lease 留在原记录证据中；RUNNING 的有效 claim/lease 同时复制到当前协议字段。源全部高水位前后对账，相关目标序列也保留历史上界。
 

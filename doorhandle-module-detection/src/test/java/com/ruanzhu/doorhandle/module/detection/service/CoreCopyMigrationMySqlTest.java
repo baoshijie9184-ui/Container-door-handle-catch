@@ -254,10 +254,71 @@ class CoreCopyMigrationMySqlTest {
     }
 
     @Test void caseInsensitiveSourceSessionReferenceRequiresAnExplicitResolution() {
-        // The source unicode_ci foreign key accepts this; the target bin key cannot preserve it by guessing a spelling.
+        // The reviewed FK-bearing source branch retains its exact-byte parent-reference guard.
         source.update("UPDATE detection_task SET session_id='SESSION-ONE' WHERE id=71");
         assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);assertCoreEmpty();
         assertThat(source.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("SESSION-ONE");
+    }
+
+    @Test void observedSessionWithoutForeignKeyPreservesDeletedAndCaseDistinctIds() throws Exception {
+        useObservedCoreSource();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM information_schema.key_column_usage WHERE table_schema=DATABASE() "
+                + "AND table_name='detection_task' AND column_name='session_id' AND referenced_table_name IS NOT NULL",Integer.class)).isZero();
+        source.update("UPDATE detection_task SET session_id='deleted-session' WHERE id=71");
+        source.update("INSERT INTO detection_task(id,task_id,status,session_id) VALUES(72,'case-distinct-task','SUCCEEDED','SESSION-ONE')");
+        source.update("INSERT INTO detection_task(id,task_id,status,session_id) VALUES(73,'null-session-task','SUCCEEDED',NULL)");
+        fixture.copy();fixture.copyChatReferenceAndInstallRelations();
+        assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("deleted-session");
+        assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=72",String.class)).isEqualTo("SESSION-ONE");
+        assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=73",String.class)).isNull();
+        assertThat(source.queryForList("SELECT id,session_id FROM detection_task ORDER BY id"))
+                .isEqualTo(target.queryForList("SELECT id,session_id FROM detection_task ORDER BY id"));
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM information_schema.key_column_usage WHERE table_schema=DATABASE() "
+                + "AND table_name='detection_task' AND column_name='session_id' AND referenced_table_name IS NOT NULL",Integer.class)).isZero();
+    }
+
+    @Test void deletingAndRekeyingSessionsNeverChangesAnyTaskHistoryField() throws Exception {
+        useObservedCoreSource();fixture.copy();fixture.copyChatReferenceAndInstallRelations();
+        var original=target.queryForMap("SELECT * FROM detection_task WHERE id=71");
+        target.update("UPDATE chat_session SET session_id='renamed-session' WHERE session_id='session-one'");
+        assertThat(target.queryForMap("SELECT * FROM detection_task WHERE id=71")).containsExactlyInAnyOrderEntriesOf(original);
+        target.update("DELETE FROM chat_session WHERE session_id='renamed-session'");
+        assertThat(target.queryForMap("SELECT * FROM detection_task WHERE id=71")).containsExactlyInAnyOrderEntriesOf(original);
+        assertThat(source.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("session-one");
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM chat_session WHERE session_id='session-one'",Integer.class)).isEqualTo(1);
+    }
+
+    @Test void declaredSessionForeignKeyStillRejectsAnOrphan() {
+        source.execute((ConnectionCallback<Void>)connection->{
+            try(var statement=connection.createStatement()) {
+                statement.execute("SET FOREIGN_KEY_CHECKS=0");
+                try {statement.executeUpdate("UPDATE detection_task SET session_id='deleted-session' WHERE id=71");}
+                finally {statement.execute("SET FOREIGN_KEY_CHECKS=1");}
+            }
+            return null;
+        });
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);assertCoreEmpty();
+        assertThat(source.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("deleted-session");
+    }
+
+    @Test void unreviewedSessionForeignKeyActionIsRejectedBeforeCopy() throws Exception {
+        useObservedCoreSource();
+        source.execute("ALTER TABLE detection_task ADD CONSTRAINT fixture_unreviewed_session FOREIGN KEY(session_id) "
+                + "REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE CASCADE");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);assertCoreEmpty();
+    }
+
+    @Test void missingUnrelatedForeignKeyCannotUseTheSessionHistoryBranch() throws Exception {
+        useObservedCoreSource();
+        source.execute("ALTER TABLE detection_task DROP FOREIGN KEY fixture_detection_task_model_id");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);assertCoreEmpty();
+    }
+
+    @Test void changedHistoricalSessionIdRollsBackTheWholeCopy() throws Exception {
+        useObservedCoreSource();source.update("UPDATE detection_task SET session_id='deleted-session' WHERE id=71");
+        target.execute("CREATE TRIGGER fixture_mutate_task_session BEFORE INSERT ON detection_task FOR EACH ROW SET NEW.session_id=NULL");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);assertCoreEmpty();
+        assertThat(source.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("deleted-session");
     }
 
     @Test void exactComparisonRollsBackAllRowsOnLateTargetMutation() {
@@ -278,9 +339,9 @@ class CoreCopyMigrationMySqlTest {
         assertThatThrownBy(()->target.update("DELETE FROM employee WHERE id=11")).isInstanceOf(Exception.class);
         assertThat(target.update("DELETE FROM users WHERE id=3")).isEqualTo(1);
         target.update("UPDATE chat_session SET session_id='session-renamed' WHERE session_id='session-one'");
-        assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("session-renamed");
+        assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("session-one");
         target.update("DELETE FROM chat_session WHERE session_id='session-renamed'");
-        assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isNull();
+        assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("session-one");
         var usageHistory=target.queryForMap("SELECT * FROM device_usage WHERE id=41");
         target.update("DELETE FROM device_management WHERE id=31");
         assertThat(target.queryForMap("SELECT * FROM device_usage WHERE id=41")).containsExactlyInAnyOrderEntriesOf(usageHistory);

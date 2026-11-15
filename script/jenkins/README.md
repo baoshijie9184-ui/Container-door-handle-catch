@@ -24,6 +24,10 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 MySQL 组合验证的 `tmp/pytest` 不适用纯 source 合成目录删除规则。只有同一构建的原件及身份已认证、MySQL scope 与执行记录完整，且原执行器明确记录 `pythonTemporaryCleanup.status=RETAINED_NATIVE_EVIDENCE` 时，才将该准确路径列入 `preservedEvidence`，原样保留而不作为收尾失败。其未测容量标记 `NOT_MEASURED`，不计作零占用或已释放空间，也不计入可丢弃生成物的预算。缺报告、重复 Python 命令、非法字段或身份不符仍阻断；不按 `PYTEST_SOURCE_SCOPE_REQUIRED` 原因码整体豁免。业务验证的原始 PASS/FAILED 不变，真正的收尾及收证失败仍使流水线失败。
 
+独立历史维护可用 `SYNTHETIC_PYTEST_CASE` 精确选择其中已证明的普通合成测试副本。目前仅登记 #337/#341/#366 的固定源码及审核过的控制测试模块，要求原 XML 对应测试全部 PASS、源码函数与 pytest 目录前缀无歧义，并重新绑定原 runner、executor、conftest 和模块。它只删除 `tmp/pytest` 下一层明确列出的 case 目录，不删除父根、失败/跳过/未知 case、真实迁移 SQL 或原始报告；任何符号链接、特殊节点、多链接文件或不安全权限都拒绝。自动 native 保留和 source-only 整根规则不变。
+
+这类纯 case 清单每历史轮最多 1,536 项；混合清单与旧类别仍最多 128 项，全局目标 JSON 16 MiB、plan 32 MiB 和实际磁盘保底保持原值。三份清单位于 `work/table-switch-20261115/native-synthetic-pytest-ci-{337,341,366}.json`，同一固定提交、一次统一控制验收后依次维护，期间不改代码或重复测试。原件、无活动引用和实时容量仍由原 plan/apply 逐项认证，私有清单不是已删除回执。
+
 历史授权清单通过同一 Jenkins 任务运行：
 
 - `ACTION=reclaim-build-outputs`

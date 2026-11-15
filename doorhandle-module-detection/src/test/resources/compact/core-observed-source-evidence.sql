@@ -403,8 +403,6 @@ ALTER TABLE `device_capture_alert` ADD CONSTRAINT `fixture_device_capture_alert_
 
 ALTER TABLE `detection_task` ADD CONSTRAINT `fixture_detection_task_model_id` FOREIGN KEY (`model_id`) REFERENCES `model_management`(`model_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
-ALTER TABLE `detection_task` ADD CONSTRAINT `fixture_detection_task_session_id` FOREIGN KEY (`session_id`) REFERENCES `chat_session`(`session_id`) ON DELETE SET NULL ON UPDATE CASCADE;
-
 ALTER TABLE `image_detection_data` ADD CONSTRAINT `fixture_image_detection_data_model_id` FOREIGN KEY (`model_id`) REFERENCES `model_management`(`model_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 ALTER TABLE chat_session ADD CONSTRAINT fixture_chat_session_username FOREIGN KEY (`username`) REFERENCES users(`username`) ON DELETE CASCADE ON UPDATE CASCADE;

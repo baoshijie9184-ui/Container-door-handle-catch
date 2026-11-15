@@ -345,7 +345,7 @@
         "doorhandle.core.copy.target.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/CoreCopyMigrationMySqlTest.java",
-      "minimumTests": 23,
+      "minimumTests": 29,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]
@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_generated_artifact_lifecycle",
-        "minimumTests": 147,
+        "minimumTests": 185,
         "source": "tests_python/test_generated_artifact_lifecycle.py",
         "allowedSkippedTests": []
       },

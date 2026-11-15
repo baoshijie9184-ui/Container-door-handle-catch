@@ -20,8 +20,9 @@ ALTER TABLE detection_task ADD CONSTRAINT `fk_detection_task_model` FOREIGN KEY 
 
 ALTER TABLE historical_detection_summary ADD CONSTRAINT `fk_image_detection_model` FOREIGN KEY (`model_id`) REFERENCES `model_management` (`model_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
--- Install relations after candidate data has been copied and checked. Preserve original session deletion/update actions.
-ALTER TABLE detection_task ADD CONSTRAINT fk_detection_task_session FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE SET NULL ON UPDATE CASCADE;
+-- The captured source has no detection_task.session_id FK. Keep the original
+-- historical ID when a session is absent, deleted or re-keyed; do not invent
+-- a parent match or add SET NULL/CASCADE behavior during table switching.
 
 -- Proposed after source orphan audit: detection_input.work_unit_id -> detection_work_unit.work_unit_id (RESTRICT). Old source had no FK.
 

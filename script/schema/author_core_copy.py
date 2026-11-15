@@ -185,12 +185,17 @@ for name,columns in optional.items():
         fallback='0' if column=='assignment_identity_revision' else 'NULL'
         emit(f"SET @compact_core_expr_{name}_{column}=IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='{name}' AND column_name='{column}')=1,'s.`{column}`','{fallback}');")
 
-# Existing FK semantics and source referential integrity. Cross-domain session data is verified here and copied separately.
+# Existing FK semantics and source referential integrity. The captured #341/#366
+# task source has no session FK; its historical session IDs are independent of
+# live chat rows. The older FK-bearing declaration remains an exact alternative.
 relations=[('employee','department_id','organization_department','id','RESTRICT','RESTRICT'),('account_employee_binding','user_id','users','id','RESTRICT','RESTRICT'),('account_employee_binding','employee_id','employee','id','RESTRICT','RESTRICT'),('device_management','employee_id','employee','id','SET NULL','RESTRICT'),('device_usage_record','device_id','device_management','id','CASCADE','RESTRICT'),('device_usage_record','employee_id','employee','id','CASCADE','RESTRICT'),('device_capture_alert','device_id','device_management','id','SET NULL','RESTRICT'),('detection_task','model_id','model_management','model_id','SET NULL','CASCADE'),('detection_task','session_id','chat_session','session_id','SET NULL','CASCADE'),('image_detection_data','model_id','model_management','model_id','SET NULL','CASCADE')]
 emit('CREATE TEMPORARY TABLE compact_core_relations(source_table VARCHAR(64),source_column VARCHAR(64),parent_table VARCHAR(64),parent_column VARCHAR(64),delete_rule VARCHAR(16),update_rule VARCHAR(16)) ENGINE=InnoDB;')
 emit('INSERT INTO compact_core_relations VALUES\n'+',\n'.join('('+','.join(map(literal,r))+')' for r in relations)+';')
 emit("UPDATE compact_core_relations SET update_rule='CASCADE' WHERE source_table='device_management' AND source_column='employee_id' AND @compact_core_observed_device_management;")
 emit("DELETE FROM compact_core_relations WHERE source_table='device_usage_record' AND @compact_core_observed_device_usage_record;")
+emit("SET @compact_core_session_fk_count=(SELECT COUNT(*) FROM information_schema.key_column_usage WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='detection_task' AND column_name='session_id' AND referenced_table_name IS NOT NULL);")
+guard("SELECT IF(@compact_core_session_fk_count IN (0,1),1,0)")
+emit("DELETE FROM compact_core_relations WHERE source_table='detection_task' AND source_column='session_id' AND @compact_core_session_fk_count=0;")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name LEFT JOIN compact_core_relations e ON e.source_table=k.table_name AND e.source_column=k.column_name AND e.parent_table=k.referenced_table_name AND e.parent_column=k.referenced_column_name AND e.delete_rule=(CASE r.delete_rule WHEN 'NO ACTION' THEN 'RESTRICT' ELSE r.delete_rule END) AND e.update_rule=(CASE r.update_rule WHEN 'NO ACTION' THEN 'RESTRICT' ELSE r.update_rule END) WHERE k.table_schema='__SOURCE_SCHEMA__' AND k.table_name IN ("+source_list+") AND (e.source_table IS NULL OR k.referenced_table_schema<>'__SOURCE_SCHEMA__' OR k.ordinal_position<>1)")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM compact_core_relations e JOIN information_schema.columns c ON c.table_schema='__SOURCE_SCHEMA__' AND c.table_name=e.source_table AND c.column_name=e.source_column LEFT JOIN information_schema.key_column_usage k ON k.table_schema='__SOURCE_SCHEMA__' AND k.table_name=e.source_table AND k.column_name=e.source_column AND k.referenced_table_schema='__SOURCE_SCHEMA__' AND k.referenced_table_name=e.parent_table AND k.referenced_column_name=e.parent_column WHERE k.constraint_name IS NULL")
 for child,column,parent,key,_,_ in relations:
@@ -202,6 +207,8 @@ for child,column,parent,key,_,_ in relations:
         # after deletion. Only its reviewed no-FK variant admits these orphans;
         # the canonical source must still satisfy its declared original FKs.
         preserved_history='@compact_core_observed_device_usage_record OR ' if child=='device_usage_record' else ''
+        if child=='detection_task' and column=='session_id':
+            preserved_history='@compact_core_session_fk_count=0 OR '
         guard(f"SELECT IF({preserved_history}COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.`{child}` s LEFT JOIN `__SOURCE_SCHEMA__`.`{parent}` p ON {binary}s.`{column}`={binary}p.`{key}` WHERE s.`{column}` IS NOT NULL AND p.`{key}` IS NULL")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.account_employee_binding WHERE version<0")
 for column in ['created_user_id','assignee_user_id','reviewer_user_id','disposition_user_id','rework_user_id','assigned_by_user_id']:
@@ -299,6 +306,7 @@ for observed in (False,True):
         fixture.append('CREATE TABLE `'+name+'` (\n    '+',\n    '.join(columns+constraints)+'\n) '+options+';')
     for child,column,parent,key,delete,update in relations:
         if observed and child=='device_usage_record':continue
+        if observed and child=='detection_task' and column=='session_id':continue
         if observed and child=='device_management':update='CASCADE'
         # Omitted actions and NO ACTION have immediate RESTRICT semantics.
         fixture.append(f'ALTER TABLE `{child}` ADD CONSTRAINT `fixture_{child}_{column}` FOREIGN KEY (`{column}`) REFERENCES `{parent}`(`{key}`) ON DELETE {delete} ON UPDATE '+('NO ACTION' if update=='RESTRICT' else update)+';')

@@ -1012,9 +1012,172 @@ def test_historical_source_authority_does_not_reclassify_native_mysql_temporary_
     assert state.native_pytest.exists() and legacy.preserved_bytes(state) == before
 
 
+@pytest.fixture
+def synthetic_native_case(native_pytest, monkeypatch):
+    state = native_pytest
+    source = state.inbox / 'source.tar.gz'
+    with tarfile.open(source, 'r:gz') as archive:
+        members = {entry.name: archive.extractfile(entry).read() for entry in archive}
+    name = 'tests_python/test_owned_synthetic.py'
+    members[name] = b'def test_owned_copy(tmp_path):\n    (tmp_path / "copy").write_bytes(b"synthetic")\n'
+    support = 'tests_python/owned_fixture.py'
+    members[support] = b'# synthetic fixture source\n'
+    members['tests_python/conftest.py'] = b'# isolated fixture source\n'
+    for member in (name, support, 'tests_python/conftest.py', 'script/jenkins/ecs-tool-runtime.py'):
+        legacy.put(state.checkout / member, members[member])
+    legacy.package(source, members, 'a' * 40)
+    checksum = cleanup.digest(source)
+    manifest = cleanup.read_json(state.manifest); manifest['sourceSha256'] = checksum
+    legacy.put_json(state.manifest, manifest)
+    claim_file = state.attempt / '.verification-claimed/claim.json'
+    claim = cleanup.read_json(claim_file); claim['sourceSha256'] = checksum; legacy.put_json(claim_file, claim)
+    tools = cleanup.read_json(state.evidence / 'tool-runtime.json')
+    tools.update(sourceSha256=checksum, manifestSha256=cleanup.digest(state.manifest))
+    tools['cleanup']['manifestSha256'] = cleanup.digest(state.manifest)
+    legacy.put_json(state.evidence / 'tool-runtime.json', tools)
+    legacy.put(state.evidence / 'python.xml', b'<testsuite>'
+        b'<testcase classname="tests_python.test_owned_synthetic" name="test_owned_copy"/>'
+        b'<testcase classname="tests_python.test_real_native" name="test_real_native"><failure/></testcase></testsuite>')
+    state.record['sourceSha256'] = checksum
+    legacy.seal(state)
+    monkeypatch.setattr(cleanup, 'SYNTHETIC_PYTEST_SOURCES', {OLD: ('a' * 40, checksum)})
+    monkeypatch.setattr(cleanup, 'SYNTHETIC_PYTEST_MODULES', frozenset({name}))
+    monkeypatch.setattr(cleanup, 'SYNTHETIC_PYTEST_SUPPORT', frozenset({support}))
+    state.synthetic_case = legacy.put(state.native_pytest / 'test_owned_copy0/copy', b'synthetic').parent
+    state.retained_native = legacy.put(state.native_pytest / 'test_real_native0/diagnostic', b'unique native diagnostic')
+    state.synthetic_request = authorize_historical_outputs(request(state, targets=[{
+        'kind': 'GENERATED_SYNTHETIC_PYTEST_CASE', 'path': state.synthetic_case.relative_to(state.root).as_posix()}]))
+    return state
+
+
+def test_exact_native_synthetic_pass_case_reuses_ordinary_tree_and_keeps_parent_and_originals(synthetic_native_case):
+    state = synthetic_native_case; before = legacy.preserved_bytes(state)
+    plan = make_plan(state, state.synthetic_request)
+    assert not plan['skipped'] and len(plan['candidates'][0]['targets']) == 1
+    basis = plan['candidates'][0]['bases'][state.synthetic_case.relative_to(state.root).as_posix()]
+    assert basis['producerModule'] == 'tests_python/test_owned_synthetic.py' and basis['matchingPassedCases'] == 1
+    receipt = cleanup.apply_plan(state.root, state.synthetic_request, plan, remote)
+    assert receipt['status'] == 'REMOVED' and not state.synthetic_case.exists()
+    assert state.native_pytest.is_dir() and state.retained_native.read_bytes() == b'unique native diagnostic'
+    assert legacy.preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('damage', ['no-authority', 'unreviewed-source', 'root', 'nested', 'other-case',
+    'absolute', 'dot-alias', 'runner', 'executor', 'producer', 'support', 'failed', 'skipped', 'unreviewed-module',
+    'ambiguous-module', 'missing-function', 'wrong-basetemp', 'running-tool'])
+def test_native_synthetic_case_requires_exact_fixed_producer_and_original_pass_before_inventory(synthetic_native_case, monkeypatch, damage):
+    state = synthetic_native_case; value = copy.deepcopy(state.synthetic_request); target = value['candidates'][0]['targets'][0]
+    if damage == 'no-authority': value.pop('historicalOutputsAuthorization')
+    elif damage == 'unreviewed-source': monkeypatch.setattr(cleanup, 'SYNTHETIC_PYTEST_SOURCES', {})
+    elif damage in ('root', 'nested', 'other-case', 'absolute', 'dot-alias'):
+        target['path'] = {'root': state.native_pytest.relative_to(state.root).as_posix(),
+            'nested': (state.synthetic_case / 'copy').relative_to(state.root).as_posix(),
+            'other-case': state.retained_native.parent.relative_to(state.root).as_posix(),
+            'absolute': str(state.synthetic_case), 'dot-alias': './' + target['path']}[damage]
+    elif damage in ('runner', 'executor', 'producer', 'support'):
+        path = {'runner': state.checkout / 'script/jenkins/verify-ecs.py',
+                'executor': state.inbox / 'tool-runtime/executor.py',
+                'producer': state.checkout / 'tests_python/test_owned_synthetic.py',
+                'support': state.checkout / 'tests_python/owned_fixture.py'}[damage]
+        legacy.put(path, path.read_bytes() + b'\n# changed\n')
+    elif damage in ('failed', 'skipped', 'unreviewed-module', 'ambiguous-module', 'missing-function'):
+        path = state.evidence / 'python.xml'; raw = path.read_bytes()
+        if damage in ('failed', 'skipped'):
+            tag = b'failure' if damage == 'failed' else b'skipped'
+            raw = raw.replace(b'name="test_owned_copy"/>', b'name="test_owned_copy"><' + tag + b'/></testcase>')
+        elif damage == 'unreviewed-module': raw = raw.replace(b'tests_python.test_owned_synthetic', b'tests_python.test_unreviewed')
+        elif damage == 'ambiguous-module': raw = raw.replace(b'</testsuite>', b'<testcase classname="tests_python.test_unreviewed" name="test_owned_copy"/></testsuite>')
+        else:
+            raw = raw.replace(b'test_owned_copy', b'test_not_in_source')
+            renamed = state.synthetic_case.with_name('test_not_in_source0'); state.synthetic_case.rename(renamed)
+            state.synthetic_case = renamed; target['path'] = renamed.relative_to(state.root).as_posix()
+        legacy.put(path, raw); legacy.seal(state)
+    else:
+        path = state.evidence / 'tool-runtime.json'; tools = cleanup.read_json(path)
+        if damage == 'wrong-basetemp': tools['commands'][0]['argumentsSha256'] = '0' * 64
+        else: tools['commands'][0]['cleanup']['pid'] = 1
+        legacy.put_json(path, tools); legacy.seal(state)
+    monkeypatch.setattr(cleanup, 'tree_inventory', lambda *_: pytest.fail('Invalid producer reached target inventory'))
+    result = make_plan(state, value)
+    assert not result['candidates'] and result['skipped'] and state.synthetic_case.exists()
+    assert state.retained_native.read_bytes() == b'unique native diagnostic'
+
+
+@pytest.mark.parametrize('damage', ['symlink', 'hardlink', 'fifo', 'writable-file', 'writable-parent', 'writable-root'])
+def test_native_synthetic_case_keeps_all_nonordinary_or_unowned_bytes(synthetic_native_case, damage):
+    state = synthetic_native_case; child = state.synthetic_case / 'unsafe'
+    if damage == 'symlink': child.symlink_to(state.retained_native)
+    elif damage == 'hardlink': os.link(state.retained_native, child)
+    elif damage == 'fifo': os.mkfifo(child, 0o600)
+    elif damage == 'writable-file': (state.synthetic_case / 'copy').chmod(0o664)
+    elif damage == 'writable-parent': state.native_pytest.chmod(0o775)
+    else: state.synthetic_case.chmod(0o775)
+    result = make_plan(state, state.synthetic_request)
+    assert not result['candidates'] and result['skipped'] and state.synthetic_case.is_dir()
+    assert state.retained_native.read_bytes() == b'unique native diagnostic'
+
+
+@pytest.mark.parametrize('reference', ['container', 'process'])
+def test_native_synthetic_case_does_not_bypass_existing_active_reference_checks(synthetic_native_case, monkeypatch, reference):
+    state = synthetic_native_case; containers = []
+    if reference == 'container':
+        containers = [('f' * 64, False, False, 0, 'unrelated', '',
+                       [{'Type': 'bind', 'Source': str(state.synthetic_case)}])]
+    else:
+        def refuse(path, **kwargs):
+            assert path == state.checkout and kwargs == {'include_inbox': True}
+            raise ValueError('ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
+        monkeypatch.setattr(cleanup, 'process_references', refuse)
+    result = make_plan(state, state.synthetic_request, containers)
+    assert not result['candidates'] and result['skipped'] and state.synthetic_case.exists()
+
+
+@pytest.mark.parametrize('damage', ['source', 'report', 'target'])
+def test_native_synthetic_case_apply_rebinds_all_originals_and_inventory(synthetic_native_case, damage):
+    state = synthetic_native_case; value = state.synthetic_request; plan = make_plan(state, value)
+    assert plan['candidates'] and not plan['skipped']
+    path = {'source': state.inbox / 'source.tar.gz', 'report': state.evidence / 'python.xml',
+            'target': state.synthetic_case / 'copy'}[damage]
+    path.write_bytes(path.read_bytes() + b'changed')
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, value, plan, remote)
+    assert state.synthetic_case.exists() and state.retained_native.exists()
+
+
+def test_native_synthetic_case_cannot_contain_a_catalogued_original_report(synthetic_native_case):
+    state = synthetic_native_case
+    report = legacy.put(state.synthetic_case / 'original.xml', b'<testsuite><testcase name="original"/></testsuite>')
+    state.reports.append('reports/' + report.relative_to(state.evidence).as_posix())
+    legacy.seal(state)
+    result = make_plan(state, state.synthetic_request)
+    assert not result['candidates'] and result['skipped'][0]['reason'] == 'GENERATED_TARGET_CONTAINS_ORIGINAL_REPORT'
+    assert report.is_file() and state.retained_native.exists()
+
+
+@pytest.mark.parametrize(('count', 'kind', 'historical', 'allowed'), [
+    (128, 'COMPILED_DIRECTORY', True, True), (129, 'COMPILED_DIRECTORY', True, False),
+    (1536, 'GENERATED_SYNTHETIC_PYTEST_CASE', True, True), (1537, 'GENERATED_SYNTHETIC_PYTEST_CASE', True, False),
+    (129, 'GENERATED_SYNTHETIC_PYTEST_CASE', False, False), (129, 'MIXED', True, False)])
+def test_only_exact_synthetic_case_batches_get_the_independent_count_bound(count, kind, historical, allowed):
+    targets = [{'kind': 'GENERATED_SYNTHETIC_PYTEST_CASE' if kind == 'MIXED' else kind, 'path': str(i)} for i in range(count)]
+    if kind == 'MIXED': targets[-1]['kind'] = 'COMPILED_DIRECTORY'
+    if allowed: cleanup.generated_target_selection(targets, historical)
+    else:
+        with pytest.raises(ValueError, match='GENERATED_TARGET_SELECTION_INVALID'):
+            cleanup.generated_target_selection(targets, historical)
+    assert cleanup.MAX_TARGET_CANONICAL == 16 * 1024 ** 2 and cleanup.MAX_PLAN == 32 * 1024 ** 2
+
+
+def test_synthetic_case_controller_mapping_is_only_inside_current_historical_authority():
+    source = (legacy.ROOT / 'script/jenkins/reclaim-build-outputs.ps1').read_text(encoding='utf8')
+    line = next(line for line in source.splitlines() if "$kindMap.SYNTHETIC_PYTEST_CASE=" in line)
+    assert "if ($null -ne $historicalOutputsAuthorization)" in line
+    assert "='GENERATED_SYNTHETIC_PYTEST_CASE'" in line
+
+
 @pytest.mark.parametrize('kind', ['COMPILED_DIRECTORY', 'NPM_CACHE', 'RETIRED_PRIVATE_MAVEN',
     'GENERATED_SOURCE_DEPENDENCIES', 'GENERATED_SOURCE_JAR', 'GENERATED_OCI_CACHE',
-    'GENERATED_IMAGE_ARCHIVE', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'])
+    'GENERATED_IMAGE_ARCHIVE', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT', 'GENERATED_SYNTHETIC_PYTEST_CASE'])
 def test_every_generated_inventory_refuses_a_writable_parent_before_reading_target(generated, monkeypatch, kind):
     parent = generated.root / 'unregistered-inventory-parent'
     file_kind = kind in ('GENERATED_SOURCE_JAR', 'GENERATED_IMAGE_ARCHIVE')
