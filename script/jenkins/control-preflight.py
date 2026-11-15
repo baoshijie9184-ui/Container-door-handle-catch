@@ -35,7 +35,8 @@ MODULES = ('test_jenkins_resource_budget', 'test_jenkins_fixture_admission', 'te
            'test_project_mysql_custody',
            'test_jenkins_suite_evidence', 'test_jenkins_evidence_recollection', 'test_jenkins_maven_dependency_cache',
            'test_compact_schema_source', 'test_control_preflight', 'test_middleware_fixture',
-           'test_observability_fixture', 'test_semantic_mysql_fixture', 'test_runtime_manual_acceptance')
+           'test_observability_fixture', 'test_semantic_mysql_fixture', 'test_runtime_manual_acceptance',
+           'test_compact_image_inputs_identity')
 TAG = re.compile(r'ci-[1-9][0-9]*-[a-f0-9]{12}')
 SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2

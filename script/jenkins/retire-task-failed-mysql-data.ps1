@@ -79,7 +79,7 @@ $request=[ordered]@{schemaVersion=1;kind='doorhandle-authorized-failed-mysql-dat
 $uploads=@();$originalCustody=@()
 $names=@{buildXml='build.xml';release='release.json';localBuild='local-build.json';fixtureCleanupPublic='fixture-cleanup.json'}
 if($finished){
-    Require-TaskData ([IO.Path]::IsPathFullyQualified($finishedManifest) -and $env:FAILED_NATIVE_BUILD_NUMBER -ceq '' -and $env:GENERATED_ARTIFACTS_ONLY -cne 'true') 'Finished outputs require a separate exact manifest and no mixed policy.'
+    Require-TaskData ([IO.Path]::IsPathFullyQualified($finishedManifest) -and [string]::IsNullOrEmpty($env:FAILED_NATIVE_BUILD_NUMBER) -and $env:GENERATED_ARTIFACTS_ONLY -cne 'true') 'Finished outputs require a separate exact manifest and no mixed policy.'
     Assert-TaskControlPath $finishedManifest
     $manifestItem=Get-Item -LiteralPath $finishedManifest
     Require-TaskData (-not($manifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $manifestItem.Length -gt 0 -and $manifestItem.Length -le 262144) 'A small regular exact manifest is required.'

@@ -91,6 +91,54 @@ def image_descriptor(value, media_types, metadata=True):
     return {key: value[key] for key in ('mediaType', 'digest', 'size')}
 
 
+def attestation_members(members, small, entry, subject):
+    """Close Docker's bounded provenance attachment to the one runtime image."""
+    require(type(entry) is dict and set(entry) == {'mediaType', 'digest', 'size', 'annotations', 'platform'}
+            and entry['platform'] == {'os': 'unknown', 'architecture': 'unknown'}
+            and entry['annotations'] == {'vnd.docker.reference.type': 'attestation-manifest',
+                                         'vnd.docker.reference.digest': subject['digest']},
+            'Unsupported or foreign image attestation reference')
+    allowed = set()
+    def blob(descriptor, media):
+        descriptor = image_descriptor(descriptor, media, metadata=False)
+        name = 'blobs/sha256/' + descriptor['digest'][7:]
+        item = members.get(name)
+        size = item.size if isinstance(item, tarfile.TarInfo) and item.isfile() else item.get('size') if type(item) is dict else None
+        require(size == descriptor['size'] and size <= 4 * MIB, 'Image attestation member is missing or oversized')
+        raw = small(name)
+        require(len(raw) == size and 'sha256:' + hashlib.sha256(raw).hexdigest() == descriptor['digest'],
+                'Image attestation bytes differ')
+        allowed.add(name)
+        return decoded(raw)
+    manifest = blob({key: entry[key] for key in ('mediaType', 'digest', 'size')}, MANIFEST_TYPES)
+    require(type(manifest) is dict and set(manifest) == {'schemaVersion', 'mediaType', 'artifactType', 'config', 'layers', 'subject'}
+            and type(manifest['schemaVersion']) is int and manifest['schemaVersion'] == 2
+            and manifest['mediaType'] == entry['mediaType']
+            and manifest['artifactType'] == 'application/vnd.docker.attestation.manifest.v1+json'
+            and image_descriptor(manifest['subject'], MANIFEST_TYPES, metadata=False) == subject,
+            'Image attestation subject differs from the sole runtime image')
+    config = manifest['config']
+    require(type(config) is dict and set(config) == {'mediaType', 'digest', 'size', 'data'}
+            and config['data'] == 'e30=' and config['size'] == 2,
+            'Image attestation must use the empty OCI configuration')
+    require(blob({key: config[key] for key in ('mediaType', 'digest', 'size')}, {'application/vnd.oci.empty.v1+json'}) == {},
+            'Image attestation configuration is not empty')
+    layers = manifest['layers']
+    require(type(layers) is list and len(layers) == 1, 'Only the bounded provenance attachment is supported')
+    layer = layers[0]
+    require(type(layer) is dict and set(layer) == {'mediaType', 'digest', 'size', 'annotations'}
+            and layer['annotations'] == {'in-toto.io/predicate-type': 'https://slsa.dev/provenance/v1'},
+            'Unsupported attestation payload descriptor')
+    payload = blob({key: layer[key] for key in ('mediaType', 'digest', 'size')}, {'application/vnd.in-toto+json'})
+    require(type(payload) is dict and payload.get('_type') == 'https://in-toto.io/Statement/v1'
+            and payload.get('predicateType') == layer['annotations']['in-toto.io/predicate-type']
+            and type(payload.get('subject')) is list and len(payload['subject']) == 1
+            and type(payload['subject'][0]) is dict
+            and payload['subject'][0].get('digest') == {'sha256': subject['digest'][7:]},
+            'Attestation payload is not the declared provenance JSON')
+    return allowed
+
+
 def oci_source(members, small):
     """Verify the original single-platform graph, retaining its load identity."""
     require('index.json' in members and 'oci-layout' in members
@@ -118,8 +166,18 @@ def oci_source(members, small):
             return root, value, allowed
         require(depth < 3 and value.keys() <= {'schemaVersion', 'mediaType', 'manifests', 'annotations'}
                 and ('mediaType' not in value or value['mediaType'] in INDEX_TYPES)
-                and type(value['manifests']) is list and len(value['manifests']) == 1, 'Engine export contains another image/platform')
-        descriptor = image_descriptor(value['manifests'][0], MANIFEST_TYPES | INDEX_TYPES)
+                and type(value['manifests']) is list and len(value['manifests']) in (1, 2), 'Engine export contains another image/platform')
+        entries = value['manifests']
+        if len(entries) == 2:
+            runtime = [entry for entry in entries if type(entry) is dict
+                       and entry.get('platform') == {'os': 'linux', 'architecture': 'amd64'}
+                       and entry.get('mediaType') in MANIFEST_TYPES]
+            require(len(runtime) == 1, 'Engine export must contain exactly one runnable linux/amd64 image')
+            descriptor = image_descriptor(runtime[0], MANIFEST_TYPES)
+            attachment = next(entry for entry in entries if entry is not runtime[0])
+            allowed.update(attestation_members(members, small, attachment, descriptor))
+        else:
+            descriptor = image_descriptor(entries[0], MANIFEST_TYPES | INDEX_TYPES)
         if root is None: root = descriptor
         name = 'blobs/sha256/' + descriptor['digest'][7:]; raw = small(name)
         require(len(raw) == descriptor['size'] and 'sha256:' + hashlib.sha256(raw).hexdigest() == descriptor['digest'],

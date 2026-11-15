@@ -310,10 +310,11 @@ def old_preflight(tree, entry, observed, verifier, cleanup):
     return binding
 
 
-def repair_entry(root, entry, observed, verifier, cleanup, *, apply=False, audit=None, journal=lambda event: None):
+def repair_entry(root, entry, observed, verifier, cleanup, *, apply=False, audit=None, journal=lambda event: None,
+                 preflight=None, quiescence=None):
     audit = audit if audit is not None else {}
     with HeldTree(root, entry['changes']) as tree:
-        binding = old_preflight(tree, entry, observed, verifier, cleanup)
+        binding = (preflight or old_preflight)(tree, entry, observed, verifier, cleanup)
         rows = []
         for change in entry['changes']:
             name = change['path']; node = tree.nodes[name]
@@ -329,7 +330,7 @@ def repair_entry(root, entry, observed, verifier, cleanup, *, apply=False, audit
         # mutation. No repair is attempted when any earlier predicate failed.
         for report in entry['reportFiles']:
             need(tree.digest(report_path(entry['release'], report['path'])) == report['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
-        cleanup.quiescent(binding, entry['release'], cleanup.docker_snapshot())
+        (quiescence or (lambda value: cleanup.quiescent(value, entry['release'], cleanup.docker_snapshot())))(binding)
         tree.verify_all(); changed = set()
         for change, row in zip(entry['changes'], rows):
             name = change['path']; tree.verify_all(changed)
@@ -351,7 +352,7 @@ def repair_entry(root, entry, observed, verifier, cleanup, *, apply=False, audit
         for report in entry['reportFiles']:
             need(tree.digest(report_path(entry['release'], report['path'])) == report['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
         tree.verify_all(changed)
-        cleanup.quiescent(binding, entry['release'], cleanup.docker_snapshot())
+        (quiescence or (lambda value: cleanup.quiescent(value, entry['release'], cleanup.docker_snapshot())))(binding)
         return {'status': 'REPAIRED' if pending else 'NO_ACTION', 'changedPaths': pending}
 
 

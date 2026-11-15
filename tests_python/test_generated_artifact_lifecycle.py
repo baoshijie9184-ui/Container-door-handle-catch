@@ -671,10 +671,10 @@ def maintenance_package_paths(generated):
     paths = re.findall(r"'([^']+)'", base[1])
     if generated:
         selected = re.search(
-            r"(?m)^    elseif \(\$env:GENERATED_ARTIFACTS_ONLY -ceq 'true'\) \{ \$maintenancePaths \+= '([^']+)' \}$",
+            r"(?m)^    elseif \(\$env:GENERATED_ARTIFACTS_ONLY -ceq 'true'\) \{ \$maintenancePaths \+= @\(([^\n]+)\) \}$",
             package)
         assert selected, 'Generated maintenance must package its dynamic tree helper'
-        paths.append(selected[1])
+        paths.extend(re.findall(r"'([^']+)'", selected[1]))
     assert "'--output=artifacts/source.tar.gz', $commit) + $maintenancePaths" in package
     return paths
 
@@ -682,6 +682,7 @@ def maintenance_package_paths(generated):
 def inspect_packaged_helpers(tmp_path, monkeypatch, *, generated, damage=None):
     paths = maintenance_package_paths(generated)
     if damage == 'missing-helper': paths.remove('script/jenkins/retire-source-pytest.py')
+    if damage == 'missing-permission-helper': paths.remove('script/jenkins/repair-ci-evidence-permissions.py')
     source = tmp_path / 'source.tar.gz'
     legacy.package(source, {name: (legacy.ROOT / name).read_bytes() for name in paths}, 'a' * 40)
     controller = (legacy.ROOT / 'script/jenkins/reclaim-build-outputs.ps1').read_text(encoding='utf8')
@@ -698,7 +699,7 @@ def test_actual_maintenance_package_contains_its_required_helper_closure(tmp_pat
     inspect_packaged_helpers(tmp_path, monkeypatch, generated=generated)
     result = json.loads(capsys.readouterr().out)
     expected = {'script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py'}
-    if generated: expected.add('script/jenkins/retire-source-pytest.py')
+    if generated: expected.update(('script/jenkins/retire-source-pytest.py', 'script/jenkins/repair-ci-evidence-permissions.py'))
     assert set(result) == expected
     for name, descriptor in result.items():
         raw = (legacy.ROOT / name).read_bytes()
@@ -707,8 +708,219 @@ def test_actual_maintenance_package_contains_its_required_helper_closure(tmp_pat
 
 @pytest.mark.parametrize(('damage', 'error'), [
     ('missing-helper', 'Required cleanup helper missing from fixed source archive'),
+    ('missing-permission-helper', 'Required cleanup helper missing from fixed source archive'),
     ('wrong-commit', 'Fixed helper commit differs'),
 ])
 def test_generated_package_rejects_missing_helper_and_wrong_commit_separately(tmp_path, monkeypatch, damage, error):
     with pytest.raises(ValueError, match=error):
         inspect_packaged_helpers(tmp_path, monkeypatch, generated=True, damage=damage)
+
+
+@pytest.fixture
+def permission_request(generated, monkeypatch):
+    state = generated
+    state.cache = legacy.add_npm_cache(state)
+    value = request(state, targets=[{'kind': 'NPM_CACHE', 'path': cleanup.generated_paths(OLD)['NPM_CACHE']}])
+    value['candidates'][0]['terminal']['kind'] = 'REMOTE_VERIFICATION'
+    changes = []
+    for path in (state.checkout / 'work', state.checkout / 'work/tool-home', state.evidence / 'receipt.json',
+                 state.evidence / 'frontend-install.log'):
+        directory = path.is_dir(); before, after = (0o775, 0o700) if directory else (0o664, 0o600)
+        path.chmod(before); info = path.stat()
+        changes.append(dict(path=path.relative_to(state.root).as_posix(), directory=directory,
+            beforeMode=before, afterMode=after, nlink=info.st_nlink, device=info.st_dev,
+            inode=info.st_ino, uid=info.st_uid, gid=info.st_gid))
+    value['candidates'][0]['permissionRepairs'] = changes
+    (state.root / 'inbox' / CURRENT).mkdir(mode=0o700, parents=True, exist_ok=True)
+    monkeypatch.setattr(cleanup, 'docker_snapshot', lambda: [])
+    return state, value
+
+
+@pytest.mark.parametrize('apply', [False, True])
+def test_exact_owner_permission_repair_preserves_report_bytes_and_only_then_admits_cache(permission_request, apply):
+    state, value = permission_request
+    before = legacy.preserved_bytes(state); original_owned = cleanup.owned
+    denied = make_plan(state, value)
+    assert not denied['candidates'] and denied['skipped'][0]['reason'] == 'PATH_NOT_OWNED_OR_WRITABLE_BY_OTHERS'
+    result = cleanup.repair_generated_permissions(state.root, value, remote, apply=apply)
+    assert result['status'] == ('REPAIRED' if apply else 'PLANNED') and result['deletedTargets'] == 0
+    assert cleanup.owned is original_owned and legacy.preserved_bytes(state) == before and state.cache.exists()
+    for change in value['candidates'][0]['permissionRepairs']:
+        assert stat.S_IMODE((state.root / change['path']).stat().st_mode) == change['afterMode' if apply else 'beforeMode']
+    if apply:
+        plan = make_plan(state, value)
+        assert not plan['skipped'] and len(plan['candidates'][0]['targets']) == 1
+        receipt = cleanup.apply_plan(state.root, value, plan, remote)
+        assert receipt['status'] == 'REMOVED' and not state.cache.exists()
+        assert legacy.preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('damage', ['inode', 'uid', 'gid', 'nlink', 'unsafe-mode', 'duplicate', 'outside',
+    'target-itself', 'symlink', 'source', 'report', 'invalid-envelope', 'unregistered-ancestor', 'protected', 'active-reference', 'missing-cache-proof'])
+def test_permission_repair_refuses_incomplete_evidence_or_widened_paths_before_chmod(permission_request, monkeypatch, damage):
+    state, value = permission_request; row = value['candidates'][0]; changes = row['permissionRepairs']
+    original_owned = cleanup.owned; calls = []
+    if damage in ('inode', 'uid', 'gid', 'nlink'): changes[0][damage] += 1
+    elif damage == 'unsafe-mode': changes[0]['afterMode'] = 0o777
+    elif damage == 'duplicate': changes.append(copy.deepcopy(changes[0]))
+    elif damage == 'outside': changes[0]['path'] = 'state/production-pointer'
+    elif damage == 'target-itself': changes[0]['path'] = row['targets'][0]['path']
+    elif damage == 'symlink':
+        leaf = state.evidence / 'frontend-install.log'; leaf.rename(leaf.with_suffix('.original')); leaf.symlink_to(leaf.with_suffix('.original'))
+    elif damage == 'source': row['sourceSha256'] = '0' * 64
+    elif damage == 'report': (state.evidence / 'frontend-install.log').write_bytes(b'changed retained report')
+    elif damage == 'invalid-envelope':
+        state.record['status'] = 'UNRECOGNIZED'; legacy.seal(state)
+    elif damage == 'unregistered-ancestor': (state.checkout / 'work/tool-home/npm-cache').chmod(0o775)
+    elif damage == 'protected': value['protectedReleases'].append(OLD)
+    elif damage == 'active-reference':
+        monkeypatch.setattr(cleanup, 'docker_snapshot', lambda: [
+            ('f' * 64, False, False, 0, 'another-build', '', [{'Type': 'bind', 'Source': str(state.cache)}])])
+    else:
+        monkeypatch.setattr(cleanup, 'npm_cache_provenance', lambda *args, **kwargs: {'status': 'SKIPPED', 'reason': 'MISSING_ORIGINAL_PRODUCER'})
+    monkeypatch.setattr(os, 'fchmod', lambda *args: calls.append(args))
+    result = cleanup.repair_generated_permissions(state.root, value, remote)
+    assert result['status'] == 'PARTIAL_FAILURE' and result['deletedTargets'] == 0 and not calls
+    assert cleanup.owned is original_owned and state.cache.exists()
+
+
+def test_permission_repair_supports_catalogued_logs_larger_than_control_json_limit(permission_request):
+    state, value = permission_request
+    log = state.evidence / 'frontend-install.log'; log.write_bytes(b'original log\n' * 100000)
+    legacy.seal(state)
+    # Sealing keeps the same inode, but restores private modes for written controls.
+    for change in value['candidates'][0]['permissionRepairs']:
+        (state.root / change['path']).chmod(change['beforeMode'])
+    before = log.read_bytes()
+    result = cleanup.repair_generated_permissions(state.root, value, remote)
+    assert result['status'] == 'REPAIRED' and log.read_bytes() == before
+
+
+def test_permission_repair_requires_explicit_historical_request(permission_request):
+    state, value = permission_request
+    for damage in ('terminal', 'missing-selection'):
+        changed = copy.deepcopy(value)
+        if damage == 'terminal': changed['currentPost'] = True
+        else: changed['candidates'][0].pop('permissionRepairs')
+        with pytest.raises(ValueError, match='EXPLICIT_MAINTENANCE'):
+            cleanup.repair_generated_permissions(state.root, changed, remote)
+    assert not (state.root / 'inbox' / CURRENT / 'generated-cleanup-permissions-journal.jsonl').exists()
+
+
+def test_controller_repairs_explicit_modes_before_readonly_plan_and_collects_both_originals():
+    source = (legacy.ROOT / 'script/jenkins/reclaim-build-outputs.ps1').read_text(encoding='utf8')
+    assert '$repairGeneratedPermissions = $false' in source
+    assert "$row.ContainsKey('permissionRepairs')" in source
+    assert 'Permission repair cannot be mixed with unrelated generated targets' in source
+    assert source.index("'$helper' repair-permissions") < source.index("'$helper' plan") < source.index("'$helper' apply")
+    for name in ('generated-cleanup-permissions.json', 'generated-cleanup-permissions-journal.jsonl'):
+        assert "Copy-ReclaimEvidence '" + name + "'" in source
+    assert 'permissionRepairAttempted = $permissionRepairAttempted' in source
+
+
+def authorize_historical_outputs(value):
+    value['historicalOutputsAuthorization'] = {'taskThreadId': '01a1de46-3b28-7a21-84e7-4f403268fa01',
+        'scope': 'historical-finished-ci-outputs', 'sourceSha256': 'd' * 64}
+    value['candidates'][0]['terminal']['kind'] = 'REMOTE_VERIFICATION'
+    return value
+
+
+@pytest.mark.parametrize('kind', ['COMPILED_DIRECTORY', 'GENERATED_NODE_MODULES', 'GENERATED_SOURCE_DEPENDENCIES'])
+def test_current_exact_authority_reuses_old_compile_and_dependency_primitives_without_old_number_lists(generated, kind):
+    state = generated
+    if kind == 'COMPILED_DIRECTORY': target = state.classes
+    elif kind == 'GENERATED_NODE_MODULES': target = legacy.add_dependencies(state)
+    else: target = add_source_package_outputs(state)[kind]
+    value = request(state, targets=[{'kind': kind, 'path': target.relative_to(state.root).as_posix()}])
+    value['candidates'][0]['terminal']['kind'] = 'REMOTE_VERIFICATION'
+    assert not make_plan(state, value)['candidates']
+    authorize_historical_outputs(value)
+    before = legacy.preserved_bytes(state)
+    plan = make_plan(state, value)
+    assert len(plan['candidates']) == 1 and not plan['skipped'] and len(plan['candidates'][0]['targets']) == 1
+    receipt = cleanup.apply_plan(state.root, value, plan, remote)
+    assert receipt['status'] == 'REMOVED' and not target.exists()
+    assert legacy.preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('damage', ['wrong-task', 'wrong-scope', 'missing-source', 'extra-authority', 'current-post', 'automatic'])
+def test_historical_authority_cannot_be_borrowed_or_widened_to_auto(generated, damage):
+    value = authorize_historical_outputs(request(generated, targets=[{'kind': 'COMPILED_DIRECTORY',
+        'path': generated.classes.relative_to(generated.root).as_posix()}]))
+    proof = value['historicalOutputsAuthorization']
+    if damage == 'wrong-task': proof['taskThreadId'] = 'another-task'
+    elif damage == 'wrong-scope': proof['scope'] = 'all-finished-builds'
+    elif damage == 'missing-source': proof['sourceSha256'] = ''
+    elif damage == 'extra-authority': proof['allowArbitraryPath'] = True
+    elif damage == 'current-post': value['currentPost'] = True
+    else: value['candidates'][0]['targets'] = 'AUTO'
+    with pytest.raises(ValueError, match='HISTORICAL_OUTPUTS_EXACT_TASK_AUTHORITY_REQUIRED'):
+        make_plan(generated, value)
+    assert generated.classes.exists()
+
+
+@pytest.mark.parametrize('damage', ['suite', 'module', 'reports', 'checkout-root', 'absolute', 'dot-alias', 'source', 'protected', 'install-proof'])
+def test_historical_exact_leaves_still_require_the_original_producer_and_preserve_reports(generated, damage):
+    state = generated; target = state.classes; kind = 'COMPILED_DIRECTORY'
+    if damage == 'suite': target = legacy.put(state.evidence / 'java-suites/suite-999' / legacy.MODULE / 'classes/A.class', b'unknown suite').parent
+    elif damage == 'module': target = legacy.put(state.classes.parent.parent / 'doorhandle-unknown/classes/A.class', b'unknown module').parent
+    elif damage == 'reports': target = state.classes.parent / 'surefire-reports'
+    elif damage == 'checkout-root': target = state.checkout
+    elif damage == 'install-proof':
+        target = legacy.put(state.checkout / 'frontend/node_modules/object', b'no archived install').parent
+        kind = 'GENERATED_NODE_MODULES'
+    value = authorize_historical_outputs(request(state, targets=[{'kind': kind, 'path': target.relative_to(state.root).as_posix()}]))
+    if damage == 'absolute': value['candidates'][0]['targets'][0]['path'] = str(target)
+    elif damage == 'dot-alias': value['candidates'][0]['targets'][0]['path'] = './' + value['candidates'][0]['targets'][0]['path']
+    if damage == 'source': value['candidates'][0]['sourceSha256'] = '0' * 64
+    elif damage == 'protected': value['protectedReleases'].append(OLD)
+    before = legacy.preserved_bytes(state); plan = make_plan(state, value)
+    assert not plan['candidates'] and plan['skipped'] and legacy.preserved_bytes(state) == before
+
+
+def test_controller_binds_new_historical_scope_to_original_user_approval_not_old_projection():
+    source = (legacy.ROOT / 'script/jenkins/reclaim-build-outputs.ps1').read_text(encoding='utf8')
+    block = source.split("if ($inputManifest.ContainsKey('historicalOutputsAuthorizationFile')) {", 1)[1].split('$kindMap =', 1)[0]
+    for predicate in ("$approval.approved -eq $true", "$approval.requiresExactManifest -eq $true",
+                      "$approval.requiresFinishedBuild -eq $true", "$approval.requiresPreservedOriginals -eq $true",
+                      "$approval.requiresNoActiveReferences -eq $true", "$approval.allowsArbitraryPath -eq $false"):
+        assert predicate in block
+    assert 'cleanup-authorization-20261115.json' in block and "Get-FileHash -LiteralPath $authPath" in block
+    assert '$requestValue.historicalOutputsAuthorization=$historicalOutputsAuthorization' in source
+
+
+def test_explicit_historical_permission_repair_can_cover_the_same_builds_cache_and_compiled_leaf(permission_request):
+    state, value = permission_request
+    value['candidates'][0]['targets'].append({'kind': 'COMPILED_DIRECTORY', 'path': state.classes.relative_to(state.root).as_posix()})
+    authorize_historical_outputs(value)
+    before = legacy.preserved_bytes(state)
+    result = cleanup.repair_generated_permissions(state.root, value, remote)
+    assert result['status'] == 'REPAIRED' and result['deletedTargets'] == 0
+    plan = make_plan(state, value)
+    assert not plan['skipped'] and len(plan['candidates'][0]['targets']) == 2
+    assert state.cache.exists() and state.classes.exists() and legacy.preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('damage', [None, 'missing-proof', 'wrong-root'])
+def test_historical_source_pytest_uses_existing_exact_basetemp_provenance_and_keeps_original_reports(generated, monkeypatch, damage):
+    state = generated; cases = legacy.add_pytest_cases(state, monkeypatch, recipe='legacy')
+    target = cases.base if damage != 'wrong-root' else state.evidence / 'tmp'
+    value = authorize_historical_outputs(request(state, targets=[{'kind': 'GENERATED_PYTEST_ROOT', 'path': target.relative_to(state.root).as_posix()}]))
+    if damage == 'missing-proof':
+        monkeypatch.setattr(cleanup, 'pytest_temp_provenance', lambda *args, **kwargs: {'status': 'SKIPPED', 'reason': 'ORIGINAL_PRODUCER_MISSING'})
+    before = legacy.preserved_bytes(state); plan = make_plan(state, value)
+    if damage:
+        assert not plan['candidates'] and plan['skipped'] and cases.base.exists()
+    else:
+        assert not plan['skipped'] and len(plan['candidates'][0]['targets']) == 1
+        result = cleanup.apply_plan(state.root, value, plan, remote)
+        assert result['status'] == 'REMOVED' and not cases.base.exists()
+    assert legacy.preserved_bytes(state) == before
+
+
+def test_historical_source_authority_does_not_reclassify_native_mysql_temporary_evidence(native_pytest):
+    state = native_pytest
+    value = authorize_historical_outputs(request(state, targets=[{'kind': 'GENERATED_PYTEST_ROOT', 'path': state.native_pytest.relative_to(state.root).as_posix()}]))
+    before = legacy.preserved_bytes(state); plan = make_plan(state, value)
+    assert not plan['candidates'] and plan['skipped'][0]['reason'] == 'HISTORICAL_PYTEST_REQUIRES_PROVEN_SOURCE_PRODUCER'
+    assert state.native_pytest.exists() and legacy.preserved_bytes(state) == before

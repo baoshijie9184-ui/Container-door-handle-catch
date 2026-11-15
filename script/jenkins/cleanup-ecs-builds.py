@@ -1270,14 +1270,15 @@ def generated_maven_basis(root, binding, row, target):
     return {'keeper': keeper.relative_to(root).as_posix(), 'receiptSha256': state['receiptSha256'], 'artifacts': artifacts}
 
 
-def generated_source_package_basis(root, binding, row, target, verifier):
+def generated_source_package_basis(root, binding, row, target, verifier, *, historical=False):
     """Retire two exact source-test package outputs, never candidate artifacts.
 
     Historical SOURCE failures retain their original result. The pinned POM,
     closed Maven command and archived producer log establish these outputs;
     the original report directories and source archive are not deletion targets.
     """
-    require(row['terminal']['kind'] in ('CURRENT_POST', 'ENROLLED_POST')
+    require(historical is True and target['kind'] == 'GENERATED_SOURCE_DEPENDENCIES'
+            or row['terminal']['kind'] in ('CURRENT_POST', 'ENROLLED_POST')
             or row['release'] in GENERATED_SOURCE_PACKAGE_HISTORY, 'SOURCE_PACKAGE_HISTORY_NOT_APPROVED')
     require(row['release'] != GENERATED_TOOL_KEEPER, 'SOURCE_PACKAGE_RECOVERY_POINT_PROTECTED')
     require(binding.get('record', {}).get('scope') == 'source'
@@ -1362,9 +1363,54 @@ def discover_generated_request(root, current, commit, source_sha, identity, term
             'protectedReleases': sorted(GENERATED_PROTECTED_RELEASES), 'currentPost': True, 'candidates': candidates}
 
 
+def historical_outputs_authorized(request):
+    proof = request.get('historicalOutputsAuthorization')
+    if proof is None: return False
+    require(type(proof) is dict and set(proof) == {'taskThreadId', 'scope', 'sourceSha256'}
+            and proof['taskThreadId'] == '01a1de46-3b28-7a21-84e7-4f403268fa01'
+            and proof['scope'] == 'historical-finished-ci-outputs' and SHA.fullmatch(proof.get('sourceSha256', ''))
+            and request.get('currentPost') is False
+            and all(type(row.get('targets')) is list for row in request.get('candidates', [])),
+            'HISTORICAL_OUTPUTS_EXACT_TASK_AUTHORITY_REQUIRED')
+    return True
+
+
+def historical_generated_target(root, binding, row, item):
+    """The same recorded Maven/npm leaves as automatic cleanup, selected exactly."""
+    require(set(item) == {'kind', 'path'}, 'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
+    checkout = binding['checkout']; path = root / item['path']; evidence = checkout / 'work/ci-evidence'
+    require(path.is_relative_to(root) and path.relative_to(root).as_posix() == item['path'],
+            'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
+    if item['kind'] == 'COMPILED_DIRECTORY':
+        suites = [evidence / 'java-suites' / suite['id'] for suite in binding['inner'].get('javaSuites', [])
+                  if re.fullmatch(r'suite-[0-9]{3}', suite.get('id', ''))]
+        if binding['inner'].get('sourceRegression'): suites.append(evidence / 'source-regression/build')
+        require(path.name in COMPILE_DIRS and path.parent.name in binding['modules'] and path.parent.parent in suites,
+                'COMPILED_TARGET_NOT_IN_RECORDED_SUITE')
+    elif item['kind'] == 'GENERATED_PYTEST_ROOT':
+        require(path == checkout / PYTEST_TMP_SUFFIX and binding.get('record', {}).get('scope') == 'source'
+                and binding['inner'].get('scopeKind') == 'source'
+                and binding.get('pytestTmp', {}).get('status') == 'PROVEN',
+                'HISTORICAL_PYTEST_REQUIRES_PROVEN_SOURCE_PRODUCER')
+    else:
+        require(item['kind'] == 'GENERATED_NODE_MODULES'
+                and path in [checkout / frontend / 'node_modules' for frontend in FRONTENDS],
+                'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
+        label = path.parent.name + '-install'
+        commands = [command for command in binding['inner']['commands'] if command.get('label') == label]
+        require(len(commands) == 1 and 'reports/' + label + '.log' in binding['catalog'],
+                'NODE_DEPENDENCIES_LACK_ARCHIVED_INSTALL_PROVENANCE')
+    reports = [checkout / ('driver.log' if name == 'driver.log' else 'work/ci-evidence/' + name.removeprefix('reports/'))
+               for name in binding['catalog']]
+    require(not any(report == path or report.is_relative_to(path) for report in reports), 'GENERATED_TARGET_CONTAINS_ORIGINAL_REPORT')
+    owned_chain(path, root, directory=True)
+    return {'recordedSuiteAndModule': item['kind'] == 'COMPILED_DIRECTORY', 'originalReportOverlap': False}
+
+
 def build_generated_plan(root, request, verifier, containers, *, held_releases=()):
     root = owned(root, directory=True)
     require(set(request) == {'schema', 'kind', 'currentRelease', 'identity', 'protectedReleases', 'candidates', 'currentPost'}
+            | ({'historicalOutputsAuthorization'} if 'historicalOutputsAuthorization' in request else set())
             and request['schema'] == 1 and request['kind'] == GENERATED_REQUEST_KIND and type(request['currentPost']) is bool,
             'GENERATED_REQUEST_SCHEMA_INVALID')
     current = request['currentRelease']; require(TAG.fullmatch(current or ''), 'CURRENT_RELEASE_INVALID')
@@ -1376,6 +1422,8 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
             and type(request['protectedReleases']) is list and all(TAG.fullmatch(tag) for tag in request['protectedReleases']),
             'GENERATED_CANDIDATE_BOUND_INVALID')
     protected = set(request['protectedReleases']) | GENERATED_PROTECTED_RELEASES
+    historical = historical_outputs_authorized(request)
+    if historical: protected.add(GENERATED_TOOL_KEEPER)
     accepted, skipped, absent, unresolved, preserved, seen = [], [], [], [], [], set()
     budget = {'remaining': MAX_TARGET_CANONICAL}
     for row in request['candidates']:
@@ -1434,8 +1482,12 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                     declared = [{'kind': kind, 'path': path} for kind, path in generated_paths(tag).items()
                                 if kind in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE') or kind in GENERATED_SOURCE_PACKAGE_KINDS]
                 for item in declared:
-                    require(type(item) is dict and set(item) == {'kind', 'path'}
-                            and generated_paths(tag).get(item['kind']) == item['path'], 'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
+                    explicit_leaf = historical and type(item) is dict and item.get('kind') in ('COMPILED_DIRECTORY', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT')
+                    if explicit_leaf:
+                        bases[item['path']] = historical_generated_target(root, binding, enriched, item)
+                    else:
+                        require(type(item) is dict and set(item) == {'kind', 'path'}
+                                and generated_paths(tag).get(item['kind']) == item['path'], 'GENERATED_TARGET_OUTSIDE_EXACT_SCOPE')
                     require(not (tag == GENERATED_TOOL_KEEPER and item['kind'] in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE')),
                             'EXISTING_PUBLIC_LAYER_KEEPER_PROTECTED')
                     path = root / item['path']
@@ -1445,7 +1497,7 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                         require(binding.get('npmCache', {}).get('status') == 'PROVEN', 'GENERATED_NPM_ROUTING_NOT_PROVEN')
                     target = {**item, **generated_inventory(root, item)}
                     if item['kind'] in GENERATED_SOURCE_PACKAGE_KINDS:
-                        bases[item['kind']] = generated_source_package_basis(root, binding, enriched, target, verifier)
+                        bases[item['kind']] = generated_source_package_basis(root, binding, enriched, target, verifier, historical=historical)
                     elif item['kind'] in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE'):
                         if 'publicTools' not in bases: bases['publicTools'] = generated_public_basis(root, binding, enriched, verifier)
                         generated_public_target(root, enriched, target, bases['publicTools'])
@@ -1475,6 +1527,117 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
             'referenceScope': {'processScanUid': os.getuid(), 'containers': 'ALL_DOCKER_CONTAINERS'},
             'candidateBytes': sum(t['bytes'] for c in accepted for t in c['targets']),
             'candidateAllocatedBytes': sum(t['allocatedBytes'] for c in accepted for t in c['targets'])}
+
+
+def generated_permission_entry(root, row, verifier, *, historical=False):
+    """Only exact retained report/target ancestors may have their modes tightened."""
+    tag = row['release']; changes = row.get('permissionRepairs')
+    require(TAG.fullmatch(tag or '') and type(changes) is list and 0 < len(changes) <= 64,
+            'GENERATED_PERMISSION_EXACT_CHANGES_REQUIRED')
+    targets = row.get('targets')
+    kinds = {'NPM_CACHE', 'RETIRED_PRIVATE_MAVEN'} | ({'GENERATED_SOURCE_DEPENDENCIES', 'COMPILED_DIRECTORY', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'} if historical else set())
+    require(type(targets) is list and 0 < len(targets) <= (128 if historical else 1)
+            and all(type(item) is dict and set(item) == {'kind', 'path'} and item['kind'] in kinds
+                    and (historical and item['kind'] in ('COMPILED_DIRECTORY', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT')
+                         or generated_paths(tag).get(item['kind']) == item['path']) for item in targets),
+            'GENERATED_PERMISSION_ONLY_SELECTED_DEPENDENCIES')
+    control = owned_chain(root / 'verification' / tag / 'verification-receipt.json', root, maximum=verifier.MAX_RECEIPT_BYTES)
+    raw = control.read_bytes(); record = json.loads(raw); catalog = receipt_catalog(record, verifier, generated=True)
+    require(record['release'] == tag and record['scope'] == 'source', 'GENERATED_PERMISSION_SOURCE_REPORTS_REQUIRED')
+    checkout = root / 'verification' / tag / 'checkout'; work = checkout / 'work'
+    files = {work / 'ci-evidence' / name.removeprefix('reports/') for name in catalog if name.startswith('reports/')}
+    directories = set()
+    for path in (*files, *(root / item['path'] for item in targets)):
+        directories.update(parent for parent in path.parents if parent == work or parent.is_relative_to(work))
+    seen = set()
+    for change in changes:
+        require(type(change) is dict and set(change) == {'path', 'directory', 'beforeMode', 'afterMode', 'nlink', 'device', 'inode', 'uid', 'gid'},
+                'GENERATED_PERMISSION_METADATA_REQUIRED')
+        name = change['path']; path = root / name
+        require(type(name) is str and name not in seen and '\\' not in name and '..' not in Path(name).parts
+                and not Path(name).is_absolute() and type(change['directory']) is bool,
+                'GENERATED_PERMISSION_PATH_INVALID'); seen.add(name)
+        directory = change['directory']
+        require(path in (directories if directory else files)
+                and (change['beforeMode'], change['afterMode']) == ((0o775, 0o700) if directory else (0o664, 0o600))
+                and all(type(change[key]) is int and change[key] >= 0 for key in ('nlink', 'device', 'inode', 'uid', 'gid'))
+                and change['uid'] == os.getuid() and change['nlink'] >= (2 if directory else 1),
+                'GENERATED_PERMISSION_REPAIR_ESCAPES_ORIGINAL_SCOPE')
+    return {**record, 'changes': changes}, control, raw
+
+
+def repair_generated_permissions(root, request, verifier, *, apply=True):
+    """Reuse descriptor-only repair; authenticate the complete old cleanup first.
+
+    This is an explicit maintenance phase, never a side effect of plan. No target
+    files are deleted here and ordinary owned() is restored before mode changes.
+    """
+    global owned
+    require(request.get('kind') == GENERATED_REQUEST_KIND and request.get('currentPost') is False
+            and 0 < len(request.get('candidates', [])) <= 128
+            and any(row.get('permissionRepairs') for row in request['candidates'])
+            and (historical_outputs_authorized(request) or all(row.get('permissionRepairs') for row in request['candidates'])),
+            'GENERATED_PERMISSION_EXPLICIT_MAINTENANCE_REQUIRED')
+    repair = verifier_module(Path(__file__).with_name('repair-ci-evidence-permissions.py'))
+    journal_path = root / 'inbox' / request['currentRelease'] / 'generated-cleanup-permissions-journal.jsonl'
+    limit = 4 * 1024 ** 2
+    disk = os.statvfs(root)
+    require(disk.f_bavail * disk.f_frsize >= CONTROL_DISK_RESERVE + 2 * limit + CONTROL_METADATA_BYTES,
+            'CONTROL_GROWTH_WOULD_EXHAUST_DISK_RESERVE')
+    audits = []; failure = None; written = 0
+    with cleanup_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as stream:
+        def journal(event):
+            nonlocal written
+            raw = canonical(event) + b'\n'; require(written + len(raw) <= limit, 'GENERATED_PERMISSION_JOURNAL_BOUND')
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno()); written += len(raw)
+        try:
+            for row in request['candidates']:
+                if not row.get('permissionRepairs'): continue
+                tag = row['release']; audit = {'release': tag}; audits.append(audit)
+                with attempt_lock(root, tag, generated=True):
+                    entry, control, control_raw = generated_permission_entry(root, row, verifier, historical=historical_outputs_authorized(request))
+                    def preflight(tree, entry, identity, verifier, cleanup):
+                        global owned
+                        original_owned = owned
+                        def held_owned(path, *, directory=False, maximum=MAX_PLAN):
+                            path = Path(path)
+                            if path.is_relative_to(root) and path.relative_to(root).as_posix() in tree.allowed:
+                                tree.add(path.relative_to(root).as_posix(), directory=directory, maximum=maximum)
+                                return path
+                            return original_owned(path, directory=directory, maximum=maximum)
+                        try:
+                            owned = held_owned
+                            require(tree.read(control.relative_to(root).as_posix(), verifier.MAX_RECEIPT_BYTES) == control_raw,
+                                    'GENERATED_PERMISSION_ORIGINAL_RECEIPT_CHANGED')
+                            for change in entry['changes']:
+                                node = tree.add(change['path'], directory=change['directory'], maximum=verifier.MAX_FILE_BYTES)
+                                require(all(node['before'][key] == change[key] for key in ('device', 'inode', 'uid', 'gid', 'nlink')),
+                                        'GENERATED_PERMISSION_REGISTERED_INODE_CHANGED')
+                            selected = {**request, 'candidates': [row]}
+                            plan = build_generated_plan(root, selected, verifier, docker_snapshot(), held_releases=[tag])
+                            require(len(plan['candidates']) == 1 and len(plan['candidates'][0]['targets']) == len(row['targets'])
+                                    and not any(plan[key] for key in ('skipped', 'absent', 'unresolved')),
+                                    'GENERATED_PERMISSION_COMPLETE_ADMISSION_REQUIRED')
+                            binding = generated_binding(root, row, identity, verifier)
+                            for report in entry['reportFiles']:
+                                name = repair.report_path(tag, report['path'])
+                                node = tree.add(name, maximum=verifier.MAX_FILE_BYTES)
+                                require(node['before']['bytes'] == report['bytes'] and tree.digest(name) == report['sha256'],
+                                        'GENERATED_PERMISSION_ORIGINAL_REPORT_CHANGED')
+                            tree.verify_all(); return binding
+                        finally:
+                            owned = original_owned
+                    audit['result'] = repair.repair_entry(root, entry, request['identity'], verifier,
+                        sys.modules.get(__name__) or SimpleNamespace(**globals()), apply=apply, audit=audit,
+                        journal=journal, preflight=preflight,
+                        quiescence=lambda binding: generated_quiescent(root, binding, tag, docker_snapshot(), row['targets']))
+        except (OSError, ValueError, KeyError, TypeError, verifier.VerificationError) as error:
+            failure = failure_guard_code(error); journal({'phase': 'FAILED', 'guardCode': failure})
+    return {'kind': 'doorhandle-generated-permission-repair-receipt', 'currentRelease': request['currentRelease'],
+            'identity': request['identity'], 'requestSha256': sha(canonical(request)),
+            'status': 'PARTIAL_FAILURE' if failure else 'REPAIRED' if apply else 'PLANNED',
+            'originalReportBytesChanged': False, 'deletedTargets': 0, 'repairs': audits,
+            'error': failure, 'journalSha256': digest(journal_path)}
 
 
 def build_plan(root, request, verifier, containers, *, held_releases=()):
@@ -1821,7 +1984,9 @@ def fixed_helper(args, verifier=None, *, executor=None, verifier_path=None):
     verifier_path = Path(verifier_path) if verifier_path else executor.with_name('verify-remote.py')
     wanted = {'script/jenkins/cleanup-ecs-builds.py': executor,
               'script/jenkins/verify-remote.py': verifier_path}
-    if getattr(args, 'generated', False): wanted['script/jenkins/retire-source-pytest.py'] = executor.with_name('retire-source-pytest.py')
+    if getattr(args, 'generated', False):
+        for name in ('retire-source-pytest.py', 'repair-ci-evidence-permissions.py'):
+            wanted['script/jenkins/' + name] = executor.with_name(name)
     for name, path in wanted.items():
         require(path == inbox / Path(name).name, 'CLEANUP_HELPER_OUTSIDE_CURRENT_INBOX')
         owned_chain(path, root, maximum=1024 ** 2)
@@ -1871,7 +2036,7 @@ def main(argv=None):
         print(json.dumps(result, sort_keys=True)); return
     require(not (sys.platform == 'linux' and os.geteuid() == 0), 'ROOT_PERMITS_ONLY_PROCESS_METADATA_MODE')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('custody', 'plan', 'apply'))
+    parser.add_argument('phase', choices=('custody', 'plan', 'apply', 'repair-permissions'))
     parser.add_argument('--retained-directory'); parser.add_argument('--output', required=True)
     parser.add_argument('--root'); parser.add_argument('--current-tag'); parser.add_argument('--commit')
     parser.add_argument('--instance-id'); parser.add_argument('--machine-id')
@@ -1895,9 +2060,12 @@ def main(argv=None):
         verifier = verifier_module(Path(__file__).with_name('verify-remote.py'))
         identity = verifier.ecs_identity(args.instance_id, args.machine_id)
         prefix = 'generated-cleanup' if args.generated else 'build-cleanup'
-        expected_output = root / 'inbox' / args.current_tag / (prefix + ('-plan.json' if args.phase == 'plan' else '-receipt.json'))
+        suffix = '-permissions.json' if args.phase == 'repair-permissions' else '-plan.json' if args.phase == 'plan' else '-receipt.json'
+        expected_output = root / 'inbox' / args.current_tag / (prefix + suffix)
         require(Path(args.output) == expected_output, 'CLEANUP_OUTPUT_OUTSIDE_CURRENT_INBOX')
-        if args.phase == 'plan':
+        if args.phase in ('plan', 'repair-permissions'):
+            require(args.phase != 'repair-permissions' or args.generated and args.request and not args.evidence_archived,
+                    'GENERATED_PERMISSION_EXPLICIT_MAINTENANCE_REQUIRED')
             if args.request:
                 request_file = owned(Path(args.request)); require(digest(request_file) == args.request_sha256, 'CLEANUP_REQUEST_SHA_DIFFERS')
                 require(request_file == root / 'inbox' / args.current_tag / (prefix + '-request.json'), 'CLEANUP_REQUEST_OUTSIDE_CURRENT_INBOX')
@@ -1909,8 +2077,12 @@ def main(argv=None):
                 request = discover_request(root, args.current_tag, identity, args.protected_release)
             require((request.get('kind') == GENERATED_REQUEST_KIND) == args.generated, 'GENERATED_MODE_REQUEST_MISMATCH')
             require(request['currentRelease'] == args.current_tag and request['identity'] == identity, 'REQUEST_BELONGS_TO_ANOTHER_BUILD_OR_ECS')
-            result = build_plan(root, request, verifier, docker_snapshot())
-            control_budget = admit_control_growth(root, result, include_plan=True)
+            if args.phase == 'repair-permissions':
+                result = repair_generated_permissions(root, request, verifier)
+                control_budget = {'receiptBytes': 4 * 1024 ** 2}
+            else:
+                result = build_plan(root, request, verifier, docker_snapshot())
+                control_budget = admit_control_growth(root, result, include_plan=True)
         else:
             plan, request = admitted_plan(args.plan, expected_output.with_name(prefix + '-plan.json'),
                                          args.plan_sha256, args.current_tag, identity)

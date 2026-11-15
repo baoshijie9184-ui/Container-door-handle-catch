@@ -2396,7 +2396,14 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
     diagnostic = ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0', *reviewed[1:])
     terminal_cleanup = (diagnostic[0], '29a93fb0890af70894d2a219ca95cdd6b7a354c42f6606a9ceb2df6b8b4766e3', reviewed[2])
     integrated = ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd', '17e79e1393e2b897c7ad659b26e5d6c442feaedaa324df5aa59789cb2bc47129', '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
-    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup, integrated})
+    repaired = (integrated[0], 'b825b85d9364214c597447697fbc6cedc92a0281650e468db12897fc1bfd0336', integrated[2])
+    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup, integrated, repaired})
+    assert retirer.database_verification_recipe(repaired[:2], repaired[2]) is True
+    assert repaired[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert repaired[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    for index in range(3):
+        changed = list(repaired); changed[index] = '0' * 64
+        assert retirer.database_verification_recipe(changed[:2], changed[2]) is False
     assert retirer.database_verification_recipe(integrated[:2], integrated[2]) is True
     assert integrated[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
     assert integrated[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
@@ -2423,7 +2430,7 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
 def test_diagnostic_archive_recipe_remains_bound_to_the_three_current_source_members():
     paths = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
     recipe = tuple(sha((MODULE.parents[2] / path).read_bytes().replace(b'\r\n', b'\n')) for path in paths)
-    assert recipe == ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd', '17e79e1393e2b897c7ad659b26e5d6c442feaedaa324df5aa59789cb2bc47129', '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
+    assert recipe == ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd', 'b825b85d9364214c597447697fbc6cedc92a0281650e468db12897fc1bfd0336', '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
     assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is True
     assert recipe[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
 

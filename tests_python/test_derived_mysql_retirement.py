@@ -1495,6 +1495,18 @@ def test_finished_controller_preserves_exact_authority_and_journal_without_gener
     assert "$failedNativeBuildNumber -cne ''" in gate
 
 
+def test_finished_controller_accepts_unset_or_empty_selector_without_accepting_whitespace():
+    # Windows Jenkins can omit an empty parameter from the process environment.
+    # Bind the actual PowerShell guard to the .NET null/empty contract, not -ceq ''.
+    guard = next(line for line in TASK_DIAGNOSTIC_CONTROLLER.splitlines()
+                 if 'Finished outputs require a separate exact manifest' in line)
+    assert '[string]::IsNullOrEmpty($env:FAILED_NATIVE_BUILD_NUMBER)' in guard
+    assert "$env:FAILED_NATIVE_BUILD_NUMBER -ceq ''" not in guard
+    assert 'IsNullOrWhiteSpace($env:FAILED_NATIVE_BUILD_NUMBER)' not in guard
+    assert "[IO.Path]::IsPathFullyQualified($finishedManifest)" in guard
+    assert "$env:GENERATED_ARTIFACTS_ONLY -cne 'true'" in guard
+
+
 @pytest.mark.parametrize('damage', [None, 'wrong-action', 'wrong-jar'])
 def test_finished_admission_uses_runtime_terminal_without_borrowing_verify_authority(task_keeper_documents, monkeypatch, damage):
     state = task_keeper_documents

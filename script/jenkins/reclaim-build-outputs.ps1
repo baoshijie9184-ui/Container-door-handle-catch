@@ -87,7 +87,7 @@ foreach ($file in @($localPlan, $localReceipt, $localResult)) {
 $archiveReader = @'
 import gzip,hashlib,json,os,stat,sys,tarfile
 wanted={'script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py'}; result={}
-if sys.argv[3]=='True':wanted.add('script/jenkins/retire-source-pytest.py')
+if sys.argv[3]=='True':wanted.update(('script/jenkins/retire-source-pytest.py','script/jenkins/repair-ci-evidence-permissions.py'))
 class Bounded:
     def __init__(self,s):self.s,self.n=s,0
     def read(self,size=-1):
@@ -115,6 +115,7 @@ $context = @{ root = $RemoteRoot; tag = $Tag; commit = $Commit; sourceSha256 = $
     instanceId = $instance; machineId = $machine; helpers = $helpers; mode = $Mode; sourceBytes = $sourceBytes;
     evidencePrefix = $evidencePrefix; generated = [bool]$GeneratedArtifacts }
 if ($Mode -ceq 'Verified') { $context.verificationReceiptSha256 = (Get-FileHash -LiteralPath $verifiedFile -Algorithm SHA256).Hash.ToLowerInvariant() }
+$repairGeneratedPermissions = $false
 if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
     $manifestPath = $env:GENERATED_RETENTION_MANIFEST
     Require-Reclaim ($manifestPath -and [IO.Path]::IsPathFullyQualified($manifestPath)) 'Generated maintenance requires the approved exact historical input manifest.'
@@ -128,7 +129,31 @@ if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
     Require-Reclaim ($authorization.version -eq 1 -and $authorization.userReply -and
         $authorization.diskExpansionAuthorized -eq $false -and $authorization.blanketDockerPruneAuthorized -eq $false -and
         'ci-266-f6e062edc7b6' -cin $authorization.excluded) 'Generated maintenance lacks the recorded scoped authorization.'
+    $historicalOutputsAuthorization = $null
+    if ($inputManifest.ContainsKey('historicalOutputsAuthorizationFile')) {
+        $authPath=$inputManifest.historicalOutputsAuthorizationFile
+        Require-Reclaim ($authPath -ceq 'D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/cleanup-authorization-20261115.json') 'Historical outputs require the independent current user authorization.'
+        Assert-ReclaimPath $authPath
+        $approval=Get-Content -LiteralPath $authPath -Raw -Encoding UTF8|ConvertFrom-Json -AsHashtable
+        Require-Reclaim ($approval.kind -ceq 'doorhandle-ci-regenerable-cleanup-user-authorization' -and $approval.version -eq 1 -and
+            $approval.taskThreadId -ceq '01a1de46-3b28-7a21-84e7-4f403268fa01' -and $approval.approved -eq $true -and
+            $approval.job -ceq 'doorhandle-java' -and $approval.branch -ceq 'java-cloud' -and
+            (@($approval.acceptedActions|Sort-Object)-join ',') -ceq 'verify,verify-runtime' -and
+            $approval.scope -ceq 'historical-finished-ci-outputs' -and $approval.remoteRoot -ceq $RemoteRoot -and
+            $approval.instanceId -ceq $instance -and $approval.machineId -ceq $machine -and
+            $approval.requiresExactManifest -eq $true -and $approval.requiresFinishedBuild -eq $true -and
+            $approval.requiresPreservedOriginals -eq $true -and $approval.requiresNoActiveReferences -eq $true -and
+            $approval.allowsArbitraryPath -eq $false -and $approval.allowsGlobalDockerPrune -eq $false -and
+            $approval.allowsDiskExpansion -eq $false -and
+            $approval.allowsManualDeletionOutsideJenkins -eq $false -and
+            $approval.classes -ccontains 'regenerable-per-build-dependencies' -and $approval.classes -ccontains 'generated-build-output') 'Historical generated cleanup lacks its exact scoped user approval.'
+        foreach($protected in @('business-data-and-services','original-sql-and-snapshots','source-originals','original-reports','ci-266-recovery-point','ci-117-pinned-layer-source','current-shared-dependencies','active-or-pending-candidates')) {
+            Require-Reclaim ($approval.protected -ccontains $protected) 'Historical output cleanup cannot remove protected originals or active inputs.'
+        }
+        $historicalOutputsAuthorization=@{taskThreadId=$approval.taskThreadId;scope=$approval.scope;sourceSha256=(Get-FileHash -LiteralPath $authPath -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
     $kindMap = @{OFFICIAL_OCI='GENERATED_OCI_CACHE';OFFICIAL_IMAGE_TAR='GENERATED_IMAGE_ARCHIVE';NPM_CACACHE='NPM_CACHE';OLD_PRIVATE_MAVEN='RETIRED_PRIVATE_MAVEN';SOURCE_DEPENDENCIES='GENERATED_SOURCE_DEPENDENCIES';SOURCE_JAR='GENERATED_SOURCE_JAR'}
+    if ($null -ne $historicalOutputsAuthorization) { $kindMap.COMPILED_DIRECTORY='COMPILED_DIRECTORY'; $kindMap.NODE_MODULES='GENERATED_NODE_MODULES'; $kindMap.SOURCE_PYTEST='GENERATED_PYTEST_ROOT' }
     $rows = @()
     foreach ($row in $inputManifest.rows) {
         Require-Reclaim ($row.release -cmatch '^ci-[0-9]+-[a-f0-9]{12}$' -and $row.commit -cmatch '^[a-f0-9]{40}$' -and
@@ -161,10 +186,18 @@ if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
             Require-Reclaim ($kindMap.ContainsKey($target.kind)) 'Historical generated target category is unsupported.'
             $targets += @{kind=$kindMap[$target.kind];path=$target.path}
         }
-        $rows += @{release=$row.release;commit=$row.commit;sourceSha256=$row.sourceSha256;terminal=$terminal;targets=$targets}
+        $candidate = @{release=$row.release;commit=$row.commit;sourceSha256=$row.sourceSha256;terminal=$terminal;targets=$targets}
+        if ($row.ContainsKey('permissionRepairs')) {
+            Require-Reclaim ($row.permissionRepairs.Count -gt 0 -and $row.permissionRepairs.Count -le 64) 'Permission repair requires a bounded exact path list.'
+            $candidate.permissionRepairs = $row.permissionRepairs
+            $repairGeneratedPermissions = $true
+        }
+        $rows += $candidate
     }
+    Require-Reclaim (-not $repairGeneratedPermissions -or ($rows.Count -le 128 -and ($null -ne $historicalOutputsAuthorization -or @($rows | Where-Object {-not $_.ContainsKey('permissionRepairs')}).Count -eq 0))) 'Permission repair cannot be mixed with unrelated generated targets.'
     $requestValue = @{schema=1;kind='doorhandle-generated-artifact-cleanup-request';currentRelease=$Tag;
         identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@('ci-266-f6e062edc7b6');currentPost=$false;candidates=$rows}
+    if ($null -ne $historicalOutputsAuthorization) { $requestValue.historicalOutputsAuthorization=$historicalOutputsAuthorization }
     $requestLocal = Join-Path $artifacts 'generated-cleanup-request.json'
     Require-Reclaim (-not (Test-Path -LiteralPath $requestLocal)) 'Generated request must use a fresh controller output.'
     $requestBytes = [Text.UTF8Encoding]::new($false).GetBytes(($requestValue | ConvertTo-Json -Depth 16 -Compress))
@@ -227,7 +260,7 @@ def control_growth(include_source):
     usage=os.statvfs(root); unit=max(4096,usage.f_frsize)
     need(unit<=1048576 and unit&(unit-1)==0)
     expected={'script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py'}
-    if data['generated']:expected.add('script/jenkins/retire-source-pytest.py')
+    if data['generated']:expected.update(('script/jenkins/retire-source-pytest.py','script/jenkins/repair-ci-evidence-permissions.py'))
     need(set(data['helpers'])==expected)
     sizes=[value['bytes'] for value in data['helpers'].values()]
     need(all(type(size) is int and 0<size<=1048576 for size in sizes))
@@ -318,7 +351,9 @@ if mode=='prepare':
     print(json.dumps(prepared))
 else:
     need(mode=='inspect');files={}
-    for label,name in [('plan',data['evidencePrefix']+'-plan.json'),('receipt',data['evidencePrefix']+'-receipt.json'),('journal',data['evidencePrefix']+'-journal.jsonl')]:
+    names=[('plan',data['evidencePrefix']+'-plan.json'),('receipt',data['evidencePrefix']+'-receipt.json'),('journal',data['evidencePrefix']+'-journal.jsonl')]
+    if data['generated']:names += [('permissions','generated-cleanup-permissions.json'),('permissionJournal','generated-cleanup-permissions-journal.jsonl')]
+    for label,name in names:
         path=inbox/name
         if path.exists() or path.is_symlink():
             info=chain(path);files[label]={'bytes':info.st_size,'sha256':digest(path)}
@@ -366,6 +401,7 @@ print(json.dumps(result))
 '@
 $admitted = $false
 $applyAttempted = $false
+$permissionRepairAttempted = $false
 $completed = $false
 $planProof = $null
 $receiptProof = $null
@@ -406,6 +442,11 @@ try {
             Copy-ReclaimEvidence 'generated-cleanup-request.json' (Join-Path $artifacts 'generated-cleanup-request.json') $ready.request
             $planArguments += " --request '$remoteInbox/generated-cleanup-request.json' --request-sha256 '$($ready.request.sha256)'"
         }
+        if ($repairGeneratedPermissions) {
+            $permissionRepairAttempted = $true
+            $repairResult = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' repair-permissions $planArguments --output '$remoteInbox/generated-cleanup-permissions.json'")) | Select-Object -Last 1) | ConvertFrom-Json
+            Require-Reclaim ($repairResult.status -ceq 'REPAIRED' -and $repairResult.currentRelease -ceq $Tag) 'Exact generated permission repair did not complete; no deletion may follow.'
+        }
         $null = Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' plan $planArguments --output '$remoteInbox/$evidencePrefix-plan.json'"))
         $inspection = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand inspect")) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
         Require-Reclaim ($inspection.files.ContainsKey('plan')) 'Read-only cleanup produced no plan.'
@@ -422,6 +463,9 @@ try {
     if ($admitted) {
         try {
             $inspection = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand inspect")) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+            if ($inspection.files.ContainsKey('permissions')) { Copy-ReclaimEvidence 'generated-cleanup-permissions.json' (Join-Path $artifacts 'generated-cleanup-permissions.json') $inspection.files.permissions }
+            if ($inspection.files.ContainsKey('permissionJournal')) { Copy-ReclaimEvidence 'generated-cleanup-permissions-journal.jsonl' (Join-Path $artifacts 'generated-cleanup-permissions-journal.jsonl') $inspection.files.permissionJournal }
+            Require-Reclaim (-not $permissionRepairAttempted -or $inspection.files.ContainsKey('permissions')) 'Permission repair lacks its retained original receipt.'
             if ($GeneratedArtifacts -and $inspection.files.ContainsKey('journal')) { Copy-ReclaimEvidence "$evidencePrefix-journal.jsonl" (Join-Path $artifacts "$evidencePrefix-journal.jsonl") $inspection.files.journal }
             if ($inspection.files.ContainsKey('plan')) { Copy-ReclaimEvidence "$evidencePrefix-plan.json" $localPlan $inspection.files.plan }
             if ($inspection.files.ContainsKey('receipt')) {
@@ -448,6 +492,7 @@ try {
     }
     if ($GeneratedArtifacts) {
         $result.generatedLifecycle = $true
+        $result.permissionRepairAttempted = $permissionRepairAttempted
         $result.retention = if ($receiptProof) { $receiptProof.retention } else { @{status='UNKNOWN';budgetVerdict='UNKNOWN'} }
         if ($result.retention.status -cne 'SATISFIED' -or $result.retention.scope -cne 'DISPOSABLE_GENERATED_OUTPUTS') { $result.status='RETAINED_OUTPUTS_REQUIRE_ACTION' }
     }

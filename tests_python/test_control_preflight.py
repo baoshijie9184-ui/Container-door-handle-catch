@@ -37,13 +37,14 @@ def test_current_fixed_profile_contains_every_focused_module():
         'test_project_mysql_custody',
         'test_jenkins_suite_evidence', 'test_jenkins_evidence_recollection', 'test_jenkins_maven_dependency_cache',
         'test_control_preflight', 'test_middleware_fixture', 'test_observability_fixture', 'test_semantic_mysql_fixture',
-        'test_runtime_manual_acceptance',
+        'test_runtime_manual_acceptance', 'test_compact_image_inputs_identity',
     }
     assert minimum['test_public_buildkit_layer_retirement'] >= 34
     assert minimum['test_local_mysql_source_classification'] >= 130
     assert minimum['test_project_mysql_custody'] >= 32
     assert minimum['test_derived_mysql_retirement'] >= 97
     assert minimum['test_runtime_manual_acceptance'] >= 30
+    assert minimum['test_compact_image_inputs_identity'] >= 59
     controller = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     declaration = re.search(r'(?m)^\s*\$expected=@\(([^\r\n]+)\)\r?$', controller)
     assert declaration, 'Controller must declare its exact preflight module contract'

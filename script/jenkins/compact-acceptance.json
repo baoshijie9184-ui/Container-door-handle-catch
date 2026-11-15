@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_generated_artifact_lifecycle",
-        "minimumTests": 72,
+        "minimumTests": 118,
         "source": "tests_python/test_generated_artifact_lifecycle.py",
         "allowedSkippedTests": []
       },
@@ -1439,7 +1439,7 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 255,
+        "minimumTests": 256,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },
@@ -1511,7 +1511,7 @@
       },
       {
         "module": "tests_python.test_compact_image_inputs_identity",
-        "minimumTests": 36,
+        "minimumTests": 59,
         "source": "tests_python/test_compact_image_inputs_identity.py",
         "allowedSkippedTests": []
       },

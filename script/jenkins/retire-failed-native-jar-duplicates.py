@@ -226,6 +226,10 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd',
      '17e79e1393e2b897c7ad659b26e5d6c442feaedaa324df5aa59789cb2bc47129',
      '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
+    # Exact generated-maintenance closure and pure image-input control preflight.
+    ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd',
+     'b825b85d9364214c597447697fbc6cedc92a0281650e468db12897fc1bfd0336',
+     '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
 })
 
 

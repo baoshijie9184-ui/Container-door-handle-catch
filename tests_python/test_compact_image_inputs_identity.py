@@ -83,6 +83,56 @@ def image_fixture(kind='native', damage=None):
     return tar_bytes(members), image, diff, root
 
 
+def attested_image_fixture(dual=True, damage=None):
+    """Docker 29 export observed on the pinned production worker dependency."""
+    raw, image, diff, runtime = image_fixture('native')
+    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as package:
+        members = {entry.name: package.extractfile(entry).read() for entry in package}
+    empty = b'{}' if damage != 'nonempty-config' else b'{"command":"never run"}'
+    config = {'mediaType': 'application/vnd.oci.empty.v1+json', 'digest': digest(empty), 'size': len(empty), 'data': 'e30='}
+    if damage == 'empty-config-data': config['data'] = 'e30K'
+    predicate = 'https://slsa.dev/provenance/v1'
+    payload = OCI.encoded({'_type': 'foreign' if damage == 'statement-type' else 'https://in-toto.io/Statement/v1',
+        'predicateType': 'foreign' if damage == 'payload-type' else predicate,
+        'subject': [{'name': 'fixture', 'digest': {'sha256': 'f' * 64 if damage == 'payload-subject' else runtime['digest'][7:]}}], 'predicate': {}})
+    layer = {'mediaType': 'application/vnd.in-toto+json', 'digest': digest(payload), 'size': len(payload),
+             'annotations': {'in-toto.io/predicate-type': predicate}}
+    if damage == 'payload-media': layer['mediaType'] = LAYER
+    manifest = {'schemaVersion': 2, 'mediaType': MANIFEST,
+        'artifactType': 'application/vnd.docker.attestation.manifest.v1+json', 'config': config,
+        'subject': copy.deepcopy(runtime), 'layers': [layer]}
+    if damage == 'foreign-subject': manifest['subject']['digest'] = 'sha256:' + 'f' * 64
+    if damage == 'bad-artifact': manifest['artifactType'] = MANIFEST
+    if damage == 'layer-count': manifest['layers'].append(copy.deepcopy(layer))
+    if damage == 'extra-manifest-field': manifest['urls'] = ['https://invalid.example/no-fetch']
+    manifest_raw = OCI.encoded(manifest)
+    attachment = {'mediaType': MANIFEST, 'digest': digest(manifest_raw), 'size': len(manifest_raw),
+        'platform': {'os': 'unknown', 'architecture': 'unknown'},
+        'annotations': {'vnd.docker.reference.type': 'attestation-manifest', 'vnd.docker.reference.digest': runtime['digest']}}
+    if damage == 'second-runtime': attachment['platform'] = {'os': 'linux', 'architecture': 'amd64'}
+    if damage == 'foreign-platform': attachment['platform'] = {'os': 'linux', 'architecture': 'arm64'}
+    if damage == 'foreign-reference': attachment['annotations']['vnd.docker.reference.digest'] = 'sha256:' + 'f' * 64
+    if damage == 'reference-type': attachment['annotations']['vnd.docker.reference.type'] = 'image'
+    runtime_entry = {**runtime, 'platform': {'os': 'linux', 'architecture': 'amd64'}}
+    nested = OCI.encoded({'schemaVersion': 2, 'mediaType': INDEX, 'manifests': [runtime_entry, attachment]})
+    root = {'mediaType': INDEX, 'digest': digest(nested), 'size': len(nested)}
+    members.update({'blobs/sha256/' + config['digest'][7:]: empty,
+        'blobs/sha256/' + layer['digest'][7:]: payload,
+        'blobs/sha256/' + attachment['digest'][7:]: manifest_raw,
+        'blobs/sha256/' + root['digest'][7:]: nested,
+        'index.json': OCI.encoded({'schemaVersion': 2, 'mediaType': INDEX, 'manifests': [root]})})
+    if dual:
+        runtime_manifest = json.loads(members['blobs/sha256/' + runtime['digest'][7:]])
+        members['manifest.json'] = OCI.encoded([{'Config': 'blobs/sha256/' + image[7:],
+            'Layers': ['blobs/sha256/' + row['digest'][7:] for row in runtime_manifest['layers']]}])
+    if damage == 'config-bytes': members['blobs/sha256/' + config['digest'][7:]] = b'[]'
+    if damage == 'payload-bytes': members['blobs/sha256/' + layer['digest'][7:]] = payload.replace(b'fixture', b'changed')
+    if damage == 'attachment-bytes': members['blobs/sha256/' + attachment['digest'][7:]] += b' '
+    if damage == 'missing-attachment': del members['blobs/sha256/' + attachment['digest'][7:]]
+    if damage == 'extra-blob': members['blobs/sha256/' + 'f' * 64] = b'{}'
+    return tar_bytes(members), image, diff, root
+
+
 def inspect(tmp_path, raw, image=None, diff=None):
     archive = tmp_path / 'image.tar'; archive.write_bytes(raw)
     return OCI.inspect_docker_archive(archive, image, None if diff is None else [diff], OCI.MIB)
@@ -161,6 +211,36 @@ def test_pinned_config_and_diffids_are_still_required_in_the_original_protocol(t
                                  lambda *_: None, lambda: None)
     classic, _image, _diff, _ = image_fixture('classic')
     with pytest.raises(ValueError): stream(tmp_path / 'classic', classic, None, diff, descriptor)
+
+
+@pytest.mark.parametrize('dual', [False, True])
+@pytest.mark.parametrize('engine_mode', [False, True])
+def test_bound_docker_attestation_preserves_original_index_and_only_normalizes_runtime_layers(tmp_path, dual, engine_mode):
+    raw, image, diff, original = attested_image_fixture(dual)
+    checked = inspect(tmp_path, raw, image, diff)
+    exported = stream(tmp_path, raw, None if engine_mode else image, diff, original if engine_mode else None)
+    measured = OCI.inspect_docker_stream(io.BytesIO(raw), None if engine_mode else image, [diff], OCI.MIB,
+        lambda: None, expected_engine_descriptor=original if engine_mode else None)
+    assert measured == exported
+    for result in (checked, exported, measured):
+        assert result['loadDescriptor'] == original and result['configDigest'] == image
+        assert result['manifestDigest'] not in (original['digest'], image)
+        assert result['layerCount'] == 1 and result['layers'][0]['diffId'] == diff
+    # The provenance bytes belong to the original graph, never an executable layer.
+    assert {p.name for p in (tmp_path / 'output/blobs/sha256').iterdir()} == {
+        image[7:], exported['manifestDigest'][7:], exported['layers'][0]['blobDigest'][7:]}
+
+
+@pytest.mark.parametrize('damage', ['second-runtime', 'foreign-platform', 'foreign-reference', 'reference-type',
+    'foreign-subject', 'bad-artifact', 'empty-config-data', 'nonempty-config', 'config-bytes', 'payload-media',
+    'payload-type', 'payload-subject', 'statement-type', 'payload-bytes', 'attachment-bytes', 'missing-attachment',
+    'extra-blob', 'layer-count', 'extra-manifest-field'])
+def test_attestation_cannot_hide_another_platform_foreign_subject_or_unverified_bytes(tmp_path, damage):
+    raw, image, diff, original = attested_image_fixture(damage=damage)
+    with pytest.raises(ValueError): inspect(tmp_path, raw, image, diff)
+    with pytest.raises(ValueError): stream(tmp_path, raw, None, diff, original)
+    with pytest.raises(ValueError):
+        OCI.inspect_docker_stream(io.BytesIO(raw), None, [diff], OCI.MIB, lambda: None, expected_engine_descriptor=original)
 
 
 def test_metadata_measurement_has_no_filesystem_writes_and_streams_large_raw_layers_in_bounded_reads():
