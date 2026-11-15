@@ -443,7 +443,7 @@ try {
     if ($GeneratedArtifacts) {
         $result.generatedLifecycle = $true
         $result.retention = if ($receiptProof) { $receiptProof.retention } else { @{status='UNKNOWN';budgetVerdict='UNKNOWN'} }
-        if ($result.retention.status -cne 'SATISFIED') { $result.status='RETAINED_OUTPUTS_REQUIRE_ACTION' }
+        if ($result.retention.status -cne 'SATISFIED' -or $result.retention.scope -cne 'DISPOSABLE_GENERATED_OUTPUTS') { $result.status='RETAINED_OUTPUTS_REQUIRE_ACTION' }
     }
     $stream = [IO.File]::Open($localResult, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($result | ConvertTo-Json -Depth 6)); $stream.Write($bytes, 0, $bytes.Length) }

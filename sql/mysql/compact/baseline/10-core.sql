@@ -163,6 +163,7 @@ CREATE TABLE device_alert (
 -- 检测模型版本、验证/发布及实测指标；不是LLM额度。
 CREATE TABLE model_management (
     row_version BIGINT NOT NULL DEFAULT 0 CHECK(row_version>=0),
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '内部行标识；迁移时保留旧库已有值与分配水位',
     `model_id` INT NOT NULL COMMENT '模型唯一标识ID（主键）',
     `model_name` VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '模型名称',
     `version` VARCHAR(20) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '版本号',
@@ -195,6 +196,7 @@ CREATE TABLE model_management (
     `no_detection_image_count` INT NULL,
     `inference_fps` DECIMAL(12,4) NULL,
     PRIMARY KEY (`model_id`),
+    UNIQUE KEY `uk_model_internal_id` (`id`),
     UNIQUE KEY `uk_model_name_version` (`model_name`, `version`),
     KEY `idx_model_management_status_upload` (`status`, `upload_time` DESC),
     KEY `idx_model_management_default_status` (`is_default`, `status`),

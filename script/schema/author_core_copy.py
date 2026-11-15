@@ -78,6 +78,15 @@ for route in mapping['tables']:
         rows.append([name,target,source_col,target_col,int(is_optional),*source_meta,*target_meta])
         if is_optional:optional[name].append(source_col)
 
+# The observed ECS source additionally uses id AUTO_INCREMENT PRIMARY KEY and
+# model_id UNIQUE. Keep the original no-id source contract, admitting only this
+# reviewed alternative. model_id remains the application's business identity.
+model_route=next(route for route in mapping['tables'] if route['sourceTable']=='model_management')
+model_route['columns'].append({'sourceColumn':'id','targetColumn':'id'})
+optional['model_management'].append('id')
+model_id_meta=['bigint','NO',None,None,None,0,'auto_increment']
+rows.append(['model_management','model_management','id','id',1,*model_id_meta,*model_id_meta])
+
 core_names=list(mapping['targetTables']);source_names=list(sources)
 sql=[]
 def emit(value=''):sql.append(value)
@@ -126,6 +135,8 @@ for name in core_names:
     columns=','.join(map(literal,targets[name]['columns']))
     guard(f"SELECT IF(COUNT(*)={len(targets[name]['columns'])},1,0) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='{name}' AND column_name IN ({columns})")
     guard(f"SELECT IF(COUNT(*)={len(targets[name]['columns'])},1,0) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='{name}'")
+guard("SELECT IF(COUNT(*)=1 AND MAX(column_name)='model_id' AND SUM(sub_part IS NOT NULL)=0,1,0) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='model_management' AND index_name='PRIMARY' AND non_unique=0")
+guard("SELECT IF(COUNT(*)=1,1,0) FROM (SELECT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='model_management' AND index_name<>'PRIMARY' AND non_unique=0 GROUP BY index_name HAVING COUNT(*)=1 AND MAX(column_name)='id' AND SUM(sub_part IS NOT NULL)=0) model_internal_key")
 guard("SELECT IF(COUNT(*)=2,1,0) FROM information_schema.triggers WHERE event_object_schema=DATABASE() AND event_object_table='users' AND action_timing='BEFORE' AND ((trigger_name='compact_identity_protect_delete' AND event_manipulation='DELETE') OR (trigger_name='compact_identity_protect_update' AND event_manipulation='UPDATE'))")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM information_schema.triggers WHERE event_object_schema='__SOURCE_SCHEMA__' AND event_object_table IN ("+source_list+")")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM information_schema.table_constraints WHERE table_schema='__SOURCE_SCHEMA__' AND table_name IN ("+source_list+") AND constraint_type='CHECK'")
@@ -135,6 +146,9 @@ for name,table in sources.items():
     keys.append((name,1,','.join(table['primaryKey'])))
     keys.extend((name,0,','.join(key)) for key in table['uniqueKeys'])
 emit('INSERT INTO compact_core_unique_keys VALUES\n'+',\n'.join('('+literal(n)+','+str(p)+','+literal(k)+')' for n,p,k in keys)+';')
+emit("SET @compact_core_model_has_id=(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='model_management' AND column_name='id');")
+emit("UPDATE compact_core_unique_keys SET is_primary=0 WHERE source_table='model_management' AND columns_in_key='model_id' AND @compact_core_model_has_id=1;")
+emit("INSERT INTO compact_core_unique_keys SELECT 'model_management',1,'id' WHERE @compact_core_model_has_id=1;")
 actual_keys="(SELECT table_name,(index_name='PRIMARY') AS is_primary,GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns_in_key,SUM(sub_part IS NOT NULL) AS prefixes FROM information_schema.statistics WHERE table_schema='__SOURCE_SCHEMA__' AND table_name IN ("+source_list+") AND non_unique=0 GROUP BY table_name,index_name)"
 guard('SELECT IF(COUNT(*)=0,1,0) FROM '+actual_keys+' a LEFT JOIN compact_core_unique_keys e ON e.source_table=a.table_name AND e.is_primary=a.is_primary AND e.columns_in_key=a.columns_in_key WHERE e.source_table IS NULL OR a.prefixes<>0')
 guard('SELECT IF(COUNT(*)=0,1,0) FROM compact_core_unique_keys e LEFT JOIN '+actual_keys+' a ON e.source_table=a.table_name AND e.is_primary=a.is_primary AND e.columns_in_key=a.columns_in_key WHERE a.table_name IS NULL')
@@ -173,6 +187,13 @@ for route in mapping['tables']:
     emit(f"SET @compact_core_next_{target}=(SELECT AUTO_INCREMENT FROM information_schema.tables WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='{name}');")
     guard(f"SELECT IF(@compact_core_next_{target} IS NOT NULL AND @compact_core_next_{target} BETWEEN 1 AND 9223372036854775807 AND @compact_core_next_{target}>(SELECT COALESCE(MAX(`{pk}`),0) FROM `__SOURCE_SCHEMA__`.`{name}`),1,0)")
     run_dynamic("CONCAT('ALTER TABLE `"+target+"` AUTO_INCREMENT=',CAST(@compact_core_next_"+target+" AS CHAR))")
+# model_id stays the target primary/business key; the optional historical id is
+# a separately indexed AUTO_INCREMENT column. Do not replace its allocation
+# watermark with MAX(id)+1 or manufacture a historical watermark for no-id data.
+emit("SET @compact_core_next_model_management=IF(@compact_core_model_has_id=1,(SELECT AUTO_INCREMENT FROM information_schema.tables WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='model_management'),NULL);")
+run_dynamic(dynamic_text(["INSERT INTO compact_core_guard SELECT IF(@compact_core_model_has_id=0 OR (@compact_core_next_model_management IS NOT NULL AND @compact_core_next_model_management BETWEEN 1 AND 9223372036854775807 AND @compact_core_next_model_management>(SELECT COALESCE(MAX(",
+                          '@compact_core_expr_model_management_id',"),0) FROM `__SOURCE_SCHEMA__`.model_management s)),1,0)"]))
+run_dynamic("IF(@compact_core_model_has_id=1,CONCAT('ALTER TABLE model_management AUTO_INCREMENT=',CAST(@compact_core_next_model_management AS CHAR)),'DO 0')")
 emit("SET @compact_core_original_sql_mode=@@SESSION.sql_mode;\nSET SESSION sql_mode=CONCAT_WS(',',@@SESSION.sql_mode,'NO_AUTO_VALUE_ON_ZERO');\nSTART TRANSACTION;")
 order=['organization_department','employee','users','model_management','device_management','device_usage','device_alert','detection_work_unit','detection_task','detection_input','quality_report','historical_detection_summary']
 routes={r['targetTable']:r for r in mapping['tables'] if r['sourceTable']!='account_employee_binding'}
@@ -215,12 +236,16 @@ for target in order:
     compare=[f'INSERT INTO compact_core_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.`{name}` s'+join+f' LEFT JOIN `{target}` t ON t.`{pk}`=s.`{pk}` WHERE t.`{pk}` IS NULL']
     for column,expr in zip(cols,exprs):
         binary='BINARY ' if re.match(r'(?:VAR)?CHAR|(?:LONG|MEDIUM)?TEXT|JSON',table['columns'][column]['type'],re.I) else ''
-        compare+=[' OR NOT('+binary+'t.`'+column+'`<=>'+binary,expr,')']
+        if target=='model_management' and column=='id':
+            compare+=[' OR (@compact_core_model_has_id=1 AND NOT(t.`id`<=>',expr,'))']
+        else:
+            compare+=[' OR NOT('+binary+'t.`'+column+'`<=>'+binary,expr,')']
     if optional[name]:run_dynamic(dynamic_text(compare))
     else:emit(''.join(compare)+';')
 guard('SELECT IF((SELECT COUNT(*) FROM users WHERE binding_history_present=TRUE)=(SELECT COUNT(*) FROM `__SOURCE_SCHEMA__`.account_employee_binding),1,0)')
 for _,target,_ in auto:
     guard(f"SELECT IF(AUTO_INCREMENT=@compact_core_next_{target},1,0) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='{target}'")
+guard("SELECT IF(@compact_core_model_has_id=0 OR AUTO_INCREMENT=@compact_core_next_model_management,1,0) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='model_management'")
 emit('COMMIT;\nSET SESSION sql_mode=@compact_core_original_sql_mode;\nDROP TEMPORARY TABLE compact_core_relations;\nDROP TEMPORARY TABLE compact_core_unique_keys;\nDROP TEMPORARY TABLE compact_core_columns;\nDROP TEMPORARY TABLE compact_core_guard;')
 with (ROOT/'sql/mysql/compact/copy/10-core.sql').open('w',encoding='utf-8',newline='\n') as output:
     output.write('\n'.join(sql)+'\n')
@@ -245,4 +270,4 @@ path=ROOT/'doorhandle-module-detection/src/test/resources/compact/core-source-ev
 path.parent.mkdir(parents=True,exist_ok=True)
 with path.open('w',encoding='utf-8',newline='\n') as output:
     output.write('\n\n'.join(fixture)+'\n')
-print(json.dumps({'status':'AUTHORED_NOT_EXECUTED','coreTargets':len(core_names),'sourceTables':len(source_names),'mappedColumns':len(rows),'highWaterMarks':len(auto)}))
+print(json.dumps({'status':'AUTHORED_NOT_EXECUTED','coreTargets':len(core_names),'sourceTables':len(source_names),'mappedColumns':len(rows),'highWaterMarks':len(auto),'optionalModelIdHighWaterMark':True}))

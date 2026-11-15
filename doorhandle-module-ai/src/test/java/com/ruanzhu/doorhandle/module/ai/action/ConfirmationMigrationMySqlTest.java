@@ -45,7 +45,10 @@ class ConfirmationMigrationMySqlTest {
     }
     @AfterEach void close()throws Exception{if(fixture!=null)fixture.close();}
 
-    @Test void preservesAllFortyFieldsOrphansRawTextAndUnknownTimesWithDistinctIdentities()throws Exception{
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void preservesAllFortyFieldsOrphansRawTextAndUnknownTimesWithDistinctIdentities(boolean legacyWithoutForeignKey)throws Exception{
+        if(legacyWithoutForeignKey)useObservedLegacyChatShape();
+        String originalDdl=source.queryForMap("SHOW CREATE TABLE chat_pending_action").get("Create Table").toString();
         var original=snapshot();var sequences=sequences();fixture.migrate("+08:00");
         var store=new AgentActionPersistence(target,new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL));
         var row=store.find(901,"shared-action",false);
@@ -71,6 +74,7 @@ class ConfirmationMigrationMySqlTest {
         var audit=json.readTree(target.queryForObject("SELECT payload_json FROM audit_event WHERE legacy_key=?",String.class,Long.toString(LARGE_ID)));
         assertThat(audit.path("legacyId").asText()).isEqualTo(Long.toString(LARGE_ID));assertThat(audit.path("actorRole").asText()).isEqualTo("SUPERVISOR");
         assertThat(target.queryForObject("SELECT COUNT(*) FROM agent_run",Integer.class)).isZero();assertThat(snapshot()).isEqualTo(original);assertThat(sequences()).isEqualTo(sequences);
+        assertThat(source.queryForMap("SHOW CREATE TABLE chat_pending_action").get("Create Table")).isEqualTo(originalDdl);
     }
 
     @ParameterizedTest @CsvSource({"+00:00,2025-01-02 03:04:05.123456","-05:30,2025-01-02 08:34:05.123456"})
@@ -98,7 +102,9 @@ class ConfirmationMigrationMySqlTest {
             "ALTER TABLE agent_pending_action ADD UNIQUE KEY unexpected_unique(action_id,user_id)",
             "ALTER TABLE agent_action_audit MODIFY COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT",
             "ALTER TABLE agent_action_audit ADD CONSTRAINT unexpected_check CHECK(user_id>0)",
-            "ALTER TABLE chat_pending_action DROP FOREIGN KEY fk_chat_pending_session",
+            "ALTER TABLE chat_pending_action DROP FOREIGN KEY fk_chat_pending_session, ADD CONSTRAINT fk_chat_pending_session FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE RESTRICT",
+            "ALTER TABLE chat_pending_action ADD CONSTRAINT unexpected_source_fk FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE CASCADE",
+            "ALTER TABLE chat_pending_action DROP FOREIGN KEY fk_chat_pending_session, ADD CONSTRAINT unexpected_source_fk FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE CASCADE",
             "ALTER TABLE chat_pending_action ALTER COLUMN status SET DEFAULT 'pending'",
             "ALTER TABLE chat_pending_action MODIFY COLUMN created_at DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)",
             "CREATE TRIGGER unexpected_source_trigger BEFORE INSERT ON agent_pending_action FOR EACH ROW SET NEW.reason_code='changed'"})
@@ -133,10 +139,19 @@ class ConfirmationMigrationMySqlTest {
         fixture.installTarget(trigger+";");rejectAndAssertUnchanged();
     }
 
-    @Test void requiresExactPreviouslyMigratedParentIdentity()throws Exception{
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void requiresExactPreviouslyMigratedParentIdentity(boolean legacyWithoutForeignKey)throws Exception{
+        if(legacyWithoutForeignKey)useObservedLegacyChatShape();
         target.update("UPDATE chat_session SET session_id='another-key'");rejectAndAssertUnchanged();
     }
-    @Test void importedChatKeepsOldUniqueCollationAndDoubleCascadeWithoutChangingAgentAction()throws Exception{
+    @Test void legacyWithoutForeignKeyStillRejectsAnOrphanInsteadOfDroppingTheAction()throws Exception{
+        useObservedLegacyChatShape();
+        source.update("UPDATE chat_pending_action SET session_id='missing-session' WHERE id=2");
+        rejectAndAssertUnchanged();
+    }
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void importedChatKeepsOldUniqueCollationAndDoubleCascadeWithoutChangingAgentAction(boolean legacyWithoutForeignKey)throws Exception{
+        if(legacyWithoutForeignKey)useObservedLegacyChatShape();
         fixture.migrate("+08:00");
         assertThatThrownBy(()->target.update("UPDATE workflow_instance SET request_id='resume',resource_id='resume' WHERE kind='LEGACY_CHAT_ACTION' AND legacy_key=?",Long.toString(LARGE_ID))).isInstanceOf(org.springframework.dao.DataAccessException.class);
         target.update("UPDATE chat_session SET session_id='renamed-session'");
@@ -151,6 +166,10 @@ class ConfirmationMigrationMySqlTest {
         fixture.migrate("+08:00");var before=target.queryForList("SELECT * FROM workflow_instance ORDER BY id");
         assertThatThrownBy(()->fixture.migrate("+08:00")).isInstanceOf(Exception.class);
         assertThat(target.queryForList("SELECT * FROM workflow_instance ORDER BY id")).isEqualTo(before);
+    }
+    private void useObservedLegacyChatShape(){
+        // #341 source-backup: same nine columns/unique keys, no FK and only the session lookup index.
+        source.execute("ALTER TABLE chat_pending_action DROP FOREIGN KEY fk_chat_pending_session, DROP INDEX idx_chat_pending_session_status_created");
     }
     private void rejectAndAssertUnchanged()throws Exception{
         var before=snapshot();var sequences=sequences();

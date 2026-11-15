@@ -36,7 +36,7 @@ Agent 原 created/expires/decided 与 audit occurred 转为 UTC，原格式和�
 
 执行前须准备同一已准入 ECS MySQL 上两个不同空的隔离 schema，既有目标账号具有源 schema 的 SELECT 和 TRIGGER 元数据读取权限。夹具不创建数据库或授予权限，不提供本地回退。替换参数包括源 schema、实际观测到的两张 V19 表 collation 和来源时间偏移。原 Agent 摘要唯一键的目标 collation 为 `utf8mb4_0900_ai_ci`，来源若不同则拒绝，先补充设计而非猜测等价。
 
-复制核对三来源全部 40 列的顺序、类型、NULL、默认值、collation、生成表达式、唯一键及真实聊天双 CASCADE；不接受额外来源 CHECK、FK 或触发器。只有时间默认表达式允许无语义差别的大小写/空括号规范化，`PENDING` 等文本默认仍按字节核对。非法用户、摘要、状态或时间不删行绕过，整批中止。字符长度遵循 MySQL utf8mb4 字符数，合法的非 BMP 字符不因 Java UTF-16 长度翻倍而拒绝读取。
+复制核对三来源全部 40 列的顺序、类型、NULL、默认值、collation、生成表达式和唯一键。聊天来源仅接受两种已核实形态：原 `schema.sql` 的单列 `fk_chat_pending_session` 双 CASCADE，或 #341 源备份实际记录的无外键旧表；其他外键、复合引用、额外 CHECK 或触发器仍拒绝。无外键来源也必须逐行找到同一源会话及已迁入目标的精确会话键与 owner，孤儿动作整批拒绝，不丢弃；目标继续使用原双 CASCADE 外键，不修改来源结构。只有时间默认表达式允许无语义差别的大小写/空括号规范化，`PENDING` 等文本默认仍按字节核对。非法用户、摘要、状态或时间不删行绕过，整批中止。字符长度遵循 MySQL utf8mb4 字符数，合法的非 BMP 字符不因 Java UTF-16 长度翻倍而拒绝读取。
 
 三类 INSERT 位于同一事务，所有尾校验在全部 INSERT 之后执行：逐源 LEFT JOIN 查漏，BINARY NULL-safe 核对所有普通目标列，包括明确应为 NULL 的其他域字段。末尾审计触发器若篡改先写入的 workflow 也必须中止。执行器必须首错停止并在同一连接 ROLLBACK；禁止 `--force`。复制不写来源，也不重置其自增序列。
 

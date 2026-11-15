@@ -10,7 +10,7 @@
 | device_management | device_management | 原设备字段与版本 |
 | device_usage_record | device_usage | 仅改表名，保留全部领用/归还区间与历史快照 |
 | device_capture_alert | device_alert | 仅改表名，保留告警确认/解决状态 |
-| model_management | model_management | 原 model_id、验证发布状态及实测指标 |
+| model_management | model_management | 原 model_id、验证发布状态及实测指标；来源存在内部 id 时保留原值及自增水位，model_id 仍为业务主键 |
 | detection_work_unit | detection_work_unit | 原工作单元及可选 V19 字段；没有原值时不捏造项目关系 |
 | detection_task | detection_task | 原任务与稳定身份字段；不含历史汇总类型 |
 | detection_work_unit_image | detection_input | 保留原 ID/image_id/工作单元、对象位置、运行及状态；新增可空 content_asset_id/content_version，只有可靠映射时才填充 |
@@ -26,4 +26,4 @@
 
 逐列清单位于 `work/schema-reduction-20261105/core-column-map.json`，外键草稿位于 `core-relations.sql`。保留原设备领用外键的级联删除语义；若要改为历史保留策略，需要另作业务变更，不能在减表迁移里悄悄替换。此前没有外键的报告/任务、输入/工作单元关系仅列为待孤儿数据审查的候选。
 
-复查工单的独立复制脚本已补齐原 20 列核对和源 AUTO_INCREMENT 高水位保留，具体边界见 [独立复查工单](compact-duplicate-ticket.md)，尚未执行。其余 12 个核心实体的 [空库复制候选](compact-core-copy.md) 已补齐 13 张来源表、260 个来源列的显式复制/比对、绑定历史及自增水位保护，并编写已核验双 schema 下的 ECS 迁移用例；均未运行。仍需完成共享 workflow/content/runtime 等领域的整库编排、未纳入这份核心逐列清单的记忆偏好和身份绑定适配、新写入回滚方案、当前 ECS SHOW CREATE 对照以及恢复数据后的逐行校验。2026-10-14 的历史汇总 DDL 不代表当前线上结构已被核实。遇到未知源列、归一化冲突或约束不兼容时停止复制，不过滤源行。
+复查工单的独立复制脚本包含原 20 列核对和源 AUTO_INCREMENT 高水位保留，具体边界见 [独立复查工单](compact-duplicate-ticket.md)。其余 12 个核心实体的 [空库复制候选](compact-core-copy.md) 识别 13 张来源表、261 个来源列，执行显式复制/比对、绑定历史及自增水位保护。#341 的原 9 个核心隔离用例通过；整库来源另有内部模型行编号，新增兼容及 5 个回归仍待 ECS 统一验证。全域复制、约束安装、源/目标双恢复和正式切库仍是独立验收条件。遇到未知源列、归一化冲突或约束不兼容时停止复制，不过滤源行。

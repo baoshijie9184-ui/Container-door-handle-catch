@@ -102,8 +102,13 @@ guard(f"NOT EXISTS(SELECT 1 FROM information_schema.columns a LEFT JOIN compact_
 guard(f"NOT EXISTS(SELECT 1 FROM compact_action_columns e LEFT JOIN information_schema.columns a ON BINARY a.table_schema=BINARY '{SOURCE}' AND BINARY a.table_name=BINARY e.table_name AND BINARY a.column_name=BINARY e.column_name WHERE a.column_name IS NULL OR NOT(a.ordinal_position<=>e.position_no) OR NOT(BINARY LOWER(a.column_type)<=>BINARY e.column_type) OR NOT(BINARY a.is_nullable<=>BINARY e.nullable) OR NOT(BINARY a.collation_name<=>BINARY e.collation_name) OR NOT(BINARY a.character_set_name<=>BINARY IF(e.collation_name IS NULL,NULL,'utf8mb4')) OR NOT(BINARY (CASE WHEN e.extra='default_generated' THEN REPLACE(LOWER(a.column_default),'()','') ELSE a.column_default END)<=>BINARY (CASE WHEN e.extra='default_generated' THEN REPLACE(LOWER(e.default_value),'()','') ELSE e.default_value END)) OR NOT(BINARY LOWER(a.extra)<=>BINARY e.extra) OR NOT(BINARY a.generation_expression<=>BINARY ''))")
 guard(f"NOT EXISTS(SELECT 1 FROM information_schema.triggers WHERE BINARY event_object_schema=BINARY '{SOURCE}' AND event_object_table IN ({table_list}))")
 guard(f"NOT EXISTS(SELECT 1 FROM information_schema.table_constraints WHERE BINARY table_schema=BINARY '{SOURCE}' AND table_name IN ({table_list}) AND (constraint_type='CHECK' OR (constraint_type='FOREIGN KEY' AND table_name<>'{CHAT}')))")
-# Original foreign key actions are material semantics; never accept a source without the real cascade.
-guard(f"(SELECT COUNT(*) FROM information_schema.referential_constraints WHERE BINARY constraint_schema=BINARY '{SOURCE}' AND BINARY table_name=BINARY '{CHAT}')=1 AND (SELECT COUNT(*) FROM information_schema.referential_constraints r JOIN information_schema.key_column_usage k ON r.constraint_schema=k.constraint_schema AND r.constraint_name=k.constraint_name AND r.table_name=k.table_name WHERE BINARY r.constraint_schema=BINARY '{SOURCE}' AND BINARY r.table_name=BINARY '{CHAT}' AND BINARY r.constraint_name=BINARY 'fk_chat_pending_session' AND r.delete_rule='CASCADE' AND r.update_rule='CASCADE' AND BINARY k.column_name=BINARY 'session_id' AND BINARY k.referenced_table_schema=BINARY '{SOURCE}' AND BINARY k.referenced_table_name=BINARY 'chat_session' AND BINARY k.referenced_column_name=BINARY 'session_id' AND k.ordinal_position=1)=1")
+# The observed ECS legacy table predates this FK. Admit only that absent shape
+# or the exact schema.sql cascade; the row/owner join below remains mandatory.
+# The compact target always keeps its reviewed parent FK and cascade contract.
+foreign_count = f"(SELECT COUNT(*) FROM information_schema.referential_constraints WHERE BINARY constraint_schema=BINARY '{SOURCE}' AND BINARY table_name=BINARY '{CHAT}')"
+foreign_columns = f"(SELECT COUNT(*) FROM information_schema.key_column_usage WHERE BINARY table_schema=BINARY '{SOURCE}' AND BINARY table_name=BINARY '{CHAT}' AND referenced_table_name IS NOT NULL)"
+exact_cascade = f"(SELECT COUNT(*) FROM information_schema.referential_constraints r JOIN information_schema.key_column_usage k ON r.constraint_schema=k.constraint_schema AND r.constraint_name=k.constraint_name AND r.table_name=k.table_name WHERE BINARY r.constraint_schema=BINARY '{SOURCE}' AND BINARY r.table_name=BINARY '{CHAT}' AND BINARY r.constraint_name=BINARY 'fk_chat_pending_session' AND r.delete_rule='CASCADE' AND r.update_rule='CASCADE' AND BINARY k.column_name=BINARY 'session_id' AND BINARY k.referenced_table_schema=BINARY '{SOURCE}' AND BINARY k.referenced_table_name=BINARY 'chat_session' AND BINARY k.referenced_column_name=BINARY 'session_id' AND k.ordinal_position=1 AND k.position_in_unique_constraint=1)"
+guard(f"({foreign_count}=0 AND {foreign_columns}=0) OR ({foreign_count}=1 AND {foreign_columns}=1 AND {exact_cascade}=1)")
 unique = {PENDING: [('PRIMARY', ['action_id']), ('uk_action_request', ['user_id', 'run_id', 'arguments_digest'])],
           AUDIT: [('PRIMARY', ['id'])], CHAT: [('PRIMARY', ['id']), ('uk_chat_pending_action_id', ['action_id'])]}
 rows = [(table, name, position, column) for table, indexes in unique.items() for name, fields in indexes for position, column in enumerate(fields, 1)]
@@ -132,7 +137,9 @@ final_checks = []
 def target_columns(table):
     statement = extract(parser.split_top_level(parser.without_comments(baseline), ';'), table)
     parsed = parser.parse_table(statement, '30-operations.sql')
-    return {name: meta for name, meta in parsed['columns'].items() if name != 'id' and 'GENERATED ALWAYS' not in meta['declaration'].upper()}
+    # write_copy adds and reconciles legacy_clock_json for both fixed and
+    # unresolved clocks; a second NULL mapping would reject its real sidecar.
+    return {name: meta for name, meta in parsed['columns'].items() if name not in ('id', 'legacy_clock_json') and 'GENERATED ALWAYS' not in meta['declaration'].upper()}
 
 
 def full_mapping(table, values):

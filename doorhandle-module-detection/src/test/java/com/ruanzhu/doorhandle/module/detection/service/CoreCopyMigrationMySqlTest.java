@@ -50,6 +50,8 @@ class CoreCopyMigrationMySqlTest {
         assertThat(target.queryForObject("SELECT detection_instances_count FROM historical_detection_summary WHERE id=200",Integer.class)).isNull();
         assertThat(target.queryForObject("SELECT detected_images_count FROM historical_detection_summary WHERE id=200",Integer.class)).isEqualTo(5077456);
         assertThat(target.queryForObject("SELECT content_asset_id FROM detection_input WHERE id=81",String.class)).isNull();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='model_management' AND column_name='id'",Integer.class)).isZero();
+        assertThat(target.queryForObject("SELECT id FROM model_management WHERE model_id=21",Long.class)).isPositive();
         target.update("INSERT INTO users(username,password) VALUES('after-copy','fixture-only')");
         assertThat(target.queryForObject("SELECT id FROM users WHERE username='after-copy'",Long.class)).isEqualTo(expectedNext);
         assertThat(source.queryForObject("SELECT COUNT(*) FROM users",Long.class)).isEqualTo(3L);
@@ -64,6 +66,52 @@ class CoreCopyMigrationMySqlTest {
         assertThat(target.queryForObject("SELECT training_image_count FROM model_management WHERE model_id=21",Integer.class)).isNull();
         assertThat(target.queryForObject("SELECT project_id FROM detection_work_unit WHERE id=61",String.class)).isNull();
         assertThat(target.queryForObject("SELECT assignment_identity_revision FROM detection_task WHERE id=71",Long.class)).isZero();
+    }
+
+    @Test void internalModelRowIdsAndDeletedAllocationWatermarkArePreserved() throws Exception {
+        useInternalModelRowIds();
+        source.update("UPDATE model_management SET id=73 WHERE model_id=21");
+        source.update("INSERT INTO model_management(id,model_id,model_name,version,model_path) VALUES(9000,22,'deleted-model','v1','deleted.onnx')");
+        source.update("DELETE FROM model_management WHERE model_id=22");
+        long expectedNext=modelNextId(source);
+        fixture.copy();
+        assertThat(target.queryForObject("SELECT id FROM model_management WHERE model_id=21",Long.class)).isEqualTo(73L);
+        assertThat(modelNextId(target)).isEqualTo(expectedNext);
+        assertThat(target.queryForObject("SELECT model_id FROM detection_task WHERE id=71",Integer.class)).isEqualTo(21);
+        target.update("INSERT INTO model_management(model_id,model_name,version,model_path) VALUES(22,'new-model','v1','new.onnx')");
+        assertThat(target.queryForObject("SELECT id FROM model_management WHERE model_id=22",Long.class)).isEqualTo(expectedNext);
+        assertThat(source.queryForObject("SELECT id FROM model_management WHERE model_id=21",Long.class)).isEqualTo(73L);
+        assertThat(modelNextId(source)).isEqualTo(expectedNext);
+    }
+
+    @Test void explicitHistoricalModelRowZeroIsNotRegenerated() throws Exception {
+        useInternalModelRowIds();
+        source.update("UPDATE model_management SET id=0 WHERE model_id=21");
+        fixture.copy();
+        assertThat(target.queryForObject("SELECT id FROM model_management WHERE model_id=21",Long.class)).isZero();
+        assertThat(target.queryForObject("SELECT model_id FROM model_management WHERE id=0",Integer.class)).isEqualTo(21);
+    }
+
+    @Test void unreviewedModelRowIdTypeIsRejectedBeforeCopy() {
+        useInternalModelRowIds();
+        source.execute("ALTER TABLE model_management MODIFY COLUMN id INT NOT NULL AUTO_INCREMENT");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);
+        assertCoreEmpty();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM model_management",Long.class)).isEqualTo(1L);
+    }
+
+    @Test void modelRowIdWithoutTheReviewedPrimaryKeyIsRejectedBeforeCopy() {
+        source.execute("ALTER TABLE model_management ADD COLUMN id BIGINT NOT NULL AUTO_INCREMENT, ADD UNIQUE KEY fixture_unreviewed_id(id)");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);
+        assertCoreEmpty();
+    }
+
+    @Test void changedTargetModelRowIdRollsBackTheWholeCopy() {
+        useInternalModelRowIds();
+        target.execute("CREATE TRIGGER fixture_mutate_model_id BEFORE INSERT ON model_management FOR EACH ROW SET NEW.id=NEW.id+1");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);
+        assertCoreEmpty();
+        assertThat(source.queryForObject("SELECT id FROM model_management WHERE model_id=21",Long.class)).isEqualTo(1L);
     }
 
     @Test void explicitHistoricalZeroIdIsNotRegenerated() throws Exception {
@@ -147,6 +195,22 @@ class CoreCopyMigrationMySqlTest {
 
     private void assertCoreEmpty() {
         for(String table:CORE)assertThat(target.queryForObject("SELECT COUNT(*) FROM `"+table+"`",Long.class)).as(table).isZero();
+    }
+    private void useInternalModelRowIds() {
+        // Captured ECS alternative: physical id primary key, unique business model_id.
+        source.execute("ALTER TABLE model_management ADD UNIQUE KEY uk_model_id(model_id)");
+        source.execute("ALTER TABLE model_management ADD COLUMN id BIGINT NOT NULL AUTO_INCREMENT FIRST, DROP PRIMARY KEY, ADD PRIMARY KEY(id)");
+    }
+    private long modelNextId(JdbcTemplate jdbc) {
+        return jdbc.execute((ConnectionCallback<Long>)connection->{
+            try(var statement=connection.createStatement()) {
+                statement.execute("SET SESSION information_schema_stats_expiry=0");
+                try(var result=statement.executeQuery("SELECT AUTO_INCREMENT FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='model_management'")) {
+                    if(!result.next())throw new IllegalStateException("Model allocation watermark is absent");
+                    return result.getLong(1);
+                }
+            }
+        });
     }
     private void seed() {
         source.update("INSERT INTO organization_department(id,name) VALUES(10,'测试部门')");

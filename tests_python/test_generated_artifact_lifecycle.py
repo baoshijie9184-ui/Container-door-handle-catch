@@ -254,6 +254,135 @@ def test_failed_python_with_complete_original_report_is_reclaimed_only_by_new_mo
     assert generated.archive.exists() and (generated.evidence / 'python.xml').exists()
 
 
+@pytest.fixture
+def native_pytest(generated, monkeypatch):
+    cases = legacy.add_pytest_cases(generated, monkeypatch, recipe='legacy')
+    inner = cleanup.read_json(generated.evidence / 'receipt.json')
+    inner.update(scopeKind='mysql', fixtureProperties=['doorhandle.test.jdbc-url'],
+                 fixtureManifest={'version': 2, 'sha256': 'f' * 64}, wholeMigrationRequested=True,
+                 pythonTemporaryCleanup={'status': 'RETAINED_NATIVE_EVIDENCE'})
+    legacy.put_json(generated.evidence / 'receipt.json', inner)
+    claim_path = generated.attempt / '.verification-claimed/claim.json'
+    claim = cleanup.read_json(claim_path)
+    claim['scope'] = 'mysql'
+    legacy.put_json(claim_path, claim)
+    generated.record.update(scope='mysql', fixtureReadinessValidated=True)
+    generated.native_pytest = cases.base
+    legacy.seal(generated)
+    return generated
+
+
+@pytest.mark.parametrize(('status', 'result'), [('PASS', 'SUCCESS'), ('FAILED', 'FAILURE')])
+@pytest.mark.parametrize('current', [False, True])
+def test_mysql_native_evidence_is_preserved_outside_generated_scope(native_pytest, status, result, current):
+    state = native_pytest
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    inner['status'] = status
+    legacy.put_json(state.evidence / 'receipt.json', inner)
+    state.record.update(status=status, verificationExitCode=0 if status == 'PASS' else 1)
+    legacy.seal(state)
+    originals = legacy.preserved_bytes(state)
+    contents = {path: path.read_bytes() for path in state.native_pytest.rglob('*') if path.is_file()}
+    value = request(state, current=current, result=result)
+    plan = make_plan(state, value)
+    expected = [{'release': OLD, 'path': state.native_pytest.relative_to(state.root).as_posix(),
+                 'kind': 'NATIVE_PYTEST_EVIDENCE', 'reason': 'RETAINED_NATIVE_EVIDENCE',
+                 'allocatedBytes': None, 'measurement': 'NOT_MEASURED'}]
+    assert not plan['skipped'] and not plan['unresolved']
+    assert plan['retentionScope'] == 'DISPOSABLE_GENERATED_OUTPUTS' and plan['preservedEvidence'] == expected
+    assert all(target['kind'] != 'GENERATED_PYTEST_ROOT' for row in plan['candidates'] for target in row['targets'])
+    receipt = cleanup.apply_plan(state.root, value, plan, remote)
+    assert receipt['status'] == 'REMOVED' and receipt['retention']['status'] == 'SATISFIED'
+    assert receipt['retention']['scope'] == 'DISPOSABLE_GENERATED_OUTPUTS'
+    assert receipt['retention']['preservedEvidence'] == expected
+    assert receipt['retention']['knownRemainingAllocatedBytes'] == 0
+    assert all(not target['path'].startswith(expected[0]['path']) for target in receipt['deleted'])
+    assert not state.classes.exists() and state.native_pytest.is_dir()
+    assert all(path.read_bytes() == raw for path, raw in contents.items())
+    assert legacy.preserved_bytes(state) == originals
+    assert cleanup.read_json(state.evidence / 'receipt.json')['status'] == status
+    assert cleanup.read_json(state.attempt / 'verification-receipt.json')['status'] == status
+    assert plan['request']['candidates'][0]['terminal']['result'] == result
+
+
+@pytest.mark.parametrize('damage', ['missing-report', 'duplicate-python', 'java-only', 'untyped-migration',
+    'untyped-worker', 'missing-disposition', 'source-envelope', 'fixture-manifest', 'fixture-properties',
+    'duplicate-tool-command', 'tool-arguments', 'cleanup-pid', 'cleanup-removed'])
+def test_mysql_retention_requires_complete_typed_native_evidence(native_pytest, damage):
+    state = native_pytest
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    if damage == 'missing-report': state.reports.remove('reports/python.xml')
+    elif damage == 'duplicate-python': inner['commands'].append(copy.deepcopy(inner['commands'][-1]))
+    elif damage == 'java-only': inner['javaOnly'] = 0
+    elif damage == 'untyped-migration': inner['wholeMigrationRequested'] = 1
+    elif damage == 'untyped-worker': inner['workerMysqlRequested'] = 0
+    elif damage == 'missing-disposition': inner.pop('pythonTemporaryCleanup')
+    elif damage == 'fixture-manifest': inner['fixtureManifest'] = None
+    elif damage == 'fixture-properties': inner['fixtureProperties'] = 'not-a-list'
+    elif damage in ('duplicate-tool-command', 'tool-arguments', 'cleanup-pid', 'cleanup-removed'):
+        tools = cleanup.read_json(state.evidence / 'tool-runtime.json')
+        command = tools['commands'][0]
+        if damage == 'duplicate-tool-command': tools['commands'].append(copy.deepcopy(command))
+        elif damage == 'tool-arguments': command['argumentsSha256'] = '0' * 64
+        elif damage == 'cleanup-pid': command['cleanup']['pid'] = 1
+        else: command['cleanup']['removed'] = False
+        legacy.put_json(state.evidence / 'tool-runtime.json', tools)
+    elif damage == 'source-envelope':
+        state.record['scope'] = 'source'
+        claim_path = state.attempt / '.verification-claimed/claim.json'
+        claim = cleanup.read_json(claim_path)
+        claim['scope'] = 'source'
+        legacy.put_json(claim_path, claim)
+    legacy.put_json(state.evidence / 'receipt.json', inner)
+    legacy.seal(state)
+    originals = legacy.preserved_bytes(state)
+    value = request(state)
+    plan = make_plan(state, value)
+    assert not plan['preservedEvidence']
+    assert plan['unresolved'][0]['reason'] == 'PYTEST_SOURCE_SCOPE_REQUIRED'
+    receipt = cleanup.apply_plan(state.root, value, plan, remote)
+    assert receipt['retention']['status'] == 'BLOCKED' and receipt['retention']['budgetVerdict'] == 'UNKNOWN'
+    assert state.native_pytest.is_dir() and legacy.preserved_bytes(state) == originals
+
+
+def test_native_pytest_root_link_does_not_receive_preserved_classification(native_pytest):
+    state = native_pytest
+    retained = state.native_pytest.with_name('retained-native-data')
+    state.native_pytest.rename(retained)
+    state.native_pytest.symlink_to(retained, target_is_directory=True)
+    originals = legacy.preserved_bytes(state)
+    value = request(state)
+    plan = make_plan(state, value)
+    assert plan['skipped'] and not plan['preservedEvidence']
+    receipt = cleanup.apply_plan(state.root, value, plan, remote)
+    assert receipt['retention']['status'] == 'BLOCKED'
+    assert state.native_pytest.is_symlink() and retained.is_dir() and state.classes.exists()
+    assert legacy.preserved_bytes(state) == originals
+
+
+def test_preserved_native_evidence_does_not_hide_other_unresolved_outputs(native_pytest):
+    state = native_pytest
+    cache = legacy.put(state.checkout / cleanup.NPM_CACHE_SUFFIX / 'unproven.bin', b'retained cache')
+    value = request(state)
+    plan = make_plan(state, value)
+    assert plan['preservedEvidence'] and plan['unresolved']
+    receipt = cleanup.apply_plan(state.root, value, plan, remote)
+    assert receipt['retention']['status'] == 'BLOCKED' and receipt['retention']['budgetVerdict'] == 'UNKNOWN'
+    assert state.native_pytest.is_dir() and cache.read_bytes() == b'retained cache'
+
+
+def test_preserved_native_evidence_does_not_hide_deletion_failure(native_pytest, monkeypatch):
+    state = native_pytest
+    value = request(state)
+    plan = make_plan(state, value)
+    def fail_delete(*args): raise OSError('Synthetic generated-output failure')
+    monkeypatch.setattr(cleanup, 'remove_target', fail_delete)
+    receipt = cleanup.apply_plan(state.root, value, plan, remote)
+    assert receipt['status'] == 'PARTIAL_FAILURE' and receipt['retention']['status'] == 'BLOCKED'
+    assert receipt['retention']['preservedEvidence'] == plan['preservedEvidence']
+    assert state.native_pytest.is_dir() and state.classes.exists()
+
+
 def test_public_oci_mixed_business_file_is_not_admitted(generated):
     directory = generated.inbox / 'candidate-build-tools'
     legacy.put_json(directory / 'official-layer-measurements.json', {
@@ -515,6 +644,9 @@ def test_pipeline_parameters_and_archival_precede_terminal_cleanup():
     assert '$context.generatedRequest = @{schema=' not in reclaim
     assert 'generated-cleanup-request.json\"))' in reclaim
     assert "if data['mode']!='Terminal'" in reclaim
+    assert "$result.retention.scope -cne 'DISPOSABLE_GENERATED_OUTPUTS'" in reclaim
+    assert "'FAILED_OR_UNKNOWN','RETAINED_OUTPUTS_REQUIRE_ACTION'" in reclaim
+    assert "catchError(buildResult: 'FAILURE', stageResult: 'FAILURE')" in pipeline
 
 
 def test_request_payload_not_embedded_in_windows_ssh_command():

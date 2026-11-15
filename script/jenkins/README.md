@@ -4,7 +4,7 @@
 
 后续单体与微服务 CI/CD 统一使用现有本地 Jenkins 控制器 <http://127.0.0.1:8080/>，账号 `admin`，密码保存在 Git 忽略的 [项目私有登录文档](../../work/jenkins/local-access.md)。当前入口、启动命令和流程以 [本地 Jenkins CI/CD 约定](../../docs/本地Jenkins-CICD.md) 为准。服务已启动并通过浏览器以 `admin` 登录，本地独立节点和统一任务入口已配置；启用任务前须确认 CI 文件已推送到 SCM 分支，最终启用状态以配置回执为准，不据此宣称已完成项目测试或发布验收。
 
-本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins 始终运行；助手在流水线外按需启动 ECS，用完且自有任务停止、报告保全、无在跑或排队验证及其他继续使用需求后，在流水线外停机并回读 `Stopped / StopCharging`。流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
+本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins 始终运行；按用户本轮提供的工作约定，ECS 保持开启，由用户自行关闭，助手不在测试前后自动启停或安排关机任务。本轮自有临时资源仍须收尾并保全报告。流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
 
 Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.cloud.yml` 的阿里云 HTTPS PyPI 镜像 `https://mirrors.aliyun.com/pypi/simple`。安装仍使用隔离 pip、固定版本、禁用缓存、原始 pip 下载摘要报告、`pip check` 和实际版本回读；不增加备用源或绕过 TLS 校验。2 GiB 总增长包络、磁盘保底、容器内存限制及 1,800 秒期限保持不变，真实安装和新增命令回归均由后续固定提交在 ECS 验证。
 
@@ -12,7 +12,9 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 常规流水线默认在 `post always` 停止本轮测试工具、归档原始证据后，执行 `CleanupGeneratedArtifacts`。SUCCESS、UNSTABLE、FAILURE 和 ABORTED 均可进入；不等待当前 Jenkins 构建离开 post，也不以业务测试 PASS 作为回收前提。收尾失败不会跳过原始证据归档。
 
-生成物完成后保留 **0 轮**，异常残留预算 **512 MiB**。每轮归档 `generated-cleanup-plan.json`、`generated-cleanup-receipt.json`、`generated-cleanup-journal.jsonl` 和控制回执；未证明可退役的对象列明路径、原因和 UNKNOWN 容量判断，并令收尾失败，不计入已释放量。实际空间采用回收前后磁盘读数；各阶段磁盘保底继续生效。
+可丢弃生成物完成后保留 **0 轮**，异常残留预算 **512 MiB**。每轮归档 `generated-cleanup-plan.json`、`generated-cleanup-receipt.json`、`generated-cleanup-journal.jsonl` 和控制回执；`retention.scope=DISPOSABLE_GENERATED_OUTPUTS`，`SATISFIED` 仅表示该授权范围内的收尾完成，不表示整个 checkout 已清空。授权生成物仍缺证据、存在未知引用或清理失败时，列明路径、原因和 UNKNOWN 容量判断，并令收尾失败，不计入已释放量。实际空间采用回收前后磁盘读数；各阶段磁盘保底继续生效。
+
+MySQL 组合验证的 `tmp/pytest` 不适用纯 source 合成目录删除规则。只有同一构建的原件及身份已认证、MySQL scope 与执行记录完整，且原执行器明确记录 `pythonTemporaryCleanup.status=RETAINED_NATIVE_EVIDENCE` 时，才将该准确路径列入 `preservedEvidence`，原样保留而不作为收尾失败。其未测容量标记 `NOT_MEASURED`，不计作零占用或已释放空间，也不计入可丢弃生成物的预算。缺报告、重复 Python 命令、非法字段或身份不符仍阻断；不按 `PYTEST_SOURCE_SCOPE_REQUIRED` 原因码整体豁免。业务验证的原始 PASS/FAILED 不变，真正的收尾及收证失败仍使流水线失败。
 
 历史授权清单通过同一 Jenkins 任务运行：
 

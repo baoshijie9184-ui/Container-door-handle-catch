@@ -1,8 +1,8 @@
 # 核心实体空库复制候选
 
-状态：`AUTHORED_NOT_EXECUTED`。脚本和 ECS 隔离迁移用例已编写，未连接数据库、未执行迁移或测试，也不表示当前线上结构已经核实。它属于当前 29 表候选，不修改表数或部署方案。
+状态：`SOURCE_VARIANT_FIX_PENDING_ECS`。#341 的核心隔离用例通过，但整库复制遇到真实来源的 `model_management.id` 结构差异而停止。现已补齐这一已观测来源变体的保全路径，新增回归仍待 ECS 统一验收；正式库尚未切换，目标仍为 29 张表。
 
-`sql/mysql/compact/copy/10-core.sql` 将 13 张来源表复制为 12 张目标实体，明确列出 260 个来源字段。独立复查工单使用相邻的 `11-duplicate-ticket.sql`，不重复复制。源字段依据为已保存的 `core-column-map.json`、`schema-inventory.json`、2026-10-14 的 `image_detection_data` DDL，目标依据为当前 `baseline/10-core.sql`。这些历史证据必须在 ECS 验收时与实际结构对照。
+`sql/mysql/compact/copy/10-core.sql` 将 13 张来源表复制为 12 张目标实体，明确列出 261 个可识别来源字段（含可选历史 `model_management.id`）。独立复查工单使用相邻的 `11-duplicate-ticket.sql`，不重复复制。源字段依据为已保存的 `core-column-map.json`、`schema-inventory.json`、2026-10-14 的 `image_detection_data` DDL，以及 #341 冻结来源备份中的模型表结构；目标依据为当前 `baseline/10-core.sql`。
 
 | 来源 | 目标 | 保真要求 |
 | --- | --- | --- |
@@ -16,7 +16,9 @@
 
 账号没有旧绑定行时，新值为 `employee_id=NULL / binding_version=0 / binding_history_present=FALSE`。存在旧绑定行时，保留原 employee_id 和 version，并设置历史标记；即使原 employee_id 为 NULL、version 为 0，历史标记仍为 TRUE。目标 `36-identity-guards.sql` 保持原绑定行对用户删除和改 ID 的限制，并阻止清除历史或版本倒退；目标员工外键维持 RESTRICT。
 
-脚本仅对清单中已声明为可选的历史新增列提供固定分支：列存在时复制，缺失时写 NULL，只有缺失的 `assignment_identity_revision` 写 0。没有 `COALESCE` 替换真实原值，没有姓名回填或生产 SQL 改写。DATETIME 和 DATE 在数据库内直接复制，不做 UTC/北京时间转换；模型训练完成时间等既有本地时间语义也保持原值。JSON 文本列按原字节核对，不重序列化、不去空格。
+模型表准入两种已知结构：原 `PRIMARY(model_id)` 无内部编号版本，以及 #341 观测到的 `id BIGINT AUTO_INCREMENT PRIMARY KEY`、`UNIQUE(model_id)` 版本。后者的 12 行来源数据分配水位为 46。目标仍以 `model_id` 作为业务主键，另设唯一自增 `id` 保存内部行编号；存在来源 `id` 时逐行复制（包括 0）并保留真实分配水位，无此列时只生成新的内部编号，不冒称原值。模型 API、外键及历史引用继续使用 `model_id`。未知 `id` 类型或不同键结构仍拒绝，不调用会删除旧 `id` 的历史 V2 迁移。
+
+脚本仅对清单中已声明为可选的历史新增列提供固定分支：列存在时复制，缺失时写 NULL，只有缺失的 `assignment_identity_revision` 写 0；模型内部 `id` 的 NULL 输入由目标自增机制分配，按上段单独核验。没有 `COALESCE` 替换真实原值，没有姓名回填或生产 SQL 改写。DATETIME 和 DATE 在数据库内直接复制，不做 UTC/北京时间转换；模型训练完成时间等既有本地时间语义也保持原值。JSON 文本列按原字节核对，不重序列化、不去空格。
 
 原 `detection_task.session_id` 是 `VARCHAR(64) utf8mb4_unicode_ci`，当前目标是 `VARCHAR(128) utf8mb4_bin`。这项已知差异单独声明；复制前必须对来源 chat_session 作字节相等检查。旧外键能以不区分大小写方式匹配、但原字符串不同的数据会停止复制，等待可追溯的解决方案，不自动改拼写。原会话删除 SET NULL、主键更新 CASCADE 的动作由最终 `40-relations.sql` 恢复。
 
@@ -26,8 +28,8 @@
 
 1. 在停写且已确认恢复路径的迁移窗口，使用不同的源、目标 schema；创建全部目标表并安装 `35-runtime-guards.sql`、`36-identity-guards.sql`，暂不安装 `40-relations.sql`。迁移连接保持 `FOREIGN_KEY_CHECKS=1` 和严格 SQL 模式。
 2. 验证 13 张源表及 12 张目标表、列类型/NULL/默认值/字符集/排序规则、原主键和唯一键、已知外键动作及目标空库状态。未知源列、缺失必需列、类型变化、生成列、新触发器/检查约束或未知外键均拒绝。原有引用及稳定用户 ID 的孤儿也拒绝；不删除、过滤或修改源行。
-3. 捕获 11 个自增表的真实下一 ID，不能用 `MAX(id)+1` 替代。目标 `ALTER TABLE ... AUTO_INCREMENT` 在行事务之前执行，保留已删除高 ID 的水位。这些 DDL 隐式提交，失败后不宣称水位已回滚；model_management 的原 model_id 不是自增列。
-4. 在同一连接内开始行事务，显式复制 12 个实体。原 ID 为 0 时也原样保留。每个目标表核对行数，并按原主键 LEFT JOIN 对全部写入列做 NULL-safe 比较；文本按 BINARY 比较，漏行和缺值都会失败。最后再次核对账号绑定历史数量及自增水位，再提交。
+3. 捕获原 11 个自增表的真实下一 ID；模型来源存在内部 `id` 时另外捕获它的水位，不能用 `MAX(id)+1` 替代。目标 `ALTER TABLE ... AUTO_INCREMENT` 在行事务之前执行，保留已删除高 ID 的水位。这些 DDL 隐式提交，失败后不宣称水位已回滚；`model_id` 本身仍不是自增列。
+4. 在同一连接内开始行事务，显式复制 12 个实体。原 ID 为 0 时也原样保留。每个目标表核对行数，并按原主键或模型的稳定唯一 `model_id` LEFT JOIN 对全部来源列做 NULL-safe 比较；文本按 BINARY 比较，漏行和缺值都会失败。无来源的模型内部编号只要求目标生成，不与不存在的原值比较。最后再次核对账号绑定历史数量及自增水位，再提交。
 5. 完成其他领域复制，包括 chat_session，再安装完整 `40-relations.sql`。若任何关系安装失败，不允许切流。这一步属于整库编排，并非本脚本已完成的工作；测试中的少量聊天行仅用于验证核心外键，不能代替完整智能体领域迁移。
 
 客户端必须遇到第一条错误立即停止，禁止 `--force`；出错后由同一连接 ROLLBACK 并关闭连接，不能在失败会话上续跑或沿用已改变的会话变量。DDL 保留的候选库状态须废弃或重新确认后重建，源库始终保留。首次切流后的新写入回退/恢复方案仍需整库设计和 ECS 验收。
@@ -44,6 +46,6 @@
 -Ddoorhandle.core.copy.target.config=/项目/work/既有目标验证库配置.json
 ```
 
-9 个已编写用例覆盖全部核心实体、空绑定/版本零、JSON 文本/日期/历史空值、删除高 ID 后的水位、显式 ID 零、可选历史列缺失、未知列和类型变化拒绝、孤儿绑定拒绝、会话字符串差异拒绝、目标中途篡改后全事务回滚，以及装配关系后的删除/更新动作。以上均为待执行测试，不是通过记录。
+原 9 个用例由 #341 执行通过。现新增 5 个模型内部行编号用例，覆盖原编号与删除高 ID 后水位、显式零值、错误类型、错误主键和目标编号篡改回滚；原无内部编号来源继续覆盖。新增范围尚待 ECS 统一验证。
 
-本脚本没有迁移 `agent_memory_preference`、`detection_identity_binding` 或内容/共享流程/运行态领域；它们不在这份 260 列核心清单中，源表保持原样，仍需各自完整持久化与复制契约。编写器 `script/schema/author_core_copy.py` 只读取已保存证据并输出显式 SQL 和历史源夹具，不访问数据库。最终验收还包括实际源 SHOW CREATE、全域复制顺序、跨域关系、逐行对账和恢复演练。
+本脚本没有迁移 `agent_memory_preference`、`detection_identity_binding` 或内容/共享流程/运行态领域；它们不在这份 261 列核心清单中，源表保持原样，仍需各自完整持久化与复制契约。编写器 `script/schema/author_core_copy.py` 只读取已保存证据并输出显式 SQL 和历史源夹具，不访问数据库。最终验收还包括实际源 SHOW CREATE、全域复制顺序、跨域关系、逐行对账和恢复演练。

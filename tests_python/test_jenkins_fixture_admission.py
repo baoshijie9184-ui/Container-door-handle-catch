@@ -383,7 +383,8 @@ def test_actual_profile_batches_all_64_classes_and_original_paths_without_proper
     requirements, provisioned = provisioned_profile()
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
-    assert len(requirements) == 64 and sum(item['minimumTests'] for item in requirements) == 760
+    # Core copy now requires 14 cases; confirmation requires all 41 expanded cases.
+    assert len(requirements) == 64 and sum(item['minimumTests'] for item in requirements) == 797
     knowledge = next(item for item in requirements if item['id'] == 'QualityKnowledgeMySqlTest')
     assert knowledge['minimumTests'] == 14
     # Nine existing cases plus five semantic-index cases, not six.

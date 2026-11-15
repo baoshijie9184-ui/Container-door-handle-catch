@@ -372,6 +372,28 @@ def npm_cache_provenance(root, source, commit, manifest, inner, catalog, tools, 
             'installArgumentsSha256': arguments_sha}
 
 
+def pytest_command_provenance(checkout, manifest, tools, *, generated=False):
+    """Bind the exact pytest invocation and its stopped tool container."""
+    arguments = ['-B', '-m', 'pytest', 'tests_python', '-q', '--basetemp=' + str(checkout / PYTEST_TMP_SUFFIX),
+                 '--junitxml=' + str(checkout / 'work/ci-evidence/python.xml')]
+    arguments_sha = sha(json.dumps(arguments, ensure_ascii=True).encode())
+    actual = tools.get('commands')
+    matching = [row for row in actual if isinstance(row, dict) and row.get('tool') == 'python'
+                and row.get('argumentsSha256') == arguments_sha] if isinstance(actual, list) else []
+    if len(matching) != 1: return None
+    command = matching[0]; cleaned = command.get('cleanup', {})
+    images = manifest.get('images'); image = images.get('python') if isinstance(images, dict) else None
+    if (command.get('status') != 'EXITED' or type(command.get('exitCode')) is not int or (not generated and command['exitCode'] != 0)
+            or not isinstance(command.get('containerId'), str) or not SHA.fullmatch(command['containerId'])
+            or not isinstance(cleaned, dict) or cleaned.get('containerId') != command['containerId']
+            or not isinstance(image, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image)
+            or cleaned.get('image') != image or type(cleaned.get('pid')) is not int or cleaned['pid'] != 0
+            or type(cleaned.get('exitCode')) is not int or cleaned['exitCode'] != command['exitCode']
+            or (not generated and cleaned['exitCode'] != 0) or cleaned.get('removed') is not True):
+        return None
+    return arguments_sha
+
+
 def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools, verifier, *, generated=False):
     """Prove only synthetic source pytest data, never native migration fixtures."""
     def skipped(reason): return {'status': 'SKIPPED', 'reason': reason}
@@ -438,23 +460,8 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
                 or tally != expected or not tally['found'] or (not generated and (not tally['passed'] or tally['failed']))):
             return skipped('PYTEST_REPORT_NOT_PASS')
     except (OSError, ValueError, ET.ParseError): return skipped('PYTEST_REPORT_NOT_PASS')
-    arguments = ['-B', '-m', 'pytest', 'tests_python', '-q', '--basetemp=' + str(checkout / PYTEST_TMP_SUFFIX),
-                 '--junitxml=' + str(checkout / 'work/ci-evidence/python.xml')]
-    arguments_sha = sha(json.dumps(arguments, ensure_ascii=True).encode())
-    actual = tools.get('commands')
-    matching = [row for row in actual if isinstance(row, dict) and row.get('tool') == 'python'
-                and row.get('argumentsSha256') == arguments_sha] if isinstance(actual, list) else []
-    if len(matching) != 1: return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
-    command = matching[0]; cleaned = command.get('cleanup', {})
-    images = manifest.get('images'); image = images.get('python') if isinstance(images, dict) else None
-    if (command.get('status') != 'EXITED' or type(command.get('exitCode')) is not int or (not generated and command['exitCode'] != 0)
-            or not isinstance(command.get('containerId'), str) or not SHA.fullmatch(command['containerId'])
-            or not isinstance(cleaned, dict) or cleaned.get('containerId') != command['containerId']
-            or not isinstance(image, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image)
-            or cleaned.get('image') != image or type(cleaned.get('pid')) is not int or cleaned['pid'] != 0
-            or type(cleaned.get('exitCode')) is not int or cleaned['exitCode'] != command['exitCode']
-            or (not generated and cleaned['exitCode'] != 0) or cleaned.get('removed') is not True):
-        return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
+    arguments_sha = pytest_command_provenance(checkout, manifest, tools, generated=generated)
+    if arguments_sha is None: return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
     return {'status': 'PROVEN', 'runnerSha256': runner_sha, 'runnerMainAstSha256': main_sha,
             'executorSha256': executor_sha, 'routingAstSha256': routing, 'argumentsSha256': arguments_sha,
             'pythonTests': tally}
@@ -535,6 +542,7 @@ def evidence_binding(root, custody, identity, verifier, *, generated=False):
     if generated:
         result['sourceArchive'] = str(source)
         result['record'] = record
+        result['toolManifest'], result['toolEvidence'] = manifest, tools
     cache = checkout / NPM_CACHE_SUFFIX
     if cache.exists() or cache.is_symlink():
         result['npmCache'] = npm_cache_provenance(root, source, record['commit'], manifest, inner, catalog, tools, verifier)
@@ -1124,6 +1132,26 @@ def generated_binding(root, row, identity, verifier):
             'evidenceArchive': None, 'claimSha256': None, 'toolManifestSha256': None}
 
 
+def native_pytest_preservation(root, binding, tag, path):
+    """Classify authenticated native evidence, without granting any deletion."""
+    inner = binding['inner']
+    python = [row for row in inner['commands'] if row.get('label') == 'python']
+    if (binding.get('record', {}).get('scope') != 'mysql' or inner.get('scopeKind') != 'mysql'
+            or inner.get('javaOnly') is not False
+            or any(type(inner.get(key)) is not bool for key in ('wholeMigrationRequested', 'workerMysqlRequested'))
+            or type(inner.get('fixtureManifest')) is not dict or not inner.get('fixtureProperties')
+            or type(inner.get('fixtureProperties')) is not list
+            or inner.get('pythonTemporaryCleanup') != {'status': 'RETAINED_NATIVE_EVIDENCE'}
+            or len(python) != 1 or not python[0].get('finishedAt') or type(python[0].get('exitCode')) is not int
+            or not {'reports/python.xml', 'reports/python.log'} <= set(binding['catalog'])):
+        return None
+    if pytest_command_provenance(binding['checkout'], binding['toolManifest'], binding['toolEvidence'], generated=True) is None:
+        return None
+    owned_chain(path, root, directory=True)
+    return {'release': tag, 'path': path.relative_to(root).as_posix(), 'kind': 'NATIVE_PYTEST_EVIDENCE',
+            'reason': 'RETAINED_NATIVE_EVIDENCE', 'allocatedBytes': None, 'measurement': 'NOT_MEASURED'}
+
+
 def generated_public_basis(root, binding, row, verifier):
     directory = root / 'inbox' / row['release'] / 'candidate-build-tools'
     summary_path = owned_chain(directory / 'resource-summary.json', root, maximum=2 * 1024 ** 2)
@@ -1348,7 +1376,7 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
             and type(request['protectedReleases']) is list and all(TAG.fullmatch(tag) for tag in request['protectedReleases']),
             'GENERATED_CANDIDATE_BOUND_INVALID')
     protected = set(request['protectedReleases']) | GENERATED_PROTECTED_RELEASES
-    accepted, skipped, absent, unresolved, seen = [], [], [], [], set()
+    accepted, skipped, absent, unresolved, preserved, seen = [], [], [], [], [], set()
     budget = {'remaining': MAX_TARGET_CANONICAL}
     for row in request['candidates']:
         tag = row.get('release', '')
@@ -1376,7 +1404,7 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                 binding = generated_binding(root, enriched, request['identity'], verifier)
                 declared = row.get('targets')
                 require(declared == 'AUTO' or type(declared) is list and len(declared) <= 128, 'GENERATED_TARGET_SELECTION_INVALID')
-                targets, bases = [], {}
+                targets, bases, retained_evidence = [], {}, []
                 if declared == 'AUTO':
                     # Only this task's enrolled terminal attempts discover new
                     # generated outputs. Old historical requests stay exact.
@@ -1388,6 +1416,10 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                             path = binding['checkout'] / suffix
                             if not path.exists() and not path.is_symlink(): continue
                             proof = binding.get(proof_key, {})
+                            retained = native_pytest_preservation(root, binding, tag, path) if proof_key == 'pytestTmp' else None
+                            if retained is not None:
+                                retained_evidence.append(retained)
+                                continue
                             if proof.get('status') != 'PROVEN':
                                 unresolved.append({'release': tag, 'path': path.relative_to(root).as_posix(),
                                     'reason': proof.get('reason', 'GENERATED_PROVENANCE_UNRESOLVED')})
@@ -1427,12 +1459,14 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                 accepted.append({'release': tag, 'custodySha256': sha(canonical(row)), 'targets': targets, 'bases': bases,
                                  'evidenceArchive': binding['evidenceArchive'], 'claimSha256': binding['claimSha256'],
                                  'toolManifestSha256': binding['toolManifestSha256']})
+                preserved.extend(retained_evidence)
         except (ValueError, OSError, KeyError, TypeError, ET.ParseError, verifier.VerificationError) as error:
             skipped.append({'release': tag, 'reason': failure_guard_code(error), 'targets': row.get('targets', 'AUTO')})
     return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-plan', 'root': str(root), 'currentRelease': current,
             'identity': request['identity'], 'requestSha256': sha(canonical(request)), 'request': request,
             'executorSha256': digest(Path(__file__).resolve()), 'verifierSha256': digest(Path(verifier.__file__).resolve()),
             'candidates': accepted, 'skipped': skipped, 'absent': absent, 'unresolved': unresolved, 'generatedLifecycle': True,
+            'retentionScope': 'DISPOSABLE_GENERATED_OUTPUTS', 'preservedEvidence': preserved,
             'sourceDataDeleted': False, 'sharedMavenCachePreserved': True, 'originalEvidencePreserved': True,
             'publishedArtifactsPreserved': True, 'oldMavenRepositoriesPreserved': not any(
                 t['kind'] == 'RETIRED_PRIVATE_MAVEN' for c in accepted for t in c['targets']),
@@ -1636,7 +1670,8 @@ def cleanup_receipt(plan, deleted, before_bytes, after_bytes, journal_sha, failu
         result.update(generatedLifecycle=True, referenceScope=plan['referenceScope'],
             oldMavenRepositoriesPreserved=not any(item['kind'] == 'RETIRED_PRIVATE_MAVEN' for item in deleted),
             unselectedMavenRepositoriesPreserved=True,
-            retention={'completedGeneratedRetentionCount': 0, 'budgetBytes': GENERATED_RETAINED_BUDGET,
+            retention={'scope': 'DISPOSABLE_GENERATED_OUTPUTS', 'preservedEvidence': plan.get('preservedEvidence', []),
+                       'completedGeneratedRetentionCount': 0, 'budgetBytes': GENERATED_RETAINED_BUDGET,
                        'remainingTargets': remaining, 'knownRemainingAllocatedBytes': known_bytes,
                        'unmeasuredCandidates': len(plan['skipped']), 'unresolvedTargets': unresolved, 'alreadyAbsent': plan['absent'],
                        'status': 'BLOCKED' if failure or remaining or plan['skipped'] or unresolved else 'SATISFIED',
