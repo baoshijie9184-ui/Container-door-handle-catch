@@ -64,13 +64,14 @@ PYTEST_TMP_SUFFIX = 'work/ci-evidence/tmp/pytest'
 # temporary cleanup revision. The main function
 # includes its nested execute callback, source environment and exact basetemp.
 PYTEST_MIDDLEWARE_RUNNER_MAIN_AST = 'd19221763b3a72097db8a78a317667d793c56d18b98d74dcd85826142d98f09f'
+PYTEST_NATIVE_COLLECTION_RUNNER_MAIN_AST = 'e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
 PYTEST_RUNNER_MAIN_AST = {
     # bb38f0fc adds opt-in synthetic middleware protocols, not a new basetemp.
     # Its semantic MySQL opt-in is excluded below; legacy receipts lack that flag.
     PYTEST_MIDDLEWARE_RUNNER_MAIN_AST,
     # Native assertion collection/module dispatch (1663a568/3502d844); the
     # source scope, Python command and explicit pytest basetemp are unchanged.
-    'e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3',
+    PYTEST_NATIVE_COLLECTION_RUNNER_MAIN_AST,
     # Same-attempt Java compilation reuse; source pytest routing is unchanged.
     '6aa846c4321a33b653d970669bd268dcb58b85a4869f7ce40ad8cb0c6968f95d',
     '6ed391795b01ecca1c45efd86b84b5270fa35f36742c76ac957141a28cb2a4ba',
@@ -372,7 +373,7 @@ def npm_cache_provenance(root, source, commit, manifest, inner, catalog, tools, 
             'installArgumentsSha256': arguments_sha}
 
 
-def pytest_command_provenance(checkout, manifest, tools, *, generated=False):
+def pytest_command_provenance(checkout, manifest, tools, *, generated=False, expected_exit_code=None):
     """Bind the exact pytest invocation and its stopped tool container."""
     arguments = ['-B', '-m', 'pytest', 'tests_python', '-q', '--basetemp=' + str(checkout / PYTEST_TMP_SUFFIX),
                  '--junitxml=' + str(checkout / 'work/ci-evidence/python.xml')]
@@ -384,6 +385,7 @@ def pytest_command_provenance(checkout, manifest, tools, *, generated=False):
     command = matching[0]; cleaned = command.get('cleanup', {})
     images = manifest.get('images'); image = images.get('python') if isinstance(images, dict) else None
     if (command.get('status') != 'EXITED' or type(command.get('exitCode')) is not int or (not generated and command['exitCode'] != 0)
+            or (expected_exit_code is not None and command['exitCode'] != expected_exit_code)
             or not isinstance(command.get('containerId'), str) or not SHA.fullmatch(command['containerId'])
             or not isinstance(cleaned, dict) or cleaned.get('containerId') != command['containerId']
             or not isinstance(image, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image)
@@ -454,17 +456,27 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
             result = 'failed' if case.find('failure') is not None or case.find('error') is not None else (
                 'skipped' if case.find('skipped') is not None else 'passed')
             tally['found'] += 1; tally[result] += 1
+        # This reviewed runner raises on pytest exit 1 before assigning either
+        # count summary (#225/#229). The catalogued XML remains the original
+        # failed result; deriving counts here never rewrites that receipt.
+        failed_xml_counts = (generated and 'pythonTests' not in inner and 'selectedPythonSuites' not in inner
+            and main_sha == PYTEST_NATIVE_COLLECTION_RUNNER_MAIN_AST and inner.get('status') == 'FAILED'
+            and inner.get('pythonTemporaryCleanup') == {'status': 'RETAINED_PYTHON_NOT_PASSED'}
+            and python[0]['exitCode'] == 1 and tally['failed'] > 0)
         expected = inner.get('pythonTests')
-        if (not isinstance(expected, dict) or set(expected) != set(tally)
-                or any(type(value) is not int for value in expected.values())
-                or tally != expected or not tally['found'] or (not generated and (not tally['passed'] or tally['failed']))):
+        summary_matches = (isinstance(expected, dict) and set(expected) == set(tally)
+            and all(type(value) is int for value in expected.values()) and tally == expected)
+        if (not (summary_matches or failed_xml_counts) or not tally['found']
+                or (not generated and (not tally['passed'] or tally['failed']))):
             return skipped('PYTEST_REPORT_NOT_PASS')
     except (OSError, ValueError, ET.ParseError): return skipped('PYTEST_REPORT_NOT_PASS')
-    arguments_sha = pytest_command_provenance(checkout, manifest, tools, generated=generated)
+    arguments_sha = pytest_command_provenance(checkout, manifest, tools, generated=generated,
+                                             expected_exit_code=1 if failed_xml_counts else None)
     if arguments_sha is None: return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
     return {'status': 'PROVEN', 'runnerSha256': runner_sha, 'runnerMainAstSha256': main_sha,
             'executorSha256': executor_sha, 'routingAstSha256': routing, 'argumentsSha256': arguments_sha,
-            'pythonTests': tally}
+            'pythonTests': tally,
+            **({'pythonCountsSource': 'ARCHIVED_FAILED_XML'} if failed_xml_counts else {})}
 
 
 def evidence_binding(root, custody, identity, verifier, *, generated=False):

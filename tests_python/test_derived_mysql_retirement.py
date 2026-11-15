@@ -614,9 +614,10 @@ def test_task_privileged_worker_refuses_extra_or_missing_arguments(root_identity
         retirement.root_worker(payload)
 
 
-@pytest.mark.parametrize('changed', [False, True])
-@pytest.mark.parametrize('objects', ['absent', 'stopped', 'remove-failed'])
-@pytest.mark.parametrize('finished', [False, True])
+@pytest.mark.parametrize('changed,objects,finished', [
+    (changed, objects, finished) for changed in (False, True)
+    for objects in ('absent', 'stopped', 'remove-failed') for finished in (False, True)
+] + [(False, 'builder-changed', True), (False, 'fixture-reappeared', True)])
 def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, monkeypatch, changed, objects, finished):
     args = SimpleNamespace(phase='plan', batch=retirement.FINISHED_BATCH if finished else retirement.TASK_BATCH, tag='ci-300-' + 'f' * 12,
         commit='f' * 40, source_sha256='e' * 64, request_sha256='d' * 64, failed_builds='287,289', plan_sha256=None)
@@ -645,8 +646,11 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
     monkeypatch.setattr(retirement, 'task_helpers', lambda _: helpers)
     monkeypatch.setattr(retirement, 'task_request', lambda _: value)
     monkeypatch.setattr(retirement, 'task_admitted', lambda *_a, **_k: keepers)
+    builder_generation = [0]
     monkeypatch.setattr(retirement, 'task_fixture_candidates', lambda *_: [
-        {'historical': {'context': {'release': tag}}, 'fixture': {'containerId': str(i) * 64} if tag in remaining else None}
+        {'historical': {'context': {'release': tag}}, 'fixture': {'containerId': str(i) * 64} if tag in remaining else None,
+         **({'preservedBuilder': {'containerId': 'c' * 64, 'preservedVolume': 'owned-independent-state',
+                                 'generation': builder_generation[0]}} if finished else {})}
         for i, tag in enumerate(tags, 1)])
     monkeypatch.setattr(retirement, 'task_fixture_quiescence', lambda *_: None)
     monkeypatch.setattr(retirement, 'task_configuration', lambda *_: retirement.TaskBatch(
@@ -677,6 +681,9 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
         if objects == 'remove-failed': raise ValueError('TASK_FIXTURE_CHANGED_AFTER_PLAN')
         if tag in remaining:
             calls.append('remove-stopped-object'); remaining.remove(tag)
+        if not remaining:
+            if objects == 'builder-changed': builder_generation[0] += 1
+            elif objects == 'fixture-reappeared': remaining.add(tags[0])
         return {'release': tag, 'status': 'REMOVED' if candidate['fixture'] else 'ALREADY_ABSENT'}
     monkeypatch.setattr(retirement, 'task_remove_fixture', remove_fixture)
     def privileged(payload):
@@ -704,6 +711,15 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
         assert receipt['status'] == 'FAILED_OR_UNKNOWN' and receipt['removed'] == []
         assert receipt['reasonCode'] == 'TASK_FIXTURE_CHANGED_AFTER_PLAN'
         assert all(state.path.exists() for state in states.values()) and remaining == set(tags)
+    elif objects in ('builder-changed', 'fixture-reappeared'):
+        code = ('FINISHED_PRESERVED_BUILDER_CHANGED_AFTER_PLAN' if objects == 'builder-changed'
+                else 'FINISHED_FIXTURE_REAPPEARED_AFTER_REMOVAL')
+        with pytest.raises(ValueError, match=code): retirement.run(args)
+        receipt = json.loads((output / 'receipt.json').read_bytes())
+        assert receipt['reasonCode'] == code and receipt['removed'] == receipt['jarRetirements'] == []
+        assert len(receipt['fixtureRetirements']) == 2
+        assert all(state.path.exists() for state in states.values())
+        assert calls == ['task-inventory', 'task-inventory', 'remove-stopped-object', 'remove-stopped-object']
     else:
         assert retirement.run(args)['status'] == 'COMPLETE'
         assert all(not state.path.exists() for state in states.values())
@@ -1545,3 +1561,206 @@ def test_finished_mysql_root_must_still_be_the_exact_inventoried_inode(task_requ
     roots[row['release']][1] += 1
     with pytest.raises(ValueError, match='MANIFEST_DATA_DIRECTORY_REPLACED'):
         retirement.task_configuration(value, keepers, roots)
+
+
+@pytest.fixture
+def finished_builder_controls(monkeypatch):
+    from tests_python import test_historical_builder_retirement as builder_cases
+    state = builder_cases.fixture_state(('ci-344-' + 'a' * 12, 'a' * 40, '1' * 64, 'b' * 24))
+    builder = builder_cases.resources
+    spec = importlib.util.spec_from_file_location('derived_finished_native', FILE.with_name('retire-failed-native-jar-duplicates.py'))
+    native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+    native.LOADED_SOURCE = FILE.with_name('retire-failed-native-jar-duplicates.py').read_bytes()
+    spec = importlib.util.spec_from_file_location('derived_finished_cleanup', FILE.with_name('cleanup-ecs-builds.py'))
+    cleanup = importlib.util.module_from_spec(spec); spec.loader.exec_module(cleanup)
+    source = {'path': 'inbox/' + state.context['release'] + '/source.tar.gz', 'sha256': state.context['sourceSha256'],
+        'failedNativePolicy': 'failed-native-retention-v1', 'mysqlFixtureStartSourceSha256': builder.LEGACY_MYSQL_START_SOURCE,
+        'builderHelperSha256': state.helpers}
+    historical = {'context': state.context, 'finishedOutputsPolicy': retirement.FINISHED_BATCH,
+        'preparedToolsSha256': retirement.digest(builder_cases.raw(state.tools)), 'sourceArchive': source,
+        'evidence': {'identity': state.identity, 'ownerToken': 'c' * 10}}
+    fixture = {'containerId': '2' * 64, 'ownerToken': 'c' * 10}
+    fixture_row = {'Id': fixture['containerId'], 'Name': '/doorhandle-compact-fixture-' + fixture['ownerToken'],
+        'State': {'Running': False, 'Restarting': False, 'Pid': 0},
+        'Config': {'Labels': {'io.doorhandle.release': state.context['release']}}, 'HostConfig': {}, 'Mounts': []}
+    rows = {state.row['Id']: state.row, fixture_row['Id']: fixture_row}; commands = []; probes = []
+    directory = state.root / 'inbox' / state.context['release'] / 'candidate-build-tools'
+    names = {'tools.json': 'tools', 'resource-summary.json': 'summary', 'official-layer-measurements.json': 'measurement'}
+    def held(root, path, maximum):
+        assert root == state.root and path.parent == directory and maximum == native.MAX_CONTROL
+        return nullcontext((io.BytesIO(builder_cases.raw(getattr(state, names[path.name]))), [0] * 10))
+    def docker(*args):
+        commands.append(args)
+        assert len(args) == 2 and args[0] == 'inspect', 'Preserved builders and volumes must never be removed'
+        return retirement.encoded([rows[args[1]]])
+    def snapshot():
+        return [(cid, row['State']['Running'], row['State']['Restarting'], row['State']['Pid'],
+            row['Config']['Labels'].get('io.doorhandle.release'), row['Config']['Labels'].get(builder.LABEL), row['Mounts'])
+            for cid, row in rows.items()]
+    monkeypatch.setattr(retirement, 'ROOT', state.root)
+    monkeypatch.setattr(native, 'held_file', held)
+    monkeypatch.setattr(native, 'builder_docker', docker)
+    monkeypatch.setattr(native, 'builder_container_ids', lambda: list(rows))
+    monkeypatch.setattr(native, 'canonical_publication_refs', lambda *_: probes.append('publication'))
+    monkeypatch.setattr(cleanup, 'docker_snapshot', snapshot)
+    monkeypatch.setattr(cleanup, 'process_references', lambda _path, **options: probes.append(options))
+    helpers = {'retire-failed-native-jar-duplicates.py': native, 'compact-build-resources.py': builder,
+               'cleanup-ecs-builds.py': cleanup}
+    return SimpleNamespace(state=state, historical=historical, fixture=fixture, rows=rows, native=native,
+                           cleanup=cleanup, builder=builder, helpers=helpers, commands=commands, probes=probes)
+
+
+@pytest.mark.parametrize('fixture_present', [False, True])
+@pytest.mark.parametrize('builder_present', [False, True])
+def test_finished_retains_only_authenticated_independent_builder_in_all_reference_paths(
+        finished_builder_controls, fixture_present, builder_present):
+    state = finished_builder_controls
+    if not fixture_present: state.rows.pop(state.fixture['containerId'])
+    if not builder_present: state.rows.pop(state.state.row['Id'])
+    descriptor = retirement.finished_preserved_builder(state.historical, state.helpers)
+    candidate = {'historical': state.historical, 'fixture': state.fixture if fixture_present else None,
+                 'preservedBuilder': descriptor}
+    retirement.task_fixture_quiescence([{'release': state.state.context['release']}], [candidate], state.helpers)
+    assert {'include_inbox': True} in state.probes
+    if builder_present:
+        assert descriptor['preservedVolume'] == state.state.volume and descriptor['volumesPreserved'] is True
+        assert descriptor['controlSha256']['tools'] == state.historical['preparedToolsSha256']
+    else: assert descriptor is None
+    assert all(command[0] == 'inspect' for command in state.commands)
+
+
+@pytest.mark.parametrize('damage', ['tools', 'summary', 'measurement', 'source', 'helper', 'cid', 'token',
+    'running', 'pid', 'restart', 'exec', 'bind', 'volume', 'source-label'])
+def test_finished_builder_cannot_gain_an_exclusion_from_labels_or_incomplete_controls(finished_builder_controls, damage):
+    case = finished_builder_controls; state = case.state
+    if damage == 'tools': state.tools['status'] = 'UNKNOWN'
+    elif damage == 'summary': state.summary['cleanup']['builderStopped'] = False
+    elif damage == 'measurement': state.measurement['compressedBytes'] += 1
+    elif damage == 'source': case.historical['sourceArchive']['sha256'] = 'f' * 64
+    elif damage == 'helper': case.historical['sourceArchive']['builderHelperSha256'] = {}
+    elif damage == 'cid': state.row['Id'] = 'f' * 64
+    elif damage == 'token': state.row['Config']['Labels'][case.builder.LABEL] = 'f' * 24
+    elif damage == 'running': state.row['State']['Running'] = True
+    elif damage == 'pid': state.row['State']['Pid'] = 1234
+    elif damage == 'restart': state.row['HostConfig']['RestartPolicy']['Name'] = 'always'
+    elif damage == 'exec': state.row['ExecIDs'] = ['active-exec']
+    elif damage == 'bind': state.row['Mounts'].append({'Type': 'bind', 'Source': str(state.root / 'inbox')})
+    elif damage == 'volume': state.row['Mounts'][0]['Name'] = 'another-volume'
+    elif damage == 'source-label': state.row['Config']['Labels']['io.doorhandle.source'] = 'f' * 64
+    with pytest.raises(ValueError): retirement.finished_preserved_builder(case.historical, case.helpers)
+    assert all(command[0] == 'inspect' for command in case.commands)
+
+
+@pytest.mark.parametrize('damage', ['same-release', 'checkout-bind', 'inbox-bind', 'namespace', 'changed-inspect', 'vanished', 'unplanned-builder'])
+def test_finished_reference_rechecks_keep_all_other_objects_and_plan_identity(finished_builder_controls, damage):
+    case = finished_builder_controls
+    if damage == 'unplanned-builder': case.rows.pop(case.state.row['Id'])
+    candidate = {'historical': case.historical, 'fixture': case.fixture,
+                 'preservedBuilder': retirement.finished_preserved_builder(case.historical, case.helpers)}
+    row = {'Id': '3' * 64, 'Name': '/unrelated', 'State': {'Running': False, 'Restarting': False, 'Pid': 0},
+           'Config': {'Labels': {}}, 'HostConfig': {}, 'Mounts': []}
+    if damage == 'same-release': row['Config']['Labels']['io.doorhandle.release'] = case.state.context['release']
+    elif damage in ('checkout-bind', 'inbox-bind'):
+        path = (case.state.root / 'verification' / case.state.context['release'] / 'checkout' if damage == 'checkout-bind'
+                else case.state.root / 'inbox' / case.state.context['release'])
+        row['Mounts'] = [{'Type': 'bind', 'Source': str(path)}]
+    elif damage == 'namespace': row['HostConfig']['NetworkMode'] = 'container:' + case.state.row['Id']
+    elif damage == 'changed-inspect': case.state.row['State']['StartedAt'] = '2026-11-15T00:00:00Z'
+    elif damage == 'vanished': case.rows.pop(case.state.row['Id'])
+    elif damage == 'unplanned-builder': case.rows[case.state.row['Id']] = case.state.row
+    case.rows[row['Id']] = row
+    with pytest.raises(ValueError): retirement.task_candidate_references(candidate, case.helpers)
+    assert all(command[0] == 'inspect' for command in case.commands)
+
+
+def test_finished_fixture_remove_uses_the_same_rebound_preserved_builder_callback(finished_builder_controls, monkeypatch):
+    case = finished_builder_controls
+    candidate = {'historical': case.historical, 'fixture': {**case.fixture, 'dataDirectory': '/synthetic/mysql-data'},
+                 'preservedBuilder': retirement.finished_preserved_builder(case.historical, case.helpers)}
+    def remove(fixture, _inspect, _remove, _list, references, _data):
+        case.state.row['State']['Running'] = True
+        references(fixture['containerId'])
+        pytest.fail('Changed preserved builder must stop the removal callback')
+    monkeypatch.setattr(case.builder, 'historical_mysql_fixture_remove', remove)
+    with pytest.raises(ValueError): retirement.task_remove_fixture(candidate, case.helpers)
+    assert all(command[0] == 'inspect' for command in case.commands)
+
+
+@pytest.mark.parametrize('fixture_present', [False, True])
+def test_old_verify_only_quiescence_never_excludes_a_builder(finished_builder_controls, fixture_present):
+    case = finished_builder_controls; case.historical.pop('finishedOutputsPolicy')
+    if not fixture_present: case.rows.pop(case.fixture['containerId'])
+    candidate = {'historical': case.historical, 'fixture': case.fixture if fixture_present else None}
+    with pytest.raises(ValueError, match='OLD_BUILD_CONTAINER_STILL_PRESENT'):
+        retirement.task_candidate_references(candidate, case.helpers)
+
+
+def test_task_diagnostic_preserves_the_actual_nested_stopped_builder_guard(finished_builder_controls):
+    case = finished_builder_controls
+    candidate = {'historical': case.historical, 'fixture': case.fixture}
+    try:
+        case.native.recent_fixture_references(retirement.ROOT, candidate, case.cleanup, case.builder)
+    except ValueError as error:
+        assert retirement.failure_reason_code(error) == 'HISTORICAL_OBJECTS_NOT_QUIESCENT_OLD_BUILD_CONTAINER_STILL_PRESENT'
+    else: pytest.fail('Unadmitted stopped builder must remain a real rejection')
+
+
+@pytest.mark.parametrize('private', ['PRIVATE_SECRET', '/home/private/password=secret'])
+def test_task_diagnostic_never_publishes_an_unvalidated_wrapped_suffix(finished_builder_controls, monkeypatch, private):
+    case = finished_builder_controls
+    def reject(*_args, **_kwargs): raise ValueError(private)
+    monkeypatch.setattr(case.cleanup, 'quiescent', reject)
+    monkeypatch.setattr(case.cleanup, 'failure_guard_code', lambda _error: private)
+    try:
+        case.native.recent_fixture_references(retirement.ROOT,
+            {'historical': case.historical, 'fixture': case.fixture}, case.cleanup, case.builder)
+    except ValueError as error:
+        assert retirement.failure_reason_code(error) == 'UNCLASSIFIED_ERROR'
+    else: pytest.fail('Expected private inner refusal')
+
+
+def test_task_diagnostic_preserves_direct_static_helper_guard(finished_builder_controls):
+    case = finished_builder_controls
+    try: case.native.terminal_xml(b'not xml', case.state.context)
+    except ValueError as error:
+        assert retirement.failure_reason_code(error) == 'INVALID_TERMINAL_XML'
+    else: pytest.fail('Invalid terminal must fail before admission')
+
+
+def test_task_diagnostic_normalizes_only_the_authenticated_builder_guard(finished_builder_controls, monkeypatch):
+    builder = finished_builder_controls.builder
+    monkeypatch.setattr(builder, 'LOADED_SOURCE', (FILE.parents[1] / 'docker/compact-build-resources.py').read_bytes(), raising=False)
+    try: builder.require(False, 'Historical builder has an unexpected bind mount or volume')
+    except ValueError as error:
+        assert retirement.failure_reason_code(error) == 'HISTORICAL_BUILDER_HAS_AN_UNEXPECTED_BIND_MOUNT_OR_VOLUME'
+    else: pytest.fail('Invalid builder mount must fail before exclusion')
+
+
+@pytest.mark.parametrize('finished', [False, True])
+def test_task_fixture_source_selects_builder_helpers_only_for_independent_finished_policy(monkeypatch, finished):
+    row = {'release': 'ci-344-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}
+    if finished: row['retirement'] = _finished_selection()
+    owner = retirement.encoded({'containerId': '1' * 64}); cleanup = retirement.encoded({'status': 'STOPPED'})
+    keeper = {**{key: row[key] for key in ('release', 'commit', 'sourceSha256')}, 'token': 'c' * 10,
+              'ownerSha256': retirement.digest(owner), 'cleanupSha256': retirement.digest(cleanup),
+              'preRuntimeAbsence': {'toolsSha256': 'e' * 64}}
+    calls = []
+    def source(*args, **options):
+        calls.append((args, options)); return {'fixed': True}
+    native = SimpleNamespace(MAX_CONTROL=1024, decode=json.loads, fixture_owner_projection=lambda value: value,
+        source_proof=source, capture_fixture=lambda *_args, **_options: None,
+        held_file=lambda _root, path, _limit: nullcontext((io.BytesIO(owner if path.name == 'compact-fixtures-owner.json' else cleanup), [])))
+    descriptor = {'containerId': '2' * 64}
+    def preserve(historical, _helpers):
+        assert historical['finishedOutputsPolicy'] == retirement.FINISHED_BATCH
+        assert historical['preparedToolsSha256'] == keeper['preRuntimeAbsence']['toolsSha256']
+        return descriptor
+    monkeypatch.setattr(retirement, 'finished_preserved_builder', preserve)
+    value = {'candidates': [row], 'identity': {'executionLocation': 'ECS'}}
+    result = retirement.task_fixture_candidates(value, [keeper], {
+        'retire-failed-native-jar-duplicates.py': native, 'compact-build-resources.py': object()})
+    assert calls[0][1] == {'canonical_jar': True, 'failed_native': True, **(
+        {'pre_runtime_recipe': row['retirement']['publicationRecipe'], 'builder_helpers': True}
+        if finished else {'database_verification': True})}
+    if finished: assert result[0]['preservedBuilder'] == descriptor
+    else: assert 'preservedBuilder' not in result[0] and 'finishedOutputsPolicy' not in result[0]['historical']

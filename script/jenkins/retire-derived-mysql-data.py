@@ -109,9 +109,10 @@ def need(value, code):
         raise ValueError(code)
 
 
-def failure_reason_code(error):
+def failure_reason_code(error, *, _seen=()):
     """Publish only a literal guard from executing, authenticated helper bytes."""
-    if not isinstance(error, ValueError) or len(error.args) != 1 or type(error.args[0]) is not str:
+    if (not isinstance(error, ValueError) or len(error.args) != 1 or type(error.args[0]) is not str
+            or id(error) in _seen or len(_seen) >= 4):
         return 'UNCLASSIFIED_ERROR'
     sources = {LOADED_SOURCE} if LOADED_SOURCE else set()
     trace = error.__traceback__
@@ -120,14 +121,29 @@ def failure_reason_code(error):
         if type(source) is bytes and len(source) <= MIB:
             sources.add(source)
         trace = trace.tb_next
+    prefixes = set()
     for source in sources:
         for node in ast.walk(ast.parse(source)):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id in ('need', 'require') and len(node.args) >= 2
-                    and isinstance(node.args[1], ast.Constant) and type(node.args[1].value) is str
-                    and re.fullmatch(r'[A-Z][A-Z0-9_]{1,160}', node.args[1].value)
-                    and node.args[1].value == error.args[0]):
-                return error.args[0]
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            argument = (node.args[1] if node.func.id in ('need', 'require') and len(node.args) >= 2 else
+                        node.args[0] if node.func.id in ('ValueError', 'RetirementError', 'BuildResourceError') and node.args else None)
+            if isinstance(argument, ast.Constant) and type(argument.value) is str and argument.value == error.args[0]:
+                code = re.sub(r'[^A-Z0-9]+', '_', argument.value.upper()).strip('_')
+                if re.fullmatch(r'[A-Z][A-Z0-9_]{1,160}', code): return code
+            if (node.func.id == 'RetirementError' and isinstance(argument, ast.BinOp)
+                    and isinstance(argument.op, ast.Add) and isinstance(argument.left, ast.Constant)
+                    and type(argument.left.value) is str
+                    and re.fullmatch(r'[A-Z][A-Z0-9_]{1,80}_', argument.left.value)):
+                prefixes.add(argument.left.value)
+    # A fixed wrapper may retain a safe inner guard, but never an arbitrary
+    # suffix copied from exception text. ``raise ... from None`` keeps context.
+    context = error.__cause__ or error.__context__
+    if prefixes and context is not None:
+        inner = failure_reason_code(context, _seen=(*_seen, id(error)))
+        if (inner != 'UNCLASSIFIED_ERROR' and any(error.args[0] == prefix + inner for prefix in prefixes)
+                and re.fullmatch(r'[A-Z][A-Z0-9_]{1,160}', error.args[0])):
+            return error.args[0]
     return 'UNCLASSIFIED_ERROR'
 
 
@@ -893,7 +909,7 @@ def task_fixture_candidates(value, keepers, helpers):
                 documents[role] = native.decode(raw)
                 references[role] = {'path': path.relative_to(ROOT).as_posix(), 'bytes': len(raw),
                                     'sha256': checksum, 'metadata': metadata}
-        options = ({'pre_runtime_recipe': row['retirement']['publicationRecipe']} if 'retirement' in row
+        options = ({'pre_runtime_recipe': row['retirement']['publicationRecipe'], 'builder_helpers': True} if 'retirement' in row
                    else {'database_verification': True})
         source = native.source_proof(ROOT, row['release'], row['commit'], row['sourceSha256'],
                                      canonical_jar=True, failed_native=True, **options)
@@ -904,22 +920,67 @@ def task_fixture_candidates(value, keepers, helpers):
                 ('schemaVersion', 'kind', 'release', 'commit', 'sourceSha256', 'identity', 'status', 'errors',
                  'containerId', 'sourceContainerUntouched', 'dataDirectoryRetained', 'sourceDumpAndEvidenceRetained')}}
         fixture = native.capture_fixture(ROOT, value, historical, builder, source_proof=source, failed_native=True)
-        candidates.append({'historical': historical, 'fixture': fixture})
+        candidate = {'historical': historical, 'fixture': fixture}
+        if 'retirement' in row:
+            historical['finishedOutputsPolicy'] = FINISHED_BATCH
+            historical['preparedToolsSha256'] = keeper['preRuntimeAbsence']['toolsSha256']
+            candidate['preservedBuilder'] = finished_preserved_builder(historical, helpers)
+        candidates.append(candidate)
     return candidates
 
 
-def task_fixture_quiescence(keepers, candidates, helpers):
+def finished_preserved_builder(historical, helpers):
+    """Authenticate an independent stopped builder; never authorize its removal."""
+    need(historical.get('finishedOutputsPolicy') == FINISHED_BATCH, 'EXACT_FINISHED_BUILDER_POLICY_REQUIRED')
+    native, builder = (helpers[name] for name in
+        ('retire-failed-native-jar-duplicates.py', 'compact-build-resources.py'))
+    context = historical['context']; directory = ROOT / 'inbox' / context['release'] / 'candidate-build-tools'
+    raw = {}
+    for role, name in (('tools', 'tools.json'), ('summary', 'resource-summary.json'),
+                       ('measurement', 'official-layer-measurements.json')):
+        with native.held_file(ROOT, directory / name, native.MAX_CONTROL) as (stream, _metadata):
+            raw[role] = stream.read(native.MAX_CONTROL + 1)
+    need(digest(raw['tools']) == historical['preparedToolsSha256'], 'FINISHED_PREPARED_BUILDER_TOOLS_CHANGED')
+    tools, summary = native.decode(raw['tools']), native.decode(raw['summary'])
+    need(tools.get('resourceEvidence') == {'file': str(directory / 'resource-summary.json'), 'sha256': digest(raw['summary'])}
+         and tools.get('imageMeasurementSha256') == digest(raw['measurement']), 'FINISHED_BUILDER_CONTROL_BINDING_CHANGED')
+    source = {**historical['sourceArchive'], 'preparedToolsSha256': historical['preparedToolsSha256']}
+    builder.failed_native_builder_source(context, {key: digest(body) for key, body in raw.items()}, source)
+    cid = summary.get('cleanup', {}).get('builderContainerId')
+    need(type(cid) is str and SHA.fullmatch(cid), 'FINISHED_ORIGINAL_BUILDER_ID_REQUIRED')
+    # An absent original grants no exclusion. Any replacement/unknown object
+    # remains visible to the normal complete-container reference checks.
+    if cid not in native.builder_container_ids(): return None
+    return builder.historical_builder_descriptor(ROOT, context, historical['evidence']['identity'],
+        raw['tools'], raw['summary'], raw['measurement'], source['builderHelperSha256'],
+        builder.historical_builder_inspect(native.builder_docker('inspect', cid)),
+        failed_native=True, source_proof=source)
+
+
+def task_candidate_references(candidate, helpers):
     native, cleanup, builder = (helpers[name] for name in
         ('retire-failed-native-jar-duplicates.py', 'cleanup-ecs-builds.py', 'compact-build-resources.py'))
+    historical, fixture = candidate['historical'], candidate['fixture']
+    if historical.get('finishedOutputsPolicy') == FINISHED_BATCH:
+        preserved = finished_preserved_builder(historical, helpers)
+        need('preservedBuilder' in candidate and preserved == candidate['preservedBuilder'],
+             'FINISHED_PRESERVED_BUILDER_CHANGED')
+        if preserved is not None:
+            return native.builder_references(ROOT, historical, preserved, cleanup, builder, fixture,
+                                             include_inbox=True, failed_native=True)
+    if fixture is not None:
+        return native.recent_fixture_references(ROOT, candidate, cleanup, builder)
+    tag = historical['context']['release']
+    return cleanup.quiescent({'checkout': ROOT / 'verification' / tag / 'checkout',
+                              'token': historical['evidence']['ownerToken']}, tag,
+                             cleanup.docker_snapshot(), include_inbox=True)
+
+
+def task_fixture_quiescence(keepers, candidates, helpers):
     need(len(keepers) == len(candidates), 'COMPLETE_TASK_FIXTURE_PROOFS_REQUIRED')
     for keeper, candidate in zip(keepers, candidates):
         need(candidate['historical']['context']['release'] == keeper['release'], 'TASK_FIXTURE_KEEPER_CONTEXT_DIFFERS')
-        fixture = candidate['fixture']
-        if fixture is None:
-            cleanup.quiescent({'checkout': ROOT / 'verification' / keeper['release'] / 'checkout',
-                               'token': keeper['token']}, keeper['release'], cleanup.docker_snapshot(), include_inbox=True)
-        else:
-            native.recent_fixture_references(ROOT, candidate, cleanup, builder)
+        task_candidate_references(candidate, helpers)
 
 
 def task_remove_fixture(candidate, helpers):
@@ -927,12 +988,12 @@ def task_remove_fixture(candidate, helpers):
     fixture = candidate['fixture']
     if fixture is None:
         return {'release': candidate['historical']['context']['release'], 'status': 'ALREADY_ABSENT'}
-    native, cleanup, builder = (helpers[name] for name in
-        ('retire-failed-native-jar-duplicates.py', 'cleanup-ecs-builds.py', 'compact-build-resources.py'))
+    native, builder = (helpers[name] for name in
+        ('retire-failed-native-jar-duplicates.py', 'compact-build-resources.py'))
     return builder.historical_mysql_fixture_remove(fixture,
         lambda cid: native.builder_docker('inspect', cid), lambda cid: native.builder_docker('rm', cid),
         native.builder_container_ids,
-        lambda _cid: native.recent_fixture_references(ROOT, candidate, cleanup, builder),
+        lambda _cid: task_candidate_references(candidate, helpers),
         lambda: native.fixture_data_metadata(ROOT, fixture['dataDirectory']))
 
 
@@ -1023,10 +1084,15 @@ def task_run(args):
     cleanup = helpers['cleanup-ecs-builds.py']
     def admitted(*, fixture_objects=False):
         keepers = task_admitted(binding, value, helpers)
-        if fixture_objects:
+        if fixture_objects or finished:
             candidates = task_fixture_candidates(value, keepers, helpers)
             task_fixture_quiescence(keepers, candidates, helpers)
-            return keepers, candidates
+            if fixture_objects: return keepers, candidates
+            need(all(item['fixture'] is None for item in candidates), 'FINISHED_FIXTURE_REAPPEARED_AFTER_REMOVAL')
+            need([(item['historical']['context'], item.get('preservedBuilder')) for item in candidates] ==
+                 [(item['historical']['context'], item.get('preservedBuilder')) for item in plan['fixtures']],
+                 'FINISHED_PRESERVED_BUILDER_CHANGED_AFTER_PLAN')
+            return keepers
         containers = cleanup.docker_snapshot()
         for keeper in keepers:
             cleanup.quiescent({'checkout': ROOT / 'verification' / keeper['release'] / 'checkout', 'token': keeper['token']},
@@ -1081,8 +1147,8 @@ def task_run(args):
                 current = next(item for item in observed if item['historical']['context'] == candidate['historical']['context'])
                 need(current == candidate, 'TASK_FIXTURE_CHANGED_AFTER_PLAN')
                 receipt['fixtureRetirements'].append(task_remove_fixture(candidate, helpers))
-            # No object is excluded at the data-removal boundary. A stopped
-            # object is first retired through its existing held-identity proof.
+            # Fixtures are gone at the data boundary. Finished-output policy
+            # retains only its fully authenticated independent stopped builder.
             need(plan['keepers'] == admitted(), 'TASK_KEEPERS_CHANGED_AFTER_OBJECT_REMOVE')
             if finished:
                 def jar_quiescence():

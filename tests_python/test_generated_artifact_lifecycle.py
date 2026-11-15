@@ -254,6 +254,92 @@ def test_failed_python_with_complete_original_report_is_reclaimed_only_by_new_mo
     assert generated.archive.exists() and (generated.evidence / 'python.xml').exists()
 
 
+def failed_pytest_without_summary(state, monkeypatch, *, recipe='legacy'):
+    """The archived #225/#229 runner raises before its count assignment."""
+    cases = legacy.add_pytest_cases(state, monkeypatch, damage='xml-failure', recipe=recipe)
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    inner.pop('pythonTests'); inner.pop('selectedPythonSuites')
+    inner.update(status='FAILED', pythonTemporaryCleanup={'status': 'RETAINED_PYTHON_NOT_PASSED'})
+    inner['commands'][-1]['exitCode'] = 1
+    legacy.put_json(state.evidence / 'receipt.json', inner)
+    tools = cleanup.read_json(state.evidence / 'tool-runtime.json')
+    tools['commands'][0]['exitCode'] = tools['commands'][0]['cleanup']['exitCode'] = 1
+    legacy.put_json(state.evidence / 'tool-runtime.json', tools)
+    state.record.update(status='FAILED', verificationExitCode=1)
+    legacy.seal(state)
+    return cases
+
+
+@pytest.mark.parametrize('xml_result', ['failure', 'error'])
+def test_historical_failed_runner_uses_archived_xml_without_inventing_original_count_summary(generated, monkeypatch, xml_result):
+    state = generated; cases = failed_pytest_without_summary(state, monkeypatch)
+    xml = state.evidence / 'python.xml'
+    if xml_result == 'error':
+        legacy.put(xml, xml.read_bytes().replace(b'<failure/>', b'<error/>'))
+        legacy.seal(state)
+    before = legacy.preserved_bytes(state)
+    value = authorize_historical_outputs(request(state, targets=[{
+        'kind': 'GENERATED_PYTEST_ROOT', 'path': cases.base.relative_to(state.root).as_posix()}]))
+    binding = cleanup.generated_binding(state.root, value['candidates'][0], IDENTITY, remote)
+    assert binding['pytestTmp']['status'] == 'PROVEN'
+    assert binding['pytestTmp']['pythonTests'] == {'found': 3, 'passed': 1, 'failed': 1, 'skipped': 1}
+    assert binding['pytestTmp']['pythonCountsSource'] == 'ARCHIVED_FAILED_XML'
+    old = cleanup.evidence_binding(state.root, state.request['candidates'][0], IDENTITY, remote)
+    assert old['pytestTmp']['status'] == 'SKIPPED'
+    plan = make_plan(state, value)
+    assert not plan['skipped'] and len(plan['candidates']) == 1
+    result = cleanup.apply_plan(state.root, value, plan, remote)
+    assert result['status'] == 'REMOVED' and not cases.base.exists()
+    assert result['retention']['status'] == 'SATISFIED' and legacy.preserved_bytes(state) == before
+    original = cleanup.read_json(state.evidence / 'receipt.json')
+    assert original['status'] == 'FAILED' and 'pythonTests' not in original and 'selectedPythonSuites' not in original
+    assert cleanup.read_json(state.attempt / 'verification-receipt.json')['status'] == 'FAILED'
+
+
+@pytest.mark.parametrize('damage', ['counts-null', 'counts-mismatch', 'selected-summary', 'status-pass',
+    'missing-disposition', 'native-disposition', 'inner-exit-zero', 'inner-exit-interrupted', 'tools-exit-zero',
+    'no-failed-test', 'different-reviewed-runner', 'missing-original-report', 'wrong-basetemp', 'changed-archived-xml'])
+def test_missing_failed_summary_does_not_replace_required_original_failure_proofs(generated, monkeypatch, damage):
+    state = generated
+    cases = failed_pytest_without_summary(state, monkeypatch,
+        recipe='middleware' if damage == 'different-reviewed-runner' else 'legacy')
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    tools = cleanup.read_json(state.evidence / 'tool-runtime.json')
+    if damage == 'counts-null': inner['pythonTests'] = None
+    elif damage == 'counts-mismatch': inner['pythonTests'] = {'found': 3, 'passed': 2, 'failed': 0, 'skipped': 1}
+    elif damage == 'selected-summary': inner['selectedPythonSuites'] = {}
+    elif damage == 'status-pass': inner['status'] = 'PASS'
+    elif damage == 'missing-disposition': inner.pop('pythonTemporaryCleanup')
+    elif damage == 'native-disposition': inner['pythonTemporaryCleanup'] = {'status': 'RETAINED_NATIVE_EVIDENCE'}
+    elif damage == 'inner-exit-zero': inner['commands'][-1]['exitCode'] = 0
+    elif damage == 'inner-exit-interrupted': inner['commands'][-1]['exitCode'] = 2
+    elif damage == 'tools-exit-zero':
+        tools['commands'][0]['exitCode'] = tools['commands'][0]['cleanup']['exitCode'] = 0
+    elif damage == 'no-failed-test':
+        xml = state.evidence / 'python.xml'; legacy.put(xml, xml.read_bytes().replace(b'<failure/>', b''))
+    elif damage == 'missing-original-report': state.reports.remove('reports/python.xml')
+    elif damage == 'wrong-basetemp': tools['commands'][0]['argumentsSha256'] = '0' * 64
+    legacy.put_json(state.evidence / 'receipt.json', inner)
+    legacy.put_json(state.evidence / 'tool-runtime.json', tools)
+    legacy.seal(state)
+    if damage == 'changed-archived-xml':
+        xml = state.evidence / 'python.xml'; legacy.put(xml, xml.read_bytes() + b'\n')
+    before = legacy.preserved_bytes(state)
+    value = authorize_historical_outputs(request(state, targets=[{
+        'kind': 'GENERATED_PYTEST_ROOT', 'path': cases.base.relative_to(state.root).as_posix()}]))
+    plan = make_plan(state, value)
+    assert not plan['candidates'] and plan['skipped'] and cases.base.exists()
+    if damage == 'changed-archived-xml':
+        assert plan['skipped'][0]['reason'] == 'ECS_ORIGINAL_REPORT_CHANGED'
+    else:
+        binding = cleanup.generated_binding(state.root, value['candidates'][0], IDENTITY, remote)
+        reason = ('PYTEST_SOURCE_SCOPE_REQUIRED' if damage == 'missing-original-report' else
+                  'PYTEST_TOOL_COMMAND_PROVENANCE_MISSING' if damage in ('tools-exit-zero', 'wrong-basetemp') else
+                  'PYTEST_REPORT_NOT_PASS')
+        assert binding['pytestTmp'] == {'status': 'SKIPPED', 'reason': reason}
+    assert legacy.preserved_bytes(state) == before
+
+
 @pytest.fixture
 def native_pytest(generated, monkeypatch):
     cases = legacy.add_pytest_cases(generated, monkeypatch, recipe='legacy')
