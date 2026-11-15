@@ -1529,7 +1529,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 195,
+        "minimumTests": 203,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1559,7 +1559,7 @@
       },
       {
         "module": "tests_python.test_jenkins_fixture_cgroup_probe",
-        "minimumTests": 43,
+        "minimumTests": 50,
         "source": "tests_python/test_jenkins_fixture_cgroup_probe.py",
         "allowedSkippedTests": []
       },
@@ -1769,7 +1769,7 @@
       },
       {
         "module": "tests_python.test_runtime_manual_acceptance",
-        "minimumTests": 30,
+        "minimumTests": 45,
         "source": "tests_python/test_runtime_manual_acceptance.py",
         "allowedSkippedTests": []
       },

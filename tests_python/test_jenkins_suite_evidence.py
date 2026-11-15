@@ -1070,6 +1070,77 @@ def test_fixture_failure_cannot_start_or_accept_a_verification_command(monkeypat
     assert waits == ([] if failure_point == 'before-command' else [0.5])
 
 
+@pytest.mark.parametrize('failure', ['stale', 'dead', 'terminal', 'status-identity'])
+def test_fixture_outer_failure_keeps_actual_guard_callsite_and_pre_cleanup_numeric_observation(monkeypatch, failure):
+    preparer = module('outer_fixture_guard_details', 'prepare-compact-fixtures.py')
+    watch = preparer.FixtureWatch.__new__(preparer.FixtureWatch)
+    value = {'status': 'FAILED' if failure == 'terminal' else 'RUNNING', 'capturedMonotonic': 97.0,
+             'probeCount': 9716, 'ownerToken': 'private-owner', 'sql': 'private-business-data'}
+    def read():
+        if failure == 'status-identity': preparer.require(False, 'MYSQL_PWD=private-cannot-be-logged')
+        return value
+    watch.process_alive = lambda: failure != 'dead'; watch.read_status = read
+    monkeypatch.setattr(preparer.time, 'monotonic', lambda: 100.0)
+    record = {'status': 'FAILED', 'fixtureRuntime': {'required': True, 'containerId': 'a' * 64}}
+    with pytest.raises(ValueError) as caught: watch.check()
+    remote.record_verification_failure(record, caught.value, ROOT, watch)
+    locations = record['failureLocations']
+    assert locations[-1]['function'] == 'require'
+    caller = next(row for row in reversed(locations) if row['function'] != 'require')
+    assert record['failureLocation'] == {'source': caller['source'], 'line': caller['line']}
+    assert caller['function'] == 'check' and caller['source'] == 'script/jenkins/prepare-compact-fixtures.py'
+    observation = record['fixtureRuntime']['checkFailure']
+    assert observation['phase'] == {'stale': 'FRESHNESS', 'dead': 'PROCESS_IDENTITY',
+                                    'terminal': 'RUNNING', 'status-identity': 'STATUS_IDENTITY'}[failure]
+    assert observation['freshnessLimitSeconds'] == 2
+    assert len(observation['samples']) == (2 if failure == 'stale' else 0)
+    watch.check_failure = None  # Later cleanup cannot replace the original failure observation.
+    assert record['fixtureRuntime']['checkFailure'] == observation
+    raw = json.dumps(record, allow_nan=False)
+    assert all(secret not in raw for secret in ('MYSQL_PWD', 'private-owner', 'private-business-data', str(ROOT)))
+    assert 'error' not in record
+
+
+@pytest.mark.parametrize('private', ['MYSQL_PWD=private', '/private/business.sql'])
+def test_outer_arbitrary_exception_text_and_external_frames_are_not_reported(private):
+    record = {}
+    try: raise ValueError(private)
+    except ValueError as error: remote.record_verification_failure(record, error, ROOT)
+    assert record == {'errorType': 'ValueError'}
+
+
+def test_outer_location_chain_is_bounded_and_retains_the_guard_caller_without_source_lines():
+    namespace = {}
+    source = "def require():\n    raise ValueError('PRIVATE_PAYLOAD')\ndef call(depth):\n    if depth: return call(depth - 1)\n    require()\n"
+    exec(compile(source, str(ROOT / 'script/jenkins/synthetic-guard.py'), 'exec'), namespace)
+    try: namespace['call'](20)
+    except ValueError as error:
+        locations = remote.failure_locations(error, ROOT)
+        location = remote.failure_location(error, ROOT)
+    assert len(locations) == 8 and locations[-1]['function'] == 'require'
+    assert location == {'source': 'script/jenkins/synthetic-guard.py', 'line': 5}
+    assert all(set(row) == {'source', 'line', 'function'} for row in locations)
+    assert 'PRIVATE_PAYLOAD' not in json.dumps(locations)
+    # Preserve the original location contract for fixed module/import failures
+    # and Python's fixed expression-frame names as well as named functions.
+    for body, function in [('1 / 0', '<module>'), ('(lambda: 1 / 0)()', '<lambda>'),
+            ('next(1 / 0 for _ in (0,))', '<genexpr>')]:
+        try: exec(compile(body, str(ROOT / 'script/jenkins/synthetic-guard.py'), 'exec'), {})
+        except ZeroDivisionError as error:
+            assert remote.failure_location(error, ROOT) == {'source': 'script/jenkins/synthetic-guard.py', 'line': 1}
+            assert remote.failure_locations(error, ROOT)[-1]['function'] == function
+
+
+def test_outer_records_first_failure_before_tool_cancellation_or_watcher_stop():
+    source = inspect.getsource(remote.run_verification)
+    original = source.index('record_verification_failure(record, error, checkout, fixture_watch)')
+    assert original < source.index('stop_owned_process(process, before_wait=cancel_fixture_tools)')
+    assert original < source.index('watch_result = fixture_watch.stop()')
+    record = {}
+    remote.record_verification_failure(record, remote.VerificationError('Fixed operator guidance'), ROOT)
+    assert record['error'] == 'Fixed operator guidance'
+
+
 @pytest.mark.parametrize('cleanup_failure', [False, True])
 def test_owned_tool_cleanup_happens_before_wait_and_never_skips_reaping(monkeypatch, cleanup_failure):
     order = []

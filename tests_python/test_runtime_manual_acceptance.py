@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -182,9 +183,43 @@ def test_manual_feature_is_default_off_and_never_reuses_production_or_old_rehear
     assert "name: 'MANUAL_ACCEPTANCE_ENABLED', defaultValue: false" in pipeline
     assert "BooleanParameterDefinition('MANUAL_ACCEPTANCE_ENABLED', false" in controller
     assert "settings.finishedOutputsManifest ?: ''" in controller
-    assert "assert finishedOutputsManifest in ['', new File(project, 'work/table-switch-20261115/finished-ci-outputs-manifest.json')" in controller
+    assert "def finishedOutputsDirectory = new File(project, 'work/table-switch-20261115')" in controller
+    assert "if (finishedOutputsManifest) {" in controller
     assert "'CI_FINISHED_OUTPUTS_MANIFEST': finishedOutputsManifest" in controller
     assert "params.ACTION != 'verify-runtime'" in pipeline and "params.PRODUCTION_RELEASE_ENABLED" in pipeline
     assert "'15','30','60'" in pipeline and 'bounded non-production verify-runtime candidate' in powershell
     assert "runtimeProof.manualAcceptance.status -cne 'ACCEPTED'" in powershell
     assert "runtimeResult.ownedCleanup -ne 'STOPPED'" in powershell
+
+
+@pytest.mark.parametrize('path,allowed', [
+    ('', True),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/finished-ci-outputs-manifest.json', True),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/finished-ci-364-outputs-manifest.json', True),
+    ('D:\\AI\\lunwen1\\DoorHandleCatch\\work\\table-switch-20261115\\finished-ci-1-outputs-manifest.json', True),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/finished-ci-0-outputs-manifest.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/finished-ci-0364-outputs-manifest.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/finished-ci--1-outputs-manifest.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/other.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/../finished-ci-364-outputs-manifest.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/./finished-ci-364-outputs-manifest.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/child/finished-ci-364-outputs-manifest.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115-other/finished-ci-364-outputs-manifest.json', False),
+    ('D:/other/finished-ci-364-outputs-manifest.json', False),
+    ('work/table-switch-20261115/finished-ci-364-outputs-manifest.json', False),
+    ('D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/finished-ci-364-outputs-manifest.json/extra', False),
+])
+def test_finished_manifest_names_stay_in_the_private_task_directory(path, allowed):
+    controller = (ROOT / 'script/jenkins/configure-local.groovy').read_text(encoding='utf8')
+    block = controller.split("def finishedOutputsManifest =", 1)[1].split('assert settings.version', 1)[0]
+    assert "finishedOutputsManifest.replace('\\\\', '/')" in block
+    assert "finishedOutputsManifest.startsWith(finishedOutputsDirectory + '/')" in block
+    assert 'finishedOutputsManifest.substring(finishedOutputsDirectory.length() + 1)' in block
+    directory = re.search(r"new File\(project, '([^']+)'\)", block).group(1)
+    pattern = re.search(r'assert finishedOutputsName ==~ /([^\n]+)/', block).group(1)
+    prefix = 'D:/AI/lunwen1/DoorHandleCatch/' + directory + '/'
+    normalized = path.replace('\\', '/')
+    admitted = not normalized or (normalized.startswith(prefix) and re.fullmatch(pattern, normalized[len(prefix):]) is not None)
+    assert admitted is allowed
+    assert "'CI_FINISHED_OUTPUTS_MANIFEST': finishedOutputsManifest" in controller
+    assert "StringParameterDefinition('CI_FINISHED_OUTPUTS_MANIFEST'" not in controller

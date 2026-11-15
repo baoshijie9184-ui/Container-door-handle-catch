@@ -70,16 +70,40 @@ def record_observability_acceptance(record, stopped):
         record.update(status='FAILED', observabilityAcceptanceErrorType='VerificationError')
 
 
-def failure_location(error, checkout):
-    for frame in reversed(traceback.extract_tb(error.__traceback__)):
+def failure_locations(error, checkout):
+    locations = []
+    for frame in traceback.extract_tb(error.__traceback__):
         try:
             relative = Path(frame.filename).relative_to(checkout)
         except ValueError:
             continue
         if (relative.parts and relative.parts[0] == 'script' and '..' not in relative.parts
-                and relative.suffix == '.py'):
-            return {'source': relative.as_posix(), 'line': frame.lineno}
-    return None
+                and relative.suffix == '.py' and (re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,99}', frame.name)
+                    or frame.name in ('<module>', '<lambda>', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'))):
+            locations.append({'source': relative.as_posix(), 'line': frame.lineno, 'function': frame.name})
+    return locations[-8:]
+
+
+def failure_location(error, checkout):
+    locations = failure_locations(error, checkout)
+    if not locations: return None
+    # A shared require() line alone loses the actual failed condition.
+    location = next((row for row in reversed(locations) if row['function'] != 'require'), locations[-1])
+    return {key: location[key] for key in ('source', 'line')}
+
+
+def record_verification_failure(record, error, checkout, fixture_watch=None):
+    record['errorType'] = type(error).__name__
+    location = failure_location(error, checkout)
+    if location is not None:
+        record['failureLocation'] = location
+        record['failureLocations'] = failure_locations(error, checkout)
+    if fixture_watch is not None and getattr(fixture_watch, 'check_failure', None) is not None:
+        # Constructed by the fixed-source watcher from numeric sample metadata,
+        # before stop() replaces its status; no exception text or private JSON.
+        record.setdefault('fixtureRuntime', {})['checkFailure'] = fixture_watch.check_failure
+    if isinstance(error, VerificationError):
+        record['error'] = str(error)
 
 
 def digest(path):
@@ -662,13 +686,7 @@ def run_verification(args):
         record["status"] = "PASS"
         exit_code = 0
     except BaseException as error:
-        record["errorType"] = type(error).__name__
-        location = failure_location(error, checkout)
-        if location is not None:
-            record['failureLocation'] = location
-        if isinstance(error, VerificationError):
-            # All VerificationError messages above are fixed operator guidance, never private JSON.
-            record["error"] = str(error)
+        record_verification_failure(record, error, checkout, fixture_watch)
     finally:
         def cancel_fixture_tools():
             if fixture_watch is not None and tool_value is not None and record['status'] != 'PASS':

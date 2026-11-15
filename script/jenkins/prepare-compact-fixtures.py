@@ -12,6 +12,7 @@ import ast
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -1781,12 +1782,35 @@ class FixtureWatch:
         return value
 
     def check(self):
-        value = self.read_status()
-        require(self.process_alive() and value['status'] == 'RUNNING', 'Owned fixture watcher or MySQL failed')
-        captured = value.get('capturedMonotonic')
-        require(type(captured) in (int, float) and 0 <= time.monotonic() - captured <= 2,
-                'Owned fixture watcher measurement is stale')
-        return value
+        self.check_failure = None
+        observation = {'freshnessLimitSeconds': 2, 'samples': []}
+        phase = 'PROCESS_IDENTITY'
+        try:
+            # Ownership scans can outlast a sample. Do not hold an old status
+            # across that scan and then reject it while a new one is published.
+            require(self.process_alive(), 'Owned fixture watcher or MySQL failed')
+            for attempt in range(2):
+                phase = 'STATUS_IDENTITY'
+                value = self.read_status()
+                phase = 'RUNNING'
+                require(value['status'] == 'RUNNING', 'Owned fixture watcher or MySQL failed')
+                phase = 'FRESHNESS'
+                captured = value.get('capturedMonotonic'); observed = time.monotonic()
+                valid = type(captured) in (int, float) and math.isfinite(captured)
+                age = observed - captured if valid else None
+                count = value.get('probeCount')
+                observation['samples'].append({'probeCount': count if type(count) is int and count >= 0 else None,
+                    'capturedMonotonic': captured if valid else None, 'observedMonotonic': observed, 'ageSeconds': age})
+                if valid and 0 <= age <= 2:
+                    return value
+                # One immediate read of the latest complete atomic publication,
+                # not a grace period: the same two-second limit still applies.
+                if attempt == 0 and valid and age > 2:
+                    continue
+                require(False, 'Owned fixture watcher measurement is stale')
+        except BaseException:
+            self.check_failure = {**observation, 'phase': phase}
+            raise
 
     def admit(self, tool_memory_bytes):
         value = self.check()

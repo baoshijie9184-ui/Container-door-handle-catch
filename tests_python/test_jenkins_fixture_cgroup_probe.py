@@ -335,6 +335,107 @@ class FixtureWatchTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         self.watch.check()
 
+    def test_slow_identity_scan_uses_the_latest_status_instead_of_aging_a_held_snapshot(self):
+        clock = [100.0]
+        self.status(capturedMonotonic=100.0, probeCount=1)
+        def alive():
+            clock[0] = 103.0
+            self.status(capturedMonotonic=103.0, probeCount=2)
+            return True
+        with patch.object(preparer.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(self.watch, 'process_alive', side_effect=alive), \
+             patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as read:
+            self.assertEqual(2, self.watch.check()['probeCount'])
+        self.assertEqual(1, read.call_count)
+        self.assertIsNone(self.watch.check_failure)
+
+    def test_stale_read_gets_only_one_immediate_latest_atomic_publication(self):
+        self.status(capturedMonotonic=97.0, probeCount=1)
+        original = self.watch.read_status
+        def read():
+            value = original()
+            if value['probeCount'] == 1:
+                self.status(capturedMonotonic=100.0, probeCount=2)
+            return value
+        with patch.object(preparer.time, 'monotonic', return_value=100.0), \
+             patch.object(preparer.time, 'sleep') as sleep, \
+             patch.object(self.watch, 'process_alive', return_value=True), \
+             patch.object(self.watch, 'read_status', side_effect=read) as reads:
+            self.assertEqual(2, self.watch.check()['probeCount'])
+        self.assertEqual(2, reads.call_count); sleep.assert_not_called()
+        self.assertIsNone(self.watch.check_failure)
+
+    def test_truly_stale_watch_keeps_two_second_limit_and_both_failed_observations(self):
+        self.status(capturedMonotonic=97.0, probeCount=17)
+        with patch.object(preparer.time, 'monotonic', return_value=100.0), \
+             patch.object(preparer.time, 'sleep') as sleep, \
+             patch.object(self.watch, 'process_alive', return_value=True), \
+             patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as reads:
+            with self.assertRaisesRegex(ValueError, 'measurement is stale'):
+                self.watch.check()
+        self.assertEqual(2, reads.call_count); sleep.assert_not_called()
+        self.assertEqual({'freshnessLimitSeconds': 2, 'phase': 'FRESHNESS', 'samples': [
+            {'probeCount': 17, 'capturedMonotonic': 97.0, 'observedMonotonic': 100.0, 'ageSeconds': 3.0}
+        ] * 2}, self.watch.check_failure)
+        self.status('STOPPED', capturedMonotonic=101.0, probeCount=18)
+        self.assertEqual(17, self.watch.check_failure['samples'][-1]['probeCount'])
+
+    def test_first_terminal_or_bad_owner_is_never_hidden_by_a_second_status(self):
+        for damage in ('FAILED', 'STOPPED', 'owner'):
+            with self.subTest(damage=damage):
+                self.status(damage if damage != 'owner' else 'RUNNING', capturedMonotonic=97.0,
+                            **({'ownerToken': '0' * 32} if damage == 'owner' else {}))
+                with patch.object(self.watch, 'process_alive', return_value=True), \
+                     patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as reads:
+                    with self.assertRaises(ValueError): self.watch.check()
+                self.assertEqual(1, reads.call_count)
+                self.assertEqual([], self.watch.check_failure['samples'])
+
+    def test_latest_terminal_or_bad_owner_cannot_be_retried_until_healthy(self):
+        for damage in ('FAILED', 'STOPPED', 'owner'):
+            with self.subTest(damage=damage):
+                self.status(capturedMonotonic=97.0, probeCount=1)
+                original = self.watch.read_status
+                def read():
+                    value = original()
+                    self.status(damage if damage != 'owner' else 'RUNNING', capturedMonotonic=100.0,
+                                **({'ownerToken': '0' * 32} if damage == 'owner' else {}))
+                    return value
+                with patch.object(preparer.time, 'monotonic', return_value=100.0), \
+                     patch.object(self.watch, 'process_alive', return_value=True), \
+                     patch.object(self.watch, 'read_status', side_effect=read) as reads:
+                    with self.assertRaises(ValueError): self.watch.check()
+                self.assertEqual(2, reads.call_count)
+                self.assertEqual(1, len(self.watch.check_failure['samples']))
+
+    def test_invalid_or_future_capture_is_not_a_stale_retry_and_does_not_export_payload(self):
+        for captured in ('MYSQL_PWD=synthetic-private', True, None, float('nan'), float('inf'), 101.0):
+            with self.subTest(captured=repr(captured)):
+                self.status(capturedMonotonic=captured)
+                with patch.object(preparer.time, 'monotonic', return_value=100.0), \
+                     patch.object(self.watch, 'process_alive', return_value=True), \
+                     patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as reads:
+                    with self.assertRaisesRegex(ValueError, 'measurement is stale'): self.watch.check()
+                self.assertEqual(1, reads.call_count)
+                raw = json.dumps(self.watch.check_failure, allow_nan=False)
+                self.assertNotIn('MYSQL_PWD', raw)
+
+    def test_exact_freshness_boundary_is_accepted_but_a_new_stale_sample_is_not(self):
+        self.status(capturedMonotonic=98.0)
+        with patch.object(preparer.time, 'monotonic', return_value=100.0), \
+             patch.object(self.watch, 'process_alive', return_value=True):
+            self.assertEqual('RUNNING', self.watch.check()['status'])
+        self.status(capturedMonotonic=96.0, probeCount=1)
+        original = self.watch.read_status
+        def read():
+            value = original(); self.status(capturedMonotonic=97.0, probeCount=2); return value
+        with patch.object(preparer.time, 'monotonic', return_value=100.0), \
+             patch.object(self.watch, 'process_alive', return_value=True), \
+             patch.object(self.watch, 'read_status', side_effect=read) as reads:
+            with self.assertRaisesRegex(ValueError, 'measurement is stale'): self.watch.check()
+        self.assertEqual(2, reads.call_count)
+        self.assertEqual([4.0, 3.0], [row['ageSeconds'] for row in self.watch.check_failure['samples']])
+
     def test_watcher_descriptor_cannot_change_after_admission(self):
         self.status()
         preparer.write_json(self.file, {**self.descriptor, 'containerId': 'b' * 64}, replace=True)

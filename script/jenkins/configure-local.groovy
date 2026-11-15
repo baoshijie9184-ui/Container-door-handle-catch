@@ -25,7 +25,12 @@ def settings = new JsonSlurper().parse(settingsFile)
 assert settings.finishedOutputsManifest == null || settings.finishedOutputsManifest instanceof String
 def finishedOutputsManifest = settings.finishedOutputsManifest ?: ''
 finishedOutputsManifest = finishedOutputsManifest.replace('\\', '/')
-assert finishedOutputsManifest in ['', new File(project, 'work/table-switch-20261115/finished-ci-outputs-manifest.json').path.replace('\\', '/')]
+def finishedOutputsDirectory = new File(project, 'work/table-switch-20261115').path.replace('\\', '/')
+if (finishedOutputsManifest) {
+    assert finishedOutputsManifest.startsWith(finishedOutputsDirectory + '/')
+    def finishedOutputsName = finishedOutputsManifest.substring(finishedOutputsDirectory.length() + 1)
+    assert finishedOutputsName ==~ /finished-ci(?:-[1-9][0-9]*)?-outputs-manifest[.]json/
+}
 assert settings.version == 1
 assert settings.instanceId == 'i-2zeieuov2aum486jm1ek'
 assert settings.machineId ==~ /[a-f0-9]{32}/
