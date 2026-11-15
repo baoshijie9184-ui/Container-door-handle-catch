@@ -1057,7 +1057,9 @@ def test_exact_native_synthetic_pass_case_reuses_ordinary_tree_and_keeps_parent_
     basis = plan['candidates'][0]['bases'][state.synthetic_case.relative_to(state.root).as_posix()]
     assert basis['producerModule'] == 'tests_python/test_owned_synthetic.py' and basis['matchingPassedCases'] == 1
     receipt = cleanup.apply_plan(state.root, state.synthetic_request, plan, remote)
-    assert receipt['status'] == 'REMOVED' and not state.synthetic_case.exists()
+    journal = state.root / 'inbox' / CURRENT / 'generated-cleanup-journal.jsonl'
+    assert receipt['status'] == 'REMOVED', [json.loads(line) for line in journal.read_text().splitlines()]
+    assert not state.synthetic_case.exists()
     assert state.native_pytest.is_dir() and state.retained_native.read_bytes() == b'unique native diagnostic'
     assert legacy.preserved_bytes(state) == before
 
@@ -1146,12 +1148,36 @@ def test_native_synthetic_case_apply_rebinds_all_originals_and_inventory(synthet
 
 def test_native_synthetic_case_cannot_contain_a_catalogued_original_report(synthetic_native_case):
     state = synthetic_native_case
+    row = state.synthetic_request['candidates'][0]
+    binding = cleanup.generated_binding(state.root, row, IDENTITY, remote)
     report = legacy.put(state.synthetic_case / 'original.xml', b'<testsuite><testcase name="original"/></testsuite>')
-    state.reports.append('reports/' + report.relative_to(state.evidence).as_posix())
-    legacy.seal(state)
-    result = make_plan(state, state.synthetic_request)
-    assert not result['candidates'] and result['skipped'][0]['reason'] == 'GENERATED_TARGET_CONTAINS_ORIGINAL_REPORT'
+    name = 'reports/' + report.relative_to(state.evidence).as_posix()
+    descriptor = {'path': name, 'bytes': report.stat().st_size, 'sha256': cleanup.digest(report)}
+    # The real envelope forbids tmp reports before target admission. Keep that
+    # boundary and exercise the independent overlap guard with a bound caller.
+    record = copy.deepcopy(state.record); record['reportFiles'].append(descriptor)
+    with pytest.raises(remote.VerificationError, match='Unexpected or duplicate report file'):
+        cleanup.receipt_catalog(record, remote, generated=True)
+    binding['catalog'][name] = descriptor
+    with pytest.raises(ValueError, match='GENERATED_TARGET_CONTAINS_ORIGINAL_REPORT'):
+        cleanup.historical_generated_target(state.root, binding, row, row['targets'][0], remote)
     assert report.is_file() and state.retained_native.exists()
+
+
+@pytest.mark.parametrize('path', ['parent', 'nested', 'sibling', 'unreviewed-release', 'absolute', 'dot-alias'])
+def test_native_synthetic_delete_primitive_rejects_noncase_and_unreviewed_paths(synthetic_native_case, path):
+    state = synthetic_native_case
+    selected = state.synthetic_request['candidates'][0]['targets'][0]
+    invalid = {'parent': state.native_pytest.relative_to(state.root).as_posix(),
+        'nested': selected['path'] + '/nested', 'sibling': selected['path'].replace('/tmp/pytest/', '/tmp/other/'),
+        'unreviewed-release': selected['path'].replace(OLD, 'ci-71-' + 'a' * 12),
+        'absolute': str(state.synthetic_case), 'dot-alias': './' + selected['path']}[path]
+    fd = os.open(state.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match='DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST'):
+            cleanup.remove_target(fd, {'kind': 'GENERATED_SYNTHETIC_PYTEST_CASE', 'path': invalid})
+    finally: os.close(fd)
+    assert state.synthetic_case.is_dir() and state.retained_native.is_file()
 
 
 @pytest.mark.parametrize(('count', 'kind', 'historical', 'allowed'), [

@@ -383,8 +383,11 @@ def test_actual_profile_batches_all_65_classes_and_original_paths_without_proper
     requirements, provisioned = provisioned_profile()
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
-    # Core copy retains 23 cases; three native usage cases cover the real service and locks.
-    assert len(requirements) == 65 and sum(item['minimumTests'] for item in requirements) == 809
+    # Core copy includes six session-history cases; original usage service cases remain.
+    assert len(requirements) == 65 and sum(item['minimumTests'] for item in requirements) == 815
+    core = next(item for item in requirements if item['id'] == 'CoreCopyMigrationMySqlTest')
+    assert core['minimumTests'] == 29
+    assert (SOURCE.parents[2] / core['source']).read_text(encoding='utf8').count('@Test void ') == core['minimumTests']
     knowledge = next(item for item in requirements if item['id'] == 'QualityKnowledgeMySqlTest')
     assert knowledge['minimumTests'] == 14
     # Nine existing cases plus five semantic-index cases, not six.

@@ -65,6 +65,7 @@ PYTEST_TMP_SUFFIX = 'work/ci-evidence/tmp/pytest'
 # these fixed sources may use the ordinary (no links/specials) tree primitive.
 # The source-only whole-root policy and automatic native retention stay intact.
 SYNTHETIC_PYTEST_CASE_LIMIT = 1536
+SYNTHETIC_PYTEST_CASE_NAME = r'test_[A-Za-z0-9_]{1,40}[0-9]+'
 SYNTHETIC_PYTEST_SOURCES = {
     'ci-337-1918c12cd441': ('1918c12cd4419670896cf07e88378c81ea03123a', 'fe062e06868fd588319e7975d38de5b4c569383bde3a131d458ae11908206b2c'),
     'ci-341-46c1dd6b1079': ('46c1dd6b107914d2d000cefbb6372fba8f7fdd97', '4d8cb28ce15c380db020d7694119cd3d116406410101bc13260f60fd73d2e498'),
@@ -1421,7 +1422,7 @@ def synthetic_pytest_case_provenance(root, binding, row, path, verifier):
     require(SYNTHETIC_PYTEST_SOURCES.get(row['release']) == (row['commit'], row['sourceSha256']),
             'SYNTHETIC_PYTEST_FIXED_SOURCE_NOT_REVIEWED')
     parent = binding['checkout'] / PYTEST_TMP_SUFFIX
-    require(path.parent == parent and re.fullmatch(r'test_[A-Za-z0-9_]{1,40}[0-9]+', path.name),
+    require(path.parent == parent and re.fullmatch(SYNTHETIC_PYTEST_CASE_NAME, path.name),
             'SYNTHETIC_PYTEST_EXACT_CASE_REQUIRED')
     if 'syntheticPytest' not in binding:
         require(native_pytest_preservation(root, binding, row['release'], parent) is not None,
@@ -1827,6 +1828,8 @@ def remove_target(root_fd, target):
         'NODE_MODULES': r'verification/ci-[0-9]+-[a-f0-9]{12}/checkout/(?:frontend|frontend-agent)/node_modules',
         'NPM_CACHE': base + re.escape(NPM_CACHE_SUFFIX.removeprefix('work/')),
         'PYTEST_CASE_DIRECTORY': base + re.escape(PYTEST_TMP_SUFFIX.removeprefix('work/')) + r'/[A-Za-z0-9_.-]{1,180}',
+        'GENERATED_SYNTHETIC_PYTEST_CASE': r'verification/(?:' + '|'.join(re.escape(tag) for tag in sorted(SYNTHETIC_PYTEST_SOURCES))
+            + r')/checkout/' + re.escape(PYTEST_TMP_SUFFIX) + '/' + SYNTHETIC_PYTEST_CASE_NAME,
         'GENERATED_OCI_CACHE': r'inbox/ci-[0-9]+-[a-f0-9]{12}/candidate-build-tools/official-oci',
         'GENERATED_IMAGE_ARCHIVE': r'inbox/ci-[0-9]+-[a-f0-9]{12}/candidate-build-tools/official-image\.tar',
         'GENERATED_SOURCE_DEPENDENCIES': base + r'ci-evidence/java-suites/suite-001/doorhandle-module-app/dependency',
