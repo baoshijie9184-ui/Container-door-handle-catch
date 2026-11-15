@@ -56,8 +56,8 @@ def source_contract(source_root):
     tree = ast.parse((directory / SOURCE_NAMES[0]).read_text(encoding='utf8'))
     required = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                 and any(isinstance(target, ast.Name) and target.id == 'REQUIRED' for target in node.targets)]
-    require(len(required) == 1 and type(required[0]) is tuple and len(required[0]) == 19
-            and len(set(required[0])) == 19, 'Fixed browser source must declare all 19 required checks')
+    require(len(required) == 1 and type(required[0]) is tuple and len(required[0]) == 21
+            and len(set(required[0])) == 21, 'Fixed browser source must declare all 21 required checks')
     return hashes, set(required[0])
 
 
@@ -112,12 +112,12 @@ def validate_report(report, context, manifest, acceptance, source_root):
             'Browser report has no passing fixed-source execution binding')
     require(type(acceptance) is dict and acceptance.get('file') == REPORT
             and isinstance(acceptance.get('sha256'), str) and SHA.fullmatch(acceptance['sha256'])
-            and acceptance.get('allA01A28Verified') is False and acceptance.get('requiredBrowserChecksPassed') == 19,
+            and acceptance.get('allA01A28Verified') is False and acceptance.get('requiredBrowserChecksPassed') == 21,
             'Browser acceptance cannot claim full A01-A28 or omit the actual report')
     checks = report.get('checks')
     require(type(checks) is dict and set(checks) == required
             and all(type(row) is dict and row.get('status') == 'PASS' for row in checks.values())
-            and report.get('failures') == [] and report.get('pageErrors') == [], 'All 19 actual browser checks must pass')
+            and report.get('failures') == [] and report.get('pageErrors') == [], 'All 21 actual browser checks must pass')
     pins = decode(raw_file(Path(source_root) / 'script/docker/collaboration-browser-sources.json', MIB)[0])
     tool = report.get('tool', {})
     require(tool.get('playwright') == pins['playwright']['version']
@@ -150,6 +150,7 @@ def validate_report(report, context, manifest, acceptance, source_root):
                     and row['role'] == ('SUPERVISOR' if alias in ('supervisor', 'reviewer') else 'INSPECTOR')
                     for alias, row in accounts.items())
             and len({row['userId'] for row in accounts.values()}) == 4, 'Four distinct actual qualified browser accounts are required')
+    validate_employee_checks(report, manifest['files'])
     validate_model_stream_check(checks['model-stream-save-connection-budget'])
     identities = checks['four-roles-real-ui']
     require(identities.get('simultaneousContexts') == 4 and all(identities.get(key) is True for key in
@@ -234,10 +235,42 @@ def validate_report(report, context, manifest, acceptance, source_root):
                 'nativeSseClosed', 'actualUiRestore', 'exactOldCookieReplay', 'qualifiedNewSessionVerified', 'bothTabsRestored'))
             and revocation.get('existingCookieHttpStatus') == revocation.get('restoredOldCookieHttpStatus') == 401,
             'Reused functional account must be restored without reviving its revoked session')
-    return {'status': 'VERIFIED', 'checks': 19, 'functionalAccounts': 4, 'tabs': 8, 'latencySamples': len(samples),
+    return {'status': 'VERIFIED', 'checks': 21, 'functionalAccounts': 4, 'tabs': 8, 'latencySamples': len(samples),
             'loadTestStatus': 'DEFERRED_BY_USER', 'performanceSloVerified': False,
             'p95Ms': p95, 'productionCapacityVerified': False, 'allA01A28Verified': False,
             'browserContainerId': actual['browserContainerId'], 'browserImageId': actual['browserImageId']}
+
+
+def validate_employee_checks(report, files):
+    checks = report['checks']
+    legacy, calendar = checks['employee-legacy-date-preserved'], checks['employee-calendar-date-edit']
+    require(revision(legacy.get('employeeId'), True) and calendar.get('employeeId') == legacy['employeeId']
+            and all(legacy.get(key) is True for key in ('legacyTextVisible', 'calendarInitiallyEmpty',
+                'unrelatedNameEditPersisted', 'legacyValuePreserved', 'reloadedFromServer'))
+            and all(calendar.get(key) is True for key in ('actualCalendarDayClicked', 'legacyLabelRemoved', 'reloadedFromServer'))
+            and calendar.get('selectedDate') == '2024-02-29' and calendar.get('editedDate') == '2024-03-01',
+            'Actual employee legacy display and calendar editing evidence is incomplete')
+    receipts = calendar.get('receipts')
+    require(type(receipts) is list and len(receipts) == 2, 'Both actual calendar save receipts are required')
+    prior, request_ids = '0', set()
+    for receipt in [legacy.get('receipt'), *receipts]:
+        require(type(receipt) is dict and receipt.get('openedVersion') == prior and revision(receipt.get('version'))
+                and int(receipt['version']) == int(prior) + 1 and receipt.get('httpStatus') == 200
+                and receipt.get('resourceReadBack') is True and isinstance(receipt.get('requestId'), str)
+                and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', receipt['requestId']) and receipt['requestId'] not in request_ids,
+                'Employee UI writes need distinct requests, successive revisions and actual readback')
+        prior = receipt['version']; request_ids.add(receipt['requestId'])
+    expected = ['screenshots/employee-legacy-initial.png', 'screenshots/employee-legacy-preserved.png',
+                'screenshots/employee-date-selected.png', 'screenshots/employee-date-edited.png']
+    require(legacy.get('screenshots') == expected[:2] and calendar.get('screenshots') == expected[2:],
+            'Employee checks must identify their actual initial/persisted/edited screenshots')
+    screenshots = report.get('screenshots')
+    require(type(screenshots) is list, 'Actual employee screenshots are absent')
+    for path in expected:
+        records = [row for row in screenshots if type(row) is dict and row.get('path') == path]
+        originals = [row for row in files if row['path'] == PREFIX + 'browser-evidence/' + path]
+        require(len(records) == len(originals) == 1 and records[0].get('sha256') == originals[0]['sha256'],
+                'Employee screenshot is absent or differs from its preserved original')
 
 
 def validate_model_stream_check(value):

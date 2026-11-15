@@ -1763,7 +1763,7 @@
       },
       {
         "module": "tests_python.test_collaboration_runtime_transport",
-        "minimumTests": 65,
+        "minimumTests": 73,
         "source": "tests_python/test_collaboration_runtime_transport.py",
         "allowedSkippedTests": []
       },
@@ -1775,7 +1775,7 @@
       },
       {
         "module": "tests_python.test_collaboration_browser_evidence",
-        "minimumTests": 129,
+        "minimumTests": 156,
         "source": "tests_python/test_collaboration_browser_evidence.py",
         "allowedSkippedTests": []
       },

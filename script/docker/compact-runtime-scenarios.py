@@ -122,6 +122,39 @@ def seed_owned_users(db, schema, token, candidate_load_user_count=4):
     return accounts
 
 
+def seed_employee_hire_date_fixture(db, schema, token, department_id):
+    """One unbound legacy employee, only in the complete owned candidate clone."""
+    require(isinstance(token, str) and re.fullmatch(r'[a-f0-9]{10,32}', token)
+            and OWNED_SCHEMA.fullmatch(schema) and db.schema == schema,
+            'Employee fixture requires the runner-owned compact target')
+    department_id = exact_integer(department_id, 1)
+    actual = db.one("SELECT JSON_OBJECT('schema',DATABASE(),'fk',@@foreign_key_checks,'tables',"
+        "(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'));")
+    require(actual['schema'] == schema and actual['fk'] == 1 and actual['tables'] == 29,
+            'Employee fixture requires the complete enforced compact target')
+    department = 'runtime-' + token
+    number, legacy = 'BD' + token[:16], '2020年春'
+    require(db.one("SELECT JSON_OBJECT('n',COUNT(*)) FROM organization_department WHERE id="
+        + str(department_id) + ' AND name=' + db.literal(department) + ';')['n'] == 1,
+        'Employee fixture must use the newly owned department')
+    require(db.one("SELECT JSON_OBJECT('n',COUNT(*)) FROM employee WHERE employee_number="
+        + db.literal(number) + ';')['n'] == 0, 'Owned browser employee already exists')
+    # Initial legacy source fact, not an API success/audit receipt. No login account
+    # is created or rebound; subsequent name/date writes must use the real UI.
+    db.execute('START TRANSACTION;\n'
+        'INSERT INTO employee(name,employee_number,contact,department,employee_type,gender,hire_date,status,version,department_id) VALUES('
+        + ','.join(db.literal(value) for value in ('日期验收原登记', number, 'hiredate@fixture.invalid', department,
+                                                  'DETECTION', '女', legacy, 'ACTIVE'))
+        + ',0,' + str(department_id) + ');\nCOMMIT;')
+    row = db.one("SELECT JSON_OBJECT('id',e.id,'hireDate',e.hire_date,'version',e.version,"
+        "'departmentId',e.department_id,'bindings',(SELECT COUNT(*) FROM users u WHERE u.employee_id=e.id))"
+        ' FROM employee e WHERE e.employee_number=' + db.literal(number) + ';')
+    require(row['hireDate'] == legacy and row['version'] == 0 and row['departmentId'] == department_id
+            and row['bindings'] == 0, 'Owned legacy employee was not persisted unbound and unchanged')
+    return {'employeeId': str(exact_integer(row['id'], 1)), 'employeeNumber': number,
+            'departmentId': str(department_id), 'legacyHireDate': legacy}
+
+
 def request(client, method, path, value=None, *, denied=(), headers=None):
     """Reuse the rehearsal client's cookie session and enforce actual API outcomes."""
     require(re.fullmatch(r'http://127\.0\.0\.1:[1-9][0-9]*', client.base) and path.startswith(('/api/', '/agui/')),

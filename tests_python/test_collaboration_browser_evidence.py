@@ -1,5 +1,6 @@
 """ECS-only source counterexamples. Synthetic bytes never count as browser acceptance."""
 import copy
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -7,10 +8,12 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-from tests_python.browser_evidence_fixture import browser, install, write, report_value, observation, CID, IMAGE, ROOT
+from tests_python.browser_evidence_fixture import browser, install, write, report_value, observation, CID, IMAGE, ROOT, PNG
 
 spec = importlib.util.spec_from_file_location('browser_adapter_contract', ROOT / 'script/docker/compact-collaboration-browser.py')
 adapter = importlib.util.module_from_spec(spec); spec.loader.exec_module(adapter)
+spec = importlib.util.spec_from_file_location('browser_employee_contract', ROOT / 'script/docker/collaboration-browser-runner.py')
+runner = importlib.util.module_from_spec(spec); spec.loader.exec_module(runner)
 
 
 def fixture(tmp_path):
@@ -39,8 +42,79 @@ def verify(value, success=True):
 def test_actual_original_report_pngs_and_external_identity_pass_byte_validation(tmp_path):
     value = fixture(tmp_path)
     result = verify(value)
-    assert result['status'] == 'VERIFIED' and result['checks'] == 19 and result['functionalAccounts'] == 4 and result['tabs'] == 8 and result['p95Ms'] == 100
+    assert result['status'] == 'VERIFIED' and result['checks'] == 21 and result['functionalAccounts'] == 4 and result['tabs'] == 8 and result['p95Ms'] == 100
     assert verify(value, False)['status'] == 'PRESERVED'
+
+
+@pytest.mark.parametrize('name', ['employee-legacy-date-preserved', 'employee-calendar-date-edit'])
+@pytest.mark.parametrize('state', ['missing', 'NOT_EXECUTED'])
+def test_employee_browser_checks_cannot_be_omitted_or_replaced_by_node_results(tmp_path, name, state):
+    value = fixture(tmp_path)
+    if state == 'missing': value.report['checks'].pop(name)
+    else: value.report['checks'][name]['status'] = state
+    resign(value)
+    with pytest.raises(ValueError): verify(value)
+
+
+@pytest.mark.parametrize('damage', ['calendar-filled', 'raw-hidden', 'unrelated-edit', 'raw-lost', 'no-reload',
+    'no-day-click', 'stale-label', 'wrong-date', 'other-employee', 'replayed-write', 'stale-version',
+    'no-readback', 'missing-save', 'missing-screenshot', 'wrong-screenshot-hash'])
+def test_employee_browser_pass_requires_real_display_writes_readback_and_preserved_screenshots(tmp_path, damage):
+    value = fixture(tmp_path)
+    legacy = value.report['checks']['employee-legacy-date-preserved']
+    calendar = value.report['checks']['employee-calendar-date-edit']
+    flags = {'calendar-filled': 'calendarInitiallyEmpty', 'raw-hidden': 'legacyTextVisible',
+             'unrelated-edit': 'unrelatedNameEditPersisted', 'raw-lost': 'legacyValuePreserved', 'no-reload': 'reloadedFromServer'}
+    if damage in flags: legacy[flags[damage]] = False
+    elif damage == 'no-day-click': calendar['actualCalendarDayClicked'] = False
+    elif damage == 'stale-label': calendar['legacyLabelRemoved'] = False
+    elif damage == 'wrong-date': calendar['editedDate'] = '2024-03-02'
+    elif damage == 'other-employee': calendar['employeeId'] = '701'
+    elif damage == 'replayed-write': calendar['receipts'][0]['requestId'] = legacy['receipt']['requestId']
+    elif damage == 'stale-version': calendar['receipts'][1]['openedVersion'] = '0'
+    elif damage == 'no-readback': calendar['receipts'][1]['resourceReadBack'] = False
+    elif damage == 'missing-save': calendar['receipts'].pop()
+    elif damage == 'missing-screenshot': value.report['screenshots'].pop()
+    else: value.report['screenshots'][-1]['sha256'] = '0' * 64
+    resign(value)
+    with pytest.raises(ValueError): verify(value)
+
+
+def employee_descriptor():
+    return {'ownership': {'token': 'f' * 12}, 'fixtures': {'employeeHireDate': {
+        'employeeId': '700', 'employeeNumber': 'BD' + 'f' * 12, 'departmentId': '90', 'legacyHireDate': '2020年春'}}}
+
+
+def test_browser_employee_fixture_is_owned_and_separate_from_the_four_accounts():
+    descriptor = employee_descriptor()
+    assert runner.employee_fixture_spec(descriptor, {'supervisor': {'employeeId': '201'}})['employeeId'] == '700'
+
+
+def test_employee_screenshot_masks_private_number_input_without_hiding_name_or_date(tmp_path):
+    captured = {}
+    async def screenshot(**kwargs):
+        captured.update(kwargs); Path(kwargs['path']).write_bytes(PNG)
+    page = SimpleNamespace(locator=lambda selector: selector, get_by_text=lambda expression: expression, screenshot=screenshot)
+    subject = SimpleNamespace(output=tmp_path, descriptor=employee_descriptor(),
+        evidence=SimpleNamespace(usernames={'owned-account'}, data={'screenshots': []}, save=lambda: None))
+    asyncio.run(runner.Runner.screenshot(subject, page, 'employee-legacy-initial'))
+    selector = captured['mask'][0]
+    assert 'input[placeholder="填写员工登记编号"]' in selector
+    assert '填写业务人员姓名' not in selector and '选择入职日期' not in selector
+    assert subject.evidence.data['screenshots'][0]['path'] == 'screenshots/employee-legacy-initial.png'
+
+
+@pytest.mark.parametrize('damage', ['bound', 'foreign-number', 'missing', 'wrong-date', 'oversized-id', 'zero-id'])
+def test_browser_rejects_foreign_bound_or_normalized_legacy_employee_fixture(damage):
+    descriptor = employee_descriptor(); accounts = {'supervisor': {'employeeId': '201'}}
+    value = descriptor['fixtures']['employeeHireDate']
+    if damage == 'bound': accounts['supervisor']['employeeId'] = value['employeeId']
+    elif damage == 'foreign-number': value['employeeNumber'] = 'production-person'
+    elif damage == 'missing': descriptor['fixtures'].pop('employeeHireDate')
+    elif damage == 'wrong-date': value['legacyHireDate'] = '2020-01-01'
+    elif damage == 'oversized-id': value['employeeId'] = '9223372036854775808'
+    else: value['employeeId'] = '0'
+    with pytest.raises(runner.CheckError): runner.employee_fixture_spec(descriptor, accounts)
 
 
 @pytest.mark.parametrize('damage', ['missing-stream', 'same-run', 'same-session', 'same-reply', 'no-content', 'finished-before-save',
@@ -171,7 +245,7 @@ def test_browser_catalog_bounds_are_checked_before_any_artifact_read(tmp_path, d
 
 def test_failed_browser_preserves_original_public_report_and_png_without_becoming_pass(tmp_path):
     value = fixture(tmp_path); value.report['status'] = 'FAIL'; value.report['checks']['real-history-diff']['status'] = 'FAIL'; resign(value)
-    assert verify(value, False)['files'] == 2
+    assert verify(value, False)['files'] == 6
     with pytest.raises(ValueError): verify(value)
 
 
@@ -262,6 +336,7 @@ def test_browser_creator_uses_private_uid1000_mounts_and_a_separate_bounded_phas
     network='owned-internal'; commands=[]; plans=[]; installed={}
     ctx=SimpleNamespace(directory=directory, attempt=attempt, source=ROOT, project=value.project, token='f'*12,
         report_task_id='actual-worker-task', owner={'browserImage':IMAGE,'browserImageBytes':123,'browserSourceHashes':browser.source_contract(ROOT)[0],
+            'employeeHireDateFixture': employee_descriptor()['fixtures']['employeeHireDate'],
             'modelStreamProbes': {'phase': 'ARMED', 'descriptor': {'schemaVersion': 1}}},
         accounts={alias:{**row,'username':alias,'password':'private-fixture-password'} for alias,row in value.report['accounts'].items()},
         args=SimpleNamespace(commit=value.context['commit'],source_sha256=value.context['sourceSha256']),
@@ -286,7 +361,9 @@ def test_browser_creator_uses_private_uid1000_mounts_and_a_separate_bounded_phas
     assert not any('private-fixture-password' in part for part in creation)
     assert (directory/'browser-inputs/users.json').stat().st_mode & 0o777 == 0o600
     assert plans[0][0]=='runtime-browser' and plans[0][1]==512*browser.MIB and plans[0][-1]==browser.MEMORY
-    assert proof['requiredBrowserChecksPassed']==19 and proof['allA01A28Verified'] is False
+    descriptor=json.loads((directory/'browser-inputs/browser-descriptor.json').read_bytes())
+    assert descriptor['fixtures']['employeeHireDate']==ctx.owner['employeeHireDateFixture']
+    assert proof['requiredBrowserChecksPassed']==21 and proof['allA01A28Verified'] is False
 
 
 @pytest.mark.parametrize('damage',['none','source-link','source-size','foreign-image','foreign-label','platform'])
@@ -329,7 +406,7 @@ def test_failed_creator_preserves_valid_originals_before_rejecting_unapproved_pr
         owner={'browserContainerId':CID,'browserImage':IMAGE},common=SimpleNamespace(write_json=write),save=lambda:None)
     with pytest.raises(ValueError,match='approved original evidence was preserved'):adapter.preserve(ctx)
     manifest_file=directory/'browser-manifest.json';manifest=json.loads(manifest_file.read_bytes())
-    assert manifest['rejectedArtifactCount']==1 and len(manifest['files'])==2
+    assert manifest['rejectedArtifactCount']==1 and len(manifest['files'])==6
     assert 'private-fixture-password' not in manifest_file.read_text()
     public=tmp_path/'public';public.mkdir();(public/'browser-manifest.json').write_bytes(manifest_file.read_bytes())
     for row in manifest['files']:

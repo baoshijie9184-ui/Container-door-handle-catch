@@ -32,6 +32,16 @@ def report_value(context):
     checks['resource-samples'].update(samples=1, memoryOomDelta=0, pidsMaxEventsDelta=0)
     checks['artifact-secret-boundary'].update(passwordFieldsMasked=True, exactSecretScan=True,
         cookiesTokensStorageStateHarTraceVideoWritten=False, actualSseLocatorsOnly=True)
+    employee_screenshots = ['screenshots/employee-legacy-initial.png', 'screenshots/employee-legacy-preserved.png',
+                           'screenshots/employee-date-selected.png', 'screenshots/employee-date-edited.png']
+    receipts = [{'openedVersion': str(index), 'version': str(index + 1), 'requestId': 'employee-write-' + str(index),
+                 'httpStatus': 200, 'resourceReadBack': True} for index in range(3)]
+    checks['employee-legacy-date-preserved'].update(employeeId='700', legacyTextVisible=True, calendarInitiallyEmpty=True,
+        unrelatedNameEditPersisted=True, legacyValuePreserved=True, reloadedFromServer=True,
+        receipt=receipts[0], screenshots=employee_screenshots[:2])
+    checks['employee-calendar-date-edit'].update(employeeId='700', actualCalendarDayClicked=True,
+        legacyLabelRemoved=True, selectedDate='2024-02-29', editedDate='2024-03-01', reloadedFromServer=True,
+        receipts=receipts[1:], screenshots=employee_screenshots[2:])
     streams = [{'marker': 'a21-stream-' + str(index) * 24, 'runId': '00000000-0000-4000-8000-' + str(index).zfill(12),
         'sessionId': 'owned-a21-session-' + str(index), 'messageId': str(100 + index), 'firstContent': True,
         'firstContentAt': 1794268800000, 'finishedEvent': True, 'finishedEventAt': 1794268815000,
@@ -59,6 +69,8 @@ def report_value(context):
         'tool': {'playwright': '1.65.0', 'actualChromium': '158.0.8127.18', 'expectedChromium': '158.0.8127.18', 'chromiumSandbox': False},
         'accounts': accounts, 'functionalAccounts': 4, 'loadTestStatus': 'DEFERRED_BY_USER',
         'performanceSloVerified': False, 'failures': [], 'pageErrors': [],
+        'screenshots': [{'path': path, 'sha256': hashlib.sha256(PNG).hexdigest()}
+                        for path in ['screenshots/actual-ui.png', *employee_screenshots]],
         'latencySamples': [{'account': alias, 'tab': 1, 'requestId': 'request-'+alias, 'resourceVersion': '1',
             'eventId': 'event-'+alias, 'eventOccurredAt': '2026-11-10T00:00:00Z', 'domAtEpochMs': 1794268800100,
             'eventOccurredToDomMs': 100, 'responseToDomMs': 80, 'visibility': 'visible',
@@ -81,16 +93,19 @@ def install(directory, context, project, proof, cleanup):
     directory.mkdir(parents=True, exist_ok=True)
     report = report_value(context)
     file = directory / 'browser-evidence/browser-evidence.json'; report_sha = write(file, report)
-    png = directory / 'browser-evidence/screenshots/actual-ui.png'; png.parent.mkdir(exist_ok=True); png.write_bytes(PNG); png.chmod(0o600)
+    screenshots = []
+    for row in report['screenshots']:
+        png = directory / 'browser-evidence' / row['path']; png.parent.mkdir(exist_ok=True)
+        png.write_bytes(PNG); png.chmod(0o600); screenshots.append(png)
     files = [{'path': browser.PREFIX + path.relative_to(directory).as_posix(), 'bytes': path.stat().st_size,
-              'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in (file, png)]
+              'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in (file, *screenshots)]
     external = {'before': observation(), 'after': observation(), 'files': files}
     manifest = {**context, 'project': project, 'status': 'EVIDENCE_PRESERVED', 'files': files,
         'browserContainerId': CID, 'browserImageId': IMAGE, 'externalContainerObservation': external}
     digest = write(directory / 'browser-manifest.json', manifest)
     cleanup['browserEvidence'] = {'file': browser.MANIFEST, 'sha256': digest}
     proof['browserAcceptance'] = {'file': browser.REPORT, 'sha256': report_sha, 'externalContainerObservation': external,
-        'allA01A28Verified': False, 'requiredBrowserChecksPassed': 19}
+        'allA01A28Verified': False, 'requiredBrowserChecksPassed': 21}
     install_model_stream_evidence(proof, report)
     return manifest, report
 

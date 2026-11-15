@@ -4,6 +4,8 @@
 
 2026-11-11 范围修订：本轮只验收功能、权限、协同与迁移，固定两名 `INSPECTOR`、两名 `SUPERVISOR`，每账号两个标签页、共八页仅用于多标签功能。正式并发容量压测与 P95≤2000ms 性能 SLO 按用户要求延期，后续再使用专用工具；本轮不开发工具、不压测，也不以保存≤2000ms作为通过门。原19项浏览器检查及资源安全边界保留，报告明确 `performanceSloVerified=false`、`loadTestStatus=DEFERRED_BY_USER`。
 
+2026-11-15 增补：现有检查保留，新增员工历史日期保留、日历日期编辑两项，当前必需检查共21项。新增源码待固定提交的 ECS 浏览器验收；历史19项回执不包含这两项。
+
 该组件供现有 `compact-runtime-acceptance.py` 完整 `verify-runtime` 的浏览器 hook 调用。它不代替九个真实业务场景，不改变升级/恢复、MySQL、全套测试或发布门。由 runtime 在原九场景通过之后、清理本轮 owned stack 之前调用；该文档没有授权手工发布、启停云实例或绕开 Jenkins。
 
 ## 固定 CLI 与输入
@@ -38,6 +40,12 @@ python /opt/doorhandle/collaboration-browser-runner.py --descriptor /run/doorhan
   },
   "fixtures": {
     "reportTaskId": "<actual worker-completed existing report_task_id>",
+    "employeeHireDate": {
+      "employeeId": "<owned unbound employee id>",
+      "employeeNumber": "BD<first 16 characters of ownership token>",
+      "departmentId": "<owned runtime department id>",
+      "legacyHireDate": "2020年春"
+    },
     "modelStreamProbes": {
       "schemaVersion": 1,
       "kind": "doorhandle-owned-model-stream-probes",
@@ -57,6 +65,8 @@ python /opt/doorhandle/collaboration-browser-runner.py --descriptor /run/doorhan
 ```
 
 可选 `fixtures.deviceId` 仅能指向本轮已拥有设备，并必须同时提供 `deviceOwned: true`；否则 runner 通过真实主管新增设备页面创建隔离设备，不借用宿主或生产资源。已创建资源 ID 即时写入证据，最终随 runtime owned schema 统一清理。浏览器不自行删库/停服务。
+
+必需 `fixtures.employeeHireDate` 由候选初始化在本轮29表克隆库中新建一名未绑定账号的员工，使用本轮部门、有效联系邮箱和原始文本日期 `2020年春`。不新增第五个登录账号，不修改现有人员、不通过 SQL 伪造后续保存回执。浏览器复用主管上下文打开真实 `/#/employees/edit/:id`；先确认原文可见而日历为空，只改姓名并保存重载，核对原日期未改变。再从实际 Element Plus 日历选中 `2024-02-29`，保存重载后继续编辑为 `2024-03-01` 并再次重载。三次真实 PUT 的不同 requestId、连续版本和 GET 读回，以及初始/保留/选择/再次编辑四张截图共同进入证据门。
 
 `users.json` 接受 runtime 的现有结构 `{ "accounts": { ... } }`，必须恰有 `inspector`、`peer`、`supervisor`、`reviewer` 四个不同真实用户；每项含 `username,password,userId,role,employeeId,departmentId`。后两个字段由 runtime 保留，不从它们伪造登录身份。`supervisor`、`reviewer` 角色为 `SUPERVISOR`，`inspector`、`peer` 为 `INSPECTOR`；登录后逐个从真实 `/api/auth/check` 验证 ID、角色、独立 Cookie 会话上下文和四个能力开关。输入中的 ID 可以是整数或 decimal string，输出统一字符串。无正确开关/资格/会话时 FAIL。
 
@@ -86,7 +96,7 @@ python /opt/doorhandle/collaboration-browser-runner.py --descriptor /run/doorhan
 
 浏览器访问容器自己的 `http://127.0.0.1:<随机端口>`。透明代理固定转发 owned network 的 `http://ui:80`，透传原 Host/Origin/Referer 和 Set-Cookie，以 `read1` 逐块读取并立即 flush；不改变业务响应、不缓存 SSE。此拓扑等效已有用户通过 SSH 回环访问真实 Nginx，localhost 按浏览器标准为可信上下文，因此可以使用真实 Web Locks。没有给 `http://ui` 使用忽略安全限制的参数，也不宣称公网 HTTP/2。证据分别记录 CDP 观察的浏览器协议和上游 Nginx HTTP 版本。
 
-实际页面沿用 Vue 组织/设备/报告/修改记录和 React `/agent-ui/` 持久工作台；选择器来自现有 diagnostics 和这些页面源码。React 必须真实读取会话 workbench 返回 200、通过原 UI 格式校验、文件控件进入已加载可用状态且没有工作台错误，不能只凭 region 出现就通过。没有测试专用业务页面、`page.set_content`或伪造业务 API；双模型流经过本轮受控provider，不调用外部付费模型。Playwright route 仅拒绝外部 origin；迟到 logout、私有 GET 和 refresh 在透明代理收到真实上游响应后、向浏览器发送任何 headers 之前暂停，保留原服务器结果及真实迟到 Set-Cookie 顺序。没有使用可能提前更新同一 cookie jar 的 `route.fetch` 冒充此竞态。
+实际页面沿用 Vue 组织/人员/设备/报告/修改记录和 React `/agent-ui/` 持久工作台；选择器来自现有 diagnostics 和这些页面源码。React 必须真实读取会话 workbench 返回 200、通过原 UI 格式校验、文件控件进入已加载可用状态且没有工作台错误，不能只凭 region 出现就通过。没有测试专用业务页面、`page.set_content`或伪造业务 API；双模型流经过本轮受控provider，不调用外部付费模型。Playwright route 仅拒绝外部 origin；迟到 logout、私有 GET 和 refresh 在透明代理收到真实上游响应后、向浏览器发送任何 headers 之前暂停，保留原服务器结果及真实迟到 Set-Cookie 顺序。没有使用可能提前更新同一 cookie jar 的 `route.fetch` 冒充此竞态。
 
 四个独立 context 各有两张真实设备列表标签。两个主管轮换进行两轮真实UI修改，从原设备表单打开并固定版本后修改型号；每轮三个其他账号的可见标签用 DOM MutationObserver 观察实际行文本，共记录六份观察、覆盖全部四账号。`four-accounts-multi-tab` 检查真实账号/页面拓扑、跨账号更新及后台恢复；`latency-observation` 检查真实匹配事件、时间与DOM。账号缺失、隐藏观察页、没有匹配命名事件或缺时间戳均失败，不要求统计样本量，也不设置P95阈值。
 
@@ -98,10 +108,10 @@ python /opt/doorhandle/collaboration-browser-runner.py --descriptor /run/doorhan
 
 ## 证据边界与不足
 
-固定 JSON 中账号仅保留 alias、decimal userId 与 role。ownership project/network 只记 SHA，token 不输出。截图遮盖密码、用户名字段以及本轮账号名/ownership token 所在文本；不启用 HAR、trace、video、storage-state 或原始 HTTP/SSE正文归档。仅存字段白名单的事件定位、版本、请求号、时间和受控错误类型；异常原文可能含凭据，故不打印。精确秘密扫描只是附加防线，不替代上述最小化设计。
+固定 JSON 中账号仅保留 alias、decimal userId 与 role。ownership project/network 只记 SHA，token 不输出。截图遮盖密码、用户名、包含本轮标记的员工编号输入，以及本轮账号名/ownership token 所在文本；员工姓名和日期证据保持可见。不启用 HAR、trace、video、storage-state 或原始 HTTP/SSE正文归档。仅存字段白名单的事件定位、版本、请求号、时间和受控错误类型；异常原文可能含凭据，故不打印。精确秘密扫描只是附加防线，不替代上述最小化设计。
 
 cleanup 的 `browserEvidence` 固定引用 `checkout/work/runtime-acceptance/browser-manifest.json` 及原始 SHA。Jenkins 成功和失败路径均按该 manifest 收取原始 `browser-evidence.json` 与单层安全文件名的 `screenshots/*.png`：最多 128 个文件、总计 128 MiB、每个最多 32 MiB；先核对远端规范路径、UID/GID 1000、单链接和长度，再传输并复核原 SHA。私有 users/descriptor、inputs、stdout/stderr、HAR/trace 不在收集路径中。失败原件保全不代表通过。
 
-`collaboration-browser-evidence.py` 仅检查原始字节，不启动浏览器或测试。成功准入核对本固定源码三份哈希、原报告与 runtime proof 的相同 SHA、已测量不可变镜像和容器、19个完整PASS、四个不同账号的真实角色及实际DOM/event观察，独立重算记录的nearest-rank P95而不应用性能阈值。summary 记录 `functionalAccounts=4`、`tabs=8`、`performanceSloVerified=false`、`loadTestStatus=DEFERRED_BY_USER`。cutover 与本地字节校验均强制功能证据门；缺少实际report/PNG、第四阶段或后台资源证据时不能发布。
+`collaboration-browser-evidence.py` 仅检查原始字节，不启动浏览器或测试。成功准入核对本固定源码三份哈希、原报告与 runtime proof 的相同 SHA、已测量不可变镜像和容器、21个完整PASS、四个不同账号的真实角色及实际DOM/event观察，并强制两项员工日期场景的写入/重读事实和四张原始PNG，独立重算记录的nearest-rank P95而不应用性能阈值。summary 记录 `functionalAccounts=4`、`tabs=8`、`performanceSloVerified=false`、`loadTestStatus=DEFERRED_BY_USER`。cutover 与本地字节校验均强制功能证据门；缺少实际report/PNG、第四阶段或后台资源证据时不能发布。
 
 JSON 对 A01–A28 逐项列 `BROWSER_PORTION_PASS`、`FAIL` 或 `NOT_COVERED` 及具体限制。required 检查一项未执行会导致总 FAIL，绝不默认 skip 当通过。A02、A05、A08、A16、A18、A19 没有本组件可独立完成的夹具/控制面，明确未覆盖；A27 通过真实浏览器 fetch 验证双标签并发 refresh、logout/B 登录后迟到 refresh headers 不改变 B、旧 A context 再刷新被拒绝，并不替代过期/重启/事务夹具。其他项也只证明浏览器部分。`fullA01A28AcceptanceClaimed` 永远为 false，必须与保留的 HTTP、MySQL、会话、真实模型/工具、迁移/恢复及外部资源证据共同评估。

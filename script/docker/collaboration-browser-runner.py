@@ -35,7 +35,8 @@ REQUIRED = ('four-roles-real-ui', 'react-real-workbench', 'real-device-created',
             'late-account-switch', 'refresh-logout-race', 'four-accounts-multi-tab',
             'http1-shared-connections', 'latency-observation', 'resource-samples',
             'account-disable-revocation', 'artifact-secret-boundary',
-            'model-stream-save-connection-budget')
+            'model-stream-save-connection-budget',
+            'employee-legacy-date-preserved', 'employee-calendar-date-edit')
 CASE_CHECKS = {
     'A01': ('four-roles-real-ui',), 'A03': ('inspector-report-and-scope',),
     'A04': ('same-version-ui-conflict',), 'A06': ('request-replay',),
@@ -146,6 +147,18 @@ def model_reply_id(value):
     return str(value)
 
 
+def employee_fixture_spec(descriptor, accounts):
+    value = descriptor.get('fixtures', {}).get('employeeHireDate')
+    require(type(value) is dict and set(value) == {'employeeId', 'employeeNumber', 'departmentId', 'legacyHireDate'}
+            and all(isinstance(value.get(key), str) and re.fullmatch(r'[1-9][0-9]{0,18}', value[key])
+                    and int(value[key]) <= 9223372036854775807 for key in ('employeeId', 'departmentId'))
+            and value.get('employeeNumber') == 'BD' + descriptor['ownership']['token'][:16]
+            and value.get('legacyHireDate') == '2020年春'
+            and all(str(account.get('employeeId')) != value['employeeId'] for account in accounts.values()),
+            'owned_unbound_legacy_employee_fixture_required')
+    return value
+
+
 def read_cgroup():
     root = Path('/sys/fs/cgroup')
     def read(name):
@@ -226,6 +239,7 @@ def validate(descriptor, accounts, output):
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', str(descriptor.get('fixtures', {}).get('reportTaskId', ''))):
         raise AdmissionError('actual_completed_task_fixture_required')
     stream_probe_spec(descriptor)
+    employee_fixture_spec(descriptor, accounts)
     if output.resolve() != Path('/evidence') or output.is_symlink():
         raise AdmissionError('owned_evidence_mount_required')
     output.mkdir(parents=True, exist_ok=True)
@@ -318,7 +332,7 @@ class Runner:
         private_text = re.compile('|'.join(re.escape(value) for value in self.evidence.usernames
                                           | {self.descriptor['ownership']['token']} if value))
         await page.screenshot(path=str(target), full_page=True, animations='disabled',
-            mask=[page.locator('input[type="password"],input[name="username"],#organization-account-query'),
+            mask=[page.locator('input[type="password"],input[name="username"],#organization-account-query,input[placeholder="填写员工登记编号"]'),
                   page.get_by_text(private_text)])
         self.evidence.data['screenshots'].append({'path': 'screenshots/' + target.name,
             'sha256': hashlib.sha256(target.read_bytes()).hexdigest()})
@@ -505,6 +519,88 @@ class Runner:
                 'four_independent_browser_cookie_contexts_required')
         self.evidence.passed('four-roles-real-ui', simultaneousContexts=4, independentCookieContexts=True,
             distinctServerAccountContexts=True, identitiesReadFromServer=True, roleSpecificOrganizationControls=True)
+
+    async def open_employee(self):
+        fixture = employee_fixture_spec(self.descriptor, self.accounts)
+        page = self.pages['supervisor'][0]
+        row = await self.api(page.context, 'GET', '/api/employees/' + fixture['employeeId'], auth_key='supervisor')
+        require(str(row.get('id')) == fixture['employeeId'] and row.get('employeeNumber') == fixture['employeeNumber']
+                and str(row.get('departmentId')) == fixture['departmentId'], 'owned_employee_readback_required')
+        await self.goto(page, '/employees/edit/' + fixture['employeeId'])
+        await page.locator('.managed-form-version').wait_for()
+        await page.wait_for_function('(name)=>document.querySelector("input[placeholder=填写业务人员姓名]")?.value===name', arg=row['name'])
+        await page.wait_for_function('document.querySelector("button[form=employee-maintenance-form]")?.disabled===false')
+        version = re.search(r'版本\s+(\d+)', await page.locator('.managed-form-version').inner_text())
+        require(version is not None and version.group(1) == str(row['version']), 'employee_opened_version_required')
+        return page, row
+
+    async def save_employee(self, page, opened, name, hire_date):
+        target = '/api/employees/' + str(opened['id'])
+        async with page.expect_response(lambda response: response.request.method == 'PUT' and urlsplit(response.url).path == target) as pending:
+            await page.get_by_role('button', name='保存人员', exact=True).click()
+        response = await pending.value
+        body, headers = response.request.post_data_json, await response.request.all_headers()
+        require(response.status == 200 and body.get('name') == name and body.get('hireDate') == hire_date
+                and headers.get('x-expected-version') == str(opened['version'])
+                and headers.get('x-request-id') and headers.get('x-account-context'), 'employee_ui_command_receipt_required')
+        result = unwrap(await response.json())
+        version = response.headers.get('x-resource-version') or result.get('version')
+        require(str(result.get('id')) == str(opened['id']) and str(version) == str(int(opened['version']) + 1),
+                'employee_saved_version_required')
+        await page.wait_for_url('**/#/employees')
+        page, persisted = await self.open_employee()
+        require(persisted.get('name') == name and persisted.get('hireDate') == hire_date
+                and str(persisted.get('version')) == str(version), 'employee_ui_save_must_persist_exact_fields')
+        return page, persisted, {'openedVersion': str(opened['version']), 'version': str(version),
+            'requestId': headers['x-request-id'], 'httpStatus': response.status, 'resourceReadBack': True}
+
+    async def employee_legacy_date(self):
+        fixture = employee_fixture_spec(self.descriptor, self.accounts)
+        page, opened = await self.open_employee()
+        legacy = fixture['legacyHireDate']
+        require(opened.get('hireDate') == legacy, 'original_legacy_employee_date_required')
+        label = '原登记：' + legacy + '。保持原文，选择日期后替换。'
+        await page.get_by_text(label, exact=True).wait_for()
+        require(await page.get_by_placeholder('选择入职日期').input_value() == '', 'legacy_text_must_not_enter_calendar')
+        await self.screenshot(page, 'employee-legacy-initial')
+        name = '日期验收改姓名'
+        await page.get_by_placeholder('填写业务人员姓名').fill(name)
+        page, _persisted, receipt = await self.save_employee(page, opened, name, legacy)
+        await page.get_by_text(label, exact=True).wait_for()
+        require(await page.get_by_placeholder('选择入职日期').input_value() == '', 'preserved_legacy_calendar_must_stay_empty')
+        await self.screenshot(page, 'employee-legacy-preserved')
+        self.evidence.passed('employee-legacy-date-preserved', employeeId=fixture['employeeId'],
+            legacyTextVisible=True, calendarInitiallyEmpty=True, unrelatedNameEditPersisted=True,
+            legacyValuePreserved=True, reloadedFromServer=True, receipt=receipt,
+            screenshots=['screenshots/employee-legacy-initial.png', 'screenshots/employee-legacy-preserved.png'])
+
+    async def employee_calendar_date(self):
+        fixture = employee_fixture_spec(self.descriptor, self.accounts)
+        page, opened = await self.open_employee()
+        require(opened.get('hireDate') == fixture['legacyHireDate'], 'calendar_replacement_starts_from_legacy_value')
+        calendar = page.get_by_placeholder('选择入职日期')
+        # Type through Element Plus, then choose a day in its real calendar popup.
+        await calendar.fill('2024-02-28')
+        # Blur commits the picker value without Enter implicitly submitting the form.
+        await calendar.press('Tab')
+        await calendar.click()
+        day = page.locator('.business-date-popper:visible .el-date-table td.available:not(.prev-month):not(.next-month)').filter(has_text=re.compile(r'^29$'))
+        await day.click()
+        await page.wait_for_function('document.querySelector("input[placeholder=选择入职日期]")?.value==="2024-02-29"')
+        page, opened, first = await self.save_employee(page, opened, opened['name'], '2024-02-29')
+        require(await page.get_by_placeholder('选择入职日期').input_value() == '2024-02-29'
+                and await page.get_by_text(re.compile('^原登记：')).count() == 0, 'selected_date_must_reload_as_calendar_value')
+        await self.screenshot(page, 'employee-date-selected')
+        calendar = page.get_by_placeholder('选择入职日期')
+        await calendar.fill('2024-03-01')
+        await calendar.press('Tab')
+        page, _persisted, second = await self.save_employee(page, opened, opened['name'], '2024-03-01')
+        require(await page.get_by_placeholder('选择入职日期').input_value() == '2024-03-01', 'normal_date_edit_must_reload')
+        await self.screenshot(page, 'employee-date-edited')
+        self.evidence.passed('employee-calendar-date-edit', employeeId=fixture['employeeId'],
+            actualCalendarDayClicked=True, legacyLabelRemoved=True, selectedDate='2024-02-29',
+            editedDate='2024-03-01', reloadedFromServer=True, receipts=[first, second],
+            screenshots=['screenshots/employee-date-selected.png', 'screenshots/employee-date-edited.png'])
 
     async def react(self):
         page = await self.contexts['inspector'].new_page()
@@ -1186,7 +1282,9 @@ class Runner:
             self.evidence.data['tool']['actualChromium'] = self.browser.version
             self.evidence.data['tool']['chromiumSandbox'] = False
             require(self.browser.version == CHROMIUM_VERSION, 'pinned_chromium_required')
-            stages = [('four-roles-real-ui', self.four_roles), ('react-real-workbench', self.react),
+            stages = [('four-roles-real-ui', self.four_roles),
+                ('employee-legacy-date-preserved', self.employee_legacy_date), ('employee-calendar-date-edit', self.employee_calendar_date),
+                ('react-real-workbench', self.react),
                 ('real-device-created', self.create_device), ('same-version-ui-conflict', self.conflict),
                 ('real-history-diff', self.history), ('request-replay', self.replay),
                 ('inspector-report-and-scope', self.inspector_report), ('native-sse-reconnect', self.reconnect),

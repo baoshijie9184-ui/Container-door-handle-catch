@@ -104,7 +104,8 @@ def run(ctx):
         'ownership': {'project': ctx.project, 'network': network, 'token': ctx.token}, 'upstream': 'http://ui:80',
         'runtime': {'browserImageId': image, 'browserContainerId': '', 'cpuLimit': 2,
                     'memoryLimitBytes': MEMORY, 'pidsLimit': 512},
-        'fixtures': {'reportTaskId': ctx.report_task_id, 'modelStreamProbes': probes['descriptor']},
+        'fixtures': {'reportTaskId': ctx.report_task_id, 'modelStreamProbes': probes['descriptor'],
+                     'employeeHireDate': ctx.owner['employeeHireDateFixture']},
         'budgets': {'functionalAccounts': 4, 'tabsPerAccount': 2, 'timeoutSeconds': 600}}
     # Build layers are retained in the measured baseline, not credited as free space.
     ctx.resources.admit('runtime-browser', 512 * MIB, {'browserImageId': image,
@@ -145,7 +146,7 @@ def run(ctx):
     require(all(result.get(key) == descriptor[key] for key in ('schemaVersion', 'commit', 'sourceSha256'))
             and result.get('runtime') == descriptor['runtime'] and result.get('status') == 'PASS'
             and result.get('fullA01A28AcceptanceClaimed') is False
-            and len(result.get('checks', {})) == 19
+            and len(result.get('checks', {})) == 21
             and all(row.get('status') == 'PASS' for row in result['checks'].values()),
             'Real browser source/identity/check evidence is incomplete')
     for name in ('collaboration-browser-runner.py', 'collaboration-browser-proxy.py', 'collaboration-browser-sources.json'):

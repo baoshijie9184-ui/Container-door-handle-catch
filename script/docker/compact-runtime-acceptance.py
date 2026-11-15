@@ -740,6 +740,8 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                 'status': 'DEFERRED_BY_USER', 'performanceSloRequired': False},
             'Current acceptance profile must use four functional accounts and defer formal load testing')
         self.accounts = self.http.seed_owned_users(self.db, schema, self.token, candidate_load_user_count=4)
+        self.owner['employeeHireDateFixture'] = self.http.seed_employee_hire_date_fixture(
+            self.db, schema, self.token, self.accounts['supervisor']['departmentId'])
         self.common.write_json(self.directory / 'users.json', self.accounts)
         runtime_accounts = self.create_dml_accounts(schema)
         self.master_key, self.key_reference = self.prepare_key()

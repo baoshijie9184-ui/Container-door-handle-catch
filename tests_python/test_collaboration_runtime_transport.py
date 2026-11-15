@@ -278,6 +278,46 @@ def test_fixture_account_count_is_bounded_before_database_access(count):
     assert database.writes == []
 
 
+class EmployeeDateDatabase(OwnedDatabase):
+    def __init__(self, damage=None):
+        super().__init__(fk=0 if damage == 'foreign-key-off' else 1, tables=28 if damage == 'incomplete-schema' else 29)
+        self.damage = damage
+
+    def one(self, sql):
+        if 'DATABASE()' in sql: return super().one(sql)
+        if 'FROM organization_department' in sql: return {'n': 0 if self.damage == 'foreign-department' else 1}
+        if 'FROM employee WHERE' in sql: return {'n': 1 if self.damage == 'employee-collision' else 0}
+        assert 'FROM employee e' in sql and 'FROM users u WHERE u.employee_id=e.id' in sql
+        return {'id': 700, 'hireDate': '2020-01-01' if self.damage == 'normalized' else '2020年春',
+                'version': 0, 'departmentId': 90, 'bindings': 1 if self.damage == 'bound' else 0}
+
+
+def test_browser_legacy_employee_seed_is_unbound_and_does_not_manufacture_write_receipts():
+    database = EmployeeDateDatabase()
+    value = scenarios.seed_employee_hire_date_fixture(database, SCHEMA, TOKEN, 90)
+    assert value == {'employeeId': '700', 'employeeNumber': 'BD' + TOKEN[:16], 'departmentId': '90', 'legacyHireDate': '2020年春'}
+    assert len(database.writes) == 1
+    sql = database.writes[0]
+    assert sql.startswith('START TRANSACTION;') and sql.endswith('COMMIT;')
+    assert sql.count('INSERT INTO employee(') == 1 and '2020年春' in sql and 'hiredate@fixture.invalid' in sql
+    assert not any(value in sql.upper() for value in ('INSERT INTO USERS', 'UPDATE ', 'AUDIT_EVENT', 'WORKFLOW_INSTANCE', 'FOREIGN_KEY_CHECKS'))
+
+
+@pytest.mark.parametrize('damage', ['foreign-schema', 'foreign-key-off', 'incomplete-schema', 'foreign-department', 'employee-collision'])
+def test_browser_employee_seed_rejects_foreign_or_existing_rows_before_writing(damage):
+    database = EmployeeDateDatabase(damage)
+    with pytest.raises(RuntimeError):
+        scenarios.seed_employee_hire_date_fixture(database, 'doorhandle' if damage == 'foreign-schema' else SCHEMA, TOKEN, 90)
+    assert database.writes == []
+
+
+@pytest.mark.parametrize('damage', ['bound', 'normalized'])
+def test_browser_employee_seed_checks_actual_legacy_text_and_absent_account_binding(damage):
+    database = EmployeeDateDatabase(damage)
+    with pytest.raises(RuntimeError, match='persisted unbound and unchanged'):
+        scenarios.seed_employee_hire_date_fixture(database, SCHEMA, TOKEN, 90)
+
+
 @pytest.fixture
 def original_runtime(tmp_path, monkeypatch):
     # The test runner can be PID 1 in its disposable container. Runtime's real
