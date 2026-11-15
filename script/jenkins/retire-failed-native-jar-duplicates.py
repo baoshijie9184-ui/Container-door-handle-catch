@@ -216,6 +216,11 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0',
      '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
      '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
+    # 26d770d4 waits for the same verifier's terminal state before fixture
+    # cleanup. No execution/publication gate or builder selection changes.
+    ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0',
+     '29a93fb0890af70894d2a219ca95cdd6b7a354c42f6606a9ceb2df6b8b4766e3',
+     '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
 })
 
 

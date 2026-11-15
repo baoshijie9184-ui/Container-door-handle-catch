@@ -2372,7 +2372,14 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
                 '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
                 '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
     diagnostic = ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0', *reviewed[1:])
-    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic})
+    terminal_cleanup = (diagnostic[0], '29a93fb0890af70894d2a219ca95cdd6b7a354c42f6606a9ceb2df6b8b4766e3', reviewed[2])
+    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup})
+    assert retirer.database_verification_recipe(terminal_cleanup[:2], terminal_cleanup[2]) is True
+    assert terminal_cleanup[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert terminal_cleanup[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    for index in range(3):
+        changed = list(terminal_cleanup); changed[index] = '0' * 64
+        assert retirer.database_verification_recipe(changed[:2], changed[2]) is False
     assert reviewed[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
     assert reviewed[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
     assert retirer.database_verification_recipe(reviewed[:2], reviewed[2]) is True
@@ -2388,7 +2395,7 @@ def test_diagnostic_archive_recipe_remains_bound_to_the_three_current_source_mem
     paths = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
     recipe = tuple(sha((MODULE.parents[2] / path).read_bytes().replace(b'\r\n', b'\n')) for path in paths)
     assert recipe == ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0',
-                      '78b9f6eea34910ad54cf902c96bc47c18b0c83d82328a561e4f043b12d716d6e',
+                      '29a93fb0890af70894d2a219ca95cdd6b7a354c42f6606a9ceb2df6b8b4766e3',
                       '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
     assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is True
     assert recipe[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
