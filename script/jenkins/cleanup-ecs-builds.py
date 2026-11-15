@@ -1022,6 +1022,9 @@ def generated_tree_helper():
 
 def generated_inventory(root, target):
     path = root / target['path']
+    # Every inventory consumer (plan, permission preflight and apply) must
+    # authenticate the complete parent chain, not only the selected leaf.
+    owned_chain(path.parent, root, directory=True)
     if target['kind'] in GENERATED_SOURCE_PACKAGE_KINDS:
         owned_chain(path, root, directory=target['kind'] == 'GENERATED_SOURCE_DEPENDENCIES', maximum=MAX_TREE_BYTES)
     if target['kind'] in ('GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'):
@@ -1613,6 +1616,8 @@ def repair_generated_permissions(root, request, verifier, *, apply=True):
                                 node = tree.add(change['path'], directory=change['directory'], maximum=verifier.MAX_FILE_BYTES)
                                 require(all(node['before'][key] == change[key] for key in ('device', 'inode', 'uid', 'gid', 'nlink')),
                                         'GENERATED_PERMISSION_REGISTERED_INODE_CHANGED')
+                            for target in row['targets']:
+                                tree.add(Path(target['path']).parent.as_posix(), directory=True)
                             selected = {**request, 'candidates': [row]}
                             plan = build_generated_plan(root, selected, verifier, docker_snapshot(), held_releases=[tag])
                             require(len(plan['candidates']) == 1 and len(plan['candidates'][0]['targets']) == len(row['targets'])

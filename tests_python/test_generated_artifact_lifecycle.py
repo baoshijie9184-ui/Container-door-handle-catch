@@ -924,3 +924,51 @@ def test_historical_source_authority_does_not_reclassify_native_mysql_temporary_
     before = legacy.preserved_bytes(state); plan = make_plan(state, value)
     assert not plan['candidates'] and plan['skipped'][0]['reason'] == 'HISTORICAL_PYTEST_REQUIRES_PROVEN_SOURCE_PRODUCER'
     assert state.native_pytest.exists() and legacy.preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('kind', ['COMPILED_DIRECTORY', 'NPM_CACHE', 'RETIRED_PRIVATE_MAVEN',
+    'GENERATED_SOURCE_DEPENDENCIES', 'GENERATED_SOURCE_JAR', 'GENERATED_OCI_CACHE',
+    'GENERATED_IMAGE_ARCHIVE', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'])
+def test_every_generated_inventory_refuses_a_writable_parent_before_reading_target(generated, monkeypatch, kind):
+    parent = generated.root / 'unregistered-inventory-parent'
+    file_kind = kind in ('GENERATED_SOURCE_JAR', 'GENERATED_IMAGE_ARCHIVE')
+    leaf = legacy.put(parent / ('output.jar' if file_kind else 'output/entry'), b'regenerable')
+    target = leaf if file_kind else leaf.parent
+    parent.chmod(0o775)
+    monkeypatch.setattr(cleanup, 'digest', lambda *args: pytest.fail('Target contents read before ancestor admission'))
+    with pytest.raises(ValueError, match='PATH_NOT_OWNED_OR_WRITABLE_BY_OTHERS'):
+        cleanup.generated_inventory(generated.root, {'kind': kind, 'path': target.relative_to(generated.root).as_posix()})
+    assert leaf.read_bytes() == b'regenerable'
+
+
+@pytest.mark.parametrize('kind', ['GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'])
+def test_generated_dynamic_root_keeps_its_existing_mode_contract_with_private_ancestors(generated, kind):
+    target = legacy.put(generated.root / 'private-parent/dynamic-root/entry', b'regenerable').parent
+    target.chmod(0o775)
+    value = cleanup.generated_inventory(generated.root, {'kind': kind, 'path': target.relative_to(generated.root).as_posix()})
+    assert value['files'] == 1 and stat.S_IMODE(value['rootMetadata'][0]) == 0o775
+
+
+def test_generated_apply_rechecks_parent_modes_before_deletion_or_journal(generated, monkeypatch):
+    state = generated; cache = legacy.add_npm_cache(state)
+    value = request(state, targets=[{'kind': 'NPM_CACHE', 'path': cache.relative_to(state.root).as_posix()}])
+    plan = make_plan(state, value)
+    assert len(plan['candidates']) == 1 and not plan['skipped']
+    cache.parent.chmod(0o775); calls = []
+    monkeypatch.setattr(cleanup, 'remove_target', lambda *args: calls.append(args))
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, value, plan, remote)
+    assert not calls and cache.exists()
+    assert not (state.root / 'inbox' / CURRENT / 'generated-cleanup-journal.jsonl').exists()
+
+
+def test_permission_preflight_holds_unlisted_private_target_ancestors_until_first_chmod(permission_request, monkeypatch):
+    state, value = permission_request; original = cleanup.generated_quiescent; calls = []
+    def drift_after_inventory(*args, **kwargs):
+        original(*args, **kwargs)
+        state.cache.parent.chmod(0o775)
+    monkeypatch.setattr(cleanup, 'generated_quiescent', drift_after_inventory)
+    monkeypatch.setattr(os, 'fchmod', lambda *args: calls.append(args))
+    result = cleanup.repair_generated_permissions(state.root, value, remote)
+    assert result['status'] == 'PARTIAL_FAILURE' and result['deletedTargets'] == 0
+    assert not calls and state.cache.exists()

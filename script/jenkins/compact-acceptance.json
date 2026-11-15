@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_generated_artifact_lifecycle",
-        "minimumTests": 118,
+        "minimumTests": 131,
         "source": "tests_python/test_generated_artifact_lifecycle.py",
         "allowedSkippedTests": []
       },
