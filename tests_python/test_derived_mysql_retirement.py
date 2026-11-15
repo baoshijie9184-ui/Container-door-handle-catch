@@ -1564,9 +1564,19 @@ def test_finished_mysql_root_must_still_be_the_exact_inventoried_inode(task_requ
 
 
 @pytest.fixture
-def finished_builder_controls(monkeypatch):
+def finished_builder_controls(tmp_path, monkeypatch):
     from tests_python import test_historical_builder_retirement as builder_cases
     state = builder_cases.fixture_state(('ci-344-' + 'a' * 12, 'a' * 40, '1' * 64, 'b' * 24))
+    # The control container mounts only its synthetic test workspace, not the
+    # host CI tree. Satisfy the real path/owner guards inside that workspace.
+    state.root = tmp_path / 'ci'
+    checkout = state.root / 'verification' / state.context['release'] / 'checkout'
+    inbox = state.root / 'inbox' / state.context['release']
+    for path in (state.root, checkout.parent.parent, checkout.parent, checkout, inbox.parent, inbox):
+        path.mkdir(mode=0o700)
+    directory = inbox / 'candidate-build-tools'
+    state.tools['licenseFile'] = str(directory / 'LICENSE')
+    state.tools['resourceEvidence']['file'] = str(directory / 'resource-summary.json')
     builder = builder_cases.resources
     spec = importlib.util.spec_from_file_location('derived_finished_native', FILE.with_name('retire-failed-native-jar-duplicates.py'))
     native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
@@ -1584,7 +1594,6 @@ def finished_builder_controls(monkeypatch):
         'State': {'Running': False, 'Restarting': False, 'Pid': 0},
         'Config': {'Labels': {'io.doorhandle.release': state.context['release']}}, 'HostConfig': {}, 'Mounts': []}
     rows = {state.row['Id']: state.row, fixture_row['Id']: fixture_row}; commands = []; probes = []
-    directory = state.root / 'inbox' / state.context['release'] / 'candidate-build-tools'
     names = {'tools.json': 'tools', 'resource-summary.json': 'summary', 'official-layer-measurements.json': 'measurement'}
     def held(root, path, maximum):
         assert root == state.root and path.parent == directory and maximum == native.MAX_CONTROL
@@ -1597,17 +1606,31 @@ def finished_builder_controls(monkeypatch):
         return [(cid, row['State']['Running'], row['State']['Restarting'], row['State']['Pid'],
             row['Config']['Labels'].get('io.doorhandle.release'), row['Config']['Labels'].get(builder.LABEL), row['Mounts'])
             for cid, row in rows.items()]
+    # Exercise the real process-reference parser against one synthetic /proc
+    # record, never the host process table or an unconditional quiet stub.
+    proc = tmp_path / 'proc'; process = proc / str(os.getpid() + 10_000_000)
+    process.mkdir(parents=True, mode=0o700)
+    (process / 'cwd').symlink_to(tmp_path, target_is_directory=True)
+    (process / 'fd').mkdir(mode=0o700)
+    (process / 'cmdline').write_bytes(b'synthetic-worker\0')
+    (process / 'maps').write_bytes(b'')
+    process_references = cleanup.process_references
+    def probe(actual_checkout, **options):
+        assert actual_checkout == checkout and options == {'include_inbox': True}
+        probes.append(options)
+        return process_references(actual_checkout, proc=proc, **options)
     monkeypatch.setattr(retirement, 'ROOT', state.root)
     monkeypatch.setattr(native, 'held_file', held)
     monkeypatch.setattr(native, 'builder_docker', docker)
     monkeypatch.setattr(native, 'builder_container_ids', lambda: list(rows))
     monkeypatch.setattr(native, 'canonical_publication_refs', lambda *_: probes.append('publication'))
     monkeypatch.setattr(cleanup, 'docker_snapshot', snapshot)
-    monkeypatch.setattr(cleanup, 'process_references', lambda _path, **options: probes.append(options))
+    monkeypatch.setattr(cleanup, 'process_references', probe)
     helpers = {'retire-failed-native-jar-duplicates.py': native, 'compact-build-resources.py': builder,
                'cleanup-ecs-builds.py': cleanup}
     return SimpleNamespace(state=state, historical=historical, fixture=fixture, rows=rows, native=native,
-                           cleanup=cleanup, builder=builder, helpers=helpers, commands=commands, probes=probes)
+                           cleanup=cleanup, builder=builder, helpers=helpers, commands=commands, probes=probes,
+                           checkout=checkout, inbox=inbox, process=process)
 
 
 @pytest.mark.parametrize('fixture_present', [False, True])
@@ -1627,6 +1650,10 @@ def test_finished_retains_only_authenticated_independent_builder_in_all_referenc
         assert descriptor['controlSha256']['tools'] == state.historical['preparedToolsSha256']
     else: assert descriptor is None
     assert all(command[0] == 'inspect' for command in state.commands)
+    for referenced in (state.checkout, state.inbox):
+        (state.process / 'cmdline').write_bytes(os.fsencode(referenced) + b'\0')
+        with pytest.raises(ValueError, match='ACTIVE_PROCESS_REFERENCES_OLD_CHECKOUT'):
+            retirement.task_candidate_references(candidate, state.helpers)
 
 
 @pytest.mark.parametrize('damage', ['tools', 'summary', 'measurement', 'source', 'helper', 'cid', 'token',
