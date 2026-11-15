@@ -102,14 +102,16 @@ class ConfirmationMigrationMySqlTest {
             "ALTER TABLE agent_pending_action ADD UNIQUE KEY unexpected_unique(action_id,user_id)",
             "ALTER TABLE agent_action_audit MODIFY COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT",
             "ALTER TABLE agent_action_audit ADD CONSTRAINT unexpected_check CHECK(user_id>0)",
-            "ALTER TABLE chat_pending_action DROP FOREIGN KEY fk_chat_pending_session, ADD CONSTRAINT fk_chat_pending_session FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE RESTRICT",
+            "ALTER TABLE chat_pending_action DROP FOREIGN KEY fk_chat_pending_session; ALTER TABLE chat_pending_action ADD CONSTRAINT fk_chat_pending_session FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE RESTRICT",
             "ALTER TABLE chat_pending_action ADD CONSTRAINT unexpected_source_fk FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE CASCADE",
             "ALTER TABLE chat_pending_action DROP FOREIGN KEY fk_chat_pending_session, ADD CONSTRAINT unexpected_source_fk FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE CASCADE",
             "ALTER TABLE chat_pending_action ALTER COLUMN status SET DEFAULT 'pending'",
             "ALTER TABLE chat_pending_action MODIFY COLUMN created_at DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)",
             "CREATE TRIGGER unexpected_source_trigger BEFORE INSERT ON agent_pending_action FOR EACH ROW SET NEW.reason_code='changed'"})
     void rejectsUnreviewedSourceStructureWithoutWritingEitherSchema(String change)throws Exception{
-        source.execute(change);rejectAndAssertUnchanged();
+        // Complete the FK removal before reusing its name in a separate ALTER TABLE.
+        for(String statement:change.split(";"))source.execute(statement.trim());
+        rejectAndAssertUnchanged();
     }
 
     @ParameterizedTest @ValueSource(strings={
