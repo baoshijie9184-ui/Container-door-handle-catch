@@ -24,6 +24,7 @@ import time
 import xml.etree.ElementTree as ET
 
 MODULES = ('test_jenkins_resource_budget', 'test_jenkins_fixture_admission', 'test_jenkins_fixture_cgroup_probe',
+           'test_jenkins_tool_preparation',
            'test_derived_mysql_retirement', 'test_source_pytest_retirement', 'test_source_pytest307308_retirement',
            'test_jenkins_ecs_build_cleanup', 'test_generated_artifact_lifecycle',
            'test_failed_native_jar_duplicates', 'test_historical_builder_retirement',

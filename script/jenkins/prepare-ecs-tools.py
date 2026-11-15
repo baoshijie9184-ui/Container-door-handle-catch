@@ -73,6 +73,9 @@ SHA = re.compile(r'[a-f0-9]{64}')
 IMAGE = re.compile(r'sha256:[a-f0-9]{64}')
 TAG = re.compile(r'ci-[1-9][0-9]*-[a-f0-9]{12}')
 SENSITIVE = re.compile(r'PASSWORD|PASSWD|SECRET|API_KEY|ACCESS_KEY|TOKEN|DATABASE_URL|DB_URL', re.I)
+HOST_UPDATE_UNITS = ('apt-daily.service', 'apt-daily-upgrade.service')
+HOST_PACKAGE_LOCKS = ('/var/lib/dpkg/lock', '/var/lib/dpkg/lock-frontend',
+    '/var/lib/apt/lists/lock', '/var/cache/apt/archives/lock', '/run/unattended-upgrades.lock')
 
 
 class PreparationError(ValueError):
@@ -81,6 +84,13 @@ class PreparationError(ValueError):
 
 class PreparationPending(PreparationError):
     """The same owned request has no final completion evidence yet."""
+
+
+class HostUpdateAdmissionError(PreparationError):
+    def __init__(self, observation):
+        self.observation = observation
+        super().__init__('Host package maintenance is active; start a new build after it finishes'
+            if observation['status'] == 'BUSY' else 'Host package maintenance state could not be verified')
 
 
 def require(condition, message):
@@ -143,6 +153,66 @@ def identity(args):
             'X-aliyun-ecs-metadata-token': token}), timeout=3) as response:
         require(response.read(256).decode().strip() == args.instance_id, 'Instance identity differs')
     return {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}
+
+
+def admit_host_package_state():
+    """Read-only admission for new work, not a promise that later updates cannot start."""
+    observation = {'kind': 'doorhandle-host-update-admission', 'status': 'UNAVAILABLE',
+                   'units': [], 'heldLocks': []}
+    try:
+        result = subprocess.run(['/usr/bin/systemctl', 'show', '--no-pager',
+            '--property=Id,LoadState,ActiveState,SubState', *HOST_UPDATE_UNITS],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+        require(result.returncode == 0 and len(result.stdout) <= 16384, 'Host unit observation unavailable')
+        units = {}
+        for block in result.stdout.decode('ascii').strip().split('\n\n'):
+            row = {}
+            for line in block.splitlines():
+                key, separator, value = line.partition('=')
+                require(separator and key in ('Id', 'LoadState', 'ActiveState', 'SubState')
+                        and key not in row, 'Host unit observation differs')
+                row[key] = value
+            require(set(row) == {'Id', 'LoadState', 'ActiveState', 'SubState'}
+                    and row['Id'] in HOST_UPDATE_UNITS and row['Id'] not in units
+                    and row['LoadState'] in ('loaded', 'not-found')
+                    and row['ActiveState'] in ('active', 'activating', 'deactivating', 'reloading', 'inactive', 'failed')
+                    and re.fullmatch(r'[a-z-]{1,32}', row['SubState']), 'Host unit observation differs')
+            units[row['Id']] = row
+        require(set(units) == set(HOST_UPDATE_UNITS), 'Host unit observation incomplete')
+        observation['units'] = [units[name] for name in HOST_UPDATE_UNITS]
+        paths = {}
+        for name in HOST_PACKAGE_LOCKS:
+            try:
+                info = Path(name).lstat()
+            except FileNotFoundError:
+                continue
+            require(stat.S_ISREG(info.st_mode), 'Host package lock path differs')
+            paths[(info.st_dev, info.st_ino)] = name
+        # Lock-file existence is normal. Match held kernel locks by device/inode,
+        # as the existing cleanup admission does; never take or remove a lock.
+        with Path('/proc/locks').open('rb') as stream:
+            raw = stream.read(4 * MIB + 1)
+        require(len(raw) <= 4 * MIB, 'Host package lock observation exceeded its bound')
+        held = set()
+        for line in raw.decode('ascii').splitlines():
+            for field in line.split():
+                if re.fullmatch(r'[a-fA-F0-9]+:[a-fA-F0-9]+:[0-9]+', field):
+                    major, minor, inode = field.split(':')
+                    key = (os.makedev(int(major, 16), int(minor, 16)), int(inode))
+                    if key in paths:
+                        held.add(key)
+                    break
+        observation['heldLocks'] = [{'path': paths[key], 'device': key[0], 'inode': key[1]}
+                                    for key in sorted(held)]
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise HostUpdateAdmissionError(observation) from error
+    # unattended-upgrades.service is a resident shutdown helper on this host;
+    # its running state alone is not an upgrade. Only active apt jobs/locks block.
+    observation['status'] = ('BUSY' if held or any(row['ActiveState'] not in ('inactive', 'failed')
+        for row in observation['units']) else 'IDLE')
+    if observation['status'] != 'IDLE':
+        raise HostUpdateAdmissionError(observation)
+    return observation
 
 
 def scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_builder=False, include_mem0_runtime=False):
@@ -336,6 +406,7 @@ class Preparation:
     def __init__(self, args):
         validate_builder_input_arguments(args)
         self.args = args; self.identity = identity(args)
+        admit_host_package_state()
         require(TAG.fullmatch(args.tag) and re.fullmatch(r'[a-f0-9]{40}', args.commit)
                 and args.tag.endswith('-' + args.commit[:12]) and SHA.fullmatch(args.source_sha256),
                 'Fixed commit, source archive hash and release are required')
@@ -1331,6 +1402,8 @@ def main(argv=None):
                   'sourceAndEvidenceRetained': True}
         if isinstance(error, PreparationError) or getattr(error, 'doorhandle_public_resource_error', False):
             failed['error'] = str(error)
+        if isinstance(error, HostUpdateAdmissionError):
+            failed['hostUpdateAdmission'] = error.observation
         if preparation is not None and not args.read_prepared:
             marker = preparation.folder / 'completion-failure.json'
             try:

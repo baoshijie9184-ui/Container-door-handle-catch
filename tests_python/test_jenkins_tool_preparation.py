@@ -1,5 +1,7 @@
 """Tool recipe boundary checks; Jenkins executes this file only on admitted ECS."""
 import hashlib
+import ast
+from contextlib import ExitStack
 from copy import deepcopy
 import importlib.util
 import io
@@ -67,9 +69,11 @@ class ToolPreparationTests(unittest.TestCase):
         for constructor in (tools.Preparation, tools.PreparedReadback):
             with self.subTest(constructor=constructor.__name__), mock.patch.object(tools, 'identity') as identity, \
                     mock.patch.object(tools, 'canonical') as canonical, \
+                    mock.patch.object(tools, 'admit_host_package_state') as host_gate, \
                     mock.patch.object(tools.Path, 'mkdir') as mkdir:
                 with self.assertRaises(ValueError): constructor(args)
-                identity.assert_not_called(); canonical.assert_not_called(); mkdir.assert_not_called()
+                identity.assert_not_called(); host_gate.assert_not_called()
+                canonical.assert_not_called(); mkdir.assert_not_called()
 
     def test_config_size_may_shrink_only_when_all_dependency_diffids_are_identical(self):
         old = {'RootFS': {'Layers': ['base', 'dependencies']}, 'Size': 1017481845}
@@ -1334,6 +1338,178 @@ class CompletedRuntimeDependencyReuseTests(unittest.TestCase):
                     self.assertIsNone(value.reuse_completed_dependencies(sources, pinned, {})); repair.assert_not_called()
                 self.assertFalse(value.folder.exists())
                 self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+
+class HostPackageAdmissionTests(unittest.TestCase):
+    """Synthetic systemd and kernel lock observations; no package-manager commands."""
+
+    def setUp(self):
+        self.stack = ExitStack(); self.addCleanup(self.stack.close)
+        self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.paths = {}
+        for index, name in enumerate(tools.HOST_PACKAGE_LOCKS):
+            path = self.directory / ('lock-' + str(index)); path.write_bytes(b'')
+            self.paths[name] = path
+        self.locks = self.directory / 'proc-locks'; self.locks.write_bytes(b'')
+        self.paths['/proc/locks'] = self.locks
+        self.stack.enter_context(mock.patch.object(tools, 'Path', side_effect=lambda name: self.paths[str(name)]))
+        self.command = self.stack.enter_context(mock.patch.object(tools.subprocess, 'run',
+            return_value=SimpleNamespace(returncode=0, stdout=self.unit_bytes(), stderr=b'')))
+
+    def unit_bytes(self, **changes):
+        rows = []
+        for name in tools.HOST_UPDATE_UNITS:
+            row = {'Id': name, 'LoadState': 'loaded', 'ActiveState': 'inactive', 'SubState': 'dead'}
+            row.update(changes.get(name, {}))
+            rows.append('\n'.join(key + '=' + value for key, value in row.items()))
+        return ('\n\n'.join(rows) + '\n').encode()
+
+    def lock_line(self, name, prefix='1: POSIX ADVISORY WRITE 123'):
+        info = self.paths[name].stat()
+        return f'{prefix} {os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino} 0 EOF\n'
+
+    def test_idle_units_and_existing_unlocked_files_admit_without_mutation(self):
+        before = {name: path.read_bytes() for name, path in self.paths.items()}
+        value = tools.admit_host_package_state()
+        self.assertEqual('IDLE', value['status']); self.assertEqual([], value['heldLocks'])
+        self.assertEqual(before, {name: path.read_bytes() for name, path in self.paths.items()})
+        self.command.assert_called_once()
+        self.assertEqual(5, self.command.call_args.kwargs['timeout'])
+        self.assertEqual(tools.subprocess.DEVNULL, self.command.call_args.kwargs['stdin'])
+
+    def test_both_apt_units_block_all_active_job_states(self):
+        for name in tools.HOST_UPDATE_UNITS:
+            for state in ('active', 'activating', 'deactivating', 'reloading'):
+                with self.subTest(unit=name, state=state):
+                    self.command.return_value.stdout = self.unit_bytes(**{name: {'ActiveState': state, 'SubState': 'running'}})
+                    with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+                        tools.admit_host_package_state()
+                    self.assertEqual('BUSY', caught.exception.observation['status'])
+                    self.assertEqual(state, next(row['ActiveState'] for row in caught.exception.observation['units'] if row['Id'] == name))
+
+    def test_inactive_failed_jobs_and_resident_unattended_service_do_not_block(self):
+        self.command.return_value.stdout = self.unit_bytes(**{'apt-daily.service': {'ActiveState': 'failed', 'SubState': 'failed'}})
+        self.assertEqual('IDLE', tools.admit_host_package_state()['status'])
+        command = self.command.call_args.args[0]
+        self.assertNotIn('unattended-upgrades.service', command)
+        self.assertNotIn('stop', command); self.assertNotIn('disable', command)
+        self.assertEqual(['apt-daily.service', 'apt-daily-upgrade.service'], command[-2:])
+
+    def test_each_held_package_lock_blocks_even_when_units_are_idle(self):
+        for name in tools.HOST_PACKAGE_LOCKS:
+            with self.subTest(path=name):
+                self.locks.write_text(self.lock_line(name))
+                with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+                    tools.admit_host_package_state()
+                self.assertEqual('BUSY', caught.exception.observation['status'])
+                self.assertEqual([name], [row['path'] for row in caught.exception.observation['heldLocks']])
+
+    def test_posix_flock_ofd_and_waiting_lock_records_keep_exact_inode_identity(self):
+        name = tools.HOST_PACKAGE_LOCKS[0]
+        for prefix in ('1: POSIX ADVISORY WRITE 123', '2: FLOCK ADVISORY WRITE 123',
+                       '3: OFDLCK ADVISORY WRITE -1', '4: -> POSIX ADVISORY WRITE 456'):
+            with self.subTest(prefix=prefix):
+                self.locks.write_text(self.lock_line(name, prefix))
+                with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+                    tools.admit_host_package_state()
+                row = caught.exception.observation['heldLocks'][0]
+                self.assertEqual((self.paths[name].stat().st_dev, self.paths[name].stat().st_ino), (row['device'], row['inode']))
+
+    def test_unrelated_kernel_locks_do_not_block_package_admission(self):
+        self.locks.write_text('1: POSIX ADVISORY WRITE 123 00:00:1 0 EOF\n')
+        self.assertEqual('IDLE', tools.admit_host_package_state()['status'])
+
+    def test_absent_ephemeral_package_lock_files_are_not_treated_as_held(self):
+        for name in tools.HOST_PACKAGE_LOCKS:
+            self.paths[name].unlink()
+        self.assertEqual('IDLE', tools.admit_host_package_state()['status'])
+
+    def test_incomplete_duplicate_foreign_or_unexpected_unit_fields_are_unavailable(self):
+        original = self.unit_bytes()
+        for raw in (b'', original.split(b'\n\n')[0], original + b'\n' + original,
+                    original.replace(b'apt-daily.service', b'unattended-upgrades.service'),
+                    original.replace(b'LoadState=loaded', b'LoadState=unknown'),
+                    original + b'Environment=PRIVATE_FIXTURE_SENTINEL\n'):
+            with self.subTest(raw=raw[:32]):
+                self.command.return_value.stdout = raw
+                with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+                    tools.admit_host_package_state()
+                self.assertEqual('UNAVAILABLE', caught.exception.observation['status'])
+                self.assertNotIn('PRIVATE_FIXTURE_SENTINEL', json.dumps(caught.exception.observation))
+
+    def test_command_failure_and_timeout_do_not_publish_external_diagnostics(self):
+        self.command.return_value = SimpleNamespace(returncode=1, stdout=b'', stderr=b'PRIVATE_FIXTURE_SENTINEL')
+        for error in (None, tools.subprocess.TimeoutExpired('PRIVATE_FIXTURE_SENTINEL', 5)):
+            with self.subTest(timeout=error is not None):
+                self.command.side_effect = error
+                with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+                    tools.admit_host_package_state()
+                self.assertEqual('UNAVAILABLE', caught.exception.observation['status'])
+                self.assertNotIn('PRIVATE_FIXTURE_SENTINEL', str(caught.exception) + json.dumps(caught.exception.observation))
+
+    def test_oversized_or_non_ascii_unit_output_cannot_admit(self):
+        for raw in (b'x' * 16385, b'\xff'):
+            self.command.return_value.stdout = raw
+            with self.assertRaises(tools.HostUpdateAdmissionError):
+                tools.admit_host_package_state()
+
+    def test_oversized_or_non_ascii_kernel_lock_output_cannot_admit(self):
+        for raw in (b'x' * (4 * MIB + 1), b'\xff'):
+            self.locks.write_bytes(raw)
+            with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+                tools.admit_host_package_state()
+            self.assertEqual('UNAVAILABLE', caught.exception.observation['status'])
+
+    def test_unreadable_kernel_locks_are_not_an_idle_observation(self):
+        self.paths['/proc/locks'] = SimpleNamespace(open=mock.Mock(side_effect=PermissionError('PRIVATE_FIXTURE_SENTINEL')))
+        with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+            tools.admit_host_package_state()
+        self.assertEqual('UNAVAILABLE', caught.exception.observation['status'])
+        self.assertNotIn('PRIVATE_FIXTURE_SENTINEL', str(caught.exception))
+
+    def test_linked_lock_path_is_not_accepted_as_an_unlocked_regular_file(self):
+        path = self.paths[tools.HOST_PACKAGE_LOCKS[0]]; path.unlink(); path.symlink_to(self.locks)
+        with self.assertRaises(tools.HostUpdateAdmissionError) as caught:
+            tools.admit_host_package_state()
+        self.assertEqual('UNAVAILABLE', caught.exception.observation['status'])
+
+    def test_busy_admission_occurs_after_identity_and_before_any_new_resources(self):
+        calls = []
+        def active():
+            calls.append('host'); raise tools.HostUpdateAdmissionError({'status': 'BUSY'})
+        with mock.patch.object(tools, 'identity', side_effect=lambda args: calls.append('identity') or {}), \
+                mock.patch.object(tools, 'admit_host_package_state', side_effect=active), \
+                mock.patch.object(tools, 'canonical') as canonical:
+            with self.assertRaises(tools.HostUpdateAdmissionError):
+                tools.Preparation(SimpleNamespace())
+        self.assertEqual(['identity', 'host'], calls); canonical.assert_not_called()
+
+    def arguments(self):
+        return ['--root', '/home/owned', '--tag', 'ci-1-' + COMMIT[:12], '--commit', COMMIT,
+                '--source-sha256', SOURCE_SHA, '--instance-id', tools.INSTANCE, '--machine-id', tools.MACHINE]
+
+    def test_main_preserves_bounded_admission_failure_without_starting_preparation(self):
+        self.command.return_value.stdout = self.unit_bytes(**{'apt-daily-upgrade.service': {'ActiveState': 'activating'}})
+        with mock.patch.object(tools, 'identity', return_value={}), mock.patch.object(tools.signal, 'signal'), \
+                mock.patch.object(tools.Preparation, 'prepare') as prepare, \
+                mock.patch('sys.stderr', io.StringIO()) as output:
+            self.assertEqual(2, tools.main(self.arguments()))
+        result = json.loads(output.getvalue())
+        self.assertEqual('BUSY', result['hostUpdateAdmission']['status'])
+        self.assertEqual('FAILED_OR_UNKNOWN', result['status']); prepare.assert_not_called()
+
+    def test_original_readback_and_cleanup_entry_points_do_not_acquire_new_start_gate(self):
+        with mock.patch.object(tools, 'PreparedReadback') as readback, \
+                mock.patch.object(tools, 'admit_host_package_state') as gate, \
+                mock.patch.object(tools.signal, 'signal'), mock.patch('sys.stdout', io.StringIO()):
+            readback.return_value.read_prepared.return_value = {'status': 'PREPARED'}
+            self.assertEqual(0, tools.main(self.arguments() + ['--read-prepared']))
+            gate.assert_not_called()
+        tree = ast.parse(FILE.read_text(encoding='utf8'))
+        callers = [node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+            and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                    and call.func.id == 'admit_host_package_state' for call in ast.walk(node))]
+        self.assertEqual(['__init__'], callers)
 
 
 if __name__ == '__main__':

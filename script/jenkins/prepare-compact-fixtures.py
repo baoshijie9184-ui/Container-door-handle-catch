@@ -366,6 +366,7 @@ class PreparationMonitor:
             require(not self.failed.is_set(), 'Owned preparation supervision has failed')
 
     def fixture_memory(self):
+        self.fixture_limit_failure = None
         journal = self.preparation.journal
         cached = getattr(self, '_fixture_cgroup', None)
         if not journal.get('containerId'):
@@ -420,15 +421,46 @@ class PreparationMonitor:
                     'Owned fixture cgroup identity changed')
 
         def read_control(name):
+            # A new descriptor starts at offset zero for every kernel read;
+            # no descriptor or buffered stream is shared between probes.
             with os.fdopen(os.open(cached['path'] / name, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
                 require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), 'Owned fixture cgroup control differs')
                 value = stream.read(4097)
             require(0 < len(value) <= 4096, 'Owned fixture cgroup control exceeded its bound')
             return value.decode('ascii').strip()
 
+        def check_limits(phase):
+            # Read both controls even when the first differs. Retain only the
+            # fixed kernel value grammar, never arbitrary bytes/error text.
+            controls = {}; values = {}; first_error = None
+            for name in ('memory.max', 'memory.swap.max'):
+                try:
+                    value = read_control(name); values[name] = value
+                    controls[name] = ({'status': 'READ', 'value': value}
+                        if re.fullmatch(r'(?:max|[0-9]{1,20})', value)
+                        else {'status': 'INVALID_VALUE'})
+                except (OSError, ValueError) as error:
+                    controls[name] = {'status': 'READ_FAILED', 'errorType': type(error).__name__}
+                    first_error = first_error or error
+            if first_error is None and values == {'memory.max': str(MYSQL_MEMORY), 'memory.swap.max': '0'}:
+                return
+            error = first_error or ValueError('Owned fixture kernel memory limits ' +
+                ('differ' if phase == 'BEFORE_COUNTERS' else 'changed'))
+            observation = {'phase': phase, 'controls': controls,
+                'capturedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'expectedMemoryLimitBytes': MYSQL_MEMORY, 'expectedSwapLimitBytes': 0,
+                'pid': cached['pid'], 'startTicks': cached['startTicks'], 'cgroup': cached['relative'],
+                'identityVerifiedBeforeProbe': True, 'identityVerifiedAfterFailure': False}
+            try:
+                current_identity()
+                observation['identityVerifiedAfterFailure'] = True
+            except (OSError, ValueError):
+                pass  # Preserve the first read failure, not an unrelated error's text.
+            self.fixture_limit_failure = (error, observation)
+            raise error
+
         current_identity()
-        require(read_control('memory.max') == str(MYSQL_MEMORY) and read_control('memory.swap.max') == '0',
-                'Owned fixture kernel memory limits differ')
+        check_limits('BEFORE_COUNTERS')
         memory = read_control('memory.current')
         events = dict(line.split() for line in read_control('memory.events').splitlines())
         try:
@@ -438,8 +470,7 @@ class PreparationMonitor:
         require(memory.isdecimal() and 'oom_kill' in events and all(value.isdecimal() for value in events.values())
                 and (peak is None or peak.isdecimal() and int(peak) >= int(memory)),
                 'Owned fixture cgroup measurement differs')
-        require(read_control('memory.max') == str(MYSQL_MEMORY) and read_control('memory.swap.max') == '0',
-                'Owned fixture kernel memory limits changed')
+        check_limits('AFTER_COUNTERS')
         current_identity()
         self._fixture_cgroup = cached
         self.fixture_observation = {'memoryCurrentBytes': int(memory), 'memoryPeakBytes': int(peak) if peak is not None else None,
@@ -650,6 +681,9 @@ class PreparationMonitor:
             measurement_failure = getattr(self, 'measurement_failure', None)
             if measurement_failure is not None and measurement_failure[0] is error:
                 self.failure['measurementFailure'] = measurement_failure[1]
+            limit_failure = getattr(self, 'fixture_limit_failure', None)
+            if limit_failure is not None and limit_failure[0] is error:
+                self.failure['kernelLimitFailure'] = limit_failure[1]
             active = getattr(self, 'active_measurement', None)
             if active is not None:
                 # Stage snapshots are replaced atomically, never mutated by the
@@ -1071,6 +1105,9 @@ class Preparation:
         if getattr(self, 'failure_origin', None) is not None:
             return self.failure_origin
         self.failure_origin = failure_details(error)
+        limit_failure = getattr(getattr(self, 'resources', None), 'fixture_limit_failure', None)
+        if limit_failure is not None and limit_failure[0] is error:
+            self.failure_origin['kernelLimitFailure'] = limit_failure[1]
         if self.journal is not None:
             try:
                 write_json(self.work / 'failure.json', {
@@ -1894,6 +1931,10 @@ class FixtureWatch:
             value['sampledWatchPeakRssBytes'] = getattr(self, 'peak_rss', 0)
             if hasattr(self.probe, 'fixture_observation'):
                 value['lastKernelObservation'] = self.probe.fixture_observation
+                value['lastKernelObservationRole'] = 'LAST_SUCCESSFUL_KERNEL_PROBE'
+            limit_failure = getattr(self.probe, 'fixture_limit_failure', None)
+            if limit_failure is not None and limit_failure[0] is error:
+                value['kernelLimitFailure'] = limit_failure[1]
             if hasattr(self, 'last_state'):
                 value['failureState'] = self.last_state
         finally:

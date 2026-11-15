@@ -230,6 +230,11 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd',
      'b825b85d9364214c597447697fbc6cedc92a0281650e468db12897fc1bfd0336',
      '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
+    # New-work host package admission and its control matrix only; publication,
+    # prepared artifacts, readback and retirement contracts remain unchanged.
+    ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd',
+     '13f49d1beab427afd024fb748cff22b4383f254fd3ec1d7ac36aba4186e39834',
+     '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e'),
 })
 
 

@@ -25,6 +25,7 @@ def test_current_fixed_profile_contains_every_focused_module():
     minimum = preflight.required_minimum(profile)
     assert set(minimum) == {
         'test_jenkins_resource_budget', 'test_jenkins_fixture_admission', 'test_jenkins_fixture_cgroup_probe',
+        'test_jenkins_tool_preparation',
         'test_derived_mysql_retirement', 'test_source_pytest_retirement', 'test_source_pytest307308_retirement',
         'test_jenkins_ecs_build_cleanup', 'test_generated_artifact_lifecycle',
         'test_failed_native_jar_duplicates', 'test_historical_builder_retirement',
@@ -45,6 +46,8 @@ def test_current_fixed_profile_contains_every_focused_module():
     assert minimum['test_derived_mysql_retirement'] >= 97
     assert minimum['test_runtime_manual_acceptance'] >= 30
     assert minimum['test_compact_image_inputs_identity'] >= 59
+    assert minimum['test_jenkins_fixture_cgroup_probe'] >= 61
+    assert minimum['test_jenkins_tool_preparation'] >= 83
     controller = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     declaration = re.search(r'(?m)^\s*\$expected=@\(([^\r\n]+)\)\r?$', controller)
     assert declaration, 'Controller must declare its exact preflight module contract'

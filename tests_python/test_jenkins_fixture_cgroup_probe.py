@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -180,6 +181,116 @@ class FixtureCgroupProbeTests(unittest.TestCase):
         self.write('memory.swap.max', '4096')
         with self.assertRaises(ValueError):
             self.monitor.fixture_memory()
+
+    def test_failed_first_pair_retains_both_values_without_retry_or_stale_success(self):
+        self.seed(); previous = dict(self.monitor.fixture_observation)
+        self.write('memory.max', 'max'); self.write('memory.swap.max', '4096')
+        with patch.object(preparer.os, 'open', wraps=os.open) as opened:
+            with self.assertRaises(ValueError) as caught: self.monitor.fixture_memory()
+        error, value = self.monitor.fixture_limit_failure
+        self.assertIs(caught.exception, error)
+        self.assertEqual(['memory.max', 'memory.swap.max'], [Path(call.args[0]).name for call in opened.call_args_list])
+        self.assertEqual('BEFORE_COUNTERS', value['phase'])
+        self.assertEqual({'memory.max': {'status': 'READ', 'value': 'max'},
+                          'memory.swap.max': {'status': 'READ', 'value': '4096'}}, value['controls'])
+        self.assertTrue(value['identityVerifiedBeforeProbe'] and value['identityVerifiedAfterFailure'])
+        self.assertEqual(31415, value['pid']); self.assertEqual(12345, value['startTicks'])
+        self.assertEqual(preparer.MYSQL_MEMORY, value['expectedMemoryLimitBytes'])
+        self.assertEqual(0, value['expectedSwapLimitBytes'])
+        self.assertEqual(previous, self.monitor.fixture_observation)
+
+    def test_failed_second_pair_retains_changed_values_and_phase(self):
+        self.seed(); original_open = os.open
+        def change(path, *args, **kwargs):
+            result = original_open(path, *args, **kwargs)
+            if Path(path).name == 'memory.events': self.write('memory.swap.max', 'max')
+            return result
+        with patch.object(preparer.os, 'open', side_effect=change):
+            with self.assertRaisesRegex(ValueError, 'limits changed'): self.monitor.fixture_memory()
+        value = self.monitor.fixture_limit_failure[1]
+        self.assertEqual('AFTER_COUNTERS', value['phase'])
+        self.assertEqual({'status': 'READ', 'value': 'max'}, value['controls']['memory.swap.max'])
+        self.assertEqual('0', str(self.monitor.fixture_observation['swapLimitBytes']))
+
+    def test_limit_diagnostics_do_not_export_invalid_oversized_or_non_ascii_bytes(self):
+        self.seed()
+        for body in (b'MYSQL_PWD=private-value', b'1' * 4097, b'\xffprivate-value', b''):
+            with self.subTest(body=body[:8]):
+                (self.group / 'memory.max').write_bytes(body)
+                with self.assertRaises(ValueError): self.monitor.fixture_memory()
+                value = self.monitor.fixture_limit_failure[1]
+                self.assertIn(value['controls']['memory.max']['status'], ('INVALID_VALUE', 'READ_FAILED'))
+                self.assertEqual({'status': 'READ', 'value': '0'}, value['controls']['memory.swap.max'])
+                raw = json.dumps(value)
+                self.assertNotIn('private-value', raw); self.assertNotIn('11111111', raw)
+                self.assertNotIn(str(self.temp), raw)
+
+    def test_first_limit_io_failure_retains_original_error_and_still_reads_swap(self):
+        self.seed(); original_open = os.open
+        failure = OSError('synthetic-private-path')
+        def unavailable(path, *args, **kwargs):
+            if Path(path).name == 'memory.max': raise failure
+            return original_open(path, *args, **kwargs)
+        with patch.object(preparer.os, 'open', side_effect=unavailable):
+            with self.assertRaises(OSError) as caught: self.monitor.fixture_memory()
+        self.assertIs(failure, caught.exception)
+        value = self.monitor.fixture_limit_failure[1]
+        self.assertEqual({'status': 'READ_FAILED', 'errorType': 'OSError'}, value['controls']['memory.max'])
+        self.assertEqual({'status': 'READ', 'value': '0'}, value['controls']['memory.swap.max'])
+        self.assertNotIn('synthetic-private-path', json.dumps(value))
+
+    def test_failed_limit_read_does_not_claim_identity_survived_replaced_process(self):
+        self.seed(); original_open = os.open
+        def changed(path, *args, **kwargs):
+            if Path(path).name == 'memory.max':
+                self.identity['startTicks'] += 1; self.write('memory.max', 'max')
+            return original_open(path, *args, **kwargs)
+        with patch.object(preparer.os, 'open', side_effect=changed):
+            with self.assertRaisesRegex(ValueError, 'limits differ'): self.monitor.fixture_memory()
+        self.assertFalse(self.monitor.fixture_limit_failure[1]['identityVerifiedAfterFailure'])
+
+    def test_prior_limit_failure_cannot_be_attached_to_a_later_identity_failure(self):
+        self.seed(); self.write('memory.swap.max', 'max')
+        with self.assertRaises(ValueError): self.monitor.fixture_memory()
+        self.assertIsNotNone(self.monitor.fixture_limit_failure)
+        self.identity = None
+        with self.assertRaises(ValueError): self.monitor.fixture_memory()
+        self.assertIsNone(self.monitor.fixture_limit_failure)
+
+    def test_failed_bootstrap_retains_limits_without_caching_success(self):
+        self.write('memory.swap.max', 'max')
+        with self.assertRaises(ValueError): self.monitor.fixture_memory()
+        self.assertFalse(hasattr(self.monitor, '_fixture_cgroup'))
+        self.assertFalse(hasattr(self.monitor, 'fixture_observation'))
+        self.assertEqual('max', self.monitor.fixture_limit_failure[1]['controls']['memory.swap.max']['value'])
+
+    def test_preparation_failure_receipt_retains_only_the_same_limit_failure(self):
+        self.seed(); self.write('memory.swap.max', 'max')
+        with self.assertRaises(ValueError) as caught: self.monitor.fixture_memory()
+        preparation = preparer.Preparation.__new__(preparer.Preparation)
+        preparation.resources = self.monitor; preparation.journal = {'phase': 'PREPARING'}
+        preparation.work = self.temp
+        preparation.args = SimpleNamespace(tag='ci-999-' + 'c' * 12, commit='c' * 40, source_sha256='d' * 64)
+        value = preparation.retain_failure(caught.exception)
+        self.assertEqual(self.monitor.fixture_limit_failure[1], value['kernelLimitFailure'])
+        self.assertEqual(value['kernelLimitFailure'], json.loads((self.temp / 'failure.json').read_text())['kernelLimitFailure'])
+        preparation.failure_origin = None
+        value = preparation.retain_failure(ValueError('unrelated-private-error'))
+        self.assertNotIn('kernelLimitFailure', value)
+        self.assertNotIn('unrelated-private-error', json.dumps(value))
+
+    def test_resource_failure_receipt_retains_the_failed_kernel_pair(self):
+        self.seed(); self.write('memory.swap.max', 'max')
+        with self.assertRaises(ValueError) as caught: self.monitor.fixture_memory()
+        self.monitor.lock = threading.RLock(); self.monitor.failed = threading.Event()
+        self.monitor.stop = threading.Event(); self.monitor.measured_at = time.monotonic()
+        self.monitor.token = 'e' * 32; self.monitor.preparation.work = self.temp
+        with patch.object(preparer.os, 'kill') as kill:
+            self.monitor.fail(caught.exception, worker='collector')
+        kill.assert_called_once()
+        value = json.loads((self.temp / 'resource-failure.json').read_text())
+        self.assertEqual(self.monitor.fixture_limit_failure[1], value['kernelLimitFailure'])
+        self.assertEqual('OWNED_ATTEMPT_ONLY', value['stopScope'])
 
     def test_control_symlink_is_rejected(self):
         self.seed()
@@ -596,6 +707,56 @@ class FixtureWatchTests(unittest.TestCase):
         self.assertEqual(1024, value['lastProbe']['memoryCurrentBytes'])
         self.assertEqual(137, value['failureState']['ExitCode'])
         self.assertEqual(1, value['probeCount'])
+
+    def install_kernel_probe(self):
+        group = self.temp / 'cgroup'; group.mkdir()
+        for name, body in {'memory.max': str(preparer.MYSQL_MEMORY), 'memory.swap.max': '0',
+                           'memory.current': '1024', 'memory.events': 'oom 0\noom_kill 0'}.items():
+            (group / name).write_text(body + '\n')
+        proc_group = self.temp / 'proc-cgroup'; proc_group.write_text('0::/docker/fixture\n')
+        meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 10000000 kB\n')
+        cache = self.watch.probe._fixture_cgroup
+        cache.update(path=group, directory=(group.stat().st_dev, group.stat().st_ino))
+        original_path = preparer.Path
+        self.stack.enter_context(patch.object(preparer, 'Path', side_effect=lambda value:
+            proc_group if str(value) == '/proc/31415/cgroup' else
+            meminfo if str(value) == '/proc/meminfo' else original_path(value)))
+        self.stack.enter_context(patch.object(preparer, 'proc_identity',
+            return_value={'pid': 31415, 'startTicks': 100}))
+        self.preparation.inspect_owned.return_value = {'State': {'Running': True, 'Restarting': False,
+            'Paused': False, 'Dead': False, 'OOMKilled': False, 'Pid': 31415}}
+        return group
+
+    def test_real_first_limit_failure_is_published_without_incrementing_successful_probe(self):
+        self.run_context(); group = self.install_kernel_probe()
+        with patch.object(preparer.time, 'sleep', side_effect=lambda _: (group / 'memory.swap.max').write_text('max\n')):
+            self.assertEqual(2, self.watch.run())
+        value = self.watch.read_status()
+        self.assertEqual('FAILED', value['status']); self.assertEqual(1, value['probeCount'])
+        self.assertEqual('BEFORE_COUNTERS', value['kernelLimitFailure']['phase'])
+        self.assertEqual('max', value['kernelLimitFailure']['controls']['memory.swap.max']['value'])
+        self.assertEqual(0, value['lastProbe']['swapLimitBytes'])
+        self.assertEqual(0, value['lastKernelObservation']['swapLimitBytes'])
+        self.assertEqual('LAST_SUCCESSFUL_KERNEL_PROBE', value['lastKernelObservationRole'])
+        self.assertTrue(value['failureState']['Running'])
+        self.assertEqual(value['kernelLimitFailure'], self.watch.evidence()['kernelLimitFailure'])
+
+    def test_real_second_limit_failure_is_published_without_replacing_last_complete_probe(self):
+        self.run_context(); group = self.install_kernel_probe(); second = [False]
+        original_open = os.open
+        def drift(path, *args, **kwargs):
+            if Path(path).name == 'memory.events' and second[0]:
+                (group / 'memory.max').write_text('max\n')
+            return original_open(path, *args, **kwargs)
+        with patch.object(preparer.time, 'sleep', side_effect=lambda _: second.__setitem__(0, True)), \
+             patch.object(preparer.os, 'open', side_effect=drift):
+            self.assertEqual(2, self.watch.run())
+        value = self.watch.read_status()
+        self.assertEqual('FAILED', value['status']); self.assertEqual(1, value['probeCount'])
+        self.assertEqual('AFTER_COUNTERS', value['kernelLimitFailure']['phase'])
+        self.assertEqual('max', value['kernelLimitFailure']['controls']['memory.max']['value'])
+        self.assertEqual(preparer.MYSQL_MEMORY, value['lastProbe']['memoryLimitBytes'])
+        self.assertEqual(1024, value['lastKernelObservation']['memoryCurrentBytes'])
 
 
 if __name__ == '__main__':
