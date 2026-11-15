@@ -18,12 +18,12 @@
 | detection_duplicate_ticket | detection_duplicate_ticket | 独立专表，原 20 列与 ID/NULL/JSON/历史引用/时间逐项保留，版本 CAS、ticket 唯一键与分派统计继续直接访问 |
 | image_detection_data | historical_detection_summary | 独立历史 ID、16 个原字段、INT 计数与 DECIMAL(5,2)；不转成当前任务 |
 
-直接改名的实体注解、Mapper/XML、JDBC 查询和对应测试引用已同步。Java 类型与 HTTP API 保持兼容。旧迁移文件作为源证据不修改；新目标采用空库完整复制，不使用兼容视图或运行时 SQL 重写。
+直接改名的实体注解、Mapper/XML、JDBC 查询和对应测试引用已同步。员工入职日期改为文本映射，正常 HTTP 日期仍为 `YYYY-MM-DD`；历史非标准文本可读取和原样保留，只有新增或主动修改日期时校验日历日期。表单将历史原文与日期控件分开显示。旧迁移文件作为源证据不修改；新目标采用空库完整复制，不使用兼容视图或运行时 SQL 重写。
 
 `detection_image_fingerprint` 不在核心 13 张表里。内容身份迁到 `content_asset` 的 DETECTION_IMAGE 类型和 `content_revision`，最新检测投影迁到 `runtime_state` 的 DETECTION_FINGERPRINT namespace。hash 统一小写，并在迁移时检查归一化冲突；原字符串 owner 原样保留在严格 V1 来源信息中，不猜测数字账号。原 ID 只是来源标识，不能充当内容或流程主键。复查工单中的原始摘要与人员证据不随此投影归一化而改写。
 
 普通检测任务不用类型过滤拦截器。历史聚合与当前任务即使数字 ID 相同，CRUD 也操作独立表。`Core12PersistenceMySqlTest` 使用真实核心建表脚本和历史 Mapper XML，覆盖此隔离以及同内容多次输入的独立状态；测试只接受明确绑定 ECS 的空验证库配置，本轮只编写，未执行。
 
-逐列清单位于 `work/schema-reduction-20261105/core-column-map.json`，外键草稿位于 `core-relations.sql`。保留原设备领用外键的级联删除语义；若要改为历史保留策略，需要另作业务变更，不能在减表迁移里悄悄替换。此前没有外键的报告/任务、输入/工作单元关系仅列为待孤儿数据审查的候选。
+逐列清单位于 `work/schema-reduction-20261105/core-column-map.json`，实际来源变体位于 `script/schema/compact_core_source_variants.json`。用户已确定删除员工/设备后保留领用历史：`40-relations.sql` 移除领用的两条父外键，原父编号及快照均保留；已观测无外键来源的历史悬空编号也原样迁入。当前设备的员工关系采用来源的 `ON DELETE SET NULL / ON UPDATE CASCADE`。新建或改变领用关联时，由服务事务校验当前父对象；历史展示不依赖活父表。正式切库仍须完整 ECS 验收。此前没有外键的报告/任务、输入/工作单元关系仍须逐行审查孤儿数据。
 
-复查工单的独立复制脚本包含原 20 列核对和源 AUTO_INCREMENT 高水位保留，具体边界见 [独立复查工单](compact-duplicate-ticket.md)。其余 12 个核心实体的 [空库复制候选](compact-core-copy.md) 识别 13 张来源表、261 个来源列，执行显式复制/比对、绑定历史及自增水位保护。#341 的原 9 个核心隔离用例通过；整库来源另有内部模型行编号，新增兼容及 5 个回归仍待 ECS 统一验证。全域复制、约束安装、源/目标双恢复和正式切库仍是独立验收条件。遇到未知源列、归一化冲突或约束不兼容时停止复制，不过滤源行。
+复查工单的独立复制脚本包含原 20 列核对和源 AUTO_INCREMENT 高水位保留，具体边界见 [独立复查工单](compact-duplicate-ticket.md)。其余 12 个核心实体的 [空库复制候选](compact-core-copy.md) 识别 13 张来源表、261 个来源列，执行显式复制/比对、绑定历史及自增水位保护。CoreCopy 现有 23 项回归源码，覆盖内部模型编号、已观测结构以及父删除/改键后的历史保全，待 ECS 统一验证。全域复制、约束安装、源/目标双恢复和正式切库仍是独立验收条件。遇到未知源列、归一化冲突或约束不兼容时停止复制，不过滤源行。

@@ -22,7 +22,7 @@
           <div class="device-form-grid">
             <el-form-item label="部门 / 班组" prop="departmentId"><el-select v-model="departmentModel" popper-class="business-select-popper" :disabled="departmentLoading || !departmentsLoaded || !!departmentError" :loading="departmentLoading" filterable placeholder="选择已有部门或班组"><el-option v-if="departmentModel && !departments.some(item=>resourceId(item.id)===departmentModel)" :value="departmentModel" :label="`原登记 ${employeeForm.department || departmentModel}（待核对）`" disabled /><el-option v-for="item in departments" :key="item.id" :label="item.name || '部门名称未记录'" :value="resourceId(item.id)" /></el-select><p class="managed-field-help">{{ departmentLoading ? '正在读取部门' : departmentsLoaded ? `本次读取 ${departments.length} 项，搜索仅在已读取项内进行` : '部门候选尚未读取' }}<router-link v-if="supervisor" :to="{name:'organization'}">维护部门</router-link></p></el-form-item>
             <el-form-item label="人员业务岗位" prop="employeeType"><el-select v-model="employeeForm.employeeType" popper-class="business-select-popper" placeholder="选择业务岗位"><el-option v-for="item in employeeTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
-            <el-form-item label="入职日期"><el-date-picker v-model="employeeForm.hireDate" popper-class="business-date-popper" type="date" placeholder="选择入职日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" /><p class="managed-field-help">保存日历日期，不按时区转换日期。</p></el-form-item>
+            <el-form-item label="入职日期"><el-date-picker v-model="hireDateModel" popper-class="business-date-popper" type="date" placeholder="选择入职日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" /><p v-if="legacyHireDateText" class="managed-field-help">原登记：{{ legacyHireDateText }}。保持原文，选择日期后替换。</p><p v-else class="managed-field-help">保存日历日期，不按时区转换日期。</p></el-form-item>
             <el-form-item label="在岗状态" prop="status"><el-select v-model="employeeForm.status" popper-class="business-select-popper" placeholder="选择在岗状态"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select><p class="managed-field-help">已有分配设备时，改为非在岗状态需先完成设备归还。</p></el-form-item>
           </div>
         </section>
@@ -38,6 +38,7 @@ import { ref,computed,watch,onBeforeUnmount,nextTick } from 'vue'
 import { captureAccountRequest } from '../../api/request'
 const request=captureAccountRequest()
 import { beijingDateTime } from '../../utils/beijingTime'
+import { isCalendarHireDate,legacyHireDate,setHireDateSelection } from '../../utils/employeeHireDate'
 import { useManagedForm } from '../../composables/useManagedForm'
 import CollaborationRefreshNotice from '../../components/CollaborationRefreshNotice.vue'
 import ManagedFormFeedback from '../../components/ManagedFormFeedback.vue'
@@ -50,6 +51,8 @@ const resourceId=value=>typeof value==='number' && Number.isSafeInteger(value) &
 const departments=ref([]),departmentLoading=ref(false),departmentsLoaded=ref(false),departmentError=ref('')
 let departmentVersion=0,pageActive=true
 const departmentModel=computed({get:()=>resourceId(employeeForm.departmentId),set:value=>{employeeForm.departmentId=value || null;const department=departments.value.find(item=>resourceId(item.id)===value);if(department)employeeForm.department=department.name}})
+const legacyHireDateText=computed(()=>legacyHireDate(employeeForm.hireDate))
+const hireDateModel=computed({get:()=>isCalendarHireDate(employeeForm.hireDate)?employeeForm.hireDate:null,set:value=>setHireDateSelection(employeeForm,value)})
 const validateEmployeeNumber=uniqueValidator('employeeNumber','/api/employees/check-number','employeeNumber','该员工编号')
 const validateDepartment=(_rule,value,callback)=>{
   if(!value)return callback()

@@ -1200,7 +1200,7 @@ def test_ssh_hangup_is_not_cancellation_but_explicit_term_and_int_still_are():
     assert '(signal.SIGTERM, signal.SIGINT)' in source and 'signal.signal(number, interrupted)' in source
 
 
-def test_controller_recovers_same_attempt_and_gates_post_tool_cleanup_on_its_terminal_state():
+def test_controller_recovers_same_attempt_and_gates_post_fixture_and_tool_cleanup_on_its_terminal_state():
     source = (ROOT / 'script/jenkins/pipeline.ps1').read_text()
     function = source.split('function Wait-ExistingVerification {', 1)[1].split('function Assert-ControlPreflight', 1)[0]
     assert 'verify-remote.py\' observe $binding' in function and "'run'" not in function
@@ -1210,6 +1210,8 @@ def test_controller_recovers_same_attempt_and_gates_post_tool_cleanup_on_its_ter
     assert verify.index('$observed=Wait-ExistingVerification') < verify.index('$collected = $false')
     cleanup = source.split("if ($Action -in @('PrepareTools', 'CleanupTools'))", 1)[1].split("if ($Action -in @('PrepareFixtures'", 1)[0]
     assert cleanup.index('$null=Wait-ExistingVerification') < cleanup.index("'$executor' cleanup")
+    fixtures = source.split("if ($Action -in @('PrepareFixtures', 'CleanupFixtures'))", 1)[1].split("if ($Action -eq 'VerifyEcs')", 1)[0]
+    assert fixtures.index('$null=Wait-ExistingVerification') < fixtures.index("'$helper' cleanup")
 
 
 @pytest.mark.parametrize('published', ['receipt', 'archive'])

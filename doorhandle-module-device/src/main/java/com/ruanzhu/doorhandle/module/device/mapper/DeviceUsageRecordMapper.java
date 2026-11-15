@@ -15,6 +15,14 @@ import java.util.Map;
 @Mapper
 public interface DeviceUsageRecordMapper extends BaseMapper<DeviceUsageRecord> {
 
+    /** Compare reference edits with the current persisted row, including retained orphan references. */
+    @Select("SELECT * FROM device_usage WHERE id = #{id} FOR UPDATE")
+    DeviceUsageRecord selectForReferenceUpdate(Long id);
+
+    /** Allocation order, not an editable historical start date, determines the newest usage receipt. */
+    @Select("SELECT * FROM device_usage WHERE device_id = #{deviceId} ORDER BY id DESC LIMIT 1 FOR UPDATE")
+    DeviceUsageRecord selectNewestForDeviceUpdate(Long deviceId);
+
     /**
      * 查询指定设备的使用记录
      * @param deviceId 设备ID

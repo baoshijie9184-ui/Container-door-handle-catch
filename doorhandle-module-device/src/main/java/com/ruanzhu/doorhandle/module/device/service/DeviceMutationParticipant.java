@@ -14,7 +14,9 @@ import java.util.*;
 public class DeviceMutationParticipant implements BusinessMutationParticipant,BusinessResourceAccess {
     private static final Mapping EMPLOYEE=map("EMPLOYEE","employee","name employee_number contact gender department_id employee_type status hire_date","contact");
     private static final Mapping DEVICE=map("DEVICE","device_management","device_code device_type model_name serial_number status employee_id last_maintenance_date","");
-    private static final Mapping USAGE=map("DEVICE_USAGE","device_usage","device_id employee_id start_time end_time status remarks","");
+    private static final Mapping USAGE=new Mapping("DEVICE_USAGE","device_usage","id","version",
+            List.of("device_id","employee_id","device_code","device_type","model_name","serial_number",
+                    "employee_name","employee_number","contact","start_time","end_time","status","remarks"),Set.of("contact"),Set.of(),false);
     private static final Mapping ALERT=map("DEVICE_ALERT","device_alert","device_id status ack_operator ack_remark acknowledged_at resolved_operator resolved_remark resolved_at","");
     private static final Map<String,Set<String>> ACTIONS=Map.of(
             "EMPLOYEE",Set.of("add","update","delete"),
@@ -43,7 +45,7 @@ public class DeviceMutationParticipant implements BusinessMutationParticipant,Bu
         if("USAGE_ASSIGN".equals(action))employees.add(((Number)arguments[1]).longValue());
         if("DEVICE".equals(domain)&&id!=null)devices.add(Long.parseLong(id));
         if("DEVICE_USAGE".equals(domain)){
-            if(id!=null)devices.addAll(jdbc.queryForList("SELECT device_id FROM device_usage WHERE id=?",Long.class,Long.parseLong(id)));
+            if(id!=null)devices.addAll(jdbc.queryForList("SELECT device_id FROM device_usage WHERE id=? AND device_id IS NOT NULL",Long.class,Long.parseLong(id)));
             if(Set.of("createDeviceUsageRecord","updateDeviceUsageRecord","createRecord","updateRecord").contains(action)){
                 var input=JdbcMutationSnapshots.properties(arguments[0],"deviceId","employeeId");
                 if(input.get("deviceId") instanceof Number device)devices.add(device.longValue());
@@ -53,7 +55,6 @@ public class DeviceMutationParticipant implements BusinessMutationParticipant,Bu
         for(Long employee:employees)jdbc.queryForList("SELECT id FROM employee WHERE id=? FOR UPDATE",employee);
         if("EMPLOYEE".equals(domain)&&"delete".equals(action)&&id!=null){
             devices.addAll(jdbc.queryForList("SELECT id FROM device_management WHERE employee_id=? ORDER BY id",Long.class,Long.parseLong(id)));
-            devices.addAll(jdbc.queryForList("SELECT DISTINCT device_id FROM device_usage WHERE employee_id=? ORDER BY device_id",Long.class,Long.parseLong(id)));
         }
         if(devices.size()>200)throw new IllegalArgumentException("关联设备超过单次操作上限，请分批处理");
         for(Long device:devices)jdbc.queryForList("SELECT id FROM device_management WHERE id=? FOR UPDATE",device);
@@ -63,7 +64,7 @@ public class DeviceMutationParticipant implements BusinessMutationParticipant,Bu
     public Object digestInput(String action,Object[] args){
         if(Set.of("add","update").contains(action))return JdbcMutationSnapshots.properties(args[0],"id","version","name","employeeNumber","contact","gender","department","departmentId","employeeType","status","hireDate");
         if(Set.of("createDevice","updateDevice").contains(action)){Object bean=args[args.length-1];return Arrays.asList(args.length>1?args[0]:null,JdbcMutationSnapshots.properties(bean,"id","version","deviceCode","deviceType","modelName","serialNumber","status","employeeId","lastMaintenanceDate"));}
-        if(Set.of("createDeviceUsageRecord","updateDeviceUsageRecord","createRecord","updateRecord").contains(action))return JdbcMutationSnapshots.properties(args[0],"id","version","deviceId","employeeId","startTime","endTime","status","remarks");
+        if(Set.of("createDeviceUsageRecord","updateDeviceUsageRecord","createRecord","updateRecord").contains(action))return JdbcMutationSnapshots.properties(args[0],"id","version","deviceId","employeeId","deviceCode","deviceType","modelName","serialNumber","employeeName","employeeNumber","contact","startTime","endTime","status","remarks");
         if(Set.of("ACKNOWLEDGE","RESOLVE").contains(action))return Arrays.asList(args[0],JdbcMutationSnapshots.properties(args[1],"remark"));
         return Arrays.asList(args);
     }
@@ -84,11 +85,12 @@ public class DeviceMutationParticipant implements BusinessMutationParticipant,Bu
         requireSupervisor(actor);var references=new TreeMap<String,Mapping>();
         for(var item:previous)references.put(item.resourceType()+":"+item.resourceId(),mapping(item.resourceType()));
         if(id!=null&&"EMPLOYEE".equals(domain)&&"delete".equals(action))for(Long device:jdbc.queryForList("SELECT id FROM device_management WHERE employee_id=? ORDER BY id",Long.class,Long.parseLong(id)))references.put("DEVICE:"+device,DEVICE);
-        if(id!=null&&"EMPLOYEE".equals(domain)&&"delete".equals(action))for(Long usage:jdbc.queryForList("SELECT id FROM device_usage WHERE employee_id=? ORDER BY id",Long.class,Long.parseLong(id)))references.put("DEVICE_USAGE:"+usage,USAGE);
-        if(id!=null&&"DEVICE".equals(domain))for(Long usage:jdbc.queryForList("SELECT id FROM device_usage WHERE device_id=? ORDER BY id",Long.class,Long.parseLong(id)))references.put("DEVICE_USAGE:"+usage,USAGE);
+        // Compound assignment commands own the newly allocated/returned receipt, not all past history.
+        if(id!=null&&"DEVICE".equals(domain)&&Set.of("assignDeviceToEmployee","USAGE_ASSIGN","UNASSIGN_EMPLOYEE","USAGE_RETURN").contains(action))
+            for(Long usage:jdbc.queryForList("SELECT id FROM device_usage WHERE device_id=? ORDER BY id DESC LIMIT 1",Long.class,Long.parseLong(id)))references.put("DEVICE_USAGE:"+usage,USAGE);
         if(id!=null&&"DEVICE".equals(domain)&&"deleteDevice".equals(action))for(Long alert:jdbc.queryForList("SELECT id FROM device_alert WHERE device_id=? ORDER BY id",Long.class,Long.parseLong(id)))references.put("DEVICE_ALERT:"+alert,ALERT);
         if("DEVICE_USAGE".equals(domain)){
-            if(id!=null)for(Long device:jdbc.queryForList("SELECT device_id FROM device_usage WHERE id=?",Long.class,Long.parseLong(id)))references.put("DEVICE:"+device,DEVICE);
+            if(id!=null)for(Long device:jdbc.queryForList("SELECT device_id FROM device_usage WHERE id=? AND device_id IS NOT NULL",Long.class,Long.parseLong(id)))references.put("DEVICE:"+device,DEVICE);
             if(Set.of("createDeviceUsageRecord","updateDeviceUsageRecord","createRecord","updateRecord").contains(action)){
                 Object device=JdbcMutationSnapshots.properties(arguments[0],"deviceId").get("deviceId");
                 if(device!=null)references.put("DEVICE:"+device,DEVICE);

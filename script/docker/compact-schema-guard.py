@@ -275,11 +275,14 @@ def application_grants(mysql, environment, common):
     require(common.db(mysql, 'SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES WHERE ' + identity
                       + " AND PRIVILEGE_TYPE<>'USAGE';") == '0', 'Application account must not have global privileges')
     require(common.db(mysql, 'SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES WHERE ' + identity
-                      + " AND (TABLE_SCHEMA<>DATABASE() OR PRIVILEGE_TYPE NOT IN ('SELECT','INSERT','UPDATE','DELETE')); ") == '0',
+                      + " AND (TABLE_SCHEMA<>DATABASE() OR PRIVILEGE_TYPE NOT IN ('SELECT','INSERT','UPDATE','DELETE') OR IS_GRANTABLE='YES'); ") == '0',
             'Application account must have no old-schema, DDL or administrative grants')
     require(common.db(mysql, 'SELECT COUNT(*) FROM information_schema.TABLE_PRIVILEGES WHERE ' + identity
-                      + " AND (TABLE_SCHEMA<>DATABASE() OR PRIVILEGE_TYPE NOT IN ('SELECT','INSERT','UPDATE','DELETE')); ") == '0',
+                      + " AND (TABLE_SCHEMA<>DATABASE() OR PRIVILEGE_TYPE NOT IN ('SELECT','INSERT','UPDATE','DELETE') OR IS_GRANTABLE='YES'); ") == '0',
             'Application table grants exceed compact runtime privileges')
+    require(common.db(mysql, 'SELECT COUNT(*) FROM information_schema.COLUMN_PRIVILEGES WHERE ' + identity
+                      + " AND (TABLE_SCHEMA<>DATABASE() OR PRIVILEGE_TYPE NOT IN ('SELECT','INSERT','UPDATE','DELETE') OR IS_GRANTABLE='YES'); ") == '0',
+            'Application column grants exceed compact runtime privileges')
     require(common.db(mysql, 'SELECT COUNT(DISTINCT PRIVILEGE_TYPE) FROM information_schema.SCHEMA_PRIVILEGES WHERE '
                       + identity + " AND TABLE_SCHEMA=DATABASE() AND PRIVILEGE_TYPE IN ('SELECT','INSERT','UPDATE','DELETE');") == '4',
             'Compact runtime requires direct schema-wide DML grants')

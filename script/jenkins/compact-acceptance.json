@@ -345,9 +345,22 @@
         "doorhandle.core.copy.target.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/CoreCopyMigrationMySqlTest.java",
-      "minimumTests": 14,
+      "minimumTests": 23,
       "coverage": [
         "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "DeviceUsageHistoryMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.DeviceUsageHistoryMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.core.copy.source.config",
+        "doorhandle.core.copy.target.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DeviceUsageHistoryMySqlTest.java",
+      "minimumTests": 3,
+      "coverage": [
+        "retained usage snapshots, real parent-reference locks and stale receipt isolation"
       ]
     },
     {
@@ -1134,6 +1147,26 @@
         "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/service/DeviceMutationParticipantReadTest.java"
       },
       {
+        "className": "com.ruanzhu.doorhandle.module.device.service.impl.EmployeeHireDateTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/service/impl/EmployeeHireDateTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.device.service.DeviceMutationNullableReferenceTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/service/DeviceMutationNullableReferenceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.device.service.impl.DeviceUsageHistoryServiceTest",
+        "minimumTests": 20,
+        "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/service/impl/DeviceUsageHistoryServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.framework.persistence.workflow.JdbcMutationSnapshotsRelationshipTest",
+        "minimumTests": 2,
+        "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/persistence/workflow/JdbcMutationSnapshotsRelationshipTest.java"
+      },
+      {
         "className": "com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidatesTest",
         "minimumTests": 5,
         "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/security/DetectionClaimCandidatesTest.java"
@@ -1256,7 +1289,7 @@
       },
       {
         "module": "tests_python.test_compact_cutover",
-        "minimumTests": 24,
+        "minimumTests": 29,
         "source": "tests_python/test_compact_cutover.py",
         "allowedSkippedTests": []
       },
@@ -1268,7 +1301,7 @@
       },
       {
         "module": "tests_python.test_compact_release_guard",
-        "minimumTests": 7,
+        "minimumTests": 17,
         "source": "tests_python/test_compact_release_guard.py",
         "allowedSkippedTests": []
       },
@@ -1815,6 +1848,7 @@
         "tests/deployment-contracts.test.cjs",
         "tests/detection-contracts.test.cjs",
         "tests/detection-transfer-compatibility.test.cjs",
+        "tests/employee-hire-date.test.cjs",
         "tests/memory-management.test.cjs",
         "tests/model-quota-presentation.test.cjs",
         "tests/project-source-helper.test.cjs",
@@ -1826,7 +1860,7 @@
         "tests/tool-execution.test.cjs",
         "tests/trace-references.test.cjs"
       ],
-      "minimumTests": 69,
+      "minimumTests": 73,
       "requiredCommands": [
         "frontend-install",
         "frontend-test",

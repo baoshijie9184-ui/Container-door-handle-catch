@@ -7,7 +7,6 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -62,9 +61,9 @@ public class Employee {
     @TableField("status")
     private String status;
 
-    /** 入职日期 */
+    /** 入职日期；历史库可含非标准日期文本，读取时保留原文。新登记由服务校验日历日期。 */
     @TableField("hire_date")
-    private LocalDate hireDate;
+    private String hireDate;
 
     /** 备注（非数据库字段） */
     @TableField(exist = false)

@@ -14,6 +14,7 @@ parser=importlib.util.module_from_spec(spec);spec.loader.exec_module(parser)
 mapping=json.loads((ROOT/'work/schema-reduction-20261105/core-column-map.json').read_text(encoding='utf-8'))
 inventory={t['name']:t for t in json.loads((ROOT/'work/schema-reduction-20261105/schema-inventory.json').read_text(encoding='utf-8'))['tables']}
 history=json.loads((ROOT/'work/schema-reduction-20261105/historical-image-detection-ddl.json').read_text(encoding='utf-8'))
+observed_variants=json.loads((ROOT/'script/schema/compact_core_source_variants.json').read_text(encoding='utf-8'))['tables']
 targets={}
 for statement in parser.split_top_level(parser.without_comments((ROOT/'sql/mysql/compact/baseline/10-core.sql').read_text(encoding='utf-8')),';'):
     if statement.startswith('CREATE TABLE '):
@@ -86,6 +87,9 @@ model_route['columns'].append({'sourceColumn':'id','targetColumn':'id'})
 optional['model_management'].append('id')
 model_id_meta=['bigint','NO',None,None,None,0,'auto_increment']
 rows.append(['model_management','model_management','id','id',1,*model_id_meta,*model_id_meta])
+# Only the captured employee shape lacks id_card. Its absence is admitted by
+# that complete source contract below, not by making every source optional.
+optional['employee'].append('id_card')
 
 core_names=list(mapping['targetTables']);source_names=list(sources)
 sql=[]
@@ -114,6 +118,23 @@ emit('''CREATE TEMPORARY TABLE compact_core_columns(
  PRIMARY KEY(source_table,source_column)
 ) ENGINE=InnoDB;''')
 emit('INSERT INTO compact_core_columns VALUES\n'+',\n'.join('('+','.join(str(x) if isinstance(x,int) else literal(x) for x in row)+')' for row in rows)+';')
+variant_markers={
+    'employee': "(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='employee' AND column_name='id_card')=0",
+    'users': "(SELECT BINARY column_default=BINARY 'OPERATOR' FROM information_schema.columns WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='users' AND column_name='role')",
+    'device_management': "(SELECT is_nullable='YES' FROM information_schema.columns WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='device_management' AND column_name='device_type')",
+    'device_usage_record': "(SELECT LOWER(column_type)='varchar(500)' FROM information_schema.columns WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='device_usage_record' AND column_name='remarks')",
+}
+source_meta_names=('source_type','source_nullable','source_charset','source_collation','source_default','source_default_expression','source_extra')
+for name,variant in observed_variants.items():
+    emit(f"SET @compact_core_observed_{name}=COALESCE({variant_markers[name]},FALSE);")
+    for column in variant['columns']:
+        default=column['default'];extra=column['extra'].lower().replace('()','')
+        expression=int('default_generated' in extra)
+        if expression and default is not None:default=default.upper().replace('()','')
+        values=[column['type'].lower(),column['nullable'],column['charset'],column['collation'],default,expression,extra]
+        assignments=','.join(key+'='+(str(value) if isinstance(value,int) else literal(value)) for key,value in zip(source_meta_names,values))
+        emit(f"UPDATE compact_core_columns SET {assignments},optional_column=FALSE WHERE source_table='{name}' AND source_column='{column['name']}' AND @compact_core_observed_{name};")
+emit("UPDATE compact_core_columns SET optional_column=TRUE WHERE source_table='employee' AND source_column='id_card' AND @compact_core_observed_employee;")
 source_list=','.join(map(literal,source_names));target_list=','.join(map(literal,core_names))
 guard(f"SELECT IF(COUNT(*)={len(source_names)},1,0) FROM information_schema.tables WHERE table_schema='__SOURCE_SCHEMA__' AND table_name IN ({source_list}) AND table_type='BASE TABLE' AND engine='InnoDB'")
 guard(f"SELECT IF(COUNT(*)={len(core_names)},1,0) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ({target_list}) AND table_type='BASE TABLE' AND engine='InnoDB'")
@@ -149,6 +170,13 @@ emit('INSERT INTO compact_core_unique_keys VALUES\n'+',\n'.join('('+literal(n)+'
 emit("SET @compact_core_model_has_id=(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='model_management' AND column_name='id');")
 emit("UPDATE compact_core_unique_keys SET is_primary=0 WHERE source_table='model_management' AND columns_in_key='model_id' AND @compact_core_model_has_id=1;")
 emit("INSERT INTO compact_core_unique_keys SELECT 'model_management',1,'id' WHERE @compact_core_model_has_id=1;")
+for name,variant in observed_variants.items():
+    emit(f"DELETE FROM compact_core_unique_keys WHERE source_table='{name}' AND @compact_core_observed_{name};")
+    indexes={}
+    for index in variant['uniqueIndexes']:indexes.setdefault(index['name'],[]).append(index)
+    for index,columns in indexes.items():
+        names=','.join(column['column'] for column in sorted(columns,key=lambda value:value['ordinal']))
+        emit(f"INSERT INTO compact_core_unique_keys SELECT '{name}',{int(index=='PRIMARY')},'{names}' WHERE @compact_core_observed_{name};")
 actual_keys="(SELECT table_name,(index_name='PRIMARY') AS is_primary,GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns_in_key,SUM(sub_part IS NOT NULL) AS prefixes FROM information_schema.statistics WHERE table_schema='__SOURCE_SCHEMA__' AND table_name IN ("+source_list+") AND non_unique=0 GROUP BY table_name,index_name)"
 guard('SELECT IF(COUNT(*)=0,1,0) FROM '+actual_keys+' a LEFT JOIN compact_core_unique_keys e ON e.source_table=a.table_name AND e.is_primary=a.is_primary AND e.columns_in_key=a.columns_in_key WHERE e.source_table IS NULL OR a.prefixes<>0')
 guard('SELECT IF(COUNT(*)=0,1,0) FROM compact_core_unique_keys e LEFT JOIN '+actual_keys+' a ON e.source_table=a.table_name AND e.is_primary=a.is_primary AND e.columns_in_key=a.columns_in_key WHERE a.table_name IS NULL')
@@ -161,6 +189,8 @@ for name,columns in optional.items():
 relations=[('employee','department_id','organization_department','id','RESTRICT','RESTRICT'),('account_employee_binding','user_id','users','id','RESTRICT','RESTRICT'),('account_employee_binding','employee_id','employee','id','RESTRICT','RESTRICT'),('device_management','employee_id','employee','id','SET NULL','RESTRICT'),('device_usage_record','device_id','device_management','id','CASCADE','RESTRICT'),('device_usage_record','employee_id','employee','id','CASCADE','RESTRICT'),('device_capture_alert','device_id','device_management','id','SET NULL','RESTRICT'),('detection_task','model_id','model_management','model_id','SET NULL','CASCADE'),('detection_task','session_id','chat_session','session_id','SET NULL','CASCADE'),('image_detection_data','model_id','model_management','model_id','SET NULL','CASCADE')]
 emit('CREATE TEMPORARY TABLE compact_core_relations(source_table VARCHAR(64),source_column VARCHAR(64),parent_table VARCHAR(64),parent_column VARCHAR(64),delete_rule VARCHAR(16),update_rule VARCHAR(16)) ENGINE=InnoDB;')
 emit('INSERT INTO compact_core_relations VALUES\n'+',\n'.join('('+','.join(map(literal,r))+')' for r in relations)+';')
+emit("UPDATE compact_core_relations SET update_rule='CASCADE' WHERE source_table='device_management' AND source_column='employee_id' AND @compact_core_observed_device_management;")
+emit("DELETE FROM compact_core_relations WHERE source_table='device_usage_record' AND @compact_core_observed_device_usage_record;")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name LEFT JOIN compact_core_relations e ON e.source_table=k.table_name AND e.source_column=k.column_name AND e.parent_table=k.referenced_table_name AND e.parent_column=k.referenced_column_name AND e.delete_rule=(CASE r.delete_rule WHEN 'NO ACTION' THEN 'RESTRICT' ELSE r.delete_rule END) AND e.update_rule=(CASE r.update_rule WHEN 'NO ACTION' THEN 'RESTRICT' ELSE r.update_rule END) WHERE k.table_schema='__SOURCE_SCHEMA__' AND k.table_name IN ("+source_list+") AND (e.source_table IS NULL OR k.referenced_table_schema<>'__SOURCE_SCHEMA__' OR k.ordinal_position<>1)")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM compact_core_relations e JOIN information_schema.columns c ON c.table_schema='__SOURCE_SCHEMA__' AND c.table_name=e.source_table AND c.column_name=e.source_column LEFT JOIN information_schema.key_column_usage k ON k.table_schema='__SOURCE_SCHEMA__' AND k.table_name=e.source_table AND k.column_name=e.source_column AND k.referenced_table_schema='__SOURCE_SCHEMA__' AND k.referenced_table_name=e.parent_table AND k.referenced_column_name=e.parent_column WHERE k.constraint_name IS NULL")
 for child,column,parent,key,_,_ in relations:
@@ -168,7 +198,11 @@ for child,column,parent,key,_,_ in relations:
         run_dynamic(dynamic_text(["INSERT INTO compact_core_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.`"+child+"` s LEFT JOIN `__SOURCE_SCHEMA__`.`"+parent+"` p ON ",f'@compact_core_expr_{child}_{column}',f'=p.`{key}` WHERE ',f'@compact_core_expr_{child}_{column}',f' IS NOT NULL AND p.`{key}` IS NULL']))
     else:
         binary='BINARY ' if column=='session_id' else ''
-        guard(f"SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.`{child}` s LEFT JOIN `__SOURCE_SCHEMA__`.`{parent}` p ON {binary}s.`{column}`={binary}p.`{key}` WHERE s.`{column}` IS NOT NULL AND p.`{key}` IS NULL")
+        # The observed usage source deliberately retains historical parent IDs
+        # after deletion. Only its reviewed no-FK variant admits these orphans;
+        # the canonical source must still satisfy its declared original FKs.
+        preserved_history='@compact_core_observed_device_usage_record OR ' if child=='device_usage_record' else ''
+        guard(f"SELECT IF({preserved_history}COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.`{child}` s LEFT JOIN `__SOURCE_SCHEMA__`.`{parent}` p ON {binary}s.`{column}`={binary}p.`{key}` WHERE s.`{column}` IS NOT NULL AND p.`{key}` IS NULL")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.account_employee_binding WHERE version<0")
 for column in ['created_user_id','assignee_user_id','reviewer_user_id','disposition_user_id','rework_user_id','assigned_by_user_id']:
     run_dynamic(dynamic_text(["INSERT INTO compact_core_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_task s LEFT JOIN `__SOURCE_SCHEMA__`.users p ON ",f'@compact_core_expr_detection_task_{column}',"=p.id WHERE ",f'@compact_core_expr_detection_task_{column}'," IS NOT NULL AND p.id IS NULL"]))
@@ -251,23 +285,27 @@ with (ROOT/'sql/mysql/compact/copy/10-core.sql').open('w',encoding='utf-8',newli
     output.write('\n'.join(sql)+'\n')
 
 # A test source reconstructed from captured SOURCE declarations, not renamed target tables.
-fixture=['-- Historical source fixture from saved inventory and 2026-10-14 summary DDL. ECS disposable schemas only.']
 fixture_order=['organization_department','employee','users','account_employee_binding','model_management','device_management','device_usage_record','device_capture_alert','detection_work_unit','chat_session','detection_task','detection_work_unit_image','detection_quality_report','image_detection_data']
-for name in fixture_order:
-    table=sources.get(name) or source_definition(name)
-    columns=[c['declaration'] for c in table['columns'].values()]
-    constraints=[k for k in table['constraints'] if 'FOREIGN KEY' not in k.upper()]
-    # Source charset defaults are made explicit only where the V15 source omits a server-dependent default.
-    options=table['options']
-    if not re.search(r'COLLATE\s*=',options,re.I):options+=' COLLATE=utf8mb4_0900_ai_ci'
-    fixture.append('CREATE TABLE `'+name+'` (\n    '+',\n    '.join(columns+constraints)+'\n) '+options+';')
-for child,column,parent,key,delete,update in relations:
-    # NO ACTION is the omitted-clause default, equivalent to immediate RESTRICT for the admitted InnoDB engine.
-    fixture.append(f'ALTER TABLE `{child}` ADD CONSTRAINT `fixture_{child}_{column}` FOREIGN KEY (`{column}`) REFERENCES `{parent}`(`{key}`) ON DELETE {delete} ON UPDATE '+('NO ACTION' if update=='RESTRICT' else update)+';')
-for column,key,update in [('username','username','CASCADE'),('user_id','id','RESTRICT')]:
-    fixture.append(f'ALTER TABLE chat_session ADD CONSTRAINT fixture_chat_session_{column} FOREIGN KEY (`{column}`) REFERENCES users(`{key}`) ON DELETE CASCADE ON UPDATE {update};')
-path=ROOT/'doorhandle-module-detection/src/test/resources/compact/core-source-evidence.sql'
-path.parent.mkdir(parents=True,exist_ok=True)
-with path.open('w',encoding='utf-8',newline='\n') as output:
-    output.write('\n\n'.join(fixture)+'\n')
+for observed in (False,True):
+    fixture=['-- Historical source fixture from saved inventory and frozen #341 declarations. ECS disposable schemas only.']
+    for name in fixture_order:
+        table=(parser.parse_table(observed_variants[name]['ddl'],'ecs-341-source-backup')
+               if observed and name in observed_variants else sources.get(name) or source_definition(name))
+        columns=[c['declaration'] for c in table['columns'].values()]
+        constraints=[k for k in table['constraints'] if 'FOREIGN KEY' not in k.upper()]
+        # Source charset defaults are made explicit only where V15 omits them.
+        options=table['options']
+        if not re.search(r'COLLATE\s*=',options,re.I):options+=' COLLATE=utf8mb4_0900_ai_ci'
+        fixture.append('CREATE TABLE `'+name+'` (\n    '+',\n    '.join(columns+constraints)+'\n) '+options+';')
+    for child,column,parent,key,delete,update in relations:
+        if observed and child=='device_usage_record':continue
+        if observed and child=='device_management':update='CASCADE'
+        # Omitted actions and NO ACTION have immediate RESTRICT semantics.
+        fixture.append(f'ALTER TABLE `{child}` ADD CONSTRAINT `fixture_{child}_{column}` FOREIGN KEY (`{column}`) REFERENCES `{parent}`(`{key}`) ON DELETE {delete} ON UPDATE '+('NO ACTION' if update=='RESTRICT' else update)+';')
+    for column,key,update in [('username','username','CASCADE'),('user_id','id','RESTRICT')]:
+        fixture.append(f'ALTER TABLE chat_session ADD CONSTRAINT fixture_chat_session_{column} FOREIGN KEY (`{column}`) REFERENCES users(`{key}`) ON DELETE CASCADE ON UPDATE {update};')
+    path=ROOT/'doorhandle-module-detection/src/test/resources/compact'/('core-observed-source-evidence.sql' if observed else 'core-source-evidence.sql')
+    path.parent.mkdir(parents=True,exist_ok=True)
+    with path.open('w',encoding='utf-8',newline='\n') as output:
+        output.write('\n\n'.join(fixture)+'\n')
 print(json.dumps({'status':'AUTHORED_NOT_EXECUTED','coreTargets':len(core_names),'sourceTables':len(source_names),'mappedColumns':len(rows),'highWaterMarks':len(auto),'optionalModelIdHighWaterMark':True}))

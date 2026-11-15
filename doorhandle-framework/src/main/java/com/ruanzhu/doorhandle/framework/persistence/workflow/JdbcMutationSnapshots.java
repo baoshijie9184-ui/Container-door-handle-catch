@@ -6,7 +6,10 @@ import java.util.*;
 
 /** Fixed domain mappings only. SQL identifiers can never originate from a request. */
 public final class JdbcMutationSnapshots {
-    public record Mapping(String type,String table,String key,String revision,List<String> fields,Set<String> masked,Set<String> secret) {
+    public record Mapping(String type,String table,String key,String revision,List<String> fields,Set<String> masked,Set<String> secret,boolean resolveRelationships) {
+        public Mapping(String type,String table,String key,String revision,List<String> fields,Set<String> masked,Set<String> secret) {
+            this(type,table,key,revision,fields,masked,secret,true);
+        }
         public Mapping {for(String name:join(table,key,revision,fields))if(!name.matches("[a-z][a-z0-9_]*"))throw new IllegalArgumentException("Unsafe mapping");fields=List.copyOf(fields);masked=Set.copyOf(masked);secret=Set.copyOf(secret);}
         private static List<String> join(String table,String key,String revision,List<String> fields){var names=new ArrayList<>(fields);names.add(table);names.add(key);names.add(revision);return names;}
     }
@@ -29,9 +32,11 @@ public final class JdbcMutationSnapshots {
         }
         // Freeze the public relationship labels in the same business transaction.
         // History readers must never resolve these IDs against today's personnel records.
-        relationship(values,"employee_id","SELECT name,employee_number FROM employee WHERE id=?",Map.of("name","employee_name","employee_number","employee_number"));
-        relationship(values,"department_id","SELECT name FROM organization_department WHERE id=?",Map.of("name","department_name"));
-        relationship(values,"device_id","SELECT device_code,model_name FROM device_management WHERE id=?",Map.of("device_code","device_code","model_name","device_model_name"));
+        if(mapping.resolveRelationships()) {
+            relationship(values,"employee_id","SELECT name,employee_number FROM employee WHERE id=?",Map.of("name","employee_name","employee_number","employee_number"));
+            relationship(values,"department_id","SELECT name FROM organization_department WHERE id=?",Map.of("name","department_name"));
+            relationship(values,"device_id","SELECT device_code,model_name FROM device_management WHERE id=?",Map.of("device_code","device_code","model_name","device_model_name"));
+        }
         return new Snapshot(mapping.type(),id,((Number)row.get(mapping.revision())).longValue(),values,mapping.masked(),mapping.secret());
     }
     private void relationship(Map<String,Object> fields,String key,String sql,Map<String,String> labels){

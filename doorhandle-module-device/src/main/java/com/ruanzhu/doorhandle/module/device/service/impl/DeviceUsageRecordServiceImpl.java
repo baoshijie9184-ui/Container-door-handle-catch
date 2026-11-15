@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.device.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceUsageRecord;
 import com.ruanzhu.doorhandle.module.device.entity.Employee;
@@ -120,6 +121,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     @Transactional
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="createDeviceUsageRecord",resource="arg0.id",supervisorOnly=true)
     public void createDeviceUsageRecord(DeviceUsageRecord deviceUsageRecord) {
+        validateChangedReferences(deviceUsageRecord, null);
         deviceUsageRecord.setVersion(0L);
         log.info("创建设备使用记录: {}", deviceUsageRecord);
         
@@ -151,11 +153,12 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     public void updateDeviceUsageRecord(DeviceUsageRecord deviceUsageRecord) {
         log.info("更新设备使用记录: {}", deviceUsageRecord);
         
-        DeviceUsageRecord existingRecord = deviceUsageRecordMapper.selectById(deviceUsageRecord.getId());
+        DeviceUsageRecord existingRecord = deviceUsageRecordMapper.selectForReferenceUpdate(deviceUsageRecord.getId());
         if (existingRecord == null) {
             log.warn("要更新的设备使用记录不存在: {}", deviceUsageRecord.getId());
             return;
         }
+        validateChangedReferences(deviceUsageRecord, existingRecord);
         
         // 如果状态从"IN_USE"变为"RETURNED"，则设置归还时间
         if ("IN_USE".equals(existingRecord.getStatus()) && "RETURNED".equals(deviceUsageRecord.getStatus())) {
@@ -164,14 +167,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
             }
             
             // 更新设备状态
-            if (existingRecord.getDeviceId() != null) {
-                Device device = deviceMapper.selectById(existingRecord.getDeviceId());
-                if (device != null) {
-                    device.setStatus("IDLE");
-                    device.setEmployeeId(null);
-                    deviceMapper.updateById(device);
-                }
-            }
+            releaseCurrentAssignment(lockCurrentAssignment(existingRecord));
         }
         
         // 更新记录
@@ -184,22 +180,14 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     public void deleteDeviceUsageRecord(Long id) {
         log.info("删除设备使用记录ID={}", id);
         
-        DeviceUsageRecord record = deviceUsageRecordMapper.selectById(id);
+        DeviceUsageRecord record = deviceUsageRecordMapper.selectForReferenceUpdate(id);
         if (record == null) {
             log.warn("要删除的设备使用记录不存在: {}", id);
             return;
         }
         
         // 如果记录状态为"IN_USE"，需要更新设备状态
-        if ("IN_USE".equals(record.getStatus()) && record.getDeviceId() != null) {
-            Device device = deviceMapper.selectById(record.getDeviceId());
-            if (device != null && device.getEmployeeId() != null && 
-                device.getEmployeeId().equals(record.getEmployeeId())) {
-                device.setStatus("IDLE");
-                device.setEmployeeId(null);
-                deviceMapper.updateById(device);
-            }
-        }
+        releaseCurrentAssignment(lockCurrentAssignment(record));
         
         // 删除记录
         deviceUsageRecordMapper.deleteById(id);
@@ -211,8 +199,10 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     }
 
     @Override
+    @Transactional
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="createRecord",supervisorOnly=true)
     public boolean createRecord(DeviceUsageRecord record) {
+        validateChangedReferences(record, null);
         record.setVersion(0L);
         if (record.getStartTime() == null) {
             record.setStartTime(LocalDateTime.now());
@@ -226,8 +216,12 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     }
 
     @Override
+    @Transactional
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="updateRecord",supervisorOnly=true)
     public boolean updateRecord(DeviceUsageRecord record) {
+        DeviceUsageRecord existing = deviceUsageRecordMapper.selectForReferenceUpdate(record.getId());
+        if (existing == null) return false;
+        validateChangedReferences(record, existing);
         return updateById(record);
     }
 
@@ -263,10 +257,12 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     @Transactional
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="returnDevice",supervisorOnly=true)
     public boolean returnDevice(Long id, String remarks) {
-        DeviceUsageRecord record = getById(id);
+        DeviceUsageRecord record = deviceUsageRecordMapper.selectForReferenceUpdate(id);
         if (record == null) {
             return false;
         }
+        if (record.getEndTime() != null || "RETURNED".equals(record.getStatus()) || "已归还".equals(record.getStatus())) return true;
+        Device assigned = lockCurrentAssignment(record);
 
         // 更新记录状态
         record.setStatus("RETURNED");
@@ -279,14 +275,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
         boolean updated = updateById(record);
         
         // 更新设备状态
-        if (updated && record.getDeviceId() != null) {
-            Device device = deviceMapper.selectById(record.getDeviceId());
-            if (device != null) {
-                device.setStatus("IDLE");
-                device.setEmployeeId(null);
-                deviceMapper.updateById(device);
-            }
-        }
+        if (updated) releaseCurrentAssignment(assigned);
         
         return updated;
     }
@@ -300,8 +289,8 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
         }
         
         // 获取设备和员工信息
-        Device device = deviceMapper.selectById(deviceId);
-        Employee employee = employeeMapper.selectById(employeeId);
+        Employee employee = employeeMapper.selectForUsageReference(employeeId);
+        Device device = deviceMapper.selectForUsageReference(deviceId);
         
         if (device == null || employee == null) {
             return false;
@@ -336,6 +325,41 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
         return saved;
     }
 
+    private void validateChangedReferences(DeviceUsageRecord record, DeviceUsageRecord existing) {
+        // Old references survive parent deletion. Only introducing a different non-null ID
+        // needs a live parent; omitted IDs retain MyBatis' existing partial-update contract.
+        Long employeeId = record.getEmployeeId();
+        if (employeeId != null && (existing == null || !employeeId.equals(existing.getEmployeeId()))) {
+            if (employeeId < 1 || employeeMapper.selectForUsageReference(employeeId) == null)
+                throw new BusinessException(400, "关联员工不存在，请重新选择");
+        }
+        Long deviceId = record.getDeviceId();
+        if (deviceId != null && (existing == null || !deviceId.equals(existing.getDeviceId()))) {
+            if (deviceId < 1 || deviceMapper.selectForUsageReference(deviceId) == null)
+                throw new BusinessException(400, "关联设备不存在，请重新选择");
+        }
+    }
+
+    private Device lockCurrentAssignment(DeviceUsageRecord record) {
+        if (record.getDeviceId() == null || record.getEmployeeId() == null || !openUsage(record)) return null;
+        Device device = deviceMapper.selectForUsageUpdate(record.getDeviceId());
+        if (device == null || !record.getEmployeeId().equals(device.getEmployeeId())) return null;
+        DeviceUsageRecord newest = deviceUsageRecordMapper.selectNewestForDeviceUpdate(record.getDeviceId());
+        return newest != null && java.util.Objects.equals(record.getId(), newest.getId())
+                && record.getEmployeeId().equals(newest.getEmployeeId()) && openUsage(newest) ? device : null;
+    }
+
+    private static boolean openUsage(DeviceUsageRecord record) {
+        return record.getEndTime() == null && ("IN_USE".equals(record.getStatus()) || "使用中".equals(record.getStatus()));
+    }
+
+    private void releaseCurrentAssignment(Device device) {
+        if (device == null) return;
+        // Use the explicit nullable update, not MyBatis' NOT_NULL entity update strategy.
+        if (deviceMapper.updateEmployeeId(device.getId(), null) != 1)
+            throw new BusinessException(409, "设备状态已变化，请刷新后重试");
+    }
+
     @Override
     @Transactional
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="USAGE_RETURN",supervisorOnly=true)
@@ -344,21 +368,15 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
             return false;
         }
         
-        Device device = deviceMapper.selectById(deviceId);
+        Device device = deviceMapper.selectForUsageUpdate(deviceId);
         if (device == null || device.getEmployeeId() == null) {
             return false;
         }
         
-        // 查找该设备的最新使用中记录
-        QueryWrapper<DeviceUsageRecord> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("device_id", deviceId);
-        queryWrapper.eq("status", "IN_USE");
-        queryWrapper.isNull("end_time");
-        queryWrapper.orderByDesc("start_time");
-        queryWrapper.last("LIMIT 1");
-        
-        DeviceUsageRecord record = getOne(queryWrapper);
-        if (record == null) {
+        // The compound audit captures this same latest allocation ID. Never fall
+        // back to an older open row when the latest receipt is already closed.
+        DeviceUsageRecord record = deviceUsageRecordMapper.selectNewestForDeviceUpdate(deviceId);
+        if (record == null || !openUsage(record) || !device.getEmployeeId().equals(record.getEmployeeId())) {
             return false;
         }
         
@@ -373,11 +391,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
         boolean updated = updateById(record);
         
         // 更新设备状态
-        if (updated) {
-            device.setStatus("IDLE");
-            device.setEmployeeId(null);
-            deviceMapper.updateById(device);
-        }
+        if (updated) releaseCurrentAssignment(device);
         
         return updated;
     }

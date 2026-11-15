@@ -11,6 +11,13 @@ import java.util.List;
  */
 @Mapper
 public interface DeviceMapper extends BaseMapper<Device> {
+
+    /** Hold a new usage reference against concurrent device deletion until the write commits. */
+    @Select("SELECT * FROM device_management WHERE id = #{id} FOR SHARE")
+    Device selectForUsageReference(Long id);
+
+    @Select("SELECT * FROM device_management WHERE id = #{id} FOR UPDATE")
+    Device selectForUsageUpdate(Long id);
     
     /**
      * 根据员工ID查询分配给该员工的设备列表
@@ -65,4 +72,4 @@ public interface DeviceMapper extends BaseMapper<Device> {
         @Result(property = "employee", column = "employee_id", one = @One(select = "com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper.selectById"))
     })
     List<Device> findAllWithEmployee();
-} 
+}

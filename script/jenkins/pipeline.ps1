@@ -995,6 +995,7 @@ if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
         $safe | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/fixture-preparation.json -Encoding utf8
     } else {
         if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
+        if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification }
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' cleanup $arguments"))
         $safe = ($result | Select-Object -Last 1) | ConvertFrom-Json
         if ($safe.status -ne 'STOPPED' -or $safe.commit -ne $commit -or $safe.release -ne $tag) { throw 'Owned test resources did not stop with a matching cleanup receipt.' }

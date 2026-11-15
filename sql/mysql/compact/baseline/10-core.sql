@@ -2,7 +2,7 @@
 -- Empty target only; CREATE refuses pre-existing objects. No source writes or compatibility views.
 -- Retains source IDs, concrete fields and original business lifecycles.
 -- Apply reviewed cross-file relations after all baseline files exist; do not bypass FK checks.
--- Static source/historical DDL has not yet been compared with the current ECS database.
+-- Core source variants include the frozen #341 metadata; row/restore acceptance remains ECS-only.
 SET NAMES utf8mb4;
 
 -- 独立部门目录。
@@ -14,18 +14,18 @@ CREATE TABLE organization_department (
     UNIQUE KEY uk_organization_department_name (name)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- 独立员工档案；停用员工不隐式改变账号状态。
+-- 独立员工档案；停用员工不隐式改变账号状态。历史入职日期文本和未知字段NULL原样保留。
 CREATE TABLE employee (
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `name` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '姓名',
     `employee_number` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '员工编号',
-    `contact` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '联系方式',
-    `department` VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '所属部门',
-    `employee_type` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '人员类型: DETECTION/COLLECTION/MAINTENANCE',
-    `gender` VARCHAR(10) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '性别',
+    `contact` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '联系方式',
+    `department` VARCHAR(100) COLLATE utf8mb4_unicode_ci NULL COMMENT '所属部门',
+    `employee_type` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '人员类型: DETECTION/COLLECTION/MAINTENANCE',
+    `gender` VARCHAR(10) COLLATE utf8mb4_unicode_ci NULL COMMENT '性别',
     `id_card` VARCHAR(18) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '身份证号',
-    `hire_date` DATE NOT NULL COMMENT '入职日期',
-    `status` VARCHAR(20) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '状态: ACTIVE/RESIGNED/VACATION',
+    `hire_date` VARCHAR(20) COLLATE utf8mb4_unicode_ci NULL COMMENT '入职日期',
+    `status` VARCHAR(20) COLLATE utf8mb4_unicode_ci NULL COMMENT '状态: ACTIVE/RESIGNED/VACATION',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `version` INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
@@ -66,10 +66,10 @@ CREATE TABLE users (
 CREATE TABLE device_management (
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `device_code` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备编号',
-    `device_type` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备类型',
-    `model_name` VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备型号',
-    `serial_number` VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '序列号',
-    `status` VARCHAR(20) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备状态: IN_USE/MAINTENANCE/IDLE/OFFLINE',
+    `device_type` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '设备类型',
+    `model_name` VARCHAR(100) COLLATE utf8mb4_unicode_ci NULL COMMENT '设备型号',
+    `serial_number` VARCHAR(100) COLLATE utf8mb4_unicode_ci NULL COMMENT '序列号',
+    `status` VARCHAR(20) COLLATE utf8mb4_unicode_ci NULL COMMENT '设备状态: IN_USE/MAINTENANCE/IDLE/OFFLINE',
     `online_status` VARCHAR(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'OFFLINE' COMMENT '在线状态: ONLINE/OFFLINE',
     `last_heartbeat_at` DATETIME DEFAULT NULL COMMENT '最近心跳时间',
     `station_code` VARCHAR(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '产线工位编号',
@@ -98,23 +98,23 @@ CREATE TABLE device_management (
     CONSTRAINT ck_device_version CHECK(version>=0)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- 领用归还区间和历史设备/员工快照；旧ID与原删除语义保留。
+-- 领用归还区间和历史设备/员工快照；父对象删除或改键后保留原ID与整行历史。
 CREATE TABLE device_usage (
     version BIGINT NOT NULL DEFAULT 0 CHECK(version>=0),
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-    `device_id` BIGINT NOT NULL COMMENT '设备ID（外键 -> device_management.id）',
-    `device_code` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备编号（快照）',
-    `device_type` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备类型（快照）',
-    `model_name` VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备型号（快照）',
-    `serial_number` VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '序列号（快照）',
-    `employee_id` BIGINT NOT NULL COMMENT '员工ID（外键 -> employee.id）',
-    `employee_name` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '员工姓名（快照）',
-    `employee_number` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '员工编号（快照）',
-    `contact` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '联系方式（快照）',
-    `start_time` DATETIME NOT NULL COMMENT '使用开始时间',
+    `device_id` BIGINT NULL COMMENT '原领用设备ID；不随当前设备删除或改键',
+    `device_code` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '设备编号（快照）',
+    `device_type` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '设备类型（快照）',
+    `model_name` VARCHAR(100) COLLATE utf8mb4_unicode_ci NULL COMMENT '设备型号（快照）',
+    `serial_number` VARCHAR(100) COLLATE utf8mb4_unicode_ci NULL COMMENT '序列号（快照）',
+    `employee_id` BIGINT NULL COMMENT '原领用员工ID；不随当前员工删除或改键',
+    `employee_name` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '员工姓名（快照）',
+    `employee_number` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '员工编号（快照）',
+    `contact` VARCHAR(50) COLLATE utf8mb4_unicode_ci NULL COMMENT '联系方式（快照）',
+    `start_time` DATETIME NULL COMMENT '使用开始时间',
     `end_time` DATETIME DEFAULT NULL COMMENT '使用结束时间',
-    `status` VARCHAR(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'IN_USE' COMMENT '记录状态: IN_USE/RETURNED',
-    `remarks` VARCHAR(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '备注',
+    `status` VARCHAR(20) COLLATE utf8mb4_unicode_ci NULL DEFAULT 'IN_USE' COMMENT '记录状态: IN_USE/RETURNED',
+    `remarks` VARCHAR(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '备注',
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),

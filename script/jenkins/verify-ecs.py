@@ -160,6 +160,7 @@ for class_name, source, target in (
     ('OrganizationBindingAuditMigrationMySqlTest', 'doorhandle.binding.source.config', 'doorhandle.binding.mysql.config'),
     ('WorkbenchMigrationMySqlTest', 'workbench.migration.source', 'workbench.migration.target'),
     ('CoreCopyMigrationMySqlTest', 'doorhandle.core.copy.source.config', 'doorhandle.core.copy.target.config'),
+    ('DeviceUsageHistoryMySqlTest', 'doorhandle.core.copy.source.config', 'doorhandle.core.copy.target.config'),
     ('DetectionRuntimeCopyMySqlTest', 'doorhandle.detection.runtime.copy.source.config', 'doorhandle.detection.runtime.copy.target.config'),
     ('IdentityMigrationMySqlTest', 'detection.identity.source.config', 'detection.identity.mysql.config'),
     ('SupportCopyMigrationMySqlTest', 'doorhandle.support.source.config', 'doorhandle.support.mysql.config'),

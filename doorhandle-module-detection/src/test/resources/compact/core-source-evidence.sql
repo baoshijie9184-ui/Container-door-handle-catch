@@ -1,4 +1,4 @@
--- Historical source fixture from saved inventory and 2026-10-14 summary DDL. ECS disposable schemas only.
+-- Historical source fixture from saved inventory and frozen #341 declarations. ECS disposable schemas only.
 
 CREATE TABLE `organization_department` (
     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,

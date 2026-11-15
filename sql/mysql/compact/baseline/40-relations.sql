@@ -1,17 +1,18 @@
 -- Cross-table relations for the compact 29-table schema; source-only build until ECS validation.
 
 -- core-relations.sql
--- Core12 FK draft. Retains old referential actions; new stricter relationships are comments until audited.
+-- Current associations retain the observed source actions. Historical usage
+-- keeps its original parent IDs and snapshots independently of live parents.
 
 ALTER TABLE employee ADD CONSTRAINT fk_employee_department FOREIGN KEY(department_id) REFERENCES organization_department(id) ON DELETE RESTRICT;
 
 ALTER TABLE users ADD CONSTRAINT fk_users_employee FOREIGN KEY(employee_id) REFERENCES employee(id) ON DELETE RESTRICT;
 
-ALTER TABLE device_management ADD CONSTRAINT `fk_device_employee` FOREIGN KEY (`employee_id`) REFERENCES `employee` (`id`) ON DELETE SET NULL;
+ALTER TABLE device_management ADD CONSTRAINT `fk_device_employee` FOREIGN KEY (`employee_id`) REFERENCES `employee` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
-ALTER TABLE device_usage ADD CONSTRAINT `fk_usage_device` FOREIGN KEY (`device_id`) REFERENCES `device_management` (`id`) ON DELETE CASCADE;
-
-ALTER TABLE device_usage ADD CONSTRAINT `fk_usage_employee` FOREIGN KEY (`employee_id`) REFERENCES `employee` (`id`) ON DELETE CASCADE;
+-- device_usage has no device/employee parent FK: deleting or re-keying a live
+-- parent must not delete history or rewrite its original IDs. New usage writes
+-- validate live parents in the service transaction; old snapshots stand alone.
 
 ALTER TABLE device_alert ADD CONSTRAINT `fk_capture_alert_device` FOREIGN KEY (`device_id`) REFERENCES `device_management` (`id`) ON DELETE SET NULL;
 

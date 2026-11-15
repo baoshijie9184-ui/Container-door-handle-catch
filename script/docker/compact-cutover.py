@@ -506,6 +506,10 @@ class Cutover:
         require(self.sql('SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES WHERE ' + identity
                          + " AND (TABLE_SCHEMA<>DATABASE() OR IS_GRANTABLE='YES');") == '0',
                 'Source runtime cannot use a cross-schema maintenance or delegating account')
+        for catalog in ('TABLE_PRIVILEGES', 'COLUMN_PRIVILEGES'):
+            require(self.sql('SELECT COUNT(*) FROM information_schema.' + catalog + ' WHERE ' + identity
+                             + " AND (TABLE_SCHEMA<>DATABASE() OR IS_GRANTABLE='YES');") == '0',
+                    'Source runtime cannot use cross-schema or delegating table/column grants')
         require(self.sql('SELECT COUNT(*) FROM mysql.role_edges WHERE TO_USER IN (' + names + ');') == '0'
                 and self.sql('SELECT COUNT(*) FROM mysql.proxies_priv WHERE User IN (' + names + ');') == '0',
                 'Source runtime role/proxy grants require separate reviewed fencing')

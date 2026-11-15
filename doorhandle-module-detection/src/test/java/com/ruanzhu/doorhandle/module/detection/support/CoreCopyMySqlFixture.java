@@ -26,6 +26,9 @@ public final class CoreCopyMySqlFixture implements AutoCloseable {
     private boolean ownsSchemas;
 
     public CoreCopyMySqlFixture() throws Exception {
+        this(false);
+    }
+    public CoreCopyMySqlFixture(boolean observedCoreSource) throws Exception {
         source=EcsIsolatedMysql.open(System.getProperty("doorhandle.core.copy.source.config"),"doorhandle_detection_verify_");
         target=EcsIsolatedMysql.open(System.getProperty("doorhandle.core.copy.target.config"),"doorhandle_detection_verify_");
         Map<String,Object> left=identity(source),right=identity(target);
@@ -39,7 +42,8 @@ public final class CoreCopyMySqlFixture implements AutoCloseable {
         if(!privileges.containsAll(Set.of("SELECT","TRIGGER")))throw new SecurityException("Target fixture account requires pre-existing SELECT and TRIGGER metadata access on source schema");
         ownsSchemas=true;
         try {
-            install(source,new ClassPathResource("compact/core-source-evidence.sql").getContentAsString(StandardCharsets.UTF_8),";",sourceTables);
+            String sourceResource=observedCoreSource?"compact/core-observed-source-evidence.sql":"compact/core-source-evidence.sql";
+            install(source,new ClassPathResource(sourceResource).getContentAsString(StandardCharsets.UTF_8),";",sourceTables);
             for(String part:new String[]{"10-core.sql","20-content.sql","25-agent.sql","30-operations.sql","35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql"})
                 install(target,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),part.endsWith("-guards.sql")?"$$":";",targetTables);
             for(String table:sourceTables)new JdbcTemplate(target).queryForObject("SELECT COUNT(*) FROM `"+sourceName+"`.`"+table+"`",Long.class);

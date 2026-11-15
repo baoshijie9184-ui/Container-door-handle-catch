@@ -68,6 +68,107 @@ class CoreCopyMigrationMySqlTest {
         assertThat(target.queryForObject("SELECT assignment_identity_revision FROM detection_task WHERE id=71",Long.class)).isZero();
     }
 
+    @Test void observedCoreShapePreservesNullableSnapshotsTextDatesAndFullRemarks() throws Exception {
+        useObservedCoreSource();
+        source.update("UPDATE employee SET contact=NULL,department=NULL,employee_type=NULL,gender=NULL,status=NULL,hire_date=? WHERE id=11","2021/待确认");
+        source.update("UPDATE device_management SET device_type=NULL,model_name=NULL,serial_number=NULL,status=NULL WHERE id=31");
+        String remarks="原".repeat(500);
+        source.update("UPDATE device_usage_record SET device_id=NULL,device_code=NULL,device_type=NULL,model_name=NULL,serial_number=NULL,"
+                + "employee_id=NULL,employee_name=NULL,employee_number=NULL,contact=NULL,start_time=NULL,status=NULL,remarks=? WHERE id=41",remarks);
+        fixture.copy();
+        assertThat(target.queryForObject("SELECT hire_date FROM employee WHERE id=11",String.class)).isEqualTo("2021/待确认");
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM employee WHERE id=11 AND contact IS NULL AND department IS NULL AND employee_type IS NULL "
+                + "AND gender IS NULL AND status IS NULL AND id_card IS NULL",Integer.class)).isEqualTo(1);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM device_management WHERE id=31 AND device_type IS NULL AND model_name IS NULL "
+                + "AND serial_number IS NULL AND status IS NULL",Integer.class)).isEqualTo(1);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM device_usage WHERE id=41 AND device_id IS NULL AND device_code IS NULL AND device_type IS NULL "
+                + "AND model_name IS NULL AND serial_number IS NULL AND employee_id IS NULL AND employee_name IS NULL AND employee_number IS NULL "
+                + "AND contact IS NULL AND start_time IS NULL AND status IS NULL",Integer.class)).isEqualTo(1);
+        assertThat(target.queryForObject("SELECT remarks FROM device_usage WHERE id=41",String.class)).isEqualTo(remarks);
+        assertThat(target.queryForObject("SELECT role FROM users WHERE id=2",String.class)).isEqualTo("OPERATOR");
+        assertThat(source.queryForObject("SELECT hire_date FROM employee WHERE id=11",String.class)).isEqualTo("2021/待确认");
+        assertThat(source.queryForObject("SELECT remarks FROM device_usage_record WHERE id=41",String.class)).isEqualTo(remarks);
+    }
+
+    @Test void canonicalDateAndIdentityCardRemainLosslessInTheCommonTarget() throws Exception {
+        source.update("UPDATE employee SET hire_date='2020-02-29',id_card='123456789012345678' WHERE id=11");
+        fixture.copy();
+        assertThat(target.queryForObject("SELECT hire_date FROM employee WHERE id=11",String.class)).isEqualTo("2020-02-29");
+        assertThat(target.queryForObject("SELECT id_card FROM employee WHERE id=11",String.class)).isEqualTo("123456789012345678");
+    }
+
+    @Test void observedShapeDoesNotAdmitAHybridEmployeeDeclaration() throws Exception {
+        useObservedCoreSource();
+        source.execute("ALTER TABLE employee MODIFY contact VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);
+        assertCoreEmpty();
+    }
+
+    @Test void observedUsageWithoutSourceForeignKeysPreservesDeletedParentIdsAndSnapshots() throws Exception {
+        useObservedCoreSource();
+        source.update("UPDATE device_usage_record SET employee_id=999,device_id=998 WHERE id=41");
+        var original=source.queryForMap("SELECT * FROM device_usage_record WHERE id=41");
+        fixture.copy();fixture.copyChatReferenceAndInstallRelations();
+        var copied=target.queryForMap("SELECT * FROM device_usage WHERE id=41");
+        assertThat(copied.remove("version")).isEqualTo(0L);
+        assertThat(copied).containsExactlyInAnyOrderEntriesOf(original);
+        assertThat(source.queryForObject("SELECT employee_id FROM device_usage_record WHERE id=41",Long.class)).isEqualTo(999L);
+    }
+
+    @Test void deletingCurrentParentsKeepsEveryUsageFieldAndDoesNotReuseTheirIds() throws Exception {
+        useObservedCoreSource();fixture.copy();fixture.copyChatReferenceAndInstallRelations();
+        var history=target.queryForMap("SELECT * FROM device_usage WHERE id=41");
+        target.update("UPDATE users SET employee_id=NULL,binding_version=binding_version+1 WHERE id=2");
+        assertThat(target.update("DELETE FROM employee WHERE id=11")).isEqualTo(1);
+        assertThat(target.queryForObject("SELECT employee_id FROM device_management WHERE id=31",Long.class)).isNull();
+        assertThat(target.queryForMap("SELECT * FROM device_usage WHERE id=41")).containsExactlyInAnyOrderEntriesOf(history);
+        assertThat(target.update("DELETE FROM device_management WHERE id=31")).isEqualTo(1);
+        assertThat(target.queryForMap("SELECT * FROM device_usage WHERE id=41")).containsExactlyInAnyOrderEntriesOf(history);
+        target.update("INSERT INTO employee(name,employee_number) VALUES('新员工','new-employee')");
+        target.update("INSERT INTO device_management(device_code) VALUES('new-device')");
+        assertThat(target.queryForObject("SELECT id FROM employee WHERE employee_number='new-employee'",Long.class)).isGreaterThan(11L);
+        assertThat(target.queryForObject("SELECT id FROM device_management WHERE device_code='new-device'",Long.class)).isGreaterThan(31L);
+        assertThat(target.queryForMap("SELECT * FROM device_usage WHERE id=41")).containsExactlyInAnyOrderEntriesOf(history);
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM employee WHERE id=11",Integer.class)).isEqualTo(1);
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM device_management WHERE id=31",Integer.class)).isEqualTo(1);
+    }
+
+    @Test void rekeyingCurrentParentsNeverReattributesHistoricalUsage() throws Exception {
+        useObservedCoreSource();fixture.copy();fixture.copyChatReferenceAndInstallRelations();
+        var history=target.queryForMap("SELECT * FROM device_usage WHERE id=41");
+        target.update("UPDATE users SET employee_id=NULL,binding_version=binding_version+1 WHERE id=2");
+        target.update("UPDATE employee SET id=111 WHERE id=11");
+        assertThat(target.queryForObject("SELECT employee_id FROM device_management WHERE id=31",Long.class)).isEqualTo(111L);
+        assertThat(target.queryForMap("SELECT * FROM device_usage WHERE id=41")).containsExactlyInAnyOrderEntriesOf(history);
+        // The current alert retains its existing restrictive update policy.
+        target.update("UPDATE device_alert SET device_id=NULL WHERE id=51");
+        target.update("UPDATE device_management SET id=131 WHERE id=31");
+        assertThat(target.queryForMap("SELECT * FROM device_usage WHERE id=41")).containsExactlyInAnyOrderEntriesOf(history);
+    }
+
+    @Test void observedDeviceRequiresItsCapturedCascadePolicy() throws Exception {
+        useObservedCoreSource();
+        source.execute("ALTER TABLE device_management DROP FOREIGN KEY fixture_device_management_employee_id");
+        source.execute("ALTER TABLE device_management ADD CONSTRAINT fixture_device_management_employee_id FOREIGN KEY(employee_id) "
+                + "REFERENCES employee(id) ON DELETE SET NULL ON UPDATE RESTRICT");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);
+        assertCoreEmpty();
+    }
+
+    @Test void observedDeviceWithoutSerialUniqueKeyCannotBypassTargetUniqueness() throws Exception {
+        useObservedCoreSource();
+        source.update("INSERT INTO device_management(id,device_code,serial_number) VALUES(32,'fixture-device-two','fixture-serial')");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);
+        assertCoreEmpty();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM device_management",Long.class)).isEqualTo(2L);
+    }
+
+    @Test void unreviewedRoleDefaultIsRejectedInsteadOfGrantingANewRole() {
+        source.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'ADMIN'");
+        assertThatThrownBy(fixture::copy).isInstanceOf(Exception.class);
+        assertCoreEmpty();
+    }
+
     @Test void internalModelRowIdsAndDeletedAllocationWatermarkArePreserved() throws Exception {
         useInternalModelRowIds();
         source.update("UPDATE model_management SET id=73 WHERE model_id=21");
@@ -168,7 +269,7 @@ class CoreCopyMigrationMySqlTest {
                 .isGreaterThan(1000L);
     }
 
-    @Test void finalRelationsPreserveIdentityAndSourceDeleteUpdateActions() throws Exception {
+    @Test void finalRelationsPreserveCurrentReferencesAndIndependentUsageHistory() throws Exception {
         fixture.copy();fixture.copyChatReferenceAndInstallRelations();
         assertThatThrownBy(()->target.update("DELETE FROM users WHERE id=1")).isInstanceOf(Exception.class);
         assertThatThrownBy(()->target.update("UPDATE users SET id=101 WHERE id=1")).isInstanceOf(Exception.class);
@@ -180,8 +281,9 @@ class CoreCopyMigrationMySqlTest {
         assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isEqualTo("session-renamed");
         target.update("DELETE FROM chat_session WHERE session_id='session-renamed'");
         assertThat(target.queryForObject("SELECT session_id FROM detection_task WHERE id=71",String.class)).isNull();
+        var usageHistory=target.queryForMap("SELECT * FROM device_usage WHERE id=41");
         target.update("DELETE FROM device_management WHERE id=31");
-        assertThat(target.queryForObject("SELECT COUNT(*) FROM device_usage",Long.class)).isZero();
+        assertThat(target.queryForMap("SELECT * FROM device_usage WHERE id=41")).containsExactlyInAnyOrderEntriesOf(usageHistory);
         assertThat(target.queryForObject("SELECT device_id FROM device_alert WHERE id=51",Long.class)).isNull();
         target.update("UPDATE model_management SET model_id=22 WHERE model_id=21");
         assertThat(target.queryForObject("SELECT model_id FROM detection_task WHERE id=71",Integer.class)).isEqualTo(22);
@@ -195,6 +297,10 @@ class CoreCopyMigrationMySqlTest {
 
     private void assertCoreEmpty() {
         for(String table:CORE)assertThat(target.queryForObject("SELECT COUNT(*) FROM `"+table+"`",Long.class)).as(table).isZero();
+    }
+    private void useObservedCoreSource() throws Exception {
+        fixture.close();
+        fixture=new CoreCopyMySqlFixture(true);source=fixture.source();target=fixture.target();seed();
     }
     private void useInternalModelRowIds() {
         // Captured ECS alternative: physical id primary key, unique business model_id.

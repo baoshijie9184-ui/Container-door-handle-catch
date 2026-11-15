@@ -13,6 +13,10 @@ import java.util.List;
  */
 @Mapper
 public interface EmployeeMapper extends BaseMapper<Employee> {
+
+    /** Hold a new usage reference against concurrent employee deletion until the write commits. */
+    @Select("SELECT * FROM employee WHERE id = #{id} FOR SHARE")
+    Employee selectForUsageReference(Long id);
     
     /**
      * 根据员工类型查询在岗员工
@@ -37,4 +41,4 @@ public interface EmployeeMapper extends BaseMapper<Employee> {
      */
     @Select("SELECT * FROM device_management WHERE employee_id = #{employeeId}")
     List<Device> getDevicesByEmployeeId(Long employeeId);
-} 
+}

@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 SOURCE = Path(__file__).resolve().parents[1]/'script/docker/compact-schema-guard.py'
@@ -112,3 +113,45 @@ def test_metadata_fingerprint_detects_changed_generated_expression():
     original={'columns':[{'name':'derived','expression':'json_unquote(`payload`)'}]}
     changed={'columns':[{'name':'derived','expression':'json_extract(`payload`,\'$.different\')'}]}
     assert guard.metadata_sha256(original)!=guard.metadata_sha256(changed)
+
+
+@pytest.mark.parametrize('catalog', ['SCHEMA_PRIVILEGES', 'TABLE_PRIVILEGES', 'COLUMN_PRIVILEGES'])
+@pytest.mark.parametrize('violation', ['old_schema', 'non_dml', 'grant_option'])
+def test_runtime_account_rejects_out_of_scope_or_delegating_grants(catalog, violation):
+    calls = []
+    predicate = {'old_schema': 'TABLE_SCHEMA<>DATABASE()',
+                 'non_dml': "PRIVILEGE_TYPE NOT IN ('SELECT','INSERT','UPDATE','DELETE')",
+                 'grant_option': "IS_GRANTABLE='YES'"}[violation]
+
+    def query(mysql, sql):
+        calls.append(sql)
+        if 'COUNT(DISTINCT PRIVILEGE_TYPE)' in sql:
+            return '4'
+        if 'information_schema.' + catalog + ' WHERE' in sql:
+            assert predicate in sql
+            assert "CONCAT(CHAR(39),'compact_app',CHAR(39))" in sql
+            return '1'
+        if '@@GLOBAL.mandatory_roles' in sql:
+            return 'NONE'
+        return '0'
+
+    with pytest.raises(ValueError, match='Application .*grants'):
+        guard.application_grants({}, {'DB_USERNAME': 'compact_app', 'DB_PASSWORD': 'synthetic'},
+                                 SimpleNamespace(db=query))
+    assert any('information_schema.' + catalog + ' WHERE' in sql for sql in calls)
+
+
+def test_runtime_account_keeps_direct_target_dml_with_no_delegation_usable():
+    calls = []
+
+    def query(mysql, sql):
+        calls.append(sql)
+        if 'COUNT(DISTINCT PRIVILEGE_TYPE)' in sql:
+            return '4'
+        return 'NONE' if '@@GLOBAL.mandatory_roles' in sql else '0'
+
+    guard.application_grants({}, {'DB_USERNAME': 'compact_worker', 'DB_PASSWORD': 'synthetic'},
+                             SimpleNamespace(db=query))
+    for catalog in ('SCHEMA_PRIVILEGES', 'TABLE_PRIVILEGES', 'COLUMN_PRIVILEGES'):
+        assert any('information_schema.' + catalog + ' WHERE' in sql and "IS_GRANTABLE='YES'" in sql
+                   for sql in calls)

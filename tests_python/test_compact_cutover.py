@@ -517,3 +517,35 @@ def test_source_root_credential_is_never_locked_or_unlocked():
     instance.sql = lambda *args, **kwargs: pytest.fail('Maintenance root must remain available')
     with pytest.raises(ValueError, match='cannot be safely fenced'):
         instance.fence_accounts()
+
+
+@pytest.mark.parametrize('catalog', ['TABLE_PRIVILEGES', 'COLUMN_PRIVILEGES'])
+@pytest.mark.parametrize('predicate', ['TABLE_SCHEMA<>DATABASE()', "IS_GRANTABLE='YES'"])
+def test_source_account_with_other_schema_or_delegating_object_grants_cannot_be_fenced(catalog, predicate):
+    instance = object.__new__(cutover.Cutover)
+    instance.journal = {'sourceAccounts': [{'user': 'old_app', 'host': '%', 'locked': 'N'}]}
+    calls = []
+
+    def query(sql):
+        calls.append(sql)
+        if 'information_schema.' + catalog + ' WHERE' in sql:
+            assert predicate in sql
+            assert "CONCAT(CHAR(39),'old_app',CHAR(39))" in sql
+            return '1'
+        return '0'
+
+    instance.sql = query
+    with pytest.raises(ValueError, match='cross-schema or delegating table/column grants'):
+        instance.check_fenceable_accounts()
+    assert all(sql.startswith('SELECT ') for sql in calls)
+
+
+def test_source_account_confined_to_its_database_remains_fenceable():
+    instance = object.__new__(cutover.Cutover)
+    instance.journal = {'sourceAccounts': [{'user': 'old_app', 'host': '%', 'locked': 'N'}]}
+    calls = []
+    instance.sql = lambda sql: calls.append(sql) or '0'
+    instance.check_fenceable_accounts()
+    for catalog in ('SCHEMA_PRIVILEGES', 'TABLE_PRIVILEGES', 'COLUMN_PRIVILEGES'):
+        assert any('information_schema.' + catalog + ' WHERE' in sql
+                   and "(TABLE_SCHEMA<>DATABASE() OR IS_GRANTABLE='YES')" in sql for sql in calls)

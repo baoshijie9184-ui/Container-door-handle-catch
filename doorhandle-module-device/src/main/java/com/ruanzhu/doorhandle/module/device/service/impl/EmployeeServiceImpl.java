@@ -16,7 +16,9 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -105,6 +107,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="add",resource="arg0.id",version="arg0.version",supervisorOnly=true)
     public boolean add(Employee employee) {
+        validateHireDate(employee, null);
         employee.setVersion(0);
         normalizeDepartment(employee);
         // 设置创建时间和更新时间
@@ -127,6 +130,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
         if (existing == null) {
             throw new com.ruanzhu.doorhandle.common.BusinessException(404, "员工不存在");
         }
+        validateHireDate(employee, existing.getHireDate());
         if (employee.getDepartmentId() == null && employee.getDepartment() == null) {
             employee.setDepartmentId(existing.getDepartmentId());
             employee.setDepartment(existing.getDepartment());
@@ -170,6 +174,24 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
         var department = organization.requireDepartment(employee.getDepartmentId(), employee.getDepartment());
         employee.setDepartmentId(department.id());
         employee.setDepartment(department.name());
+    }
+
+    private void validateHireDate(Employee employee, String original) {
+        String value = employee.getHireDate();
+        // An unchanged legacy value must not prevent edits to unrelated fields.
+        // Missing/empty dates keep the existing partial-update (NOT_NULL) contract.
+        if (value == null || java.util.Objects.equals(value, original)) return;
+        if (value.isEmpty()) {
+            employee.setHireDate(null);
+            return;
+        }
+        try {
+            if (!value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}") || LocalDate.parse(value).getYear() < 1) {
+                throw new DateTimeParseException("Invalid calendar date", value, 0);
+            }
+        } catch (DateTimeParseException invalid) {
+            throw new com.ruanzhu.doorhandle.common.BusinessException(400, "入职日期必须是有效的 YYYY-MM-DD 日期；历史登记可原样保留");
+        }
     }
     
     @Override
@@ -255,7 +277,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="UNASSIGN_EMPLOYEE",supervisorOnly=true)
     public boolean unassignDevice(Long deviceId) {
         // 检查设备是否存在
-        Device device = deviceMapper.selectById(deviceId);
+        Device device = deviceMapper.selectForUsageUpdate(deviceId);
         if (device == null) {
             return false;
         }
@@ -265,22 +287,14 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
             return true;
         }
         
-        // 更新设备状态为 IDLE 并解除关联
-        device.setEmployeeId(null);
-        device.setStatus("IDLE");
-        device.setUpdatedTime(LocalDateTime.now());
-        
-        boolean result = deviceMapper.updateById(device) > 0;
-        if (!result) {
+        // Close the matching current receipt while its assignment is still present.
+        if (deviceUsageRecordService.updateRecordOnUnassign(deviceId, "设备已归还")) return true;
+        // Older data may have an assignment without a matching open receipt. The
+        // explicit unassign still releases it, without rewriting an older history row.
+        if (deviceMapper.updateEmployeeId(deviceId, null) != 1) {
             throw new com.ruanzhu.doorhandle.common.BusinessException(409, "设备已被其他主管修改，请刷新后重试");
         }
-        
-        // 更新设备使用记录
-        if (result) {
-            deviceUsageRecordService.updateRecordOnUnassign(deviceId, "设备已归还");
-        }
-
-        return result;
+        return true;
     }
 
     @Override
