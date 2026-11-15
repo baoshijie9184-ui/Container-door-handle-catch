@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'CollectExistingEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'PreserveProjectMySql', 'CleanupProjectMySql', 'ReclaimBuildOutputs', 'CleanupGeneratedArtifacts', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'CollectExistingEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'PreserveProjectMySql', 'CleanupProjectMySql', 'ReclaimBuildOutputs', 'CleanupGeneratedArtifacts', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'AwaitManualRuntime', 'CompleteManualRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -289,11 +289,19 @@ if ([string]::IsNullOrWhiteSpace($nativeRetentionPolicy)) {$nativeRetentionPolic
 if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredCopies203','PublicCaches221224235','DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283','SourcePytest16','SourcePytest307308')) { throw 'Unsupported native retention policy.' }
 if ($nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs') { throw 'An explicit retired-copy policy requires source-only build maintenance.' }
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
+$manualEnabled=$env:MANUAL_ACCEPTANCE_ENABLED -ceq 'true'
+if ($env:MANUAL_ACCEPTANCE_ENABLED -and $env:MANUAL_ACCEPTANCE_ENABLED -cnotin @('true','false')) { throw 'Invalid manual acceptance flag.' }
+if ($manualEnabled -and ($env:ACTION -cne 'verify-runtime' -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql' -or $env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -or $env:MANUAL_ACCEPTANCE_MINUTES -cnotin @('15','30','60'))) {
+    throw 'Manual acceptance only applies to the bounded non-production verify-runtime candidate.'
+}
+if ($Action -in @('AwaitManualRuntime','CompleteManualRuntime') -and -not $manualEnabled) { throw 'Manual acceptance was not requested.' }
 $failedNativeBuildNumber=[string]$env:FAILED_NATIVE_BUILD_NUMBER
 $failedMysqlDataBuilds=[string]$env:FAILED_MYSQL_DATA_BUILDS
 if ($failedMysqlDataBuilds -cne '') {
+    $finishedOutputsManifest=[Environment]::GetEnvironmentVariable('CI_FINISHED_OUTPUTS_MANIFEST')
     if ($env:ACTION -cne 'reclaim-build-outputs' -or $nativeRetentionPolicy -cne 'FailedNative' -or
-        $env:DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID -cne '01a1a46b-d37a-7fb2-8638-afe345c73531' -or
+        ([string]::IsNullOrWhiteSpace($finishedOutputsManifest) -and $env:DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID -cne '01a1a46b-d37a-7fb2-8638-afe345c73531') -or
+        (-not [string]::IsNullOrWhiteSpace($finishedOutputsManifest) -and $failedNativeBuildNumber -cne '') -or
         $failedMysqlDataBuilds -cnotmatch '\A[1-9][0-9]{0,8}(,[1-9][0-9]{0,8}){0,15}\z') { throw 'Failed MySQL data retirement requires the current task authorization and explicit maintenance selection.' }
     $dataNumbers=@($failedMysqlDataBuilds.Split(','))
     if (@($dataNumbers | Select-Object -Unique).Count -ne $dataNumbers.Count -or @($dataNumbers | Where-Object {[long]$_ -lt 287 -or [long]$_ -ge [long]$env:BUILD_NUMBER}).Count) { throw 'Only distinct earlier failed verification builds from this task are eligible.' }
@@ -534,6 +542,14 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
         & ./script/jenkins/retire-source-pytest.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
         return
     }
+    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('CI_FINISHED_OUTPUTS_MANIFEST'))) {
+        if ($nativeRetentionPolicy -cne 'FailedNative' -or $failedMysqlDataBuilds -ceq '' -or $failedNativeBuildNumber -cne '') { throw 'Finished-output maintenance requires its exact data-build list and no other native policy.' }
+        # Reuse fixed-source staging, not the generic historical deletion pass.
+        & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -PrepareOnly -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+        $derivedHelper = Get-PinnedSourceFile 'script/jenkins/retire-derived-mysql-data.py'
+        & ./script/jenkins/retire-derived-mysql-data.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -PinnedHelper $derivedHelper -FailedBuildNumbers $failedMysqlDataBuilds
+        return
+    }
     & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     if ($nativeRetentionPolicy -cin @('DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283')) {
         $derivedHelper = Get-PinnedSourceFile 'script/jenkins/retire-derived-mysql-data.py'
@@ -619,7 +635,7 @@ if ($Action -eq 'Preflight') {
         } finally {
             @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;originalExitCode=$originalControlExit;exitCode=$controlExit;transportRecovered=($originalControlExit -eq 255 -and $collected);receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
         }
-        $expected=@('test_source_pytest_retirement','test_source_pytest307308_retirement','test_jenkins_resource_budget','test_jenkins_fixture_admission','test_jenkins_fixture_cgroup_probe','test_derived_mysql_retirement','test_jenkins_ecs_build_cleanup','test_generated_artifact_lifecycle','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compose_container_selection','test_local_fixed_originals_retirement','test_fixed_originals_attestation','test_local_mysql_custody','test_local_mysql_source_classification','test_project_mysql_custody','test_jenkins_suite_evidence','test_jenkins_evidence_recollection','test_jenkins_maven_dependency_cache','test_compact_schema_source','test_control_preflight','test_middleware_fixture','test_observability_fixture','test_semantic_mysql_fixture')
+        $expected=@('test_source_pytest_retirement','test_source_pytest307308_retirement','test_jenkins_resource_budget','test_jenkins_fixture_admission','test_jenkins_fixture_cgroup_probe','test_derived_mysql_retirement','test_jenkins_ecs_build_cleanup','test_generated_artifact_lifecycle','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compose_container_selection','test_local_fixed_originals_retirement','test_fixed_originals_attestation','test_local_mysql_custody','test_local_mysql_source_classification','test_project_mysql_custody','test_jenkins_suite_evidence','test_jenkins_evidence_recollection','test_jenkins_maven_dependency_cache','test_compact_schema_source','test_control_preflight','test_middleware_fixture','test_observability_fixture','test_semantic_mysql_fixture','test_runtime_manual_acceptance')
         if ($controlExit -ne 0 -or $null -eq $remoteResult -or $remoteResult.status -cne 'CONTROL_PREFLIGHT_PASS' -or $remoteResult.receipt -cne "$remoteOutput/receipt.json" -or $remoteResult.receiptSha256 -cnotmatch '^[a-f0-9]{64}$' -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.fullProjectVerified -ne $false -or $receipt.businessRuntimeStarted -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true -or (@($receipt.selectedModules|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or (@($receipt.modules.PSObject.Properties.Name|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or -not (Test-Path -LiteralPath artifacts/control-preflight/python.xml) -or -not (Test-Path -LiteralPath artifacts/control-preflight/pytest.log)) { throw 'ECS control-script preflight did not pass with complete reports and owned cleanup; native preparation is blocked.' }
         foreach ($module in $expected) { $counts=$receipt.modules.$module; if ($counts.passed -lt 1 -or $counts.failed -ne 0 -or $counts.skipped -ne 0) { throw 'Control preflight omitted or failed a required module.' } }
         @{status='CONTROL_PREFLIGHT_PASS';release=$tag;commit=$commit;sourceSha256=$sha;receiptSha256=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant();fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight-gate.json -Encoding utf8
@@ -1101,6 +1117,11 @@ print(json.dumps({'status':'SEALED','file':'verify-remote.py','sha256':expected,
     Write-Host 'ECS verification passed; source, execution identity and bounded evidence were validated. ECS lifecycle remains external.'
     return
 }
+if ($Action -in @('AwaitManualRuntime','CompleteManualRuntime')) {
+    . (Get-PinnedSourceFile 'script/jenkins/runtime-manual-acceptance.ps1')
+    if ($Action -eq 'AwaitManualRuntime') { Await-ManualRuntime } else { Complete-ManualRuntime }
+    return
+}
 if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
@@ -1475,14 +1496,17 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     }
     $fixtureResources = @{}
     $runtimeSource=Get-PinnedSourceFile 'script/docker/compact-runtime-acceptance.py'
+    $manualSeconds=if ($manualEnabled) {[int]$env:MANUAL_ACCEPTANCE_MINUTES*60} else {0}
     @{release=$tag;commit=$commit;sourceSha256=$sha;runtime=$runtime;settings=$settings;
+        manualAcceptanceSeconds=$manualSeconds;
         instanceId=$instance;machineId=$machine;
         helperSha256=(Get-FileHash -LiteralPath $runtimeSource -Algorithm SHA256).Hash.ToLowerInvariant();
         candidateBuildSha256=(Get-FileHash -LiteralPath artifacts/compact-candidate-build.json -Algorithm SHA256).Hash.ToLowerInvariant()} |
-        ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-execution-request.json -Encoding utf8
+        ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-execution-request.json.tmp -Encoding utf8
+    Move-Item -LiteralPath artifacts/runtime-execution-request.json.tmp -Destination artifacts/runtime-execution-request.json
     try {
         $PSNativeCommandUseErrorActionPreference=$false
-        $result=@(& ssh.exe @sshOptions -p $portText $destination "python3 -B '$runtimeHelper' run $runtimeArguments")
+        $result=@(& ssh.exe @sshOptions -p $portText $destination "python3 -B '$runtimeHelper' run $runtimeArguments --manual-acceptance-seconds $manualSeconds")
         $runtimeExit=$LASTEXITCODE
         if ($runtimeExit -eq 255) {
             $observed=Wait-ExistingRuntime
@@ -1500,6 +1524,15 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/runtime-acceptance.json", 'artifacts/runtime-acceptance.json'))
     if ((Get-FileHash -LiteralPath artifacts/runtime-acceptance.json -Algorithm SHA256).Hash.ToLowerInvariant() -ne $runtimeResult.runtimeReceiptSha256) { throw 'The actual runtime acceptance receipt changed during collection.' }
     $runtimeProof = Get-Content -LiteralPath artifacts/runtime-acceptance.json -Raw | ConvertFrom-Json
+    if ($manualEnabled) {
+        if ($runtimeProof.manualAcceptance.enabled -ne $true -or $runtimeProof.manualAcceptance.status -cne 'ACCEPTED') { throw 'The requested human acceptance did not pass.' }
+        $manualReady=Get-Content -LiteralPath artifacts/manual-acceptance-ready.json -Raw | ConvertFrom-Json
+        if ($runtimeProof.manualAcceptance.executionId -cne $manualReady.executionId -or
+            $runtimeProof.manualAcceptance.expiresAtUnix -ne $manualReady.expiresAtUnix -or
+            $runtimeProof.manualAcceptance.submittedAtUnix -ge $manualReady.expiresAtUnix) { throw 'Human acceptance receipt belongs to another window.' }
+    } elseif ($runtimeProof.manualAcceptance.enabled -ne $false -or $runtimeProof.manualAcceptance.status -cne 'NOT_REQUESTED') {
+        throw 'Unrequested manual acceptance changed the automatic runtime contract.'
+    }
     foreach ($name in @('model', 'mcp', 'browser')) {
         $reference = $runtimeProof.fixtureBuildResources.$name
         $file = "artifacts/fixture-build-resources/$name/resource-summary.json"

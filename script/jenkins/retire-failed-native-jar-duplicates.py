@@ -221,6 +221,11 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0',
      '29a93fb0890af70894d2a219ca95cdd6b7a354c42f6606a9ceb2df6b8b4766e3',
      '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
+    # Integrated manual runtime handoff and explicitly opted-in maintenance.
+    # The ordinary verify path remains nonpublishing and has no candidate builder.
+    ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd',
+     '17e79e1393e2b897c7ad659b26e5d6c442feaedaa324df5aa59789cb2bc47129',
+     '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8'),
 })
 
 
@@ -742,9 +747,14 @@ def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None, publ
 
 
 def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canonical_jar=False, failed_native=False,
-                 retired_copy_batch=None, database_verification=False):
+                 retired_copy_batch=None, database_verification=False, pre_runtime_recipe=None):
     """Read and authenticate the retained archive; never extract or run it."""
     need(type(database_verification) is bool, 'EXACT_DATABASE_VERIFICATION_POLICY_REQUIRED')
+    if pre_runtime_recipe is not None:
+        need(canonical_jar and failed_native and not database_verification and retired_copy_batch is None
+             and type(pre_runtime_recipe) is list and len(pre_runtime_recipe) == 3
+             and all(type(value) is str and SHA.fullmatch(value) for value in pre_runtime_recipe),
+             'EXACT_MANIFEST_PRE_RUNTIME_RECIPE_REQUIRED')
     path = Path(root) / 'inbox' / tag / 'source.tar.gz'
     need(path.exists() or path.is_symlink(), 'OLD_SOURCE_ARCHIVE_MISSING')
     with held_file(root, path, MAX_SOURCE_ARCHIVE) as (stream, signature):
@@ -769,7 +779,7 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
                     raw = archive.extractfile(member).read(1024 ** 2 + 1)
                     need(len(raw) == member.size, 'OLD_PUBLICATION_SOURCE_TRUNCATED')
                     publication_shas[member.name] = digest_bytes(raw)
-                if database_verification and member.name == 'script/jenkins/prepare-ecs-tools.py':
+                if (database_verification or pre_runtime_recipe is not None) and member.name == 'script/jenkins/prepare-ecs-tools.py':
                     need(preparation_sha is None and member.isfile() and 0 < member.size <= 1024 ** 2,
                          'UNIQUE_DATABASE_TOOL_PREPARATION_SOURCE_REQUIRED')
                     raw = archive.extractfile(member).read(1024 ** 2 + 1)
@@ -811,6 +821,10 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
                         canonical_commit(tag) == commit and pair == APPROVED_CANONICAL_SOURCES.get(tag))
             if failed_native and database_verification:
                 approved = approved or database_verification_recipe(pair, preparation_sha)
+            if pre_runtime_recipe is not None:
+                # Only the separate, authenticated exact-manifest entry uses
+                # this recipe. Never widen the ordinary runtime allowlist.
+                approved = [*pair, preparation_sha] == pre_runtime_recipe
             if retired_copy_batch is not None:
                 targets, _ = retired_copy_policy(retired_copy_batch)
                 approved = (not failed_native and targets.get(tag, {}).get('commit') == commit
@@ -818,6 +832,8 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             need(set(publication_shas) == set(publication_names) and approved,
                  'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED')
             proof['unpublishedPipelineSourceSha256'] = publication_shas
+        if pre_runtime_recipe is not None:
+            proof['toolPreparationHelperSha256'] = preparation_sha
         if database_verification:
             need(canonical_jar and failed_native and retired_copy_batch is None
                  and database_verification_recipe(

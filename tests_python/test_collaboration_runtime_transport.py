@@ -431,6 +431,32 @@ def test_runtime_observation_timeout_neither_cancels_nor_forges_a_terminal_state
     assert runtime.runtime_execution(ctx.instance)['status'] == 'RUNNING'
 
 
+@pytest.mark.parametrize('seconds', [900, 1800, 3600])
+def test_manual_window_extends_only_the_original_fixed_observation_deadline(original_runtime, monkeypatch, seconds):
+    ctx = original_runtime; ctx.instance.args.manual_acceptance_seconds = seconds
+    initial = runtime.begin_runtime_execution(ctx.instance)
+    assert initial['manualAcceptanceSeconds'] == seconds
+    initial['startedAtUnix'] = runtime.time.time() - (240 * 60 + 121)
+    ctx.write(runtime.runtime_execution_file(ctx.instance), initial)
+    sleeps = []
+    def finish(delay): sleeps.append(delay); ctx.complete(initial)
+    monkeypatch.setattr(runtime.time, 'sleep', finish)
+    assert runtime.observe_runtime_execution(ctx.instance)['status'] == 'PASS' and sleeps == [5]
+    # A reconnect after the fixed extension cannot renew the same execution.
+    initial['startedAtUnix'] = runtime.time.time() - (240 * 60 + seconds + 121)
+    ctx.write(runtime.runtime_execution_file(ctx.instance), initial)
+    with pytest.raises(ValueError, match='timed out'): runtime.observe_runtime_execution(ctx.instance)
+    assert runtime.runtime_execution(ctx.instance)['status'] == 'RUNNING'
+
+
+@pytest.mark.parametrize('seconds', [True, -900, 60, '900'])
+def test_runtime_execution_rejects_an_invalid_manual_extension(original_runtime, seconds):
+    ctx = original_runtime; value = runtime.begin_runtime_execution(ctx.instance)
+    value['manualAcceptanceSeconds'] = seconds
+    ctx.write(runtime.runtime_execution_file(ctx.instance), value)
+    with pytest.raises(ValueError, match='manual acceptance duration'): runtime.runtime_execution(ctx.instance)
+
+
 def runtime_arguments(phase):
     return ['runtime', phase, '--root', '/home/ci', '--runtime', '/home/runtime', '--tag', 'ci-224-' + 'a' * 12,
         '--commit', 'a' * 40, '--source-sha256', 'b' * 64, '--instance-id', 'i-runtime',
@@ -443,6 +469,20 @@ def test_runtime_observation_error_cannot_fall_through_main_destructive_failure_
     monkeypatch.setattr(runtime, 'Runtime', lambda _: instance)
     monkeypatch.setattr(runtime, 'observe_runtime_execution', lambda _: (_ for _ in ()).throw(ValueError('unresolved original')))
     monkeypatch.setattr(runtime.sys, 'argv', runtime_arguments('observe'))
+    monkeypatch.setattr(runtime.signal, 'signal', lambda *_: None)
+    assert runtime.main() == 2 and json.loads(capsys.readouterr().out)['status'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('phase', ['manual-status', 'manual-decision'])
+def test_manual_control_failure_cannot_clean_up_the_original_running_candidate(monkeypatch, capsys, phase):
+    def forbidden(*_): pytest.fail('manual observer attempted original-owner cleanup/write')
+    instance = SimpleNamespace(owner={'phase': 'WAITING_FOR_MANUAL_ACCEPTANCE'}, cleanup=forbidden, save=forbidden, failure=forbidden)
+    instance.manual = SimpleNamespace(decide=forbidden)
+    monkeypatch.setattr(runtime, 'Runtime', lambda _: instance)
+    monkeypatch.setattr(runtime, 'runtime_execution_file', lambda _: (_ for _ in ()).throw(ValueError('unresolved original')))
+    monkeypatch.setattr(runtime, 'runtime_execution', lambda _: (_ for _ in ()).throw(ValueError('unresolved original')))
+    monkeypatch.setattr(runtime.sys, 'stdin', SimpleNamespace(buffer=SimpleNamespace(read=lambda _: b'{}')))
+    monkeypatch.setattr(runtime.sys, 'argv', runtime_arguments(phase))
     monkeypatch.setattr(runtime.signal, 'signal', lambda *_: None)
     assert runtime.main() == 2 and json.loads(capsys.readouterr().out)['status'] == 'UNKNOWN'
 

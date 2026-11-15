@@ -1,6 +1,7 @@
 param(
     [ValidateSet('Verified', 'Maintenance', 'Terminal')][string]$Mode = 'Verified',
     [switch]$GeneratedArtifacts,
+    [switch]$PrepareOnly,
     [Parameter(Mandatory = $true)][string[]]$SshOptions,
     [Parameter(Mandatory = $true)][string]$Destination,
     [Parameter(Mandatory = $true)][string]$PortText,
@@ -41,6 +42,7 @@ if ($Mode -ceq 'Maintenance') {
         $env:CI_GENERATED_CLEANUP_ELIGIBLE -ceq 'true' -and $env:CI_TERMINAL_RESULT -cin @('SUCCESS','UNSTABLE','FAILURE','ABORTED','NOT_BUILT')) 'Terminal cleanup requires completed remote-stage cleanup and archived original evidence, not a business-test PASS.'
 } else { Require-Reclaim ($env:CI_ECS_VERIFIED -ceq 'true') 'Cleanup requires this build passing ECS verification.' }
 Require-Reclaim (-not $GeneratedArtifacts -or $Mode -cin @('Maintenance','Terminal')) 'Generated lifecycle is an explicit maintenance or terminal operation.'
+Require-Reclaim (-not $PrepareOnly -or ($Mode -ceq 'Maintenance' -and -not $GeneratedArtifacts)) 'Source-only staging cannot execute a retention policy.'
 Require-Reclaim ($Destination -cmatch '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}$') 'Invalid admitted SSH destination.'
 Require-Reclaim ($PortText -match '^[0-9]{1,5}$' -and [int]$PortText -ge 1 -and [int]$PortText -le 65535) 'Invalid SSH port.'
 Require-Reclaim ($RemoteRoot -cmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+$' -and $RemoteRoot -notmatch '(^|/)\.\.?(/|$)|//' -and -not $RemoteRoot.EndsWith('/')) 'Invalid admitted ECS root.'
@@ -397,20 +399,22 @@ try {
     $ready = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand prepare")) | Select-Object -Last 1) | ConvertFrom-Json
     Require-Reclaim ($ready.status -ceq 'PREPARED' -and $ready.release -ceq $Tag -and $ready.sourceSha256 -ceq $SourceSha256 -and $ready.mode -ceq $Mode) 'Current fixed cleanup helpers were not admitted.'
     $admitted = $true
-    $planArguments = $arguments
-    if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
-        Require-Reclaim ($ready.request.bytes -gt 0 -and $ready.request.bytes -le 1MB -and $ready.request.sha256 -cmatch '^[a-f0-9]{64}$') 'Generated maintenance request lacks its exact fixed transfer proof.'
-        Copy-ReclaimEvidence 'generated-cleanup-request.json' (Join-Path $artifacts 'generated-cleanup-request.json') $ready.request
-        $planArguments += " --request '$remoteInbox/generated-cleanup-request.json' --request-sha256 '$($ready.request.sha256)'"
+    if(-not $PrepareOnly){
+        $planArguments = $arguments
+        if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
+            Require-Reclaim ($ready.request.bytes -gt 0 -and $ready.request.bytes -le 1MB -and $ready.request.sha256 -cmatch '^[a-f0-9]{64}$') 'Generated maintenance request lacks its exact fixed transfer proof.'
+            Copy-ReclaimEvidence 'generated-cleanup-request.json' (Join-Path $artifacts 'generated-cleanup-request.json') $ready.request
+            $planArguments += " --request '$remoteInbox/generated-cleanup-request.json' --request-sha256 '$($ready.request.sha256)'"
+        }
+        $null = Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' plan $planArguments --output '$remoteInbox/$evidencePrefix-plan.json'"))
+        $inspection = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand inspect")) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+        Require-Reclaim ($inspection.files.ContainsKey('plan')) 'Read-only cleanup produced no plan.'
+        Copy-ReclaimEvidence "$evidencePrefix-plan.json" $localPlan $inspection.files.plan
+        $planProof = (Invoke-Reclaim $python @('-I', '-B', '-c', $evidenceReader, $localPlan) | Select-Object -Last 1) | ConvertFrom-Json
+        Require-Reclaim ($planProof.kind -ceq 'doorhandle-old-build-cleanup-plan' -and $planProof.currentRelease -ceq $Tag -and $planProof.identity.instanceId -ceq $instance -and $planProof.identity.machineId -ceq $machine -and $planProof.identity.executionLocation -ceq 'ECS') 'Collected cleanup plan belongs to another build or ECS.'
+        $applyAttempted = $true
+        $null = Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' apply $arguments --plan '$remoteInbox/$evidencePrefix-plan.json' --plan-sha256 '$($planProof.rawSha256)' --output '$remoteInbox/$evidencePrefix-receipt.json'"))
     }
-    $null = Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' plan $planArguments --output '$remoteInbox/$evidencePrefix-plan.json'"))
-    $inspection = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand inspect")) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
-    Require-Reclaim ($inspection.files.ContainsKey('plan')) 'Read-only cleanup produced no plan.'
-    Copy-ReclaimEvidence "$evidencePrefix-plan.json" $localPlan $inspection.files.plan
-    $planProof = (Invoke-Reclaim $python @('-I', '-B', '-c', $evidenceReader, $localPlan) | Select-Object -Last 1) | ConvertFrom-Json
-    Require-Reclaim ($planProof.kind -ceq 'doorhandle-old-build-cleanup-plan' -and $planProof.currentRelease -ceq $Tag -and $planProof.identity.instanceId -ceq $instance -and $planProof.identity.machineId -ceq $machine -and $planProof.identity.executionLocation -ceq 'ECS') 'Collected cleanup plan belongs to another build or ECS.'
-    $applyAttempted = $true
-    $null = Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' apply $arguments --plan '$remoteInbox/$evidencePrefix-plan.json' --plan-sha256 '$($planProof.rawSha256)' --output '$remoteInbox/$evidencePrefix-receipt.json'"))
     $completed = $true
 } catch {
     $failure = $_
@@ -430,12 +434,14 @@ try {
         } catch { $collectionFailed = $true }
     }
     $status = if ($completed -and -not $collectionFailed -and $null -ne $receiptProof -and $receiptProof.status -cin @('REMOVED', 'NO_ACTION')) { $receiptProof.status } else { 'FAILED_OR_UNKNOWN' }
+    if($PrepareOnly -and $completed -and -not $collectionFailed){$status='SOURCE_PREPARED'}
     $result = @{ schema = 1; kind = 'doorhandle-build-cleanup-controller'; status = $status; currentRelease = $Tag;
         commit = $Commit; sourceSha256 = $SourceSha256; identity = @{ instanceId = $instance; machineId = $machine; executionLocation = 'ECS' };
         applyAttempted = $applyAttempted; planCollected = (Test-Path -LiteralPath $localPlan); receiptCollected = (Test-Path -LiteralPath $localReceipt);
         collectionFailed = $collectionFailed; planRawSha256 = $(if ($null -ne $planProof) { $planProof.rawSha256 } else { $null });
         receiptRawSha256 = $(if ($null -ne $receiptProof) { $receiptProof.rawSha256 } else { $null });
         helperStatus = $(if ($null -ne $receiptProof) { $receiptProof.status } else { $null }) }
+    if($PrepareOnly){$result.prepareOnly=$true;$result.deletionPerformed=$false}
     if ($Mode -ceq 'Maintenance') {
         $result.mode = 'Maintenance'; $result.testsExecuted = $false; $result.applicationBuilt = $false
         $result.sourceBytes = $sourceBytes; $result.admission = $bootstrap

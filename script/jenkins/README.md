@@ -8,6 +8,14 @@
 
 Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.cloud.yml` 的阿里云 HTTPS PyPI 镜像 `https://mirrors.aliyun.com/pypi/simple`。安装仍使用隔离 pip、固定版本、禁用缓存、原始 pip 下载摘要报告、`pip check` 和实际版本回读；不增加备用源或绕过 TLS 校验。2 GiB 总增长包络、磁盘保底、容器内存限制及 1,800 秒期限保持不变，真实安装和新增命令回归均由后续固定提交在 ECS 验证。
 
+## 同一 29 表候选的人工验收
+
+`ACTION=verify-runtime`、`DOORHANDLE_CI_SCOPE=mysql` 且生产发布关闭时，可设 `MANUAL_ACCEPTANCE_ENABLED=true`、`MANUAL_ACCEPTANCE_MINUTES=30`（可选 15/30/60）。默认关闭，仍按原自动验收后立即收尾。此入口不使用 `rehearse` 或 `REHEARSAL_KEEP`，不开放生产和旧库演练门。
+
+全部自动断言及 21 项真实页面检查通过后，原 runtime 保持运行和资源采样，Jenkins 建立有界 SSH 回环转发，并写入 `artifacts/manual-acceptance-ready.json`。其中 `localUrl` 是用户在 Jenkins 所在本机浏览器使用的入口；`privateGuide` 指向项目 Git 忽略的 `work/jenkins/manual-acceptance/<release>/access.md`，包含本轮四个测试账号。账号由已有凭据通道私密传输，不输出控制台或归档。`configure-local.groovy` 维护该私有根路径，不需要新增用户参数。
+
+用户在当前构建的 `manual-candidate-acceptance` input 选择“验收通过”或“发现问题”，也可在聊天告知助手处理同一 input。截止时间由原 runtime 固定，重连不续期；拒绝、取消或超时按原失败路径保全证据并收尾。确认通过后也必须完成原 `STOPPED` 清理及最终证据检查才能得到 SUCCESS。窗口结束关闭本轮入口并删除临时私密账号说明，不关闭 ECS 或原业务服务。READY 只表示可以开始人工操作，不是最终 PASS；模型仍使用隔离脚本/本地配置，不调用付费外部模型。
+
 ## 生成物收尾与独立维护
 
 常规流水线默认在 `post always` 停止本轮测试工具、归档原始证据后，执行 `CleanupGeneratedArtifacts`。SUCCESS、UNSTABLE、FAILURE 和 ABORTED 均可进入；不等待当前 Jenkins 构建离开 post，也不以业务测试 PASS 作为回收前提。收尾失败不会跳过原始证据归档。

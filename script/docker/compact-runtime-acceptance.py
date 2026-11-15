@@ -473,6 +473,7 @@ class Runtime:
         self.native = module('runtime_legacy_candidate', source / 'script/jenkins/prepare-legacy-candidate.py')
         self.worker_fence = module('runtime_worker_unknown_result', source / 'script/docker/compact-runtime-worker-fence.py')
         self.browser = module('runtime_collaboration_browser', source / 'script/docker/compact-collaboration-browser.py')
+        self.manual = module('runtime_manual_acceptance', source / 'script/docker/compact-runtime-manual.py')
         self.stable_identity = module('runtime_stable_identity', source / 'script/docker/compact-runtime-stable-identity.py')
         self.collaboration_http = module('runtime_collaboration_http', source / 'script/docker/compact-collaboration-http.py')
         self.stream_probes = module('runtime_collaboration_stream_probes', source / 'script/docker/compact-collaboration-stream-probes.py')
@@ -1599,6 +1600,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             failures.append('original-source-readback')
         try: self.browser.preserve(self)
         except BaseException: failures.append('browser-evidence-preservation')
+        try: (self.directory / 'manual-access.json').unlink(missing_ok=True)
+        except BaseException: failures.append('manual-private-access-cleanup')
         resource_evidence = self.resources.finish()
         result = {**self.context(), 'status': 'NEEDS_REVIEW' if failures else 'STOPPED', 'project': self.project,
             'stoppedContainers': stopped, 'preservedOwnedVolumes': True,
@@ -1608,6 +1611,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             'objectsCleaned': self.owner.get('objectsCleaned'), 'unresolved': failures,
             'resourceEvidence': resource_evidence, 'fixtureBuildResources': fixture_builds,
             'browserEvidence': self.owner.get('browserEvidence'),
+            'manualAcceptance': self.owner.get('manualAcceptance', {'enabled': False, 'status': 'NOT_REQUESTED'}),
             'stableIdentityEvidence': {stage: self.owner['stableIdentity' + stage.title()]
                 for stage in ('preflight', 'admission', 'authorization') if 'stableIdentity' + stage.title() in self.owner},
             'collaborationHttpEvidence': self.owner.get('collaborationHttpEvidence', {})}
@@ -1797,7 +1801,25 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         self.save()
         self.observability.verify(self, 'after-business')
         monitoring = self.observability.finish(self)
+        # Finish every automatic gate before offering the same running candidate.
+        # Sampling stays active throughout the optional human window and cleanup.
+        if getattr(self.args, 'manual_acceptance_seconds', 0):
+            require(self.resources.error is None, 'Runtime resource observation failed before manual acceptance')
+            require(set(self.owner.get('nativeVerifications', {})) == {'after-start', 'after-restart', 'after-volume-restore'},
+                    'Complete native recovery must pass before manual acceptance')
+            activation = self.native.finalize_semantic_activation(self)
+            native_usage = native_activation_usage(self, activation)
+            fixture_builds = self.build_resources.fixture_build_evidence(self, require_pass=True)
+            with self.resources.lock:
+                raw = self.resources.raw.read_bytes()
+                summary = {**copy.deepcopy(self.resources.summary), 'status': 'MEASURED_FOR_BOUNDED_SCENARIOS',
+                           'rawProbeSha256': hashlib.sha256(raw).hexdigest()}
+            validate_resource_evidence(summary, raw, self.context(), self.project)
+            daemons = set(self.config['services']) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
+            require(daemons <= {row['service'] for row in summary['containers'].values() if row['peakBytes'] > 0},
+                    'Every actual service peak must be observed before manual acceptance')
         self.save('ASSERTIONS_PASSED')
+        manual_acceptance = self.manual.wait(self, runtime_execution(self))
         self.cleanup()
         require(self.resources.error is None, 'Runtime resource observation failed; bounded acceptance cannot pass')
         daemons = set(self.config['services']) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
@@ -1806,10 +1828,12 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         validate_resource_evidence(self.resources.summary, self.resources.raw.read_bytes(), self.context(), self.project)
         require(set(self.owner.get('nativeVerifications', {})) == {'after-start', 'after-restart', 'after-volume-restore'},
                 'Complete native RAG startup/restart/new-volume recovery was not verified')
-        activation = self.native.finalize_semantic_activation(self)
-        native_usage = native_activation_usage(self, activation)
-        fixture_builds = self.build_resources.fixture_build_evidence(self, require_pass=True)
+        if not getattr(self.args, 'manual_acceptance_seconds', 0):
+            activation = self.native.finalize_semantic_activation(self)
+            native_usage = native_activation_usage(self, activation)
+            fixture_builds = self.build_resources.fixture_build_evidence(self, require_pass=True)
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
+            'manualAcceptance': manual_acceptance,
             'observability': monitoring,
             'fixtureBuildResources': fixture_builds,
             'browserAcceptance': browser,
@@ -1892,6 +1916,10 @@ def begin_runtime_execution(instance):
         'supervisor': {'pid': os.getpid(), 'startTicks': instance.transport.supervisor_start(os.getpid()),
             'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()},
         'status': 'RUNNING', 'startedAtUnix': time.time()}
+    seconds = getattr(instance.args, 'manual_acceptance_seconds', 0)
+    if seconds:
+        require(type(seconds) is int and seconds in (900, 1800, 3600), 'Invalid manual acceptance duration')
+        value['manualAcceptanceSeconds'] = seconds
     instance.common.write_json(path, value)
     return value
 
@@ -1905,6 +1933,8 @@ def runtime_execution(instance):
         and type(value.get('startedAtUnix')) in (int, float) and 0 < value['startedAtUnix'] <= time.time() + 5
         and value.get('status') in ('RUNNING', 'PASS', 'FAILED'),
         'Runtime execution belongs to another original operation')
+    seconds = value.get('manualAcceptanceSeconds', 0)
+    require(type(seconds) is int and seconds in (0, 900, 1800, 3600), 'Invalid original manual acceptance duration')
     supervisor = value.get('supervisor')
     require(type(supervisor) is dict and set(supervisor) == {'pid', 'startTicks', 'bootId'}
         and type(supervisor['pid']) is int and supervisor['pid'] > 1
@@ -1925,7 +1955,7 @@ def observe_runtime_execution(instance):
     """Read the original runtime only; no prepare, cancellation or cleanup occurs."""
     original = runtime_execution(instance)
     # Reconnection observes the original execution window; it does not renew it.
-    remaining = 240 * 60 + 120 - max(0, time.time() - original['startedAtUnix'])
+    remaining = 240 * 60 + original.get('manualAcceptanceSeconds', 0) + 120 - max(0, time.time() - original['startedAtUnix'])
     deadline = time.monotonic() + max(0, remaining)
     while True:
         value = runtime_execution(instance)
@@ -1961,7 +1991,8 @@ def observe_runtime_execution(instance):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('run', 'cleanup', 'status', 'observe'))
+    parser.add_argument('phase', choices=('run', 'cleanup', 'status', 'observe', 'manual-status', 'manual-decision'))
+    parser.add_argument('--manual-acceptance-seconds', type=int, choices=(0, 900, 1800, 3600), default=0)
     for name in ('root', 'runtime', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'settings'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(); instance = None; execution = None; heartbeat = None; done = threading.Event()
@@ -1986,11 +2017,18 @@ def main():
             return 0 if result['status'] == 'PASS' else 1
         elif args.phase == 'cleanup':
             require(instance.owner, 'No runtime attempt was prepared'); result = instance.cleanup()
+        elif args.phase == 'manual-status':
+            result = instance.manual.status(instance, runtime_execution(instance)) if runtime_execution_file(instance).exists() else {
+                **instance.context(), 'status': 'STARTING', 'terminal': False}
+        elif args.phase == 'manual-decision':
+            raw = sys.stdin.buffer.read(8193)
+            require(0 < len(raw) <= 8192, 'Manual decision exceeds its input bound')
+            result = instance.manual.decide(instance, runtime_execution(instance), json.loads(raw))
         else:
             result = {'status': instance.owner['phase'] if instance.owner else 'NOT_PREPARED', 'release': args.tag}
         instance.transport.progress(result); return 0
     except BaseException as error:
-        if args.phase == 'observe':
+        if args.phase in ('observe', 'manual-status', 'manual-decision'):
             # Observation failure is not authority to cancel the still-live original.
             print(json.dumps({'status': 'UNKNOWN', 'release': args.tag, 'terminal': False,
                               'errorType': type(error).__name__}))

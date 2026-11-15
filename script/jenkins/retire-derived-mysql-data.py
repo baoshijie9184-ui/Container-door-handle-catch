@@ -93,6 +93,8 @@ SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2
 TASK_BATCH = 'current-task-failed-verify-mysql-v1'
 TASK_ID = '01a1a46b-d37a-7fb2-8638-afe345c73531'
+FINISHED_BATCH = 'manifest-pre-runtime-outputs-v1'
+FINISHED_TASK_ID = '01a1de46-3b28-7a21-84e7-4f403268fa01'
 
 
 class TaskBatch:
@@ -564,7 +566,8 @@ def task_numbers(text, current):
 
 def task_helpers(binding):
     """Load only the current committed maintenance source, including pure validators."""
-    need(set(binding) == {'tag', 'commit', 'sourceSha256', 'requestSha256', 'failedBuilds'},
+    need(set(binding) == {'tag', 'commit', 'sourceSha256', 'requestSha256', 'failedBuilds'}
+         | ({'batch'} if binding.get('batch') == FINISHED_BATCH else set()),
          'EXACT_TASK_SOURCE_BINDING_REQUIRED')
     tag, commit = binding['tag'], binding['commit']
     need(re.fullmatch(r'ci-[1-9][0-9]*-[a-f0-9]{12}', tag or '') and
@@ -617,20 +620,25 @@ def task_request(binding):
                        parse_constant=lambda _value: need(False, 'NONFINITE_TASK_REQUEST'))
     identity = {'instanceId': INSTANCE, 'machineId': MACHINE, 'executionLocation': 'ECS'}
     expected = {'release': binding['tag'], 'commit': binding['commit'], 'sourceSha256': binding['sourceSha256']}
+    finished = binding.get('batch') == FINISHED_BATCH
     need(set(value) == {'schemaVersion', 'kind', 'current', 'identity', 'authorization', 'builds', 'candidates'}
-         and type(value['schemaVersion']) is int and value['schemaVersion'] == 1 and value['kind'] == 'doorhandle-authorized-failed-mysql-data-request'
+         and type(value['schemaVersion']) is int and value['schemaVersion'] == 1
+         and value['kind'] == ('doorhandle-authorized-pre-runtime-outputs-request' if finished else 'doorhandle-authorized-failed-mysql-data-request')
          and value['current'] == expected and value['identity'] == identity,
          'TASK_REQUEST_CONTEXT_DIFFERS')
     authorization = value['authorization']
     need(set(authorization) == {'taskThreadId', 'sourceSha256', 'endsWithTask', 'allowArbitraryPath'}
-         and authorization['taskThreadId'] == TASK_ID and SHA.fullmatch(authorization.get('sourceSha256', ''))
+         | ({'manifestSha256'} if finished else set())
+         and authorization['taskThreadId'] == (FINISHED_TASK_ID if finished else TASK_ID)
+         and SHA.fullmatch(authorization.get('sourceSha256', ''))
+         and (not finished or SHA.fullmatch(authorization.get('manifestSha256', '')))
          and authorization['endsWithTask'] is True and authorization['allowArbitraryPath'] is False,
          'CURRENT_TASK_AUTHORIZATION_REQUIRED')
     numbers = task_numbers(binding['failedBuilds'], int(binding['tag'].split('-')[1]))
     need(value['builds'] == numbers and type(value['candidates']) is list and
          len(value['candidates']) == len(numbers), 'COMPLETE_EXPLICIT_TASK_TARGETS_REQUIRED')
     for number, row in zip(numbers, value['candidates']):
-        need(set(row) == {'release', 'commit', 'sourceSha256', 'controls'} and
+        need(set(row) == {'release', 'commit', 'sourceSha256', 'controls'} | ({'retirement'} if finished else set()) and
              re.fullmatch(r'[a-f0-9]{40}', row.get('commit', '')) and
              row['release'] == 'ci-' + number + '-' + row['commit'][:12] and
              SHA.fullmatch(row.get('sourceSha256', '')), 'CANONICAL_FAILED_TASK_TAG_REQUIRED')
@@ -640,7 +648,53 @@ def task_request(binding):
             need(set(reference) == {'bytes', 'sha256'} and type(reference['bytes']) is int and
                  0 < reference['bytes'] <= 2 * MIB and SHA.fullmatch(reference.get('sha256', '')),
                  'EXACT_ORIGINAL_TASK_CONTROL_REQUIRED')
+        if finished:
+            validate_finished_selection(row)
     return value
+
+
+def validate_finished_selection(row):
+    """A reviewed manifest chooses resources; it cannot choose filesystem paths."""
+    item = row['retirement']
+    need(set(item) == {'policy', 'publicationRecipe', 'jarSha256', 'jarBytes', 'dataIdentity', 'jarIdentities'}
+         and item['policy'] == FINISHED_BATCH and type(item['publicationRecipe']) is list
+         and len(item['publicationRecipe']) == 3
+         and all(type(value) is str and SHA.fullmatch(value) for value in item['publicationRecipe'])
+         and SHA.fullmatch(item.get('jarSha256', '')) and type(item['jarBytes']) is int
+         and 0 < item['jarBytes'] <= 512 * MIB, 'EXACT_FINISHED_RESOURCE_SELECTION_REQUIRED')
+    identities = [item['dataIdentity'], *item['jarIdentities']]
+    need(type(item['jarIdentities']) is list and len(item['jarIdentities']) == 2
+         and all(type(value) is list and len(value) == 2 and all(type(part) is int and part > 0 for part in value)
+                 for value in identities) and len({tuple(value) for value in identities}) == 3,
+         'EXACT_FINISHED_RESOURCE_INODES_REQUIRED')
+
+
+def finished_runtime_absence(row, preparation, transport, recipe, identity):
+    context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}
+    tag = row['release']; base = ROOT / 'verification' / tag
+    forbidden = [ROOT / 'releases' / tag, base / 'runtime-execution.json', base / 'runtime-failure.json',
+        base / 'runtime-acceptance.json', base / 'checkout/work/runtime-acceptance',
+        base / 'checkout/work/candidate-build-resources', base / 'checkout/work/compact-fixtures/runtime-migration.json']
+    need(all(not path.exists() and not path.is_symlink() for path in forbidden),
+         'CANDIDATE_OR_RUNTIME_ALREADY_ENTERED')
+    reference = preparation.get('candidateBuilderTools', {})
+    tool_path = ROOT / 'inbox' / tag / 'candidate-build-tools/tools.json'
+    need(all(document.get(key) == expected for document in (preparation, transport) for key, expected in context.items())
+         and preparation.get('kind') == 'doorhandle-ecs-tool-preparation' and preparation.get('status') == 'PREPARED'
+         and preparation.get('identity') == identity and preparation.get('testsExecuted') is False
+         and preparation.get('sourceFiles', {}).get('script/jenkins/prepare-ecs-tools.py') == recipe['toolPreparationHelperSha256']
+         and reference.get('file') == str(tool_path) and reference.get('status') == 'PREPARED'
+         and SHA.fullmatch(reference.get('sha256', ''))
+         and transport.get('kind') == 'doorhandle-public-build-input-transport' and transport.get('status') == 'AVAILABLE'
+         and transport.get('buildkitArchive') == preparation.get('buildkitArchive'),
+         'PREPARED_TOOLS_ORIGINAL_BINDING_REQUIRED')
+    raw = read(tool_path); tools = json.loads(raw)
+    need(digest(raw) == reference['sha256']
+         and all(tools.get(key) == expected for key, expected in context.items())
+         and tools.get('kind') == 'doorhandle-candidate-build-tools' and tools.get('status') == 'PREPARED'
+         and tools.get('identity') == identity and tools.get('imageId') == reference.get('imageId'),
+         'PREPARED_TOOLS_RECEIPT_CHANGED')
+    return {'toolsSha256': digest(raw), 'candidateRuntimeEntered': False}
 
 
 def task_source_recipe(native, row):
@@ -665,8 +719,11 @@ def task_source_recipe(native, row):
                 need(member.name not in bodies and member.isfile() and 0 < member.size <= MIB,
                      'ORIGINAL_TASK_RECIPE_INVALID')
                 bodies[member.name] = archive.extractfile(member).read(MIB + 1)
-    need(set(bodies) == set(names) and native.database_verification_recipe(
-         tuple(digest(bodies[name]) for name in names[:2]), digest(bodies[names[2]])),
+    actual = [digest(bodies[name]) for name in names] if set(bodies) == set(names) else []
+    finished = row.get('retirement', {}).get('policy') == FINISHED_BATCH
+    need(set(bodies) == set(names) and
+         (actual == row['retirement']['publicationRecipe'] if finished else native.database_verification_recipe(
+             tuple(actual[:2]), actual[2])),
          'REVIEWED_VERIFY_ONLY_TASK_SOURCE_REQUIRED')
     return {'sourceSha256': digest(raw), 'publicationRecipe': [digest(bodies[name]) for name in names[:2]],
             'toolPreparationHelperSha256': digest(bodies[names[2]])}
@@ -731,8 +788,9 @@ def task_reports(row, verifier, *, metadata_only=False):
 
 def task_admitted(binding, value, helpers, *, metadata_only=False):
     native, verifier = helpers['retire-failed-native-jar-duplicates.py'], helpers['verify-remote.py']
+    finished = binding.get('batch') == FINISHED_BATCH
     local_names = {**native.UPLOADED_NAMES, 'preparation': 'ecs-tool-preparation.json',
-                   'transport': 'ecs-tool-preparation-transport.json'}
+                   'transport': 'candidate-build-tools-transport.json' if finished else 'ecs-tool-preparation-transport.json'}
     keepers = []
     for row in value['candidates']:
         tag = row['release']; work = ROOT / 'verification' / tag / 'checkout/work/compact-fixtures'
@@ -751,7 +809,7 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
                            ('fixtureCleanup', work / 'cleanup-receipt.json')):
             raw_docs[role] = read(path)
         evidence = native.validate_control_documents(raw_docs, context, value['identity'],
-                                                     canonical_jar=True, database_verification=True)
+                                                     canonical_jar=True, database_verification=not finished)
         owner, cleanup = json.loads(raw_docs['fixtureOwner']), json.loads(raw_docs['fixtureCleanup'])
         need(owner.get('dataDirectory') == str(work / 'mysql-data') and owner.get('sourceTableCount') == 131
              and owner.get('sourceClone') == 'doorhandle_migration_verify_' + evidence['ownerToken']
@@ -759,7 +817,13 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
              and cleanup.get('dataDirectoryRetained') == str(work / 'mysql-data'), 'EXACT_DERIVED_TASK_OWNER_REQUIRED')
         recipe = task_source_recipe(native, row)
         preparation, transport = local['preparation'], local['transport']
-        need(all(document.get(key) == expected for document in (preparation, transport)
+        if finished:
+            absence = finished_runtime_absence(row, preparation, transport, recipe, value['identity'])
+            need((evidence['jarSha256'], evidence['jarBytes']) ==
+                 (row['retirement']['jarSha256'], row['retirement']['jarBytes']),
+                 'MANIFEST_BINARY_DIFFERS_FROM_ORIGINAL_BUILD')
+        else:
+            need(all(document.get(key) == expected for document in (preparation, transport)
                  for key, expected in context.items()) and preparation.get('status') == 'PREPARED'
              and preparation.get('kind') == 'doorhandle-ecs-tool-preparation'
              and preparation.get('identity') == value['identity'] and 'candidateBuilderTools' not in preparation
@@ -769,8 +833,8 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
              and type(transport.get('schema')) is int and transport['schema'] == 1
              and transport.get('instanceId') == INSTANCE and transport.get('machineId') == MACHINE
              and type(transport.get('finalExitCode')) is int and transport['finalExitCode'] == 0 and 'buildkitArchive' not in transport,
-             'VERIFY_ONLY_TASK_WITHOUT_CANDIDATE_BUILDER_REQUIRED')
-        need(not (ROOT / 'inbox' / tag / 'candidate-build-tools').exists()
+                 'VERIFY_ONLY_TASK_WITHOUT_CANDIDATE_BUILDER_REQUIRED')
+        need((finished or not (ROOT / 'inbox' / tag / 'candidate-build-tools').exists())
              and not (work / 'derived-mysql-retired-task.json').exists()
              and not (ROOT / 'releases' / tag).exists(), 'PUBLISHED_CANDIDATE_OR_RETIRED_TASK_REFUSED')
         publication = None if metadata_only else native.canonical_publication_refs(ROOT, tag)
@@ -790,7 +854,8 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
             'cleanupSha256': digest(raw_docs['fixtureCleanup']), 'backupManifestSha256': digest(manifest_raw),
             'sourceSqlSha256': sql_sha, 'sourceSqlBytes': sql_bytes, 'sourceSnapshotSha256': owner['sourceSnapshotSha256'],
             'sourceRecipe': recipe, 'publicationReferences': publication,
-            'reports': task_reports(row, verifier, metadata_only=metadata_only)})
+            'reports': task_reports(row, verifier, metadata_only=metadata_only),
+            **({'preRuntimeAbsence': absence} if finished else {})})
     return keepers
 
 
@@ -804,6 +869,8 @@ def task_configuration(value, keepers, roots):
         need(type(meta) is list and len(meta) == 5 and all(type(part) is int for part in meta)
              and meta[0] == 64771 and stat.S_ISDIR(meta[2]) and meta[3:] == [999, 1000]
              and stat.S_IMODE(meta[2]) == 0o700, 'TASK_METADATA_DIRECTORY_IDENTITY_REQUIRED')
+        if 'retirement' in row:
+            need(meta[:2] == row['retirement']['dataIdentity'], 'MANIFEST_DATA_DIRECTORY_REPLACED')
         targets[row['release']] = (meta[1], row['commit'])
     return TaskBatch(targets, {row['release']: row['backupManifestSha256'] for row in keepers})
 
@@ -826,8 +893,10 @@ def task_fixture_candidates(value, keepers, helpers):
                 documents[role] = native.decode(raw)
                 references[role] = {'path': path.relative_to(ROOT).as_posix(), 'bytes': len(raw),
                                     'sha256': checksum, 'metadata': metadata}
+        options = ({'pre_runtime_recipe': row['retirement']['publicationRecipe']} if 'retirement' in row
+                   else {'database_verification': True})
         source = native.source_proof(ROOT, row['release'], row['commit'], row['sourceSha256'],
-                                     canonical_jar=True, failed_native=True, database_verification=True)
+                                     canonical_jar=True, failed_native=True, **options)
         historical = {'context': context, 'controls': references, 'sourceArchive': source,
             'evidence': {'identity': value['identity'], 'ownerToken': keeper['token']},
             'fixtureOwner': native.fixture_owner_projection(documents['fixtureOwner']),
@@ -867,6 +936,40 @@ def task_remove_fixture(candidate, helpers):
         lambda: native.fixture_data_metadata(ROOT, fixture['dataDirectory']))
 
 
+def finished_jar_targets(value, helpers):
+    native = helpers['retire-failed-native-jar-duplicates.py']
+    targets = []
+    for row in value['candidates']:
+        item = row['retirement']; tag = row['release']
+        copy = native.describe_duplicate(ROOT, tag, item['jarSha256'], item['jarBytes'])
+        canonical = native.describe_canonical_jar(ROOT, tag, item['jarSha256'], item['jarBytes'], failed_native=True)
+        need([canonical['metadata'][:2], copy['metadata'][:2]] == item['jarIdentities'],
+             'MANIFEST_JAR_INODE_REPLACED')
+        # The duplicate's keeper must still exist when the copy is removed.
+        targets.extend([copy, canonical])
+    return targets
+
+
+def finished_remove_jars(output, targets, helpers, quiescence, receipt):
+    native = helpers['retire-failed-native-jar-duplicates.py']
+    with os.fdopen(os.open(output / 'jar-journal.jsonl', os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+        def record(event):
+            journal.write(encoded(event) + b'\n'); journal.flush(); os.fsync(journal.fileno())
+        record({'phase': 'STARTED', 'planSha256': receipt['planSha256'], 'requestSha256': receipt['requestSha256']})
+        for target in targets:
+            quiescence()
+            quarantine = native.reserve_quarantine(ROOT, target['release'])
+            record({'phase': 'DELETE_STARTED', 'path': target['path'], 'quarantine': quarantine})
+            if target['kind'] == native.JAR_COPY_KIND:
+                removed = native.remove_duplicate(ROOT, target, quarantine, quiescence=quiescence)
+            else:
+                need(target['kind'] == native.CANONICAL_JAR_KIND, 'UNKNOWN_FINISHED_BINARY_KIND')
+                removed = native.remove_canonical_jar(ROOT, target, quarantine, quiescence=quiescence, failed_native=True)
+            receipt['jarRetirements'].append(removed)
+            record({'phase': 'DELETE_FINISHED', **removed})
+        record({'phase': 'FINISHED', 'deletedFiles': len(receipt['jarRetirements'])})
+
+
 def task_root_worker(request):
     need(os.getuid() == 0 and Path('/etc/machine-id').read_text().strip() == MACHINE,
          'APPROVED_TASK_ROOT_IDENTITY_REQUIRED')
@@ -888,16 +991,18 @@ def task_root_worker(request):
 
 
 def task_run(args):
-    need(os.getuid() == 1000 and args.batch == TASK_BATCH, 'EXPLICIT_TASK_MAINTENANCE_REQUIRED')
+    need(os.getuid() == 1000 and args.batch in (TASK_BATCH, FINISHED_BATCH), 'EXPLICIT_TASK_MAINTENANCE_REQUIRED')
+    finished = args.batch == FINISHED_BATCH
     binding = {'tag': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
                'requestSha256': args.request_sha256, 'failedBuilds': args.failed_builds}
+    if finished: binding['batch'] = FINISHED_BATCH
     helpers = task_helpers(binding); value = task_request(binding)
     identity = helpers['verify-remote.py'].ecs_identity(INSTANCE, MACHINE)
     output = ROOT / 'inbox' / args.tag / 'derived-failed-mysql-retirement'
     plan_file, receipt_file, execution_file = (output / name for name in ('plan-private.json', 'receipt.json', 'execution.json'))
-    public_binding = {'batch': TASK_BATCH, 'release': args.tag, 'commit': args.commit,
+    public_binding = {'batch': args.batch, 'release': args.tag, 'commit': args.commit,
         'sourceSha256': args.source_sha256, 'identity': identity, 'requestSha256': args.request_sha256,
-        'taskThreadId': TASK_ID}
+        'taskThreadId': FINISHED_TASK_ID if finished else TASK_ID}
     if args.phase == 'status':
         if receipt_file.exists():
             receipt = json.loads(read(receipt_file))
@@ -939,6 +1044,8 @@ def task_run(args):
             need(measured['processProbe']['status'] == 'QUIESCENT', 'ALL_UID_TASK_QUIESCENCE_REQUIRED')
             plan = {**public_binding, 'keepers': keepers, 'fixtures': fixtures, 'roots': roots, 'targets': measured['targets'],
                     'processProbe': measured['processProbe']}
+            if finished:
+                plan['jarTargets'] = finished_jar_targets(value, helpers)
             write(plan_file, plan)
             public = {**public_binding, 'planSha256': digest(encoded(plan)), 'sourceSqlAndReportsRetained': True,
                 'targets': [{key: target[key] for key in ('release', 'path', 'allocatedBytes', 'files', 'inventorySha256')}
@@ -946,6 +1053,8 @@ def task_run(args):
                 'fixtureObjects': [{'release': item['historical']['context']['release'],
                     'containerId': item['fixture']['containerId'] if item['fixture'] else None,
                     'status': 'STOPPED_OBJECT_ADMITTED' if item['fixture'] else 'ALREADY_ABSENT'} for item in fixtures]}
+            if finished:
+                public['jarTargets'] = plan['jarTargets']
             write(output / 'plan.json', public)
             return {'status': 'PLANNED', **public_binding, 'planSha256': public['planSha256']}
         raw = read(plan_file, 8 * MIB); plan = json.loads(raw)
@@ -953,12 +1062,15 @@ def task_run(args):
              all(plan.get(key) == expected for key, expected in public_binding.items())
              and (plan['keepers'], plan['fixtures']) == admitted(fixture_objects=True)
              and not receipt_file.exists() and not execution_file.exists(), 'TASK_PLAN_OR_KEEPERS_CHANGED')
+        if finished:
+            need(plan.get('jarTargets') == finished_jar_targets(value, helpers), 'FINISHED_JARS_CHANGED_AFTER_PLAN')
         write(execution_file, {'binding': public_binding, 'pid': os.getpid(),
             'startTicks': Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19],
             'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
         receipt = {**public_binding, 'status': 'FAILED_OR_UNKNOWN', 'planSha256': args.plan_sha256,
                    'removed': [], 'fixtureRetirements': [], 'sourceSqlAndReportsRetained': True,
                    'availableBytesBefore': os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize}
+        if finished: receipt['jarRetirements'] = []
         try:
             measurement = privileged({'phase': 'task-inventory', 'binding': binding, 'roots': plan['roots']})
             need(measurement['targets'] == plan['targets'] and measurement['processProbe']['status'] == 'QUIESCENT',
@@ -972,6 +1084,10 @@ def task_run(args):
             # No object is excluded at the data-removal boundary. A stopped
             # object is first retired through its existing held-identity proof.
             need(plan['keepers'] == admitted(), 'TASK_KEEPERS_CHANGED_AFTER_OBJECT_REMOVE')
+            if finished:
+                def jar_quiescence():
+                    need(plan['keepers'] == admitted(), 'TASK_KEEPERS_CHANGED_BEFORE_BINARY_REMOVE')
+                finished_remove_jars(output, plan['jarTargets'], helpers, jar_quiescence, receipt)
             for target in plan['targets']:
                 need(plan['keepers'] == admitted(), 'TASK_KEEPERS_CHANGED_BEFORE_REMOVE')
                 receipt['removed'].append(privileged({'phase': 'task-remove', 'binding': binding,

@@ -22,6 +22,10 @@ import org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty
 def project = new File('D:/AI/lunwen1/DoorHandleCatch').canonicalFile
 def settingsFile = new File(project, 'work/jenkins/local-node.json').canonicalFile
 def settings = new JsonSlurper().parse(settingsFile)
+assert settings.finishedOutputsManifest == null || settings.finishedOutputsManifest instanceof String
+def finishedOutputsManifest = settings.finishedOutputsManifest ?: ''
+finishedOutputsManifest = finishedOutputsManifest.replace('\\', '/')
+assert finishedOutputsManifest in ['', new File(project, 'work/table-switch-20261115/finished-ci-outputs-manifest.json').path.replace('\\', '/')]
 assert settings.version == 1
 assert settings.instanceId == 'i-2zeieuov2aum486jm1ek'
 assert settings.machineId ==~ /[a-f0-9]{32}/
@@ -77,6 +81,8 @@ def variables = [
     'DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID': dataTaskId,
     'DOORHANDLE_SOURCE_PYTEST16_AUTHORIZATION_FILE': new File(project, 'work/jenkins/data-residency-20261107/source-pytest16-retention-authorization-20261114.json').path,
     'DOORHANDLE_SOURCE_PYTEST307308_AUTHORIZATION_FILE': new File(project, 'work/jenkins/data-residency-20261107/source-pytest307308-retention-authorization-20261114.json').path,
+    'CI_FINISHED_OUTPUTS_MANIFEST': finishedOutputsManifest,
+    'DOORHANDLE_MANUAL_ACCEPTANCE_PRIVATE_ROOT': new File(project, 'work/jenkins/manual-acceptance').path,
     'CANDIDATE_BUILD_INPUT_CACHE_ROOT': new File(project, 'work/jenkins/build-deps').path,
     'PATH+DOORHANDLE': settings.extraPath
 ]
@@ -130,6 +136,8 @@ def parameters = [
     new StringParameterDefinition('PYTHON_EXE', settings.python.toString(), 'Existing local Python for evidence validation; never runs project tests locally.'),
     new ChoiceParameterDefinition('BUILD_NPM_REGISTRY', ['https://registry.npmjs.org', 'https://registry.npmmirror.com'] as String[], 'Remote image build registry only.'),
     new BooleanParameterDefinition('REHEARSAL_KEEP', false, 'Only retain an accepted isolated rehearsal.'),
+    new BooleanParameterDefinition('MANUAL_ACCEPTANCE_ENABLED', false, 'Only verify-runtime: hand off the automatically checked 29-table candidate before owned cleanup.'),
+    new ChoiceParameterDefinition('MANUAL_ACCEPTANCE_MINUTES', ['30','15','60'] as String[], 'Fixed human acceptance window; reconnecting does not renew it.'),
     new StringParameterDefinition('COMPATIBLE_BACKEND_IMAGE', '', 'Independently accepted compatible backend image, if needed.'),
     new StringParameterDefinition('COMPATIBLE_RUNNER_IMAGE', '', 'Independently accepted compatible runner image, if needed.'),
     new StringParameterDefinition('REHEARSAL_MEMORY_EXTRACTION_MODEL', '', 'Explicit isolated rehearsal model, if needed.')

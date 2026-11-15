@@ -1439,13 +1439,13 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 216,
+        "minimumTests": 255,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 449,
+        "minimumTests": 455,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
@@ -1763,8 +1763,14 @@
       },
       {
         "module": "tests_python.test_collaboration_runtime_transport",
-        "minimumTests": 73,
+        "minimumTests": 82,
         "source": "tests_python/test_collaboration_runtime_transport.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_runtime_manual_acceptance",
+        "minimumTests": 30,
+        "source": "tests_python/test_runtime_manual_acceptance.py",
         "allowedSkippedTests": []
       },
       {

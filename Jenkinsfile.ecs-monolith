@@ -2,6 +2,10 @@
 // ECS start/stop is managed outside CI/CD, with no cloud lifecycle calls here.
 def configureVerificationInputs() {
     if (!(params.ACTION in ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs', 'collect-existing-evidence'])) error('Unsupported pipeline action')
+    env.MANUAL_ACCEPTANCE_ENABLED = params.MANUAL_ACCEPTANCE_ENABLED ? 'true' : 'false'
+    env.MANUAL_ACCEPTANCE_MINUTES = params.MANUAL_ACCEPTANCE_MINUTES ?: '30'
+    if (params.MANUAL_ACCEPTANCE_ENABLED && (params.ACTION != 'verify-runtime' || params.DOORHANDLE_CI_SCOPE != 'mysql'
+        || params.PRODUCTION_RELEASE_ENABLED || !(env.MANUAL_ACCEPTANCE_MINUTES in ['15','30','60']))) error('Manual acceptance requires the bounded isolated verify-runtime/mysql candidate')
     env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'
     if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16', 'SourcePytest307308'])) error('Unsupported native retention policy')
     if (env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs') error('An explicit retired-copy policy requires source-only build maintenance')
@@ -21,7 +25,10 @@ def configureVerificationInputs() {
         if (!params.TRUSTED_COMMIT?.trim() || params.TRUSTED_COMMIT.trim() != env.GIT_COMMIT) error('Evidence recollection requires the explicit fixed collector commit')
     } else if (env.EXISTING_EVIDENCE_BUILD) error('An existing evidence build is accepted only by collect-existing-evidence')
     if (env.FAILED_MYSQL_DATA_BUILDS) {
-        if (params.ACTION != 'reclaim-build-outputs' || env.NATIVE_RETENTION_POLICY != 'FailedNative' || env.DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID != '01a1a46b-d37a-7fb2-8638-afe345c73531') error('Failed MySQL data retirement requires this task authorization and exact FailedNative maintenance')
+        def finishedOutputs = env.CI_FINISHED_OUTPUTS_MANIFEST?.trim()
+        if (params.ACTION != 'reclaim-build-outputs' || env.NATIVE_RETENTION_POLICY != 'FailedNative'
+            || (!finishedOutputs && env.DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID != '01a1a46b-d37a-7fb2-8638-afe345c73531')
+            || (finishedOutputs && env.FAILED_NATIVE_BUILD_NUMBER)) error('Failed outputs require their independent exact manifest or the original verify-only authorization; policies cannot be mixed')
         if (!(env.FAILED_MYSQL_DATA_BUILDS ==~ /[1-9][0-9]{0,8}(,[1-9][0-9]{0,8}){0,15}/)) error('Provide one bounded explicit comma-separated failed-build selection')
         def dataBuilds = env.FAILED_MYSQL_DATA_BUILDS.tokenize(',')
         if (dataBuilds.toSet().size() != dataBuilds.size() || dataBuilds.any { it.toLong() < 287 || it.toLong() >= env.BUILD_NUMBER.toLong() }) error('Only earlier failed verification builds from this task are eligible')
@@ -138,7 +145,7 @@ pipeline {
         disableConcurrentBuilds()
         disableRestartFromStage()
         timestamps()
-        timeout(time: 240, unit: 'MINUTES')
+        timeout(time: 240 + (params.MANUAL_ACCEPTANCE_ENABLED && ((params.MANUAL_ACCEPTANCE_MINUTES ?: '30') in ['15','30','60']) ? (params.MANUAL_ACCEPTANCE_MINUTES ?: '30').toInteger() : 0), unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '15', artifactNumToKeepStr: '5'))
     }
     triggers { pollSCM('H/5 * * * *') }
@@ -187,6 +194,8 @@ pipeline {
         string(name: 'PYTHON_EXE', defaultValue: 'D:/ruanjian/anaconda3/envs/leetcode/python.exe', description: '本地控制脚本使用的已有 Python，不在本地运行 pytest')
         choice(name: 'BUILD_NPM_REGISTRY', choices: ['https://registry.npmjs.org', 'https://registry.npmmirror.com'], description: '仅本次远端构建使用，不修改生产环境或锁文件')
         booleanParam(name: 'REHEARSAL_KEEP', defaultValue: false, description: '仅已验收的隔离演练可保留候选环境供查看')
+        booleanParam(name: 'MANUAL_ACCEPTANCE_ENABLED', defaultValue: false, description: '仅verify-runtime：自动验收通过后提供同一29表候选入口，人工确认或超时后原链收尾')
+        choice(name: 'MANUAL_ACCEPTANCE_MINUTES', choices: ['30','15','60'], description: '人工验收固定窗口；重连不续期，结束后入口失效')
         string(name: 'COMPATIBLE_BACKEND_IMAGE', defaultValue: '', trim: true, description: '可选已独立验收的兼容旧版后端 sha256 镜像')
         string(name: 'COMPATIBLE_RUNNER_IMAGE', defaultValue: '', trim: true, description: '可选已独立验收的兼容旧版 MCP runner sha256 镜像')
         string(name: 'REHEARSAL_MEMORY_EXTRACTION_MODEL', defaultValue: '', trim: true, description: '可选明确指定的隔离演练提炼模型，不更改生产配置')
@@ -479,7 +488,38 @@ pipeline {
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                     file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                 ]) {
-                    pwsh '& ./script/jenkins/pipeline.ps1 -Action VerifyRuntime'
+                    script {
+                        if (!params.MANUAL_ACCEPTANCE_ENABLED) {
+                            pwsh '& ./script/jenkins/pipeline.ps1 -Action VerifyRuntime'
+                        } else {
+                            parallel failFast: false,
+                                runtime: {
+                                    try { pwsh '& ./script/jenkins/pipeline.ps1 -Action VerifyRuntime' }
+                                    finally { writeFile file: 'artifacts/runtime-owner-finished.json', text: '{"finished":true}' }
+                                },
+                                manual: {
+                                    def decision = 'REJECTED'
+                                    def submittedBy = 'jenkins-cancelled-or-expired'
+                                    try {
+                                        pwsh '& ./script/jenkins/pipeline.ps1 -Action AwaitManualRuntime'
+                                        def ready = new groovy.json.JsonSlurperClassic().parseText(readFile('artifacts/manual-acceptance-ready.json'))
+                                        def remaining = Math.floor((ready.expiresAtUnix as double) - System.currentTimeMillis()/1000d) as int
+                                        if (remaining <= 0) error('人工验收窗口已到期，原候选正在收尾')
+                                        echo "29表候选已就绪：${ready.localUrl}；私密账号说明：${ready.privateGuide}；提交 ${ready.commit}；不是生产站点"
+                                        timeout(time: remaining, unit: 'SECONDS') {
+                                            def answer = input(id: 'manual-candidate-acceptance', message: "请验收 ${ready.localUrl} 的29表候选；账号见私密说明 ${ready.privateGuide}。验收结束后选择结果，入口随后关闭。", ok: '结束验收', submitterParameter: 'SUBMITTED_BY', parameters: [choice(name: 'RESULT', choices: ['发现问题','验收通过'], description: '仅确认本轮隔离候选功能；不发布生产')])
+                                            decision = answer.RESULT == '验收通过' ? 'ACCEPTED' : 'REJECTED'
+                                            submittedBy = answer.SUBMITTED_BY
+                                        }
+                                    } finally {
+                                        withEnv(["MANUAL_ACCEPTANCE_DECISION=${decision}", "MANUAL_ACCEPTANCE_SUBMITTER=${submittedBy}"]) {
+                                            pwsh '& ./script/jenkins/pipeline.ps1 -Action CompleteManualRuntime'
+                                        }
+                                    }
+                                    if (decision != 'ACCEPTED') error('用户报告候选存在问题，保全证据并按原链收尾')
+                                }
+                        }
+                    }
                 }
                 script { env.CI_RUNTIME_VERIFIED = 'true' }
             }
@@ -520,7 +560,7 @@ pipeline {
                     }
                 } else if (params.ACTION == 'reclaim-build-outputs') {
                     if (env.CI_ARTIFACTS_READY == 'true') {
-                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/generated-cleanup-*.json,artifacts/generated-cleanup-*.jsonl,artifacts/derived-mysql-*.json,artifacts/derived-mysql-*.txt,artifacts/source-pytest16/*,artifacts/source-pytest307308/*,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.json,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.json,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/native-python-build-cache-*.json,artifacts/native-python-build-cache-*.jsonl,artifacts/native-python-build-cache-inspect/*.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/generated-cleanup-*.json,artifacts/generated-cleanup-*.jsonl,artifacts/derived-mysql-*.json,artifacts/derived-mysql-*.jsonl,artifacts/derived-mysql-*.txt,artifacts/source-pytest16/*,artifacts/source-pytest307308/*,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-retired-candidate-copy-*.json,artifacts/native-retired-candidate-copy-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl,artifacts/native-generated-public-image-archive-*.json,artifacts/native-generated-public-image-archive-*.jsonl,artifacts/native-python-build-cache-*.json,artifacts/native-python-build-cache-*.jsonl,artifacts/native-python-build-cache-inspect/*.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }
                 } else {
                     env.CI_GENERATED_CLEANUP_ELIGIBLE = 'true'

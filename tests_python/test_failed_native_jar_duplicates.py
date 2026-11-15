@@ -517,6 +517,28 @@ def test_real_retained_source_archive_is_hashed_and_inspected_without_execution(
     assert copies.target.exists() and copies.keeper.exists()
 
 
+@pytest.mark.parametrize('damage', [None, 0, 1, 2, 'ordinary-runtime', 'database-entry'])
+def test_manifest_pre_runtime_recipe_is_exact_and_does_not_widen_other_entries(copies, damage):
+    publication = {'Jenkinsfile.ecs-monolith': b'reviewed terminal stage order',
+                   'script/jenkins/pipeline.ps1': b'reviewed pre-runtime producer',
+                   'script/jenkins/prepare-ecs-tools.py': b'reviewed prepared tools producer'}
+    recipe = b"def prepare(self):\n jar = canonical(self.inbox / 'application.jar')\n uploaded = self.work / 'candidate-app.jar'\n shutil.copyfile(jar, uploaded)\ndef start_mysql(self, image):\n return image\n"
+    archive = source_archive(copies, recipe=recipe, publication=publication)
+    exact = [sha(raw) for raw in publication.values()]
+    options = {'canonical_jar': True, 'failed_native': True, 'pre_runtime_recipe': exact}
+    if type(damage) is int: exact[damage] = 'f' * 64
+    elif damage == 'ordinary-runtime': options.pop('pre_runtime_recipe')
+    elif damage == 'database-entry': options['database_verification'] = True
+    arguments = (copies.root, copies.tag, 'a' * 40, sha(archive.read_bytes()))
+    if damage is not None:
+        with pytest.raises(retirer.RetirementError): retirer.source_proof(*arguments, **options)
+    else:
+        result = retirer.source_proof(*arguments, **options)
+        assert result['toolPreparationHelperSha256'] == exact[2]
+        assert result['mysqlFixtureStartSourceSha256']
+        assert tuple(exact[:2]) not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+
+
 @pytest.mark.parametrize('damage', ['commit', 'recipe', 'hash'])
 def test_wrong_source_commit_or_generic_copy_recipe_cannot_authorize_a_transport_target(copies, damage):
     archive = source_archive(copies, comment='f' * 40 if damage == 'commit' else None,
@@ -2373,7 +2395,14 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
                 '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
     diagnostic = ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0', *reviewed[1:])
     terminal_cleanup = (diagnostic[0], '29a93fb0890af70894d2a219ca95cdd6b7a354c42f6606a9ceb2df6b8b4766e3', reviewed[2])
-    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup})
+    integrated = ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd', '17e79e1393e2b897c7ad659b26e5d6c442feaedaa324df5aa59789cb2bc47129', '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
+    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup, integrated})
+    assert retirer.database_verification_recipe(integrated[:2], integrated[2]) is True
+    assert integrated[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert integrated[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    for index in range(3):
+        changed = list(integrated); changed[index] = '0' * 64
+        assert retirer.database_verification_recipe(changed[:2], changed[2]) is False
     assert retirer.database_verification_recipe(terminal_cleanup[:2], terminal_cleanup[2]) is True
     assert terminal_cleanup[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
     assert terminal_cleanup[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
@@ -2394,9 +2423,7 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
 def test_diagnostic_archive_recipe_remains_bound_to_the_three_current_source_members():
     paths = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
     recipe = tuple(sha((MODULE.parents[2] / path).read_bytes().replace(b'\r\n', b'\n')) for path in paths)
-    assert recipe == ('b40a7762c9d5c8202bceb87dc32d41ddacbe47c49c675c46d73c5c2976f975c0',
-                      '29a93fb0890af70894d2a219ca95cdd6b7a354c42f6606a9ceb2df6b8b4766e3',
-                      '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
+    assert recipe == ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd', '17e79e1393e2b897c7ad659b26e5d6c442feaedaa324df5aa59789cb2bc47129', '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
     assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is True
     assert recipe[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
 

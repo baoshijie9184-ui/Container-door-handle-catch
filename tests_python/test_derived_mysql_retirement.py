@@ -616,8 +616,9 @@ def test_task_privileged_worker_refuses_extra_or_missing_arguments(root_identity
 
 @pytest.mark.parametrize('changed', [False, True])
 @pytest.mark.parametrize('objects', ['absent', 'stopped', 'remove-failed'])
-def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, monkeypatch, changed, objects):
-    args = SimpleNamespace(phase='plan', batch=retirement.TASK_BATCH, tag='ci-300-' + 'f' * 12,
+@pytest.mark.parametrize('finished', [False, True])
+def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, monkeypatch, changed, objects, finished):
+    args = SimpleNamespace(phase='plan', batch=retirement.FINISHED_BATCH if finished else retirement.TASK_BATCH, tag='ci-300-' + 'f' * 12,
         commit='f' * 40, source_sha256='e' * 64, request_sha256='d' * 64, failed_builds='287,289', plan_sha256=None)
     root = tmp_path / 'ci'; output = root / 'inbox' / args.tag / 'derived-failed-mysql-retirement'; output.mkdir(parents=True)
     tags = ['ci-287-' + 'a' * 12, 'ci-289-' + 'b' * 12]
@@ -663,6 +664,13 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
     monkeypatch.setattr(retirement, 'tree', live_inventory)
     monkeypatch.setattr(retirement, 'lock', lambda _: nullcontext()); monkeypatch.setattr(retirement, 'attempt_lock', lambda _: nullcontext())
     calls = []
+    if finished:
+        jar_targets = [{'path': tag + '/' + name} for tag in tags for name in ('copy.jar', 'canonical.jar')]
+        monkeypatch.setattr(retirement, 'finished_jar_targets', lambda *_: jar_targets)
+        def remove_jars(_output, targets, _helpers, quiescent, receipt):
+            assert not remaining and all(state.path.exists() for state in states.values())
+            quiescent(); calls.append('remove-jars'); receipt['jarRetirements'].extend(targets)
+        monkeypatch.setattr(retirement, 'finished_remove_jars', remove_jars)
     def remove_fixture(candidate, _helpers):
         tag = candidate['historical']['context']['release']
         assert all(state.path.exists() for state in states.values())
@@ -701,9 +709,10 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
         assert all(not state.path.exists() for state in states.values())
         for state in states.values():
             marker = json.loads((state.parent / 'derived-mysql-retired-task.json').read_text())
-            assert marker['taskThreadId'] == retirement.TASK_ID and marker['status'] == 'REMOVED'
+            assert marker['taskThreadId'] == (retirement.FINISHED_TASK_ID if finished else retirement.TASK_ID) and marker['status'] == 'REMOVED'
         assert calls == ['task-inventory', 'task-inventory',
-                         *(['remove-stopped-object'] * 2 if objects == 'stopped' else []), 'task-remove', 'task-remove']
+                         *(['remove-stopped-object'] * 2 if objects == 'stopped' else []),
+                         *(['remove-jars'] if finished else []), 'task-remove', 'task-remove']
         assert len(json.loads((output / 'receipt.json').read_bytes())['fixtureRetirements']) == 2
     assert (protected / 'keep.ibd').read_bytes() == b'recovery point'
     for state in states.values():
@@ -721,7 +730,8 @@ def test_task_interface_keeps_closed_batches_and_requires_private_authorization(
     assert "name: 'FAILED_MYSQL_DATA_BUILDS', defaultValue: ''" in pipeline
     assert 'DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID' in pipeline and 'dataBuilds.toSet().size()' in pipeline
     assert 'authorization.completed != true && authorization.revoked != true' in config
-    assert producer.index('-FailedNativeBuildNumber $failedNativeBuildNumber') < producer.index('-FailedBuildNumbers $failedMysqlDataBuilds')
+    legacy = producer[producer.index("    & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -SshOptions", producer.index("if ($Action -ceq 'ReclaimBuildOutputs'")):]
+    assert legacy.index('-FailedNativeBuildNumber $failedNativeBuildNumber') < legacy.index('-FailedBuildNumbers $failedMysqlDataBuilds')
     assert 'Read-TaskDataAuthorization' in controller and 'CollectDataControls' in controller
     assert 'if ($CollectDataControls)' in native and native.index('if ($CollectDataControls)', native.index('$local=')) < native.index('$spec=')
     assert 'Remove-Item' not in controller and 'rm -' not in controller
@@ -1346,3 +1356,180 @@ def test_task_failure_reason_preserves_loaded_cleanup_literal_without_arbitrary_
     except ValueError as error:
         assert retirement.failure_reason_code(error) == 'OLD_BUILD_CONTAINER_STILL_PRESENT'
     assert retirement.failure_reason_code(OSError('private path or credentials')) == 'UNCLASSIFIED_ERROR'
+
+
+def _finished_selection():
+    return {'policy': retirement.FINISHED_BATCH, 'publicationRecipe': ['1' * 64, '2' * 64, '3' * 64],
+            'jarSha256': 'c' * 64, 'jarBytes': 10, 'dataIdentity': [64771, 1234],
+            'jarIdentities': [[64771, 1235], [64771, 1236]]}
+
+
+@pytest.mark.parametrize('damage', [None, 'old-authorization', 'old-entry', 'missing-manifest',
+    'arbitrary-path', 'generic-policy', 'bad-recipe', 'same-inode', 'protected-build'])
+def test_finished_request_has_independent_authority_and_exact_resource_selection(task_request_document, damage):
+    state = task_request_document
+    state.binding['batch'] = retirement.FINISHED_BATCH
+    state.value['kind'] = 'doorhandle-authorized-pre-runtime-outputs-request'
+    state.value['authorization'].update(taskThreadId=retirement.FINISHED_TASK_ID, manifestSha256='d' * 64)
+    for row in state.value['candidates']: row['retirement'] = _finished_selection()
+    item = state.value['candidates'][0]['retirement']
+    if damage == 'old-authorization': state.value['authorization']['taskThreadId'] = retirement.TASK_ID
+    elif damage == 'old-entry': state.binding.pop('batch')
+    elif damage == 'missing-manifest': state.value['authorization'].pop('manifestSha256')
+    elif damage == 'arbitrary-path': item['path'] = '/var/lib/mysql'
+    elif damage == 'generic-policy': item['policy'] = 'all-finished-builds'
+    elif damage == 'bad-recipe': item['publicationRecipe'][1] = 'unknown'
+    elif damage == 'same-inode': item['jarIdentities'][0] = item['dataIdentity']
+    elif damage == 'protected-build': state.value['builds'][0] = '266'; state.binding['failedBuilds'] = '266,289'
+    state.refresh()
+    if damage:
+        with pytest.raises(ValueError): retirement.task_request(state.binding)
+    else:
+        assert retirement.task_request(state.binding) == state.value
+
+
+@pytest.fixture
+def finished_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr(retirement, 'ROOT', tmp_path)
+    row = {'release': 'ci-344-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}
+    identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
+    tools = {'kind': 'doorhandle-candidate-build-tools', 'status': 'PREPARED', **row,
+             'identity': identity, 'imageId': 'sha256:' + 'c' * 64}
+    raw = retirement.encoded(tools)
+    path = tmp_path / 'inbox' / row['release'] / 'candidate-build-tools/tools.json'
+    preparation = {'kind': 'doorhandle-ecs-tool-preparation', 'status': 'PREPARED', **row,
+        'identity': identity, 'testsExecuted': False, 'sourceFiles': {'script/jenkins/prepare-ecs-tools.py': 'd' * 64},
+        'candidateBuilderTools': {'file': str(path), 'status': 'PREPARED', 'sha256': retirement.digest(raw), 'imageId': tools['imageId']},
+        'buildkitArchive': {'file': 'shared-buildkit-archive', 'sha256': 'e' * 64, 'bytes': 100}}
+    transport = {'kind': 'doorhandle-public-build-input-transport', 'status': 'AVAILABLE', **row,
+                 'buildkitArchive': preparation['buildkitArchive']}
+    monkeypatch.setattr(retirement, 'read', lambda actual: raw if actual == path else pytest.fail('Unexpected tool read'))
+    return SimpleNamespace(row=row, identity=identity, preparation=preparation, transport=transport,
+        recipe={'toolPreparationHelperSha256': 'd' * 64}, raw=raw, root=tmp_path)
+
+
+@pytest.mark.parametrize('damage', [None, 'release', 'execution', 'failure', 'acceptance', 'runtime-work',
+    'candidate-work', 'migration', 'symlink', 'tools-sha', 'preparation-sha', 'transport', 'builder-missing'])
+def test_finished_entry_requires_prepared_tools_but_no_application_candidate_or_runtime(finished_tools, damage):
+    state = finished_tools; base = state.root / 'verification' / state.row['release']
+    paths = {'release': state.root / 'releases' / state.row['release'], 'execution': base / 'runtime-execution.json',
+        'failure': base / 'runtime-failure.json', 'acceptance': base / 'runtime-acceptance.json',
+        'runtime-work': base / 'checkout/work/runtime-acceptance', 'candidate-work': base / 'checkout/work/candidate-build-resources',
+        'migration': base / 'checkout/work/compact-fixtures/runtime-migration.json'}
+    if damage in paths:
+        paths[damage].parent.mkdir(parents=True, exist_ok=True); paths[damage].touch()
+    elif damage == 'symlink':
+        paths['execution'].parent.mkdir(parents=True); paths['execution'].symlink_to(state.root / 'missing')
+    elif damage == 'tools-sha': state.preparation['candidateBuilderTools']['sha256'] = 'f' * 64
+    elif damage == 'preparation-sha': state.preparation['sourceFiles']['script/jenkins/prepare-ecs-tools.py'] = 'f' * 64
+    elif damage == 'transport': state.transport['status'] = 'UNKNOWN'
+    elif damage == 'builder-missing': state.preparation.pop('candidateBuilderTools')
+    arguments = (state.row, state.preparation, state.transport, state.recipe, state.identity)
+    if damage:
+        with pytest.raises(ValueError): retirement.finished_runtime_absence(*arguments)
+    else:
+        assert retirement.finished_runtime_absence(*arguments) == {
+            'toolsSha256': retirement.digest(state.raw), 'candidateRuntimeEntered': False}
+
+
+@pytest.mark.parametrize('replaced', [False, True])
+def test_finished_binary_plan_keeps_copy_before_canonical_and_binds_observed_inodes(replaced):
+    row = {'release': 'ci-344-' + 'a' * 12, 'retirement': _finished_selection()}
+    canonical = {'metadata': [64771, 1235], 'kind': 'canonical'}
+    copy = {'metadata': [64771, 9999 if replaced else 1236], 'kind': 'copy'}
+    native = SimpleNamespace(describe_duplicate=lambda *_: copy, describe_canonical_jar=lambda *_a, **_k: canonical)
+    arguments = ({'candidates': [row]}, {'retire-failed-native-jar-duplicates.py': native})
+    if replaced:
+        with pytest.raises(ValueError, match='MANIFEST_JAR_INODE_REPLACED'): retirement.finished_jar_targets(*arguments)
+    else:
+        assert retirement.finished_jar_targets(*arguments) == [copy, canonical]
+
+
+@pytest.mark.parametrize('failure', [None, 'quiescence', 'copy', 'canonical'])
+def test_finished_binary_deletion_reuses_capture_primitives_and_preserves_partial_journal(tmp_path, failure):
+    events = []; receipt = {'planSha256': 'a' * 64, 'requestSha256': 'b' * 64, 'jarRetirements': []}
+    targets = [{'kind': name, 'release': 'ci-344-' + 'c' * 12, 'path': name + '.jar'} for name in ('copy', 'canonical')]
+    def quiescent():
+        if failure == 'quiescence': raise ValueError('REFERENCED')
+        events.append('quiescent')
+    def remove(_root, target, _quarantine, *, quiescence, **options):
+        quiescence(); events.append(target['kind'])
+        if failure == target['kind']: raise ValueError('CHANGED')
+        assert options == ({'failed_native': True} if target['kind'] == 'canonical' else {})
+        return {'path': target['path']}
+    native = SimpleNamespace(JAR_COPY_KIND='copy', CANONICAL_JAR_KIND='canonical',
+        reserve_quarantine=lambda *_: {'path': 'private-quarantine/candidate-app.jar'},
+        remove_duplicate=remove, remove_canonical_jar=remove)
+    arguments = (tmp_path, targets, {'retire-failed-native-jar-duplicates.py': native}, quiescent, receipt)
+    if failure:
+        with pytest.raises(ValueError): retirement.finished_remove_jars(*arguments)
+    else: retirement.finished_remove_jars(*arguments)
+    journal = [json.loads(line) for line in (tmp_path / 'jar-journal.jsonl').read_text().splitlines()]
+    assert journal[0]['phase'] == 'STARTED'
+    if failure:
+        assert journal[-1]['phase'] != 'FINISHED'
+        assert len(receipt['jarRetirements']) == (1 if failure == 'canonical' else 0)
+    else:
+        assert [event for event in events if event != 'quiescent'] == ['copy', 'canonical']
+        assert journal[-1] == {'phase': 'FINISHED', 'deletedFiles': 2}
+
+
+def test_finished_controller_preserves_exact_authority_and_journal_without_generic_cleanup():
+    controller = TASK_DIAGNOSTIC_CONTROLLER
+    assert "$finished=-not [string]::IsNullOrWhiteSpace($finishedManifest)" in controller
+    assert "else{'01a1a46b-d37a-7fb2-8638-afe345c73531'}" in controller
+    assert "else{'current-task-failed-verify-mysql-v1'}" in controller
+    assert "@($authorization.acceptedActions).Count -eq 1 -and $authorization.acceptedActions[0] -ceq 'verify'" in controller
+    producer = (FILE.parents[2] / 'script/jenkins/pipeline.ps1').read_text(encoding='utf-8-sig')
+    branch = producer.split("if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('CI_FINISHED_OUTPUTS_MANIFEST'))) {", 1)[1].split('\n    }', 1)[0]
+    assert '-Mode Maintenance -PrepareOnly' in branch and '-FailedBuildNumbers $failedMysqlDataBuilds' in branch
+    assert 'FailedNativeBuildNumber' not in branch and branch.rstrip().endswith('return')
+    assert 'cleanup-authorization-20261115.json' in controller and 'ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT' in controller
+    assert 'authorizationSha256 -ceq $authorizationSha' in controller and 'manifestSha256=$manifestSha' in controller
+    assert controller.index("$currentStep='AUTHORIZATION_RECHECK'") < controller.index('$attempted=$true')
+    assert 'derived-mysql-user-authorization.json' in controller and 'derived-mysql-finished-manifest.json' in controller
+    pipeline = (FILE.parents[2] / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf-8-sig')
+    assert 'artifacts/derived-mysql-*.jsonl' in pipeline
+    gate = producer.split("if ($failedMysqlDataBuilds -cne '') {", 1)[1].split('\n}', 1)[0]
+    assert "[string]::IsNullOrWhiteSpace($finishedOutputsManifest) -and $env:DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID" in gate
+    assert "$failedNativeBuildNumber -cne ''" in gate
+
+
+@pytest.mark.parametrize('damage', [None, 'wrong-action', 'wrong-jar'])
+def test_finished_admission_uses_runtime_terminal_without_borrowing_verify_authority(task_keeper_documents, monkeypatch, damage):
+    state = task_keeper_documents
+    state.binding['batch'] = retirement.FINISHED_BATCH
+    state.row['retirement'] = _finished_selection()
+    if damage != 'wrong-action':
+        state.xml = state.xml.replace(b'<value>verify</value>', b'<value>verify-runtime</value>')
+    if damage == 'wrong-jar': state.row['retirement']['jarBytes'] = 11
+    state.refresh()
+    transport = retirement.encoded(state.documents['ecs-tool-preparation-transport.json'])
+    state.row['controls']['transport'] = {'bytes': len(transport), 'sha256': retirement.digest(transport)}
+    read = retirement.read
+    monkeypatch.setattr(retirement, 'read', lambda path, maximum=0:
+        transport if path.name == 'candidate-build-tools-transport.json' else read(path, maximum))
+    calls = []
+    def absence(*args):
+        calls.append(args)
+        return {'toolsSha256': 'e' * 64, 'candidateRuntimeEntered': False}
+    monkeypatch.setattr(retirement, 'finished_runtime_absence', absence)
+    if damage:
+        with pytest.raises((ValueError, state.native.RetirementError)):
+            retirement.task_admitted(state.binding, state.value, state.helpers)
+    else:
+        result = retirement.task_admitted(state.binding, state.value, state.helpers)
+        assert len(calls) == 1 and result[0]['preRuntimeAbsence']['candidateRuntimeEntered'] is False
+        assert result[0]['reports'] == {'reportFiles': 1}
+        assert result[0]['sourceSqlSha256'] == state.manifest['data']['sha256']
+
+
+def test_finished_mysql_root_must_still_be_the_exact_inventoried_inode(task_request_document):
+    row = task_request_document.value['candidates'][0]
+    row['retirement'] = _finished_selection()
+    value = {'candidates': [row]}; keepers = [{'release': row['release'], 'backupManifestSha256': 'b' * 64}]
+    roots = {row['release']: [64771, 1234, stat.S_IFDIR | 0o700, 999, 1000]}
+    assert retirement.task_configuration(value, keepers, roots).targets[row['release']][0] == 1234
+    roots[row['release']][1] += 1
+    with pytest.raises(ValueError, match='MANIFEST_DATA_DIRECTORY_REPLACED'):
+        retirement.task_configuration(value, keepers, roots)
