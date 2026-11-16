@@ -34,11 +34,13 @@ fixture 将 `DOORHANDLE_CACHE_REDIS_TEST_HOST/PORT/DATABASE` 及 `DOORHANDLE_REQ
 
 私有清单位于 `work/table-switch-20261115/historical-derived-mysql-15-manifest.json`。本地先核对全部原件 custody，再上传原 build.xml、release.json 和既有用户授权；远端重新核对完整源 SQL、固定源码、原 owner/STOPPED、目录身份和全部活动引用，经原 plan/apply 执行。原始 SQL、源码、报告、业务库和保护恢复点保留。本批受控计量与删除回执均为 4,004,081,664 B，15 项全部移除。
 
-## 准备失败的精确输出维护
+## 应用 runtime 启动前的精确输出维护
 
 `manifest-pre-runtime-outputs-v1` 继续只按独立私有清单处理已结束轮次的两份未发布 JAR 和派生 MySQL，源 SQL、源码和报告保留。#389 的原失败发生在 watcher 就绪前；`post` 的 Generated 收尾随后复制了 `verify-remote.py`，该文件存在不代表验证 driver 已启动。
 
 这一形状仅在原源码中的 preparer/verifier 匹配审核过的 a351 字节、原 Jenkins 为 FAILURE、原 failure 记录 `FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED`、parent owner 按原异常路径移除了 `fixtureWatch`（独立 watch-owner 原件仍保留）、owner 和 cleanup 一致确认同一进程组已停止，并且 ready、claim、driver、验证回执和上传标记全部不存在时准入。实际容器退役同样读取原 watcher 的 `FAILED/watchStopped=false` 和父取消原件，确认原进程已不存在后才接受父确认停止，不要求伪造 driver 报告。保留原失败回执，不补造退出码；任一未知生产者、启动标记或未闭合收尾仍拒绝。原无 helper 的 NOT_STARTED 路径以及 SQL 完整、主机/目录身份、全 UID 引用和原件绑定门保持不变。源码支持不等于本批已回收，实际清理仍须统一控制验证后经 Jenkins 执行一次精确清单。
+
+完整迁移先于原生测试执行时，`runtime-migration.json` 是整库复制、双恢复、拒绝重放及读回全部通过后产生的下一阶段输入，不是应用已启动回执。Finished 入口只在固定源码中的该生产者、归档 Python 原 XML、driver 汇总、公开 migration 摘要及同一 owner 的私有迁移/双恢复原件全部绑定时接受此输入；后续原生失败仍保持 FAILURE。真实 runtime/candidate-build/发布路径及活动引用继续拒绝，plan、每次删除边界和收尾重新验证原件。该输入、reviewed config、迁移/恢复报告及原 SQL 均保留，删除集合仍只有清单中的两份未发布 JAR 和派生 MySQL。
 
 ## 同一 29 表候选的人工验收
 

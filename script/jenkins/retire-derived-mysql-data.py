@@ -982,14 +982,21 @@ def finished_completed_binaries(binding, row):
             'alreadyRetiredJarBytes': sum(item['allocatedBytes'] for item in receipt['jarRetirements'])}
 
 
-def finished_runtime_absence(row, preparation, transport, recipe, identity):
+def finished_runtime_absence(row, preparation, transport, recipe, identity, completed_migration=None):
     context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}
     tag = row['release']; base = ROOT / 'verification' / tag
     forbidden = [ROOT / 'releases' / tag, base / 'runtime-execution.json', base / 'runtime-failure.json',
         base / 'runtime-acceptance.json', base / 'checkout/work/runtime-acceptance',
-        base / 'checkout/work/candidate-build-resources', base / 'checkout/work/compact-fixtures/runtime-migration.json']
+        base / 'checkout/work/candidate-build-resources']
     need(all(not path.exists() and not path.is_symlink() for path in forbidden),
          'CANDIDATE_OR_RUNTIME_ALREADY_ENTERED')
+    sidecar = base / 'checkout/work/compact-fixtures/runtime-migration.json'
+    if sidecar.exists() or sidecar.is_symlink():
+        need(isinstance(completed_migration, dict) and
+             completed_migration.get('sidecarSha256') == digest(read(sidecar)),
+             'COMPLETE_RETAINED_MIGRATION_PROOF_REQUIRED')
+    else:
+        need(completed_migration is None, 'RETAINED_MIGRATION_INPUT_DISAPPEARED')
     reference = preparation.get('candidateBuilderTools', {})
     tool_path = ROOT / 'inbox' / tag / 'candidate-build-tools/tools.json'
     need(all(document.get(key) == expected for document in (preparation, transport) for key, expected in context.items())
@@ -1019,6 +1026,13 @@ WATCH_START_FAILURE_PRODUCER = {
     'script/jenkins/verify-remote.py': 'eaa8049ea4d18c749f73e0d8076bcfeedf8812dd06ebf980e9dcaec72204aaaf',
 }
 
+# This test writes the runtime input only after actual copy, both restores,
+# refused replay and readback. It does not launch the application runtime.
+WHOLE_MIGRATION_PRODUCER = {
+    'tests_python/test_compact_migration_orchestration_ecs.py':
+        '99805fc8293741db50e3f0c900bcc7eb7f688f0520bf612281853a44e0050c14',
+}
+
 
 def task_source_recipe(native, row):
     raw = read(ROOT / 'inbox' / row['release'] / 'source.tar.gz', 128 * MIB)
@@ -1038,7 +1052,7 @@ def task_source_recipe(native, row):
         need(archive.pax_headers.get('comment') == row['commit'], 'RETAINED_TASK_COMMIT_DIFFERS')
         for index, member in enumerate(archive, 1):
             need(index <= 50000 and 0 <= member.size <= 32 * MIB, 'RETAINED_TASK_SOURCE_MEMBER_BOUND')
-            if member.name in names or member.name in WATCH_START_FAILURE_PRODUCER:
+            if member.name in names or member.name in WATCH_START_FAILURE_PRODUCER or member.name in WHOLE_MIGRATION_PRODUCER:
                 need(member.name not in bodies and member.isfile() and 0 < member.size <= MIB,
                      'ORIGINAL_TASK_RECIPE_INVALID')
                 bodies[member.name] = archive.extractfile(member).read(MIB + 1)
@@ -1051,7 +1065,97 @@ def task_source_recipe(native, row):
     return {'sourceSha256': digest(raw), 'publicationRecipe': [digest(bodies[name]) for name in names[:2]],
             'toolPreparationHelperSha256': digest(bodies[names[2]]),
             **({'watchStartFailureProducer': {name: digest(bodies[name]) for name in WATCH_START_FAILURE_PRODUCER}}
-               if set(WATCH_START_FAILURE_PRODUCER) <= set(bodies) else {})}
+               if set(WATCH_START_FAILURE_PRODUCER) <= set(bodies) else {}),
+            **({'wholeMigrationProducer': {name: digest(bodies[name]) for name in WHOLE_MIGRATION_PRODUCER}}
+               if set(WHOLE_MIGRATION_PRODUCER) <= set(bodies) else {})}
+
+
+def finished_completed_migration(row, owner, recipe, documents):
+    """Bind retained migration proofs; none of these files is a removal target."""
+    need(row.get('retirement', {}).get('policy') == FINISHED_BATCH and
+         recipe.get('wholeMigrationProducer') == WHOLE_MIGRATION_PRODUCER,
+         'REVIEWED_WHOLE_MIGRATION_PRODUCER_REQUIRED')
+    need(set(documents) == {'reports/receipt.json', 'reports/migration.json', 'reports/python.xml'},
+         'COMPLETE_WHOLE_MIGRATION_REPORTS_REQUIRED')
+    driver = json.loads(documents['reports/receipt.json'])
+    summary_raw = documents['reports/migration.json']; summary = json.loads(summary_raw)
+    need(driver.get('identity') == owner['identity'] and driver.get('scopeKind') == 'mysql'
+         and driver.get('wholeMigrationRequested') is True
+         and driver.get('wholeMigrationTests') == {'passed': 1, 'failed': 0, 'skipped': 0}
+         and driver.get('wholeMigrationSummarySha256') == digest(summary_raw),
+         'WHOLE_MIGRATION_DRIVER_PROOF_DIFFERS')
+    xml = documents['reports/python.xml']
+    need(b'<!DOCTYPE' not in xml.upper() and b'<!ENTITY' not in xml.upper(), 'ENTITY_FREE_MIGRATION_XML_REQUIRED')
+    cases = [case for case in ET.fromstring(xml).iter('testcase')
+             if case.get('classname') == 'tests_python.test_compact_migration_orchestration_ecs']
+    need(len(cases) == 1 and cases[0].get('name') ==
+         'test_actual_whole_copy_both_restores_readback_and_unknown_result_stop'
+         and not any(cases[0].find(name) is not None for name in ('failure', 'error', 'skipped')),
+         'ACTUAL_WHOLE_MIGRATION_PASS_REQUIRED')
+    expected = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration-acceptance',
+                'status': 'VERIFIED', 'sourceTableCount': 131, 'targetTableCount': 29}
+    hashes = {'migrationReceiptSha256', 'sourceSnapshotSha256', 'targetSnapshotSha256',
+              'sourceRecoveryReceiptSha256', 'targetRecoveryReceiptSha256'}
+    need(set(summary) == set(expected) | hashes and all(summary.get(key) == value for key, value in expected.items())
+         and all(type(summary[key]) is str and SHA.fullmatch(summary[key]) for key in hashes),
+         'WHOLE_MIGRATION_SUMMARY_DIFFERS')
+    work = ROOT / 'verification' / row['release'] / 'checkout/work/compact-fixtures'
+    sidecar_raw = read(work / 'runtime-migration.json'); sidecar = json.loads(sidecar_raw)
+    need(sidecar.get('version') == 1 and sidecar.get('kind') == 'doorhandle-runtime-migration-input'
+         and sidecar.get('ecs') == owner['identity'] and sidecar.get('serverUuid') == owner.get('serverUuid')
+         and sidecar.get('targetSchema') == 'doorhandle_compact_candidate_' + owner['token']
+         and sidecar.get('migrationReceiptSha256') == summary['migrationReceiptSha256'],
+         'WHOLE_MIGRATION_INPUT_OWNER_DIFFERS')
+    receipt_path = Path(sidecar['migrationReceiptFile'])
+    folder = receipt_path.parent.parent
+    need(folder.parent == work and re.fullmatch(r'whole-migration-acceptance-[a-f0-9]{10}', folder.name)
+         and receipt_path == folder / 'migrate/migration-receipt.json'
+         and sidecar['reviewedConfigFile'] == str(work / ('reviewed-whole-migration-' + folder.name[-10:] + '.json')),
+         'WHOLE_MIGRATION_PROOF_PATH_DIFFERS')
+    receipt_raw = read(receipt_path, 16 * MIB); receipt = json.loads(receipt_raw)
+    config_sha = digest(read(Path(sidecar['reviewedConfigFile'])))
+    context = {'ecs': owner['identity'], 'scope': 'ecs-disposable-migration', 'serverUuid': owner['serverUuid'],
+               'sourceSchema': owner['sourceClone'], 'targetSchema': sidecar['targetSchema']}
+    need(digest(receipt_raw) == summary['migrationReceiptSha256']
+         and receipt.get('kind') == 'doorhandle-compact-migration' and receipt.get('schemaVersion') == 1
+         and receipt.get('status') == 'VERIFIED' and receipt.get('sourceTableCount') == 131
+         and receipt.get('targetTableCount') == 29 and receipt.get('foreignKeysValidated') is True
+         and receipt.get('freezeEvidenceSha256') is None
+         and all(receipt.get(key) == value for key, value in context.items())
+         and receipt.get('configSha256') == sidecar.get('reviewedConfigSha256') == config_sha
+         and receipt.get('sourceSnapshotSha256') == summary['sourceSnapshotSha256'] == owner['sourceCloneSnapshotSha256']
+         and receipt.get('targetSnapshotSha256') == summary['targetSnapshotSha256'],
+         'WHOLE_MIGRATION_RECEIPT_BINDING_DIFFERS')
+    evidence_raw = read(receipt_path.parent / 'migration-evidence.json', 16 * MIB)
+    evidence_sha = digest(evidence_raw); evidence = json.loads(evidence_raw)
+    need(receipt.get('evidence') == {'file': 'migration-evidence.json', 'sha256': evidence_sha}
+         and evidence.get('kind') == 'doorhandle-compact-migration-evidence' and evidence.get('status') == 'COPY_VERIFIED'
+         and all(evidence.get(key) == receipt.get(key) for key in
+             ('attempt', *context, 'contractSha256', 'sqlSha256', 'copyPlanSha256', 'sourceSnapshotSha256',
+              'sourceMetadataSha256', 'targetSnapshotSha256', 'targetMetadataSha256', 'executedSteps',
+              'sourceSnapshot', 'targetSnapshot', 'sourceTableCount', 'targetTableCount', 'foreignKeysValidated',
+              'freezeEvidenceSha256', 'sourceClockPolicy')),
+         'WHOLE_MIGRATION_COPY_EVIDENCE_DIFFERS')
+    for purpose, count in (('source', 131), ('target', 29)):
+        member = purpose + '-recovery/recovery-receipt.json'
+        proof_raw = read(receipt_path.parent / member); proof = json.loads(proof_raw)
+        need(receipt.get('recovery', {}).get(purpose) == {'file': member, 'sha256': digest(proof_raw)}
+             and digest(proof_raw) == summary[purpose + 'RecoveryReceiptSha256']
+             and proof.get('kind') == 'doorhandle-compact-recovery' and proof.get('schemaVersion') == 1
+             and proof.get('status') == 'VERIFIED' and proof.get('purpose') == purpose
+             and proof.get('migrationEvidenceSha256') == evidence_sha
+             and all(proof.get(key) == receipt.get(key) for key in
+                 ('attempt', 'ecs', 'serverUuid', 'sourceSchema', 'targetSchema', 'contractSha256', 'sqlSha256',
+                  'copyPlanSha256', 'targetMetadataSha256'))
+             and proof.get('expectedSnapshotSha256') == proof.get('restoredSnapshotSha256') == summary[purpose + 'SnapshotSha256']
+             and proof.get('restoredMetadataSha256') == receipt[purpose + 'MetadataSha256']
+             and proof.get('restoredTableCount') == count,
+             'WHOLE_MIGRATION_DUAL_RESTORE_DIFFERS')
+    return {'sidecarSha256': digest(sidecar_raw), 'migrationReceiptSha256': digest(receipt_raw),
+            'copyEvidenceSha256': evidence_sha, 'reviewedConfigSha256': config_sha,
+            'sourceRecoveryReceiptSha256': summary['sourceRecoveryReceiptSha256'],
+            'targetRecoveryReceiptSha256': summary['targetRecoveryReceiptSha256'],
+            'originalReportSha256': {name: digest(raw) for name, raw in documents.items()}}
 
 
 def pre_driver_memory_failure(row, receipt, catalog, fixture_container_id):
@@ -1227,13 +1331,22 @@ def task_reports(row, verifier, *, metadata_only=False, fixture_container_id=Non
     catalog = verifier.validate_envelope(receipt, args)
     need(bool(catalog), 'ORIGINAL_VERIFICATION_REPORTS_REQUIRED')
     if pre_driver: pre_driver_memory_failure(row, receipt, catalog, fixture_container_id)
+    sidecar = receipt_path.parent / 'checkout/work/compact-fixtures/runtime-migration.json'
+    migration = row.get('retirement', {}).get('policy') == FINISHED_BATCH and (sidecar.exists() or sidecar.is_symlink())
+    migration_names = {'reports/receipt.json', 'reports/migration.json', 'reports/python.xml'}
+    if migration:
+        need(not pre_driver and row.get('retirement', {}).get('policy') == FINISHED_BATCH
+             and isinstance(preparation_failure, dict) and migration_names <= set(catalog)
+             and all(0 < catalog[name]['bytes'] <= 16 * MIB for name in migration_names),
+             'COMPLETE_WHOLE_MIGRATION_REPORTS_REQUIRED')
     archive_path = safe(ROOT / 'inbox' / row['release'] / 'verification-evidence.tar.gz')
     before = archive_path.stat()
     need(stat.S_ISREG(before.st_mode) and before.st_uid == 1000 and before.st_nlink == 1
          and not before.st_mode & 0o022 and 0 < before.st_size <= verifier.MAX_EVIDENCE_ARCHIVE,
          'ORIGINAL_REPORT_ARCHIVE_REQUIRED')
-    if not metadata_only or pre_driver:
-        seen = set(); lifecycle = {}
+    completed_migration = None
+    if not metadata_only or pre_driver or migration:
+        seen = set(); lifecycle = {}; migration_documents = {}
         with verifier.bounded_tar(archive_path, verifier.MAX_EVIDENCE_BYTES + 16 * MIB) as archive:
             for index, member in enumerate(archive, 1):
                 name = verifier.member_path(member.name).as_posix()
@@ -1250,6 +1363,11 @@ def task_reports(row, verifier, *, metadata_only=False, fixture_container_id=Non
                     need(len(body) == member.size and digest(body) == catalog[name]['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
                     lifecycle[name] = json.loads(body)
                     continue
+                if migration and name in migration_names:
+                    body = archive.extractfile(member).read(16 * MIB + 1)
+                    need(len(body) == member.size and digest(body) == catalog[name]['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
+                    migration_documents[name] = body
+                    continue
                 check = hashlib.sha256()
                 with archive.extractfile(member) as stream:
                     for block in iter(lambda: stream.read(MIB), b''):
@@ -1257,9 +1375,13 @@ def task_reports(row, verifier, *, metadata_only=False, fixture_container_id=Non
                 need(check.hexdigest() == catalog[name]['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
         need(seen == {'verification-receipt.json', *catalog}, 'ORIGINAL_REPORT_ARCHIVE_INCOMPLETE')
         if pre_driver: pre_driver_cleanup(receipt, lifecycle)
+        if migration:
+            completed_migration = finished_completed_migration(row, preparation_failure['owner'],
+                preparation_failure['recipe'], migration_documents)
     need(signature(before) == signature(archive_path.stat()), 'ORIGINAL_REPORT_ARCHIVE_CHANGED')
     return {'verificationStatus': receipt['status'], 'receiptSha256': digest(raw),
             'archiveMetadata': signature(before), 'reportFiles': len(catalog),
+            **({'completedMigration': completed_migration} if completed_migration is not None else {}),
             **({'verificationExitCode': None, 'driverStarted': False, 'failureStage': 'FIXTURE_MEMORY_ADMISSION'}
                if pre_driver else {})}
 
@@ -1295,8 +1417,12 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
              and cleanup.get('dataDirectoryRetained') == str(work / 'mysql-data'), 'EXACT_DERIVED_TASK_OWNER_REQUIRED')
         recipe = task_source_recipe(native, row)
         preparation, transport = local['preparation'], local['transport']
+        reports = task_reports(row, verifier, metadata_only=metadata_only, fixture_container_id=owner['containerId'],
+            preparation_failure={'owner': owner, 'cleanup': cleanup, 'recipe': recipe,
+                                 'jenkinsResult': evidence['jenkinsResult']} if finished else None)
         if finished:
-            absence = finished_runtime_absence(row, preparation, transport, recipe, value['identity'])
+            absence = finished_runtime_absence(row, preparation, transport, recipe, value['identity'],
+                *([reports['completedMigration']] if 'completedMigration' in reports else []))
             need((evidence['jarSha256'], evidence['jarBytes']) ==
                  (row['retirement']['jarSha256'], row['retirement']['jarBytes']),
                  'MANIFEST_BINARY_DIFFERS_FROM_ORIGINAL_BUILD')
@@ -1332,9 +1458,7 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
             'cleanupSha256': digest(raw_docs['fixtureCleanup']), 'backupManifestSha256': digest(manifest_raw),
             'sourceSqlSha256': sql_sha, 'sourceSqlBytes': sql_bytes, 'sourceSnapshotSha256': owner['sourceSnapshotSha256'],
             'sourceRecipe': recipe, 'publicationReferences': publication,
-            'reports': task_reports(row, verifier, metadata_only=metadata_only, fixture_container_id=owner['containerId'],
-                preparation_failure={'owner': owner, 'cleanup': cleanup, 'recipe': recipe,
-                                     'jenkinsResult': evidence['jenkinsResult']} if finished else None),
+            'reports': reports,
             **({'preRuntimeAbsence': absence} if finished else {}),
             **({'completedBinaryRetirement': finished_completed_binaries(binding, row)}
                if finished and 'completedAttempt' in row['retirement'] else {})})

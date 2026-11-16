@@ -100,20 +100,22 @@ class CompactH2FixtureInstallationTest {
         assertThatThrownBy(() -> jdbc.update("INSERT INTO chat_project(project_id,username,user_id,name) "
                 + "VALUES('orphan-project','history-clear',999999,'fixture')"))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> jdbc.update("INSERT INTO chat_session(session_id,username,user_id,project_id) "
-                + "VALUES('orphan-session','history-clear',?,'missing-project')", user))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        // The observed session source preserves historical names/project references without extra parent FKs.
+        jdbc.update("INSERT INTO chat_session(session_id,username,user_id,project_id) "
+                + "VALUES('orphan-session','retired-history',?,'missing-project')", user);
+        var orphanSession=jdbc.queryForMap("SELECT * FROM chat_session WHERE session_id='orphan-session'");
         assertThatThrownBy(() -> jdbc.update("UPDATE users SET id=? WHERE id=?", user + 1000, user))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> jdbc.update("UPDATE chat_project SET project_id='restricted-project' WHERE project_id='fk-project'"))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        jdbc.update("UPDATE chat_project SET project_id='renamed-project' WHERE project_id='fk-project'");
+        assertThat(jdbc.queryForObject("SELECT project_id FROM chat_session WHERE session_id='fk-session'", String.class)).isEqualTo("fk-project");
         jdbc.update("UPDATE users SET username='history-renamed' WHERE id=?", user);
-        assertThat(jdbc.queryForObject("SELECT username FROM chat_project WHERE project_id='fk-project'", String.class)).isEqualTo("history-renamed");
-        assertThat(jdbc.queryForObject("SELECT username FROM chat_session WHERE session_id='fk-session'", String.class)).isEqualTo("history-renamed");
+        assertThat(jdbc.queryForObject("SELECT username FROM chat_project WHERE project_id='renamed-project'", String.class)).isEqualTo("history-renamed");
+        assertThat(jdbc.queryForObject("SELECT username FROM chat_session WHERE session_id='fk-session'", String.class)).isEqualTo("history-clear");
         jdbc.update("UPDATE chat_session SET session_id='fk-session-renamed' WHERE session_id='fk-session'");
         assertThat(jdbc.queryForObject("SELECT session_id FROM chat_message", String.class)).isEqualTo("fk-session-renamed");
-        jdbc.update("DELETE FROM chat_project WHERE project_id='fk-project'");
-        assertThat(jdbc.queryForObject("SELECT project_id FROM chat_session WHERE session_id='fk-session-renamed'", String.class)).isNull();
+        jdbc.update("DELETE FROM chat_project WHERE project_id='renamed-project'");
+        assertThat(jdbc.queryForObject("SELECT project_id FROM chat_session WHERE session_id='fk-session-renamed'", String.class)).isEqualTo("fk-project");
+        assertThat(jdbc.queryForMap("SELECT * FROM chat_session WHERE session_id='orphan-session'")).isEqualTo(orphanSession);
         jdbc.update("INSERT INTO chat_project(project_id,username,user_id,name) VALUES('fk-project-delete','history-renamed',?,'fixture')", user);
         jdbc.update("DELETE FROM users WHERE id=?", user);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM chat_project", Integer.class)).isZero();

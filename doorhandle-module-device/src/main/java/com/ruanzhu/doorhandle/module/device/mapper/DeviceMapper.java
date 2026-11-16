@@ -58,6 +58,7 @@ public interface DeviceMapper extends BaseMapper<Device> {
     @Select("SELECT d.*, e.name as employee_name, e.employee_number, e.employee_type FROM device_management d LEFT JOIN employee e ON d.employee_id = e.id WHERE d.id = #{id}")
     @Results({
         @Result(property = "id", column = "id"),
+        @Result(property = "employeeId", column = "employee_id"),
         @Result(property = "employee", column = "employee_id", one = @One(select = "com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper.selectById"))
     })
     Device getDeviceWithEmployee(Long id);
@@ -69,6 +70,7 @@ public interface DeviceMapper extends BaseMapper<Device> {
     @Select("SELECT d.*, e.name as employee_name, e.employee_number FROM device_management d LEFT JOIN employee e ON d.employee_id = e.id")
     @Results({
         @Result(property = "id", column = "id"),
+        @Result(property = "employeeId", column = "employee_id"),
         @Result(property = "employee", column = "employee_id", one = @One(select = "com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper.selectById"))
     })
     List<Device> findAllWithEmployee();

@@ -5,7 +5,9 @@ import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
+import com.ruanzhu.doorhandle.framework.config.MybatisPlusConfig;
 import com.ruanzhu.doorhandle.module.detection.support.CoreCopyMySqlFixture;
+import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceUsageRecord;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceUsageRecordMapper;
@@ -60,6 +62,8 @@ class DeviceUsageHistoryMySqlTest {
         var config = new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true);
         config.addMapper(EmployeeMapper.class); config.addMapper(DeviceMapper.class); config.addMapper(DeviceUsageRecordMapper.class);
         var factory = new MybatisSqlSessionFactoryBean(); factory.setDataSource(jdbc.getDataSource()); factory.setConfiguration(config);
+        // Match the application: @Version updates require the optimistic-lock plugin.
+        factory.setPlugins(new MybatisPlusConfig().mybatisPlusInterceptor());
         factory.setMapperLocations(new ClassPathResource("mapper/DeviceUsageRecordMapper.xml"));
         var sql = new SqlSessionTemplate(factory.getObject());
         service = new DeviceUsageRecordServiceImpl();
@@ -83,6 +87,39 @@ class DeviceUsageHistoryMySqlTest {
     }
 
     @AfterEach void close() throws Exception { if (fixture != null) fixture.close(); }
+
+    @Test void joinedDeviceReadsKeepTheAssignmentIdAlongsideTheNestedEmployee() {
+        assertAssignedDeviceRead(devices.getDeviceById(9L));
+        assertThat(devices.getAllDevicesWithEmployee()).singleElement().satisfies(this::assertAssignedDeviceRead);
+        var page = devices.getDevicesByPage(null, null, null, null, null, 1, 10);
+        assertThat(page.get("total")).isEqualTo(1L);
+        assertThat((List<?>) page.get("records")).singleElement().satisfies(row -> assertAssignedDeviceRead((Device) row));
+
+        assertThat(tx.<Boolean>execute(status -> devices.removeEmployeeFromDevice(9L))).isTrue();
+        assertThat(devices.getDeviceById(9L).getEmployeeId()).isNull();
+        assertThat(devices.getDeviceById(9L).getEmployee()).isNull();
+        assertThat(devices.getAllDevicesWithEmployee()).singleElement().satisfies(device -> {
+            assertThat(device.getEmployeeId()).isNull();
+            assertThat(device.getEmployee()).isNull();
+        });
+    }
+
+    @Test void productionOptimisticLockRejectsAStaleDeviceVersionWithoutChangingItsAssignment() {
+        Device current = devices.getDeviceById(9L);
+        Device stale = devices.getDeviceById(9L);
+        assertThat(current.getVersion()).isZero();
+        current.setStatus("MAINTENANCE");
+        Device updated = tx.execute(status -> devices.updateDevice(9L, current));
+        assertThat(updated.getVersion()).isEqualTo(1);
+        stale.setStatus("IDLE");
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> devices.updateDevice(9L, stale)))
+                .isInstanceOfSatisfying(BusinessException.class, conflict -> assertThat(conflict.getCode()).isEqualTo(409));
+        assertThat(devices.getDeviceById(9L)).satisfies(device -> {
+            assertThat(device.getVersion()).isEqualTo(1);
+            assertThat(device.getStatus()).isEqualTo("MAINTENANCE");
+            assertThat(device.getEmployeeId()).isEqualTo(11L);
+        });
+    }
 
     @Test void deletingParentsPreservesStoredHistoryAndAllowsReadsNotesAndHistoricalReturn() {
         Map<String,Object> before = jdbc.queryForMap("SELECT * FROM device_usage WHERE id=41");
@@ -214,20 +251,36 @@ class DeviceUsageHistoryMySqlTest {
         jdbc.update("UPDATE device_management SET employee_id=NULL,status='IDLE',device_type='DETECTION' WHERE id=9");
         var before = jdbc.queryForMap("SELECT * FROM device_management WHERE id=9");
         var failingHistory = mock(DeviceUsageRecordService.class);
+        when(failingHistory.createRecordOnAssign(eq(9L), eq(11L), anyString())).thenAnswer(call -> {
+            // The failure must follow the real device write, not a mapper binding error.
+            assertThat(jdbc.queryForObject("SELECT employee_id FROM device_management WHERE id=9", Long.class)).isEqualTo(11L);
+            assertThat(jdbc.queryForObject("SELECT status FROM device_management WHERE id=9", String.class)).isEqualTo("MAINTENANCE");
+            assertThat(jdbc.queryForObject("SELECT version FROM device_management WHERE id=9", Integer.class)).isEqualTo(1);
+            return false;
+        });
         ReflectionTestUtils.setField(employees, "deviceUsageRecordService", failingHistory);
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> employees.assignDeviceToEmployee(11L, 9L)))
                 .isInstanceOf(BusinessException.class);
+        verify(failingHistory).createRecordOnAssign(eq(9L), eq(11L), anyString());
         assertThat(jdbc.queryForMap("SELECT * FROM device_management WHERE id=9")).isEqualTo(before);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_usage", Integer.class)).isEqualTo(1);
     }
 
     @Test void failedDeviceReleaseRollsBackTheClosedReceipt() {
         var failingDevices = mock(DeviceMapper.class);
-        when(failingDevices.selectForUsageUpdate(9L)).thenReturn(devices.getDeviceById(9L));
+        Device assigned = devices.getDeviceById(9L);
+        assertAssignedDeviceRead(assigned);
+        when(failingDevices.selectForUsageUpdate(9L)).thenReturn(assigned);
+        when(failingDevices.updateEmployeeId(9L, null)).thenAnswer(call -> {
+            assertThat(service.getById(41L).getStatus()).isEqualTo("RETURNED");
+            assertThat(service.getById(41L).getEndTime()).isNotNull();
+            return 0;
+        });
         ReflectionTestUtils.setField(service, "deviceMapper", failingDevices);
         var before = jdbc.queryForMap("SELECT * FROM device_usage WHERE id=41");
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> devices.removeEmployeeFromDevice(9L)))
                 .isInstanceOf(BusinessException.class);
+        verify(failingDevices).updateEmployeeId(9L, null);
         assertThat(jdbc.queryForMap("SELECT * FROM device_usage WHERE id=41")).isEqualTo(before);
         assertLiveAssignment();
     }
@@ -235,6 +288,14 @@ class DeviceUsageHistoryMySqlTest {
     private void assertLiveAssignment() {
         assertThat(jdbc.queryForObject("SELECT employee_id FROM device_management WHERE id=9", Long.class)).isEqualTo(11L);
         assertThat(jdbc.queryForObject("SELECT status FROM device_management WHERE id=9", String.class)).isEqualTo("IN_USE");
+    }
+
+    private void assertAssignedDeviceRead(Device device) {
+        assertThat(device.getId()).isEqualTo(9L);
+        assertThat(device.getEmployeeId()).isEqualTo(11L);
+        assertThat(device.getEmployee()).isNotNull();
+        assertThat(device.getEmployee().getId()).isEqualTo(11L);
+        assertThat(device.getEmployee().getName()).isEqualTo("Current employee");
     }
 
     private void assertBlockedConcurrentWrite(String sql) {

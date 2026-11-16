@@ -358,7 +358,7 @@
         "doorhandle.core.copy.target.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DeviceUsageHistoryMySqlTest.java",
-      "minimumTests": 11,
+      "minimumTests": 13,
       "coverage": [
         "retained usage snapshots, real parent-reference locks and stale receipt isolation"
       ]
@@ -1459,7 +1459,7 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 426,
+        "minimumTests": 470,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },

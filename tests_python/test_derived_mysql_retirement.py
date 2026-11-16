@@ -2405,7 +2405,8 @@ def test_finished_watch_start_failure_binds_original_producer_and_retained_helpe
         retirement.task_reports(case.row, SimpleNamespace(), preparation_failure=case.arguments)
 
 
-def test_finished_admission_passes_authenticated_owner_cleanup_recipe_and_terminal_to_report_guard(task_keeper_documents, monkeypatch):
+@pytest.mark.parametrize('completed', [False, True])
+def test_finished_admission_passes_authenticated_owner_cleanup_recipe_and_terminal_to_report_guard(task_keeper_documents, monkeypatch, completed):
     state = task_keeper_documents
     state.binding['batch'] = retirement.FINISHED_BATCH; state.row['retirement'] = _finished_selection()
     state.xml = state.xml.replace(b'<value>verify</value>', b'<value>verify-runtime</value>')
@@ -2415,16 +2416,226 @@ def test_finished_admission_passes_authenticated_owner_cleanup_recipe_and_termin
     read = retirement.read
     monkeypatch.setattr(retirement, 'read', lambda path, maximum=0:
         transport if path.name == 'candidate-build-tools-transport.json' else read(path, maximum))
-    monkeypatch.setattr(retirement, 'finished_runtime_absence', lambda *_: {'candidateRuntimeEntered': False})
+    proof = {'sidecarSha256': '9' * 64}
+    def absence(*arguments):
+        assert arguments[5:] == ((proof,) if completed else ())
+        return {'candidateRuntimeEntered': False}
+    monkeypatch.setattr(retirement, 'finished_runtime_absence', absence)
     calls = []
+    result_reports = ({'verificationStatus': 'FAILED', 'completedMigration': proof} if completed else {'status': 'NOT_STARTED'})
     def reports(row, verifier, **options):
         calls.append(options)
         assert row is state.row and verifier is state.helpers['verify-remote.py']
         assert options['fixture_container_id'] == state.owner['containerId']
         assert options['preparation_failure'] == {'owner': state.owner,
             'cleanup': state.documents['cleanup-receipt.json'], 'recipe': state.recipe, 'jenkinsResult': 'FAILURE'}
-        return {'status': 'NOT_STARTED'}
+        return result_reports
     monkeypatch.setattr(retirement, 'task_reports', reports)
     result = retirement.task_admitted(state.binding, state.value, state.helpers)
-    assert len(calls) == 1 and result[0]['reports'] == {'status': 'NOT_STARTED'}
+    assert len(calls) == 1 and result[0]['reports'] == result_reports
     assert result[0]['sourceSqlSha256'] == state.manifest['data']['sha256']
+
+
+@pytest.fixture
+def completed_migration_reports(tmp_path, monkeypatch):
+    root = tmp_path / 'ci'; tag = 'ci-401-' + 'a' * 12
+    base = root / 'verification' / tag; work = base / 'checkout/work/compact-fixtures'
+    migrated = work / 'whole-migration-acceptance-0123456789/migrate'
+    inbox = root / 'inbox' / tag
+    migrated.mkdir(parents=True); inbox.mkdir(parents=True)
+    (base / '.verification-claimed').mkdir()
+    row = {'release': tag, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64, 'retirement': _finished_selection()}
+    context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}
+    identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
+    owner = {'identity': identity, 'token': '0123456789', 'serverUuid': '11111111-2222-3333-4444-555555555555',
+             'sourceClone': 'doorhandle_migration_verify_0123456789', 'sourceCloneSnapshotSha256': 'd' * 64}
+    config = work / 'reviewed-whole-migration-0123456789.json'; config.write_bytes(b'{"synthetic":true}')
+    receipt = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration', 'status': 'VERIFIED',
+        'scope': 'ecs-disposable-migration', 'attempt': 'f' * 32, 'ecs': identity, 'serverUuid': owner['serverUuid'],
+        'sourceSchema': owner['sourceClone'], 'targetSchema': 'doorhandle_compact_candidate_0123456789',
+        'sourceTableCount': 131, 'targetTableCount': 29, 'foreignKeysValidated': True, 'freezeEvidenceSha256': None,
+        'sourceSnapshotSha256': 'd' * 64, 'targetSnapshotSha256': 'e' * 64,
+        'sourceMetadataSha256': '1' * 64, 'targetMetadataSha256': '2' * 64,
+        'contractSha256': '3' * 64, 'sqlSha256': '4' * 64, 'copyPlanSha256': '5' * 64,
+        'configSha256': retirement.digest(config.read_bytes()), 'executedSteps': [{'name': 'synthetic-copy'}],
+        'sourceSnapshot': {'tables': {}}, 'targetSnapshot': {'tables': {}}}
+    evidence = {**receipt, 'kind': 'doorhandle-compact-migration-evidence', 'status': 'COPY_VERIFIED'}
+    proofs = {}
+    for purpose, count in (('source', 131), ('target', 29)):
+        proofs[purpose] = {key: receipt[key] for key in ('attempt', 'ecs', 'serverUuid', 'sourceSchema', 'targetSchema',
+            'contractSha256', 'sqlSha256', 'copyPlanSha256', 'targetMetadataSha256')}
+        proofs[purpose].update(kind='doorhandle-compact-recovery', schemaVersion=1, status='VERIFIED', purpose=purpose,
+            expectedSnapshotSha256=receipt[purpose + 'SnapshotSha256'], restoredSnapshotSha256=receipt[purpose + 'SnapshotSha256'],
+            restoredMetadataSha256=receipt[purpose + 'MetadataSha256'], restoredTableCount=count)
+    sidecar = {'version': 1, 'kind': 'doorhandle-runtime-migration-input', 'ecs': identity,
+        'serverUuid': owner['serverUuid'], 'targetSchema': receipt['targetSchema'],
+        'migrationReceiptFile': str(migrated / 'migration-receipt.json'), 'reviewedConfigFile': str(config),
+        'reviewedConfigSha256': receipt['configSha256']}
+    driver = {'identity': identity, 'scopeKind': 'mysql', 'status': 'FAILED', 'nativeAssertionFailures': True,
+              'wholeMigrationRequested': True, 'wholeMigrationTests': {'passed': 1, 'failed': 0, 'skipped': 0}}
+    summary = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration-acceptance', 'status': 'VERIFIED',
+               'sourceTableCount': 131, 'targetTableCount': 29,
+               'sourceSnapshotSha256': receipt['sourceSnapshotSha256'], 'targetSnapshotSha256': receipt['targetSnapshotSha256']}
+    xml = ET.Element('testsuites'); suite = ET.SubElement(xml, 'testsuite')
+    case = ET.SubElement(suite, 'testcase', classname='tests_python.test_compact_migration_orchestration_ecs',
+                        name='test_actual_whole_copy_both_restores_readback_and_unknown_result_stop')
+    recipe = {'wholeMigrationProducer': dict(retirement.WHOLE_MIGRATION_PRODUCER)}
+    outer = {'schema': 1, 'kind': 'doorhandle-ecs-ci', **context, 'attempt': 'c' * 32, 'scope': 'mysql',
+             'identity': identity, 'status': 'FAILED', 'verificationExitCode': 1,
+             'lifecycle': 'managed-outside-jenkins', 'fixtureReadinessValidated': True}
+    state = SimpleNamespace(root=root, base=base, work=work, migrated=migrated, inbox=inbox, row=row,
+        owner=owner, recipe=recipe, receipt=receipt, evidence=evidence, proofs=proofs, sidecar=sidecar,
+        driver=driver, summary=summary, xml=xml, case=case, config=config, omitted=None)
+    def refresh():
+        def put(path, value):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw = retirement.encoded(value); path.write_bytes(raw); path.chmod(0o600); return retirement.digest(raw)
+        evidence_sha = put(migrated / 'migration-evidence.json', evidence)
+        receipt['evidence'] = {'file': 'migration-evidence.json', 'sha256': evidence_sha}
+        receipt['recovery'] = {}
+        for purpose, proof in proofs.items():
+            proof['migrationEvidenceSha256'] = evidence_sha
+            member = purpose + '-recovery/recovery-receipt.json'; checksum = put(migrated / member, proof)
+            receipt['recovery'][purpose] = {'file': member, 'sha256': checksum}
+            summary[purpose + 'RecoveryReceiptSha256'] = checksum
+        summary['migrationReceiptSha256'] = put(migrated / 'migration-receipt.json', receipt)
+        sidecar['migrationReceiptSha256'] = summary['migrationReceiptSha256']
+        put(work / 'runtime-migration.json', sidecar)
+        summary_raw = retirement.encoded(summary); driver['wholeMigrationSummarySha256'] = retirement.digest(summary_raw)
+        documents = {'reports/receipt.json': retirement.encoded(driver), 'reports/migration.json': summary_raw,
+                     'reports/python.xml': ET.tostring(xml)}
+        if state.omitted: documents.pop(state.omitted)
+        state.documents = documents
+        outer['reportFiles'] = [{'path': name, 'bytes': len(raw), 'sha256': retirement.digest(raw)} for name, raw in documents.items()]
+        outer_raw = retirement.encoded(outer); put(base / 'verification-receipt.json', outer)
+        put(base / '.verification-claimed/claim.json', {'schema': 1, 'kind': 'doorhandle-ci-claim', **context,
+             'attempt': outer['attempt'], 'identity': identity, 'scope': 'mysql'})
+        with tarfile.open(inbox / 'verification-evidence.tar.gz', 'w:gz') as archive:
+            for name, raw in {'verification-receipt.json': outer_raw, **documents}.items():
+                member = tarfile.TarInfo(name); member.size = len(raw); archive.addfile(member, io.BytesIO(raw))
+        (inbox / 'verification-evidence.tar.gz').chmod(0o600)
+    state.refresh = refresh; refresh()
+    spec = importlib.util.spec_from_file_location('finished_whole_report_verifier', FILE.with_name('verify-remote.py'))
+    verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+    state.read_reports = lambda **options: retirement.task_reports(row, verifier,
+        preparation_failure={'owner': owner, 'recipe': recipe}, **options)
+    monkeypatch.setattr(retirement, 'ROOT', root)
+    return state
+
+
+@pytest.mark.parametrize('metadata_only', [False, True])
+def test_finished_completed_copy_and_restores_are_retained_despite_later_native_failure(completed_migration_reports, metadata_only):
+    state = completed_migration_reports
+    before = {path: path.read_bytes() for path in state.work.rglob('*') if path.is_file()}
+    result = state.read_reports(metadata_only=metadata_only)
+    assert result['verificationStatus'] == 'FAILED'
+    assert result['completedMigration']['migrationReceiptSha256'] == state.summary['migrationReceiptSha256']
+    assert result['completedMigration']['sidecarSha256'] == retirement.digest((state.work / 'runtime-migration.json').read_bytes())
+    assert result['completedMigration']['originalReportSha256'] == {name: retirement.digest(raw) for name, raw in state.documents.items()}
+    assert before == {path: path.read_bytes() for path in before}
+
+
+def test_finished_migration_proof_does_not_change_legacy_verify_report_contract(completed_migration_reports):
+    state = completed_migration_reports
+    state.row.pop('retirement')
+    state.recipe.clear()
+    result = state.read_reports()
+    assert result['verificationStatus'] == 'FAILED' and 'completedMigration' not in result
+
+
+@pytest.mark.parametrize('damage', ['producer', 'omitted', 'not-requested', 'driver-skip', 'xml-failure', 'xml-error',
+    'xml-skipped', 'xml-missing', 'xml-duplicate', 'summary-count', 'owner', 'server', 'target', 'escaped-receipt',
+    'escaped-config', 'receipt-status', 'receipt-scope', 'receipt-count', 'receipt-source', 'receipt-snapshot',
+    'copy-evidence', 'source-restore-status', 'target-restore-count', 'restore-owner', 'restore-snapshot', 'restore-metadata'])
+def test_finished_completed_migration_rejects_incomplete_or_rebound_proofs(completed_migration_reports, damage):
+    state = completed_migration_reports
+    if damage == 'producer': state.recipe['wholeMigrationProducer'] = {}
+    elif damage == 'omitted': state.omitted = 'reports/python.xml'
+    elif damage == 'not-requested': state.driver['wholeMigrationRequested'] = False
+    elif damage == 'driver-skip': state.driver['wholeMigrationTests'] = {'passed': 0, 'failed': 0, 'skipped': 1}
+    elif damage.startswith('xml-'):
+        issue = damage[4:]
+        if issue == 'missing': state.case.set('name', 'another_test')
+        elif issue == 'duplicate': state.xml[0].append(ET.fromstring(ET.tostring(state.case)))
+        else: ET.SubElement(state.case, issue)
+    elif damage == 'summary-count': state.summary['sourceTableCount'] = 130
+    elif damage == 'owner': state.sidecar['ecs'] = {'instanceId': 'other'}
+    elif damage == 'server': state.sidecar['serverUuid'] = 'other'
+    elif damage == 'target': state.sidecar['targetSchema'] = 'business'
+    elif damage == 'escaped-receipt': state.sidecar['migrationReceiptFile'] = str(state.root / 'other/migration-receipt.json')
+    elif damage == 'escaped-config': state.sidecar['reviewedConfigFile'] = str(state.root / 'other.json')
+    elif damage == 'receipt-status': state.receipt['status'] = 'COPY_VERIFIED'
+    elif damage == 'receipt-scope': state.receipt['scope'] = 'production-migration'
+    elif damage == 'receipt-count': state.receipt['targetTableCount'] = 28
+    elif damage == 'receipt-source': state.receipt['sourceSchema'] = 'business'
+    elif damage == 'receipt-snapshot': state.receipt['sourceSnapshotSha256'] = '9' * 64
+    elif damage == 'copy-evidence': state.evidence['executedSteps'] = []
+    elif damage == 'source-restore-status': state.proofs['source']['status'] = 'FAILED'
+    elif damage == 'target-restore-count': state.proofs['target']['restoredTableCount'] = 28
+    elif damage == 'restore-owner': state.proofs['target']['serverUuid'] = 'other'
+    elif damage == 'restore-snapshot': state.proofs['source']['restoredSnapshotSha256'] = '9' * 64
+    elif damage == 'restore-metadata': state.proofs['target']['restoredMetadataSha256'] = '9' * 64
+    state.refresh()  # The outer catalog remains authentic; the inner proof is wrong.
+    with pytest.raises(ValueError): state.read_reports(metadata_only=True)
+
+
+@pytest.mark.parametrize('path', ['runtime-migration.json', 'reviewed-whole-migration-0123456789.json',
+    'whole-migration-acceptance-0123456789/migrate/migration-receipt.json',
+    'whole-migration-acceptance-0123456789/migrate/migration-evidence.json',
+    'whole-migration-acceptance-0123456789/migrate/source-recovery/recovery-receipt.json',
+    'whole-migration-acceptance-0123456789/migrate/target-recovery/recovery-receipt.json'])
+def test_finished_migration_original_changes_are_rechecked_at_later_admission(completed_migration_reports, path):
+    state = completed_migration_reports
+    before = state.read_reports()['completedMigration']
+    target = state.work / path; target.write_bytes(target.read_bytes() + b' ')
+    if path == 'runtime-migration.json':
+        # Whitespace still parses, but the keeper proof changes and plan equality rejects it.
+        after = state.read_reports()['completedMigration']
+        assert after['sidecarSha256'] == retirement.digest(target.read_bytes())
+        assert after != before
+    else:
+        with pytest.raises(ValueError): state.read_reports()
+
+
+@pytest.mark.parametrize('path', ['runtime-migration.json', 'reviewed-whole-migration-0123456789.json',
+    'whole-migration-acceptance-0123456789/migrate/target-recovery/recovery-receipt.json'])
+def test_finished_migration_rejects_linked_originals(completed_migration_reports, path):
+    state = completed_migration_reports
+    target = state.work / path; other = state.root / 'linked-original.json'
+    other.write_bytes(target.read_bytes()); target.unlink(); target.symlink_to(other)
+    with pytest.raises(ValueError): state.read_reports()
+
+
+@pytest.mark.parametrize('damage', [None, 'changed-input', 'removed-input', 'app-started'])
+def test_finished_runtime_absence_accepts_only_the_same_completed_input(finished_tools, monkeypatch, damage):
+    state = finished_tools; base = state.root / 'verification' / state.row['release']
+    sidecar = base / 'checkout/work/compact-fixtures/runtime-migration.json'
+    sidecar.parent.mkdir(parents=True); raw = b'{"synthetic":"completed"}'; sidecar.write_bytes(raw)
+    proof = {'sidecarSha256': retirement.digest(raw)}
+    if damage == 'changed-input': sidecar.write_bytes(b'changed')
+    elif damage == 'removed-input': sidecar.unlink()
+    elif damage == 'app-started': (base / 'runtime-execution.json').write_bytes(b'owned runtime')
+    original = retirement.read
+    monkeypatch.setattr(retirement, 'read', lambda path: path.read_bytes() if path == sidecar else original(path))
+    args = (state.row, state.preparation, state.transport, state.recipe, state.identity, proof)
+    if damage:
+        with pytest.raises(ValueError): retirement.finished_runtime_absence(*args)
+    else:
+        assert retirement.finished_runtime_absence(*args)['candidateRuntimeEntered'] is False
+
+
+def test_finished_whole_migration_producer_is_bound_to_retained_source_without_import(monkeypatch):
+    bodies = {name: (FILE.parents[2] / name).read_bytes().replace(b'\r\n', b'\n')
+              for name in retirement.WHOLE_MIGRATION_PRODUCER}
+    assert {name: retirement.digest(raw) for name, raw in bodies.items()} == retirement.WHOLE_MIGRATION_PRODUCER
+    names = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
+    bodies.update({name: b'synthetic reviewed recipe ' + name.encode() for name in names})
+    row = {'release': 'ci-401-' + 'a' * 12, 'commit': 'a' * 40, 'retirement': _finished_selection()}
+    row['retirement']['publicationRecipe'] = [retirement.digest(bodies[name]) for name in names]
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode='w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': row['commit']}) as archive:
+        for name, raw in bodies.items():
+            member = tarfile.TarInfo(name); member.size = len(raw); archive.addfile(member, io.BytesIO(raw))
+    raw = stream.getvalue(); row['sourceSha256'] = retirement.digest(raw)
+    monkeypatch.setattr(retirement, 'read', lambda *_: raw)
+    assert retirement.task_source_recipe(SimpleNamespace(), row)['wholeMigrationProducer'] == retirement.WHOLE_MIGRATION_PRODUCER

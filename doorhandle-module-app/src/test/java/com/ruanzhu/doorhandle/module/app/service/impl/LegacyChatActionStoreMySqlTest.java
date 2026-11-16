@@ -151,19 +151,29 @@ class LegacyChatActionStoreMySqlTest {
         assertThat(jdbc.queryForList("SELECT actor_user_id FROM audit_event ORDER BY id",Long.class)).containsExactly(1L,2L);
     }
 
-    @Test void sessionRenameAndDeletionCascadeOnlyLiveActionRowsAndKeepAuditEvidence() {
+    @Test void sessionIdentityCascadesKeepHistoricalUsernameAndAuditEvidence() {
         store.insert(1,pending("rename-action",SESSION));store.insert(2,pending("other-action",OTHER));
+        jdbc.update("INSERT INTO chat_message(session_id,role,content) VALUES(?,'user','alice message'),(?,'user','bob message')",SESSION,OTHER);
         jdbc.update("UPDATE chat_session SET session_id='renamed-session' WHERE session_id=?",SESSION);
         jdbc.update("UPDATE users SET username='alice-renamed' WHERE id=1");
-        assertThat(jdbc.queryForObject("SELECT username FROM chat_session WHERE session_id='renamed-session'",String.class)).isEqualTo("alice-renamed");
+        // The observed source has only the stable user_id FK; username remains the historical value.
+        assertThat(jdbc.queryForObject("SELECT username FROM users WHERE id=1",String.class)).isEqualTo("alice-renamed");
+        assertThat(jdbc.queryForObject("SELECT username FROM chat_session WHERE session_id='renamed-session'",String.class)).isEqualTo("alice");
+        assertThat(jdbc.queryForObject("SELECT user_id FROM chat_session WHERE session_id='renamed-session'",Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT session_id FROM chat_message WHERE content='alice message'",String.class)).isEqualTo("renamed-session");
         assertThat(store.get(1,"renamed-session","rename-action").getSessionId()).isEqualTo("renamed-session");
         assertThatThrownBy(()->store.get(1,SESSION,"rename-action")).isInstanceOf(SecurityException.class);
         assertThat(jdbc.queryForObject("SELECT session_id FROM audit_event WHERE resource_id='rename-action'",String.class)).isEqualTo(SESSION);
         assertThat(store.transition(1,"renamed-session","rename-action","PENDING","CANCELLED",null)).isTrue();
         jdbc.update("DELETE FROM chat_session WHERE session_id='renamed-session'");
         assertThat(count("workflow_instance")).isEqualTo(1);assertThat(store.get(2,OTHER,"other-action").getStatus()).isEqualTo("PENDING");
+        assertThat(jdbc.queryForList("SELECT session_id FROM chat_message",String.class)).containsExactly(OTHER);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE resource_id='rename-action'",Long.class)).isEqualTo(2);
         assertThatThrownBy(()->store.get(1,"renamed-session","rename-action")).isInstanceOf(SecurityException.class);
+        var audit=jdbc.queryForList("SELECT * FROM audit_event ORDER BY id");
+        jdbc.update("DELETE FROM users WHERE id=2");
+        assertThat(count("chat_session")).isZero();assertThat(count("chat_message")).isZero();assertThat(count("workflow_instance")).isZero();
+        assertThat(jdbc.queryForList("SELECT * FROM audit_event ORDER BY id")).isEqualTo(audit);
     }
 
     @Test void actionIdentityRetainsGlobalUnicodeCaseAndAccentInsensitiveUniqueness() {
