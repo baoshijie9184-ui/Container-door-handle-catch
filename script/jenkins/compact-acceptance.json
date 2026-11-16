@@ -1307,7 +1307,7 @@
       },
       {
         "module": "tests_python.test_compact_schema_source",
-        "minimumTests": 32,
+        "minimumTests": 38,
         "source": "tests_python/test_compact_schema_source.py",
         "allowedSkippedTests": []
       },

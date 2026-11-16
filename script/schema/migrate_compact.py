@@ -184,6 +184,12 @@ def migrate(config, identity, config_sha, output, model, model_sha):
                               '48-mcp.sql': 'mcp'}.get(step['name'])
                     if domain:
                         body = 'SET @compact_' + domain + '_source_frozen=1; SET @compact_' + domain + '_target_frozen=1;\n' + body
+                    elif step['name'] == '47-detection-runtime.sql':
+                        # Mysql.script opens a new client session for each segment.
+                        # Pass the held source-lock proof in that same session;
+                        # satisfy the SQL's isolation guard without changing globals.
+                        body = ('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\n'
+                                'SET @compact_source_quiesced=1;\n' + body)
                     mysql.script(body, database=config['targetSchema'], label='copy-' + path.stem)
                     proof = {'transaction': 'SEGMENT_COMMITTED_AND_LOCAL_GUARDS_PASSED'}
                 record['executedSteps'].append({**step, 'finishedAtUtc': utc_now(), **proof})

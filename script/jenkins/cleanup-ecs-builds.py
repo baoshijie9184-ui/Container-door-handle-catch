@@ -70,6 +70,9 @@ SYNTHETIC_PYTEST_SOURCES = {
     'ci-337-1918c12cd441': ('1918c12cd4419670896cf07e88378c81ea03123a', 'fe062e06868fd588319e7975d38de5b4c569383bde3a131d458ae11908206b2c'),
     'ci-341-46c1dd6b1079': ('46c1dd6b107914d2d000cefbb6372fba8f7fdd97', '4d8cb28ce15c380db020d7694119cd3d116406410101bc13260f60fd73d2e498'),
     'ci-366-2fb71393e3a3': ('2fb71393e3a3c0f1412040633c04db180b2fd2da', 'c628f6efc5e2c23764e9f2886b6dd9796e2fc5a46c697925da6bd226382fadd6'),
+    # Same reviewed producers; later additions create only synthetic fixture
+    # bytes. The failed whole-migration case and every nonordinary tree stay.
+    'ci-375-b15e66d4e7e3': ('b15e66d4e7e39b9022c8fcfde8928d1d30231358', '84d4696ec2cfcc8acee67389441c5126af2482d37a2bc9101d19d618fad7fd62'),
 }
 SYNTHETIC_PYTEST_MODULES = frozenset('tests_python/' + name + '.py' for name in (
     'test_cold_store_custody', 'test_collaboration_browser_evidence', 'test_compact_cutover',

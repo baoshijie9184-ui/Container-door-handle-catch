@@ -1,6 +1,6 @@
 # 131 张源表到 29 张业务表的整库迁移与恢复
 
-当前交付是迁移、恢复及验收入口源码。尚未在 ECS 执行本轮整库迁移、两份恢复和业务验收，不能据此打开生产发布门禁。正式切换由 [部署协议](compact-deployment.md) 中的本地 Jenkins 流水线负责；本文件的 CLI 不切换应用连接、不启动应用、不管理 ECS 启停。
+当前交付是迁移、恢复及验收入口源码。整库迁移、两份恢复和业务验收尚未完整通过，不能据此打开生产发布门禁。正式切换由 [部署协议](compact-deployment.md) 中的本地 Jenkins 流水线负责；本文件的 CLI 不切换应用连接、不启动应用、不管理 ECS 启停。
 
 ## 入口与范围
 
@@ -65,7 +65,7 @@
 
 此模板不能直接执行。首切 helper 用现有管理连接读取完整事件及存储过程/函数目录、锁定原运行账号，并在每阶段独立回读；受限迁移账号看不到元数据时返回的零行不构成无对象证明。CLI 校验完整目录结构、目录 SHA、账号锁证明与冻结文件 SHA，并逐一独立 inspect 所有 writer 都已停止且重启策略为 `no`。本入口支持表与触发器恢复，源 SQL event 和 routine 目录必须实际为空；即使发现 DISABLED event 也停止，须另行完成相应恢复设计，不能悄悄遗漏。隔离夹具须有显式 source EVENT、EXECUTE 元数据可见授权才能独立核对目录，不向生产迁移账号添加这两项权限。
 
-迁移期间另由独立长连接持有全部 131 张源表的 `LOCK TABLES ... READ`。各 copy 段、Java helper 和 dump 使用其他连接，避免段内 `START TRANSACTION` 释放源锁。每段前及最终验证检查该锁连接仍存活。会话中的 `@compact_*_source_frozen=1` 只传递已成立的冻结状态，不作为停写证据。
+迁移期间另由独立长连接持有全部 131 张源表的 `LOCK TABLES ... READ`。各 copy 段、Java helper 和 dump 使用其他连接，避免段内 `START TRANSACTION` 释放源锁。每段前及最终验证检查该锁连接仍存活。45/context、46/identity、48/MCP 的 source/target frozen 变量，以及 47/detection-runtime 的 `@compact_source_quiesced=1`，均在该段自己的新客户端会话内设置，只传递已成立的冻结状态，不作为停写证据。47 段还在同一会话显式设置 `REPEATABLE READ`，再执行原 SQL 的隔离级别检查；不依赖上一段的会话变量或修改全局隔离级别。
 
 ## 实际执行阶段
 

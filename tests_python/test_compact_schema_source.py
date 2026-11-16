@@ -1,4 +1,5 @@
 """Source-contract regression cases. Execute with the project suite on ECS only."""
+from contextlib import contextmanager
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import json
@@ -21,6 +22,120 @@ def module(name):
 
 builder = module('build_compact_schema')
 inspector = module('inspect_compact_schema')
+
+
+COPY_SESSION_PREAMBLES = {
+    '45-context.sql': 'SET @compact_context_source_frozen=1; SET @compact_context_target_frozen=1;\n',
+    '46-detection-identity.sql': 'SET @compact_identity_source_frozen=1; SET @compact_identity_target_frozen=1;\n',
+    '47-detection-runtime.sql': ('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\n'
+                                 'SET @compact_source_quiesced=1;\n'),
+    '48-mcp.sql': 'SET @compact_mcp_source_frozen=1; SET @compact_mcp_target_frozen=1;\n',
+}
+
+
+def test_all_copy_segments_have_only_the_reviewed_external_session_variables():
+    paths = sorted((ROOT / 'sql/mysql/compact/copy').glob('*.sql'))
+    assert len(paths) == 30
+    required = {}
+    for path in paths:
+        sql = builder.without_comments(path.read_text('utf8'))
+        used = set(re.findall(r'(?<!@)@[A-Za-z_][A-Za-z_0-9]*', sql))
+        assigned = set(re.findall(r'(?:SET\s+|INTO\s+)(@[A-Za-z_][A-Za-z_0-9]*)', sql, re.I))
+        if used - assigned:
+            required[path.name] = used - assigned
+    assert required == {name: set(re.findall(r'(?<!@)@[A-Za-z_][A-Za-z_0-9]*', preamble))
+                        for name, preamble in COPY_SESSION_PREAMBLES.items()}
+
+
+@pytest.fixture
+def migration_copy_sessions(tmp_path, monkeypatch):
+    """Exercise the real orchestration/plan/rendering, with no database process."""
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    migration = module('migrate_compact'); model, model_sha = migration.contract()
+    plan = migration.copy_plan(model); identity = {'instanceId': 'synthetic', 'machineId': 'synthetic'}
+    config = {'scope': 'ecs-disposable-migration', 'serverUuid': 'synthetic-server',
+              'sourceSchema': 'doorhandle_legacy_verify_0123456789',
+              'targetSchema': 'doorhandle_compact_candidate_0123456789',
+              'sourceOffsets': {name: '+00:00' for name in migration.clocks.DOMAINS},
+              'sourceCollations': {name: 'utf8mb4_bin' for name in model['sourceTables']},
+              'reviewedSourceSnapshot': 'synthetic-observation', 'reviewedSourceSnapshotSha256': 'e' * 64}
+    observed = {'kind': 'doorhandle-compact-source-observation', 'status': 'FROZEN_SOURCE_OBSERVED',
+                'ecs': identity, 'sourceSchema': config['sourceSchema'], 'serverUuid': config['serverUuid'],
+                'contractSha256': model_sha, 'sourceSnapshotSha256': 'a' * 64,
+                'sourceMetadataSha256': 'b' * 64, 'sourceSnapshot': {'tables': {}}}
+    rendered = {step['name']: migration.render_copy(
+        (ROOT / 'sql/mysql/compact/copy' / step['name']).read_text('utf8'), config,
+        source_snapshot_sha256=observed['sourceSnapshotSha256']) for step in plan if step['kind'] == 'sql'}
+    calls = []; state = {'locked': False, 'loseLockBefore': None}
+
+    class CopyBoundaryReached(Exception):
+        pass
+
+    class Mysql:
+        def admitted_server(self): return {'serverUuid': config['serverUuid']}
+        @contextmanager
+        def source_lock(self, schema, tables):
+            assert schema == config['sourceSchema'] and tables == model['sourceTables']
+            state['locked'] = True
+            try: yield {'kind': 'MYSQL_LOCK_TABLES_READ', 'sourceTableCount': 131}
+            finally: state['locked'] = False
+        def assert_source_lock(self):
+            assert state['locked']
+            if state['loseLockBefore'] == plan[len(calls)]['name']:
+                raise ValueError('synthetic source lock lost')
+        def script(self, body, *, database, label):
+            assert state['locked'] and database == config['targetSchema']
+            name = label.removeprefix('copy-') + '.sql'
+            assert body.endswith(rendered[name])
+            prefix = body[:-len(rendered[name])]
+            # Each call represents a new client session: previous SETs cannot
+            # satisfy this segment, and its reviewed SQL body stays unchanged.
+            assert prefix == COPY_SESSION_PREAMBLES.get(name, '')
+            calls.append({'name': name, 'prefix': prefix})
+
+    mysql = Mysql()
+    monkeypatch.setattr(migration, 'Mysql', lambda *_: mysql)
+    monkeypatch.setattr(migration, 'compiled_target_parts', lambda: ('', {'sqlSha256': 'c' * 64}, [], [], []))
+    monkeypatch.setattr(migration, 'freeze_evidence', lambda *_: {'sha256': 'd' * 64})
+    monkeypatch.setattr(migration, 'private_json', lambda *_: (None, observed, 'e' * 64))
+    monkeypatch.setattr(migration, 'observed_source', lambda *_: observed)
+    monkeypatch.setattr(migration, 'backup_schema', lambda *args, **kwargs: {})
+    monkeypatch.setattr(migration, 'initialize_target', lambda *_: None)
+    def workbench(*args, **kwargs):
+        assert state['locked']; calls.append({'name': 'workbench-java'})
+        return {'transaction': 'SYNTHETIC_BRIDGE'}
+    monkeypatch.setattr(migration, 'workbench', workbench)
+    def after_copy(*_):
+        assert state['locked']
+        raise CopyBoundaryReached()
+    monkeypatch.setattr(migration, 'install_relations', after_copy)
+    output = tmp_path / 'migrate'; output.mkdir()
+    def run(): return migration.migrate(config, identity, 'f' * 64, output, model, model_sha)
+    return run, plan, calls, state, output, CopyBoundaryReached
+
+
+def test_whole_orchestrator_initializes_every_new_copy_session_under_the_source_lock(migration_copy_sessions):
+    run, plan, calls, state, output, boundary = migration_copy_sessions
+    with pytest.raises(boundary): run()
+    assert [call['name'] for call in calls] == [step['name'] for step in plan]
+    assert len(calls) == 31 and sum('prefix' in call for call in calls) == 30
+    assert not state['locked']
+    record = json.loads((output / 'migration-failed.json').read_bytes())
+    assert [step['name'] for step in record['executedSteps']] == [step['name'] for step in plan]
+    assert not (output / 'migration-receipt.json').exists()  # This test stops before real relations/restores.
+
+
+@pytest.mark.parametrize('segment', list(COPY_SESSION_PREAMBLES))
+def test_lost_source_lock_never_issues_a_frozen_session_flag_or_next_copy(migration_copy_sessions, segment):
+    run, plan, calls, state, output, _ = migration_copy_sessions
+    state['loseLockBefore'] = segment
+    with pytest.raises(ValueError, match='synthetic source lock lost'): run()
+    preceding = [step['name'] for step in plan[:next(i for i, step in enumerate(plan) if step['name'] == segment)]]
+    assert [call['name'] for call in calls] == preceding and segment not in preceding
+    assert not state['locked'] and not (output / 'migration-receipt.json').exists()
+    record = json.loads((output / 'migration-failed.json').read_bytes())
+    assert record['status'] == 'FAILED_OR_UNKNOWN_STOPPED'
+    assert [step['name'] for step in record['executedSteps']] == preceding
 
 
 def test_large_comment_free_insert_is_not_copied_into_character_storage():
