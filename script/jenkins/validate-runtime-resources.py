@@ -51,8 +51,10 @@ def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_di
              'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True}
     if proof.get('loadScope', {}).get('observabilityRequired') is True:
         scope['observabilityRequired'] = True
+    if proof.get('loadScope', {}).get('transientAdmissionPolicy') is not None:
+        scope['transientAdmissionPolicy'] = 'REAL_START_OWNED_STOP_V1'
     require(proof.get('loadScope') == scope
-            and all(type(proof['loadScope'].get(key)) is bool for key in scope if key != 'profile')
+            and all(type(proof['loadScope'].get(key)) is bool for key in scope if key not in ('profile', 'transientAdmissionPolicy'))
             and proof.get('status') == 'PASS',
             'Runtime proof must describe the actual bounded acceptance scope')
     reference = proof.get('resourceEvidence')
@@ -61,7 +63,19 @@ def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_di
             and re.fullmatch(r'[a-f0-9]{64}', reference.get('sha256', '')),
             'Runtime resource reference is malformed or foreign')
     summary, summary_sha = json_file(summary_file)
+    require(summary.get('transientAdmissionPolicy') == scope.get('transientAdmissionPolicy'),
+            'Runtime proof and resource summary disagree on transient admission')
+    if scope.get('transientAdmissionPolicy'):
+        require(summary.get('manualTransientRequired') == proof.get('manualAcceptance', {}).get('enabled'),
+                'Manual window lacks its own transient memory admission')
     cleanup, _ = json_file(cleanup_file)
+    if scope.get('transientAdmissionPolicy'):
+        for entry in summary.get('transientAdmissions', []):
+            name = entry.get('admission', {}).get('name', '')
+            original = (proof.get('legacyData', {}).get('verifications', {}).get(name[4:]) if name.startswith('bge-') else
+                        proof.get('scenarios', {}).get('private-mcp-install-fetch-cancel-reconcile') if name == 'mcp' else
+                        cleanup.get('browserEvidence') if name == 'browser' else proof.get('manualAcceptance'))
+            require(entry.get('completionReceipt') == original, 'Transient release is not bound to its original runtime receipt')
     require(summary_sha == reference['sha256'] and cleanup.get('resourceEvidence') == reference
             and cleanup.get('status') == 'STOPPED', 'Runtime cleanup and resource evidence are not bound together')
     context_keys = ('schemaVersion', 'kind', 'release', 'commit', 'sourceSha256', 'identity',

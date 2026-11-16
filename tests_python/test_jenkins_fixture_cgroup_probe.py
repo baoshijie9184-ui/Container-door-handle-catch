@@ -846,7 +846,8 @@ class FixtureWatchTests(unittest.TestCase):
         watch = preparer.FixtureWatch(preparation); self.status()
         spec = importlib.util.spec_from_file_location('admission_remote', MODULE.with_name('verify-remote.py'))
         remote = importlib.util.module_from_spec(spec); spec.loader.exec_module(remote)
-        runtime = SimpleNamespace(MEMORY={'mvn': 4, 'python': 4, 'java': 2, 'npm': 3, 'node': 2})
+        spec = importlib.util.spec_from_file_location('admission_tool_runtime', MODULE.with_name('ecs-tool-runtime.py'))
+        runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
         vector, metrics, redis = Mock(), Mock(), Mock()
         seen = []
         def ancillary(name, owned, limit):
@@ -864,7 +865,7 @@ class FixtureWatchTests(unittest.TestCase):
         self.assertEqual(['alertmanager', 'prometheus'], [call.args[0] for call in metrics.owned.call_args_list])
         self.assertEqual('ADMITTED', result['capacityVerdict'])
         self.assertEqual(5, len(result['fixtures']))
-        self.assertEqual(6 * preparer.GIB, result['toolMemoryBoundBytes'])
+        self.assertEqual(5888 * preparer.MIB, result['toolMemoryBoundBytes'])
         self.assertEqual(self.descriptor['containerId'], result['fixtures'][0]['containerId'])
         self.assertEqual(512, result['fixtures'][0]['anonymousMemoryBytes'])
 

@@ -1369,7 +1369,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_build_cleanup",
-        "minimumTests": 227,
+        "minimumTests": 231,
         "source": "tests_python/test_jenkins_ecs_build_cleanup.py",
         "allowedSkippedTests": []
       },
@@ -1537,7 +1537,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_tool_runtime",
-        "minimumTests": 79,
+        "minimumTests": 100,
         "source": "tests_python/test_jenkins_ecs_tool_runtime.py",
         "allowedSkippedTests": []
       },
@@ -1747,7 +1747,7 @@
       },
       {
         "module": "tests_python.test_compact_runtime_resources",
-        "minimumTests": 95,
+        "minimumTests": 156,
         "source": "tests_python/test_compact_runtime_resources.py",
         "allowedSkippedTests": []
       },

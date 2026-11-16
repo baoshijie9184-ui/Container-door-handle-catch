@@ -46,7 +46,10 @@ ENVIRONMENT = {'LANG', 'LC_ALL', 'PYTHONDONTWRITEBYTECODE',
                'DOORHANDLE_REQUIRE_SEMANTIC_MYSQL_TESTS',
                'DOORHANDLE_CACHE_REDIS_TEST_HOST', 'DOORHANDLE_CACHE_REDIS_TEST_PORT',
                'DOORHANDLE_CACHE_REDIS_TEST_DATABASE', 'DOORHANDLE_REQUIRE_REDIS_TESTS'}
-MEMORY = {'java': 2, 'mvn': 4, 'node': 2, 'npm': 3, 'python': 4}
+MEMORY_BYTES = {'java': 1792 * 1024 ** 2, 'mvn': 4 * 1024 ** 3, 'node': 2 * 1024 ** 3,
+                'npm': 3 * 1024 ** 3, 'python': 4 * 1024 ** 3}
+JAVA_MEMORY_OPTIONS = ('-Xmx1024m -XX:MaxMetaspaceSize=256m -XX:MaxDirectMemorySize=128m '
+                       '-XX:ReservedCodeCacheSize=128m -XX:+ExitOnOutOfMemoryError')
 NPM_NODE_OPTIONS = '--max-old-space-size=2048'
 DISK_FLOOR = (2 * 1024 + 256) * 1024 ** 2
 MEMORY_FLOOR = 1024 ** 3
@@ -705,9 +708,12 @@ def release_arguments(proof, arguments):
 
 
 def runtime_limits(tool):
-    return {'containerMemoryBytes': MEMORY[tool] * 1024 ** 3,
-            'containerMemorySwapBytes': MEMORY[tool] * 1024 ** 3,
-            'nodeOptions': NPM_NODE_OPTIONS if tool == 'npm' else None}
+    result = {'containerMemoryBytes': MEMORY_BYTES[tool],
+              'containerMemorySwapBytes': MEMORY_BYTES[tool],
+              'nodeOptions': NPM_NODE_OPTIONS if tool == 'npm' else None}
+    if tool == 'java':
+        result['javaMemoryOptions'] = JAVA_MEMORY_OPTIONS
+    return result
 
 
 def observed_runtime_limits(tool, row):
@@ -719,6 +725,18 @@ def observed_runtime_limits(tool, row):
     actual = {'containerMemoryBytes': row['HostConfig'].get('Memory'),
               'containerMemorySwapBytes': row['HostConfig'].get('MemorySwap'),
               'nodeOptions': options[0] if options else None}
+    if tool == 'java':
+        environment = row['Config'].get('Env') or []
+        java = [entry.partition('=')[2] for entry in environment if entry.partition('=')[0] == 'JAVA_TOOL_OPTIONS']
+        fixed = expected['javaMemoryOptions'].split()
+        tokens = java[0].split() if len(java) == 1 else []
+        paths = ('-Duser.home=', '-Djava.io.tmpdir=', '-Djansi.tmpdir=')
+        require(len(tokens) == len(fixed) + len(paths) and tokens[:len(fixed)] == fixed
+                and all(token.startswith(prefix) and len(token) > len(prefix)
+                        for token, prefix in zip(tokens[len(fixed):], paths))
+                and not any(entry.partition('=')[0] in ('JDK_JAVA_OPTIONS', '_JAVA_OPTIONS') for entry in environment),
+                'Tool Java options differ from the fixed executor configuration')
+        actual['javaMemoryOptions'] = ' '.join(tokens[:len(fixed)])
     require(actual == expected, 'Tool runtime limits differ from the fixed executor configuration')
     return actual
 
@@ -737,8 +755,6 @@ def owned_row(program, value, container):
             and re.fullmatch('/doorhandle-ci-tool-' + value['token'] + '-[a-f0-9]{12}', row.get('Name', ''))
             and host['RestartPolicy']['Name'] == 'no' and host['NetworkMode'] == 'host'
             and host.get('ReadonlyRootfs') is True and host.get('Privileged') is False
-            and host.get('Memory') == MEMORY[tool] * 1024 ** 3
-            and host.get('MemorySwap') == MEMORY[tool] * 1024 ** 3
             and set(host.get('CapDrop') or ()) == {'ALL'}
             and 'no-new-privileges:true' in (host.get('SecurityOpt') or ())
             and row['Config']['Entrypoint'] == [BINARIES[tool]]
@@ -927,11 +943,12 @@ def command(value, tool, arguments, cwd, environment):
     env, home = safe_environment(value, environment, writable)
     role = 'maven' if tool in ('java', 'mvn') else 'node' if tool in ('node', 'npm') else 'python'
     image = value['images'][role]
+    limits = runtime_limits(tool)
     name = 'doorhandle-ci-tool-' + value['token'] + '-' + secrets.token_hex(6)
     args = [value['docker'], 'create', '-i', '--name', name, '--network', 'host', '--restart', 'no',
             '--user', str(value['uid']) + ':' + str(value['gid']), '--read-only', '--cap-drop', 'ALL',
             '--security-opt', 'no-new-privileges:true', '--pids-limit', '512', '--cpus', '2',
-            '--memory', str(MEMORY[tool]) + 'g', '--memory-swap', str(MEMORY[tool]) + 'g',
+            '--memory', str(limits['containerMemoryBytes']), '--memory-swap', str(limits['containerMemorySwapBytes']),
             '--tmpfs', '/tmp:rw,nosuid,nodev,size=536870912',
             '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=1',
             '--label', LABEL + '=' + value['token'], '--label', 'io.doorhandle.release=' + value['release'],
@@ -961,7 +978,8 @@ def command(value, tool, arguments, cwd, environment):
     if role == 'maven':
         env.update(JAVA_HOME='/opt/java/openjdk', PATH='/opt/java/openjdk/bin:/usr/local/bin:/usr/bin:/bin',
                    MAVEN_CONFIG=str(home / '.m2'))
-        env['JAVA_TOOL_OPTIONS'] = ('-Xmx1536m -XX:MaxMetaspaceSize=512m -Duser.home=' + str(home)
+        heap = limits['javaMemoryOptions'] if tool == 'java' else '-Xmx1536m -XX:MaxMetaspaceSize=512m'
+        env['JAVA_TOOL_OPTIONS'] = (heap + ' -Duser.home=' + str(home)
             + ' -Djava.io.tmpdir=' + str(home / 'tmp') + ' -Djansi.tmpdir=' + str(home / 'tmp'))
     else:
         env['PATH'] = '/usr/local/bin:/usr/bin:/bin'

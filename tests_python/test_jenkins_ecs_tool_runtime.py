@@ -127,6 +127,8 @@ def test_maven_executor_drops_business_credentials_and_writes_only_owned_paths(r
     assert not any('docker.sock' in item for item in command)
     assert 'type=bind,src=/etc/machine-id,dst=/etc/machine-id,readonly' in command
     assert 'DOORHANDLE_COMPACT_MIGRATION_CONFIG=' + value['checkout'] + '/work/private.json' in command
+    assert command[command.index('--memory') + 1] == command[command.index('--memory-swap') + 1] == str(4 * 1024 ** 3)
+    assert any(entry.startswith('JAVA_TOOL_OPTIONS=-Xmx1536m -XX:MaxMetaspaceSize=512m -Duser.home=') for entry in command)
 
 
 @pytest.mark.parametrize('tool,memory_gib,node_options', [
@@ -142,8 +144,8 @@ def test_node_heap_configuration_is_fixed_per_tool_and_drops_caller_injection(re
         ['NODE_OPTIONS=' + node_options] if node_options else [])
     assert '/private/injected.js' not in '\n'.join(command)
     assert not any(entry.startswith('npm_config_node_options=') for entry in environment)
-    assert command[command.index('--memory') + 1] == str(memory_gib) + 'g'
-    assert command[command.index('--memory-swap') + 1] == str(memory_gib) + 'g'
+    assert command[command.index('--memory') + 1] == str(memory_gib * 1024 ** 3)
+    assert command[command.index('--memory-swap') + 1] == str(memory_gib * 1024 ** 3)
     assert 'NODE_OPTIONS' not in tools.ENVIRONMENT
 
 
@@ -228,6 +230,77 @@ def migration_arguments(jar, config, output):
             '--config', str(config), '--output', str(output)]
 
 
+@pytest.mark.parametrize('location', ['checkout', 'probe', 'release'])
+def test_java_command_uses_bounded_heap_and_actual_integer_docker_limit(registration, tmp_path, location):
+    value, _, _ = registration
+    cwd, arguments = Path(value['checkout']), ['-version']
+    if location == 'probe': cwd = tmp_path
+    if location == 'release':
+        value, cwd, jar = release_registration(registration)
+        tools.admit_release(value, cwd / 'candidate-build.json')
+        config = cwd / 'work/private.json'; config.write_text('{}')
+        arguments = migration_arguments(jar, config, cwd / 'work/receipt.json')
+    command, _ = tools.command(value, 'java', arguments, cwd, {
+        'JAVA_TOOL_OPTIONS': '-Xmx8192m', 'JDK_JAVA_OPTIONS': '-Xmx8192m', '_JAVA_OPTIONS': '-Xmx8192m'})
+    environment = [command[index + 1] for index, entry in enumerate(command) if entry == '--env']
+    java_options = next(entry.partition('=')[2] for entry in environment if entry.startswith('JAVA_TOOL_OPTIONS='))
+    assert java_options.split()[:5] == ['-Xmx1024m', '-XX:MaxMetaspaceSize=256m', '-XX:MaxDirectMemorySize=128m',
+                                        '-XX:ReservedCodeCacheSize=128m', '-XX:+ExitOnOutOfMemoryError']
+    assert len(java_options.split()) == 8
+    assert not any(entry.startswith(('JDK_JAVA_OPTIONS=', '_JAVA_OPTIONS=')) for entry in environment)
+    assert '8192m' not in '\n'.join(command)
+    assert command[command.index('--memory') + 1] == command[command.index('--memory-swap') + 1] == '1879048192'
+    assert command[-len(arguments):] == arguments
+    assert tools.runtime_limits('java') == {'containerMemoryBytes': 1792 * 1024 ** 2,
+        'containerMemorySwapBytes': 1792 * 1024 ** 2, 'nodeOptions': None,
+        'javaMemoryOptions': ' '.join(java_options.split()[:5])}
+
+
+def java_row(value):
+    command, _ = tools.command(value, 'java', ['-version'], Path(value['checkout']), {})
+    observed = row(value)
+    observed['Config']['Labels']['io.doorhandle.tool'] = 'java'
+    observed['Config']['Labels'].pop('io.doorhandle.maven-cache')
+    observed['Config']['Entrypoint'] = [tools.BINARIES['java']]
+    observed['Config']['Env'] = [command[index + 1] for index, entry in enumerate(command) if entry == '--env']
+    observed['HostConfig'].update(Memory=int(command[command.index('--memory') + 1]),
+                                  MemorySwap=int(command[command.index('--memory-swap') + 1]))
+    observed['Mounts'].pop()
+    return observed
+
+
+@pytest.mark.parametrize('mutation', ['none', 'old-memory', 'swap', 'heap', 'metaspace', 'direct', 'code-cache',
+                                    'oom', 'missing', 'duplicate', 'jdk-options', 'legacy-options'])
+def test_java_owned_container_binds_real_command_limits_and_jvm_options(registration, monkeypatch, mutation):
+    value, _, _ = registration
+    observed = java_row(value)
+    environment = observed['Config']['Env']
+    index = next(i for i, entry in enumerate(environment) if entry.startswith('JAVA_TOOL_OPTIONS='))
+    replacements = {'heap': ('-Xmx1024m', '-Xmx1536m'), 'metaspace': ('MetaspaceSize=256m', 'MetaspaceSize=512m'),
+        'direct': ('DirectMemorySize=128m', 'DirectMemorySize=256m'),
+        'code-cache': ('CodeCacheSize=128m', 'CodeCacheSize=256m'),
+        'oom': ('-XX:+ExitOnOutOfMemoryError', '-XX:-ExitOnOutOfMemoryError')}
+    if mutation in replacements: environment[index] = environment[index].replace(*replacements[mutation])
+    if mutation == 'old-memory': observed['HostConfig']['Memory'] = 2 * 1024 ** 3
+    if mutation == 'swap': observed['HostConfig']['MemorySwap'] += 1
+    if mutation == 'missing': environment.pop(index)
+    if mutation == 'duplicate': environment.append(environment[index])
+    if mutation == 'jdk-options': environment.append('JDK_JAVA_OPTIONS=-Xmx2048m')
+    if mutation == 'legacy-options': environment.append('_JAVA_OPTIONS=-Xmx2048m')
+    calls = []
+    def operation(program, *args, **kwargs):
+        calls.append(args)
+        assert args == ('inspect', 'e' * 64)
+        return json.dumps([observed]).encode()
+    monkeypatch.setattr(tools, 'docker', operation)
+    if mutation == 'none':
+        actual = tools.owned_row('/usr/bin/docker', value, 'e' * 64)
+        assert tools.observed_runtime_limits('java', actual) == tools.runtime_limits('java')
+    else:
+        with pytest.raises(ValueError): tools.stop_container('/usr/bin/docker', value, 'e' * 64)
+    assert len(calls) == 1  # Rejected identity cannot reach stop or remove.
+
+
 def test_java_release_binds_exact_source_candidate_and_jenkins_jar(registration):
     value, release, jar = release_registration(registration)
     tools.admit_release(value, release / 'candidate-build.json')
@@ -280,7 +353,7 @@ def test_python_executor_owns_mem0_data_and_accepts_only_registered_nested_java(
     assert not any('/production/data' in part for part in command)
     assert 'type=bind,src=' + value['docker'] + ',dst=' + value['docker'] + ',readonly' in command
     assert 'type=bind,src=' + str(socket) + ',dst=/var/run/docker.sock' in command
-    assert command[command.index('--memory') + 1] == command[command.index('--memory-swap') + 1]
+    assert command[command.index('--memory') + 1] == command[command.index('--memory-swap') + 1] == str(4 * 1024 ** 3)
     with pytest.raises(ValueError, match='immutable registration wrapper'):
         tools.command(value, 'python', ['-m', 'pytest'], Path(value['checkout']), {'DOORHANDLE_MIGRATION_JAVA': '/tmp/java'})
 
@@ -304,11 +377,10 @@ def test_resource_floor_fails_before_execution_and_retains_actual_probe(registra
 def test_sampling_failure_records_safe_source_location_and_preserves_owned_stop(registration, monkeypatch, failing_sample):
     value, _, _ = registration
     name = 'doorhandle-ci-tool-' + value['token'] + '-123456789abc'
+    observed = java_row(value)
     monkeypatch.setattr(tools, 'command', lambda *_args: (['/usr/bin/docker', 'create'], name))
     monkeypatch.setattr(tools, 'canonical', lambda path, **_kwargs: Path(path))
     monkeypatch.setattr(tools, 'docker', lambda *_args: ('e' * 64).encode())
-    observed = row(value)
-    observed['HostConfig'].update(Memory=2 * 1024 ** 3, MemorySwap=2 * 1024 ** 3)
     monkeypatch.setattr(tools, 'owned_row', lambda *_args: observed)
     samples, stopped = [], []
     def sample(*_args):
@@ -392,8 +464,7 @@ def test_tool_report_exports_only_hashes_exits_and_actual_cleanup(registration):
                'sourceSha256': value['sourceSha256'], 'tool': 'java', 'containerId': 'e' * 64,
                'argumentsSha256': hashlib.sha256(b'private argument bytes').hexdigest(),
                'status': 'EXITED', 'exitCode': 0, 'privateSentinel': 'do-not-export',
-               'runtimeLimits': {'containerMemoryBytes': 2 * 1024 ** 3,
-                                 'containerMemorySwapBytes': 2 * 1024 ** 3, 'nodeOptions': None},
+               'runtimeLimits': tools.observed_runtime_limits('java', java_row(value)),
                'cleanup': {'containerId': 'e' * 64, 'image': value['images']['maven'], 'pid': 0,
                            'exitCode': 0, 'removed': True}}
     file = Path(value['directory']) / 'receipts' / ('doorhandle-ci-tool-' + value['token'] + '-123456789abc.json')
@@ -402,6 +473,29 @@ def test_tool_report_exports_only_hashes_exits_and_actual_cleanup(registration):
     assert len(report['commands']) == 1 and 'do-not-export' not in json.dumps(report)
     assert report['commands'][0]['runtimeLimits'] == receipt['runtimeLimits']
     assert remote.allowed_evidence('reports/tool-runtime.json')
+
+
+@pytest.mark.parametrize('mutation', ['none', 'missing', 'old-memory', 'missing-options', 'changed-options', 'private-options'])
+def test_java_public_evidence_requires_actual_bounded_limits_without_private_paths(registration, mutation):
+    value, _, _ = registration
+    limits = tools.observed_runtime_limits('java', java_row(value))
+    receipt = {'kind': 'doorhandle-ecs-tool-command', 'release': value['release'], 'commit': value['commit'],
+        'sourceSha256': value['sourceSha256'], 'tool': 'java', 'containerId': 'e' * 64,
+        'argumentsSha256': hashlib.sha256(b'private argument bytes').hexdigest(),
+        'status': 'EXITED', 'exitCode': 0, 'runtimeLimits': limits}
+    if mutation == 'missing': receipt.pop('runtimeLimits')
+    if mutation == 'old-memory': limits['containerMemoryBytes'] = limits['containerMemorySwapBytes'] = 2 * 1024 ** 3
+    if mutation == 'missing-options': limits.pop('javaMemoryOptions')
+    if mutation == 'changed-options': limits['javaMemoryOptions'] = '-Xmx1536m -XX:MaxMetaspaceSize=512m'
+    if mutation == 'private-options': limits['javaMemoryOptions'] += ' -Duser.home=/private/never-export'
+    file = Path(value['directory']) / 'receipts' / ('doorhandle-ci-tool-' + value['token'] + '-123456789abc.json')
+    tools.write_json(file, receipt)
+    if mutation == 'none':
+        report = tools.evidence(value, {'status': 'STOPPED', 'remaining': []})
+        assert report['commands'][0]['runtimeLimits'] == limits
+        assert value['checkout'] not in json.dumps(limits) and '-D' not in limits['javaMemoryOptions']
+    else:
+        with pytest.raises(ValueError, match='runtime limits'): tools.evidence(value, {'status': 'STOPPED', 'remaining': []})
 
 
 @pytest.mark.parametrize('tool', ['npm', 'node'])

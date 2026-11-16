@@ -10,6 +10,7 @@
 *.md text working-tree-encoding=UTF-8
 /deploy/buildkit/LICENSE -text
 /tests_python/fixtures/ci-producer-3502d844/*.txt text eol=lf
+/tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt text eol=lf
 # Byte-exact author_support_copy.py outputs must stay LF in Windows Git archives.
 /sql/mysql/compact/copy/12-chat-and-fingerprints.sql text eol=lf
 /sql/mysql/compact/copy/50-owner-locks.sql text eol=lf

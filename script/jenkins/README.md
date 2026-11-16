@@ -10,7 +10,9 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 新建工具准备前只读检查 apt 服务和内核包管理锁，活动升级未结束时拒绝开始；原件回读及清理不受此门影响，不停止或禁用系统更新。长轮验证前还须核对实际更新计时器，选择不重叠的窗口。MySQL 内核限额检查失败时分别保存两个控制文件的读数及采样阶段；`lastKernelObservation` 仅代表上次成功探针，不能当作失败现场。限额和失败即停止规则保持不变。
 
-启动完整验证 driver 前，以主机 `MemAvailable` 对照 1 GiB 保底、6 GiB Python/Java 实际重叠额度、全部自有 fixture 和 watcher 的剩余额度。已启动组件只抵扣身份核验后的匿名驻留内存，不抵扣文件缓存；按 MySQL 3 GiB、Qdrant 512 MiB、Prometheus 512 MiB、Alertmanager 128 MiB、Redis 128 MiB 和 watcher 256 MiB 上限计算。原回执 `fixtureRuntime.memoryAdmission` 保存可用量、各组件观测、所需量和差额；真实内存拒绝且尚未请求启动 driver 时，另记 `driverStart={requested:false,blockedBy:FIXTURE_MEMORY_ADMISSION}`。这不是全程峰值保证，后续原资源监控和失败收尾继续生效。
+启动完整验证 driver 前，以主机 `MemAvailable` 对照 1 GiB 保底、5888 MiB Python/Java 实际重叠额度、全部自有 fixture 和 watcher 的剩余额度。已启动组件只抵扣身份核验后的匿名驻留内存，不抵扣文件缓存；按 MySQL 3 GiB、Qdrant 512 MiB、Prometheus 512 MiB、Alertmanager 128 MiB、Redis 128 MiB 和 watcher 256 MiB 上限计算。原回执 `fixtureRuntime.memoryAdmission` 保存可用量、各组件观测、所需量和差额；真实内存拒绝且尚未请求启动 driver 时，另记 `driverStart={requested:false,blockedBy:FIXTURE_MEMORY_ADMISSION}`。这不是全程峰值保证，后续原资源监控和失败收尾继续生效。
+
+独立 Java 工具实际硬限额为 1792 MiB，`runtime_limits` 的整数 bytes 同时用于 Docker 创建、owned 检查、公开回执和并发账。Java 使用 `-Xmx1024m`、256 MiB 元空间、直接内存/代码缓存各 128 MiB 及 OOM 立即退出；Maven 仍为原 4 GiB/1536 MiB 堆。完整源 SQL 当前为 13,148,174 B，这一配置仍需完成真实整库复制和双恢复，不能当作任意极端输入的容量保证。原 npm/Python 输出路由未变，生成物回收同时保留新旧两个精确审核配方，已有来源不能因本轮 JVM 限额更新失去准入。
 
 ## 完整迁移先于 native Java
 

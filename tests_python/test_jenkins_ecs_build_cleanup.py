@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # Original LF source bytes from 3502d8448ffd5c31c5750293d3377d47db87d8c1.
 # These archived recipes are read/parsed, never imported or executed.
 REVIEWED_SOURCE_FIXTURES = ROOT / 'tests_python/fixtures/ci-producer-3502d844'
+# Prior exact executor from 7f8b992d5b9aad9014a5ead226b0de1f9fa52a90, also parsed only.
+LEGACY_EXECUTOR = ROOT / 'tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt'
 
 
 def load(name, filename):
@@ -224,8 +226,8 @@ def add_dependencies(state, *, proven=True):
     return target
 
 
-def add_npm_cache(state, damage=None):
-    raw = (ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
+def add_npm_cache(state, damage=None, *, executor_recipe='current'):
+    raw = (LEGACY_EXECUTOR if executor_recipe == 'legacy' else ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
     archived = raw
     if damage == 'changed-routing':
         archived = raw.replace(b"npm_config_cache=str(home / 'npm-cache')", b"npm_config_cache=str(home / 'unreviewed-cache')")
@@ -273,18 +275,21 @@ def add_npm_cache(state, damage=None):
     return cache
 
 
-def test_reviewed_npm_routing_fingerprints_still_match_the_fixed_executor_source():
-    tree = ast.parse((ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes())
+@pytest.mark.parametrize('executor_recipe', ['current', 'legacy'])
+def test_reviewed_npm_routing_fingerprints_still_match_the_fixed_executor_source(executor_recipe):
+    source = LEGACY_EXECUTOR if executor_recipe == 'legacy' else ROOT / 'script/jenkins/ecs-tool-runtime.py'
+    tree = ast.parse(source.read_bytes())
     actual = {node.name: cleanup.routing_ast_sha(node) for node in tree.body
               if isinstance(node, ast.FunctionDef) and node.name in cleanup.NPM_ROUTING_AST}
-    assert actual == cleanup.NPM_ROUTING_AST
+    expected = cleanup.NPM_LEGACY_ROUTING_AST if executor_recipe == 'legacy' else cleanup.NPM_ROUTING_AST
+    assert actual == expected and actual in cleanup.NPM_ROUTING_RECIPES
 
 
-def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy'):
+def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy', executor_recipe='current'):
     """Bind real archived routing code to synthetic, completed Python evidence."""
     runner = ((REVIEWED_SOURCE_FIXTURES / 'verify-ecs.py.txt') if recipe == 'legacy'
               else (ROOT / 'script/jenkins/verify-ecs.py')).read_bytes()
-    executor = (ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
+    executor = (LEGACY_EXECUTOR if executor_recipe == 'legacy' else ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
     main = next(node for node in ast.parse(runner).body if isinstance(node, ast.FunctionDef) and node.name == 'main')
     expected_main = ('e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
                      if recipe == 'legacy' else cleanup.PYTEST_CURRENT_RUNNER_MAIN_AST)
@@ -379,8 +384,9 @@ def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy'):
 
 
 @pytest.mark.parametrize('recipe', ['legacy', 'middleware'])
-def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temporary_roots_remain(state, monkeypatch, recipe):
-    cases = add_pytest_cases(state, monkeypatch, recipe=recipe); before = preserved_bytes(state)
+@pytest.mark.parametrize('executor_recipe', ['current', 'legacy'])
+def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temporary_roots_remain(state, monkeypatch, recipe, executor_recipe):
+    cases = add_pytest_cases(state, monkeypatch, recipe=recipe, executor_recipe=executor_recipe); before = preserved_bytes(state)
     value = plan(state); candidate = value['candidates'][0]
     proof = candidate['pytestTmp']
     assert proof['status'] == 'PROVEN' and proof['runnerSha256'] == cases.runner_sha
@@ -512,8 +518,9 @@ def test_routing_fingerprint_only_normalizes_an_empty_cross_version_type_paramet
     assert cleanup.routing_ast_sha(node) == (None if generic else expected)
 
 
-def test_exact_proven_npm_content_cache_is_removed_from_a_terminal_failed_build(state):
-    cache = add_npm_cache(state)
+@pytest.mark.parametrize('executor_recipe', ['current', 'legacy'])
+def test_exact_proven_npm_content_cache_is_removed_from_a_terminal_failed_build(state, executor_recipe):
+    cache = add_npm_cache(state, executor_recipe=executor_recipe)
     before = preserved_bytes(state)
     value = plan(state)
     candidate = value['candidates'][0]

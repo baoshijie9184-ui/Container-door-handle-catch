@@ -9,6 +9,7 @@ closed, without converting an unexecuted scenario into a successful flag.
 import argparse
 import base64
 import copy
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -85,7 +86,7 @@ DISK_FLOOR = 2 * GIB + 256 * MIB
 MEMORY_FLOOR = GIB
 # Includes short initialization jobs; admission conservatively counts them all.
 SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'qdrant': 512, 'bge-qdrant': 512,
-    'detection-worker': 2048, 'higress': 512, 'redis': 256, 'nginx': 64, 'mcp-runner': 256,
+    'detection-worker': 2048, 'higress': 512, 'redis': 128, 'nginx': 64, 'mcp-runner': 256,
     'mcp-egress': 128, 'model-fixture': 128, 'oss-proxy': 128, 'kafka-init': 256,
     'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128, 'qdrant-storage-init': 64,
     'prometheus': 512, 'alertmanager': 128}
@@ -96,6 +97,49 @@ BROWSER_MEMORY = 2 * GIB
 TRANSIENT_SERVICE_MEMORY_MIB = {'bge-qdrant': 512, 'bge-verifier': 768, 'collaboration-browser': 2048}
 INIT_SERVICES = {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config', 'qdrant-storage-init'}
 CORE_DAEMON_SERVICES = frozenset(set(SERVICE_MEMORY_MIB) - INIT_SERVICES - set(TRANSIENT_SERVICE_MEMORY_MIB))
+TRANSIENT_POLICY = 'REAL_START_OWNED_STOP_V1'
+TRANSIENT_ORDER = ('bge-after-start', 'mcp', 'bge-after-restart', 'bge-after-volume-restore', 'browser')
+OWNED_TRANSIENT_SERVICES = {'mcp-child', 'bge-verifier', 'bge-qdrant', 'collaboration-browser', 'owned-helper'}
+
+
+def transient_budget(name):
+    require(name in (*TRANSIENT_ORDER, 'manual'), 'Unregistered runtime transient admission')
+    return (BGE_VERIFIER_MEMORY + 512 * MIB if name.startswith('bge-') else
+            BROWSER_MEMORY if name == 'browser' else MCP_CHILD_MEMORY)
+
+
+def transient_services(name):
+    return ({'bge-verifier', 'bge-qdrant', 'owned-helper'} if name.startswith('bge-') else
+            {'collaboration-browser'} if name == 'browser' else {'mcp-child'})
+
+
+def transient_plan(name, probe):
+    budget = transient_budget(name)
+    return {'name': name, 'baselineProbe': probe, 'memoryAdmissionBytes': budget,
+            'memoryFloorBytes': MEMORY_FLOOR, 'diskFloorBytes': DISK_FLOOR,
+            'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'allCapsConcurrentCapacityVerified': False,
+            'status': 'ADMITTED' if probe['memoryAvailableBytes'] >= budget + MEMORY_FLOOR
+                      and probe['diskAvailableBytes'] >= DISK_FLOOR else 'REJECTED'}
+
+
+def transient_completion(owner, name):
+    if name.startswith('bge-'):
+        result = owner.get('nativeVerifications', {}).get(name[4:])
+        path = 'native-readback-' + name[4:] + '.json'
+    elif name == 'mcp':
+        path = 'scenario-private-mcp-install-fetch-cancel-reconcile.json'
+        result = owner.get('scenarios', {}).get('private-mcp-install-fetch-cancel-reconcile')
+    elif name == 'browser':
+        result = owner.get('browserEvidence'); path = 'browser-manifest.json'
+    else:
+        result = owner.get('manualAcceptance')
+        require(isinstance(result, dict) and result.get('enabled') is True and result.get('status') == 'ACCEPTED',
+                'Manual transient has no accepted original completion')
+        return copy.deepcopy(result)
+    require(isinstance(result, dict) and set(result) == {'file', 'sha256'}
+            and result['file'] == 'checkout/work/runtime-acceptance/' + path
+            and re.fullmatch(r'[a-f0-9]{64}', result['sha256']), 'Transient lacks its original successful completion receipt')
+    return copy.deepcopy(result)
 
 
 def bounded_config(config):
@@ -117,6 +161,9 @@ def bounded_config(config):
             env.update(KAFKA_LOG_SEGMENT_BYTES=str(16 * MIB), KAFKA_LOG_RETENTION_BYTES=str(64 * MIB),
                        KAFKA_LOG_RETENTION_HOURS='24', KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS='3',
                        KAFKA_TRANSACTION_STATE_LOG_NUM_PARTITIONS='1')
+        if name == 'redis':
+            service['command'] = ['sh', '-c', 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD" '
+                                  '--maxmemory 64mb --maxmemory-policy noeviction']
     return value
 
 
@@ -155,7 +202,7 @@ def phase_admission(phase, probe, growth_bytes, memory_bytes, measured):
     return result
 
 
-def validate_resource_evidence(summary, raw, context, project):
+def validate_resource_evidence(summary, raw, context, project, *, manual_pending=False):
     """Pure verification shared by remote admission and local byte-only archiving."""
     require(isinstance(summary, dict) and isinstance(raw, bytes) and 0 < len(raw) <= 64 * MIB,
             'Bounded runtime resource evidence is absent or oversized')
@@ -179,10 +226,58 @@ def validate_resource_evidence(summary, raw, context, project):
     require(0 < len(lines) <= 250000 and all(0 < len(line) <= MIB for line in lines), 'Invalid resource probe stream bounds')
     samples = [json.loads(line, object_pairs_hook=pairs,
                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Invalid JSON number'))) for line in lines]
+    policy = summary.get('transientAdmissionPolicy')
+    require(policy in (None, TRANSIENT_POLICY), 'Unknown runtime transient admission contract')
+    transient_by_sample = {}
+    if policy == TRANSIENT_POLICY:
+        require(type(summary.get('manualTransientRequired')) is bool, 'Manual transient requirement is missing')
+        entries = summary.get('transientAdmissions')
+        required_names = list(TRANSIENT_ORDER)
+        if summary['manualTransientRequired'] and not manual_pending: required_names.append('manual')
+        require(isinstance(entries, list) and [row.get('admission', {}).get('name') for row in entries] == required_names,
+                'Runtime transient admissions are missing or reordered')
+        previous_end = 0
+        for entry in entries:
+            plan = entry['admission']; name = plan['name']
+            require(plan == transient_plan(name, plan['baselineProbe']) and plan['status'] == 'ADMITTED'
+                    and entry.get('status') == 'COMPLETED', 'Runtime transient admission or release is incomplete')
+            receipt = entry.get('completionReceipt')
+            owner = ({'nativeVerifications': {name[4:]: receipt}} if name.startswith('bge-') else
+                     {'scenarios': {'private-mcp-install-fetch-cancel-reconcile': receipt}} if name == 'mcp' else
+                     {'browserEvidence': receipt} if name == 'browser' else {'manualAcceptance': receipt})
+            require(transient_completion(owner, name) == receipt, 'Transient completion receipt differs')
+            first, last = entry.get('firstSample'), entry.get('lastSample')
+            require(type(first) is int and type(last) is int and previous_end < first <= last <= len(samples),
+                    'Runtime transient observation intervals overlap or are absent')
+            previous_end = last
+            for field in ('quiescentBefore', 'quiescentAfter'):
+                rows = entry.get(field)
+                require(isinstance(rows, list) and len({row['containerId'] for row in rows}) == len(rows)
+                        and all(set(row) == {'containerId', 'image', 'service', 'pid'} and row['pid'] == 0
+                                and re.fullmatch(r'[a-f0-9]{64}', row['containerId'])
+                                and re.fullmatch(r'sha256:[a-f0-9]{64}', row['image'])
+                                and row['service'] in {'mcp-child', 'bge-verifier', 'bge-qdrant', 'collaboration-browser', 'owned-helper'}
+                                for row in rows), 'Runtime transient release inventory is incomplete')
+            first_stamp = samples[first - 1]['probe']['capturedAtUnix']
+            require(0 <= first_stamp - plan['baselineProbe']['capturedAtUnix'] <= 2,
+                    'Runtime transient admission was stale before its first observation')
+            for index in (first, last):
+                require(not any(row['running'] and row['service'] in OWNED_TRANSIENT_SERVICES
+                                for row in samples[index - 1]['containers']), 'Transient boundary retained a running helper')
+            observed = {row['service'] for event in samples[first - 1:last] for row in event['containers']
+                        if row['running'] and row['peakBytes'] > 0}
+            required = ({'bge-verifier', 'bge-qdrant'} if name.startswith('bge-') else
+                        {'mcp-child'} if name == 'mcp' else {'collaboration-browser'} if name == 'browser' else set())
+            require(required <= observed, 'An admitted transient lacks its actual running cgroup observation')
+            for index in range(first, last + 1): transient_by_sample[index] = name
     plans = summary.get('phasePlans', {})
     expected_phases = ['runtime-start', 'runtime-backup', 'runtime-restore']
     if 'collaboration-browser' in summary.get('requiredTransientServices', []): expected_phases.append('runtime-browser')
     require(set(plans) == set(expected_phases), 'Runtime phase plans are missing')
+    if policy == TRANSIENT_POLICY:
+        require(plans['runtime-start']['memoryAdmissionBytes'] == sum(SERVICE_MEMORY_MIB[name] * MIB
+                for name in set(SERVICE_MEMORY_MIB) - set(TRANSIENT_SERVICE_MEMORY_MIB)),
+                'Runtime start must reserve every actual service, without future transient processes')
     for phase, plan in plans.items():
         require(plan == phase_admission(phase, plan['baselineProbe'], plan['growthEnvelopeBytes'],
                     plan['memoryAdmissionBytes'], plan['measuredInputs']) and plan['status'] == 'MEASUREMENT_ADMITTED',
@@ -193,10 +288,13 @@ def validate_resource_evidence(summary, raw, context, project):
                     'A runtime phase omitted the continuous monitoring storage envelope')
     last, minimum_disk, minimum_memory, containers = None, None, None, {}
     observed_phases, browser_phase_peak, last_phase = set(), False, -1
-    for event in samples:
+    for sample_index, event in enumerate(samples, 1):
         require(set(event) == {'probe', 'containers', 'stopReasons'} and event['stopReasons'] == []
                 and isinstance(event['containers'], list), 'A failed/partial resource observation cannot pass')
         probe = event['probe']; stamp = probe['capturedAtUnix']
+        active = transient_by_sample.get(sample_index)
+        if policy == TRANSIENT_POLICY:
+            require(probe.get('transientAdmission') == active, 'Raw transient observation differs from its admission interval')
         require(isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
                 and (last is None or 0 <= stamp - last <= 2), 'Resource probe interval was not independently bounded')
         last = stamp
@@ -213,6 +311,7 @@ def validate_resource_evidence(summary, raw, context, project):
                 'Resource pressure was hidden in the raw observation stream')
         minimum_disk = min(minimum_disk or probe['diskAvailableBytes'], probe['diskAvailableBytes'])
         minimum_memory = min(minimum_memory or probe['memoryAvailableBytes'], probe['memoryAvailableBytes'])
+        active_memory = 0
         for row in event['containers']:
             cid, service = row['containerId'], row['service']
             if service == 'collaboration-browser':
@@ -223,12 +322,20 @@ def validate_resource_evidence(summary, raw, context, project):
                     and all(type(row[key]) is int and row[key] >= 0 for key in ('currentBytes', 'peakBytes', 'oom', 'oomKills', 'memoryLimitBytes'))
                     and (0 < row['memoryLimitBytes'] <= 256 * MIB if service == 'owned-helper'
                          else row['memoryLimitBytes'] == (BROWSER_MEMORY if service == 'collaboration-browser' else BGE_VERIFIER_MEMORY if service == 'bge-verifier'
-                              else 256 * MIB if service == 'mcp-child' else SERVICE_MEMORY_MIB[service] * MIB))
+                               else 256 * MIB if service == 'mcp-child' or service == 'redis' and policy is None
+                               else SERVICE_MEMORY_MIB[service] * MIB))
                     and row['oom'] == row['oomKills'] == 0, 'Container resource evidence is incomplete or contains OOM')
             previous = containers.get(cid)
             require(previous is None or (previous['image'] == row['image'] and previous['service'] == service
                     and row['peakBytes'] >= previous['peakBytes']), 'A container resource identity/peak was rewritten')
             containers[cid] = row
+            if policy == TRANSIENT_POLICY and row['running'] and service in {'mcp-child', 'bge-verifier', 'bge-qdrant', 'collaboration-browser'}:
+                require(active is not None and service in transient_services(active), 'Unadmitted transient process was observed')
+                active_memory += row['memoryLimitBytes']
+            elif policy == TRANSIENT_POLICY and row['running'] and service == 'owned-helper' and active:
+                require(service in transient_services(active), 'A helper overlapped an unrelated transient')
+                active_memory += row['memoryLimitBytes']
+        require(not active or active_memory <= transient_budget(active), 'Transient aggregate cap exceeded its admitted memory')
     require(summary.get('samples') == len(samples) and summary.get('containers') == containers
             and summary.get('minimumDiskAvailableBytes') == minimum_disk
             and summary.get('minimumMemoryAvailableBytes') == minimum_memory
@@ -264,6 +371,7 @@ class RuntimeResources:
         self.runtime = runtime
         self.done = threading.Event(); self.lock = threading.RLock()
         self.thread = None; self.phase = None; self.error = None; self.previous_signal = None
+        self.active_transient = None
         self.summary = {**runtime.context(), 'kind': 'doorhandle-bounded-runtime-resources',
             'project': runtime.project, 'profile': RUNTIME_PROFILE,
             'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
@@ -271,6 +379,8 @@ class RuntimeResources:
             'containers': {}, 'phases': [], 'phasePlans': {}, 'samples': 0,
             'requiredDaemonServices': sorted(CORE_DAEMON_SERVICES),
             'observabilityRequired': True,
+            'transientAdmissionPolicy': TRANSIENT_POLICY, 'transientAdmissions': [],
+            'manualTransientRequired': bool(getattr(getattr(runtime, 'args', None), 'manual_acceptance_seconds', 0)),
             'requiredTransientServices': sorted(TRANSIENT_SERVICE_MEMORY_MIB),
             'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl'}
         self.raw = runtime.directory / 'resource-probes.jsonl'
@@ -290,6 +400,95 @@ class RuntimeResources:
             self.summary['phasePlans'][phase] = plan
             require(plan['status'] == 'MEASUREMENT_ADMITTED', 'Measured runtime phase lacks its bounded disk/memory reserve')
             self.phase = plan
+            if phase == 'runtime-browser':
+                self.begin_transient('browser', probe=probe)
+
+    def transient_quiescence(self):
+        """Read back the same owned pool/helpers; absence is not inferred from call order."""
+        ctx = self.runtime; stopped = []
+        for row in self.rows():
+            labels = row['Config'].get('Labels') or {}
+            child = labels.get('doorhandle.mcp.pool') == ctx.owner.get('mcpPoolId') and labels.get('doorhandle.mcp.managed') == 'true'
+            service = ('mcp-child' if child else 'collaboration-browser' if labels.get('io.doorhandle.collaboration-browser') == ctx.token
+                       else 'bge-verifier' if labels.get('io.doorhandle.bge-verifier') == ctx.token
+                       else labels.get('com.docker.compose.service') or 'owned-helper')
+            if service not in {'mcp-child', 'bge-verifier', 'bge-qdrant', 'collaboration-browser', 'owned-helper'}: continue
+            ordinary = labels.get('io.doorhandle.rehearsal') == ctx.project
+            require(row['Id'] not in (ctx.settings['sourceMysqlContainerId'], ctx.owner['mysqlContainerId'])
+                    and (ordinary if not child else row['Image'] == ctx.owner['runtimeMcpImage']
+                         and labels.get('doorhandle.mcp.owner') in {str(v['userId']) for v in ctx.accounts.values()}),
+                    'Transient release inventory has a foreign owner')
+            if service == 'bge-verifier': require(row['Image'] == ctx.images['mem0'], 'BGE release image differs')
+            if service == 'bge-qdrant': require(row['Image'] == ctx.qdrant_image, 'BGE Qdrant release image differs')
+            if service == 'collaboration-browser':
+                require(row['Id'] == ctx.owner['browserContainerId'] and row['Image'] == ctx.owner['browserImage'],
+                        'Browser release identity differs')
+            state = row['State']
+            require(not state['Running'] and not state.get('Restarting') and not state.get('Paused') and state['Pid'] == 0
+                    and not state.get('OOMKilled'), 'Previous owned runtime transient has not stopped cleanly')
+            stopped.append({'containerId': row['Id'], 'image': row['Image'], 'service': service, 'pid': 0})
+        return sorted(stopped, key=lambda row: row['containerId'])
+
+    def begin_transient(self, name, *, probe=None):
+        with self.lock:
+            require(self.error is None and not self.done.is_set() and self.active_transient is None
+                    and self.thread is not None and self.thread.is_alive(),
+                    'Runtime transient cannot bypass a failed, closed or active observer')
+            completed = self.summary['transientAdmissions']
+            expected = (*TRANSIENT_ORDER, 'manual') if self.summary['manualTransientRequired'] else TRANSIENT_ORDER
+            require(len(completed) < len(expected) and name == expected[len(completed)]
+                    and all(row.get('status') == 'COMPLETED' for row in completed), 'Runtime transient lifecycle is out of order')
+            before = self.transient_quiescence()
+            # Browser reuses its immediately preceding phase admission; other
+            # helpers probe immediately before their existing launcher is called.
+            probe = probe if probe is not None else host_probe(self.runtime.directory)
+            plan = transient_plan(name, probe)
+            entry = {'admission': plan, 'quiescentBefore': before, 'status': plan['status']}
+            completed.append(entry)
+            self.runtime.common.write_json(self.runtime.directory / 'transient-admissions.json', completed)
+            require(plan['status'] == 'ADMITTED', 'Runtime transient lacks its fresh memory/disk reserve')
+            entry['firstSample'] = self.summary['samples'] + 1
+            self.active_transient = name
+            sampled = self.sample()
+            require(0 <= self.summary['latestProbeAtUnix'] - probe['capturedAtUnix'] <= 2,
+                    'Runtime transient admission expired before launcher entry')
+            require(not any(row['running'] and row['service'] in OWNED_TRANSIENT_SERVICES for row in sampled),
+                    'A transient appeared before its admitted launcher')
+
+    def end_transient(self, name):
+        with self.lock:
+            require(self.active_transient == name and self.error is None and not self.done.is_set(),
+                    'Runtime transient completion lost its live observer')
+            stopped = self.transient_quiescence()
+            receipt = transient_completion(self.runtime.owner, name)
+            sampled = self.sample()
+            require(not any(row['running'] and row['service'] in OWNED_TRANSIENT_SERVICES for row in sampled),
+                    'An owned transient remained active at release')
+            entry = self.summary['transientAdmissions'][-1]
+            entry.update(status='COMPLETED', lastSample=self.summary['samples'], quiescentAfter=stopped,
+                         completionReceipt=receipt)
+            self.active_transient = None
+            self.runtime.common.write_json(self.runtime.directory / 'transient-admissions.json', self.summary['transientAdmissions'])
+
+    @contextmanager
+    def transient(self, name):
+        self.begin_transient(name)
+        # On a launcher/assertion failure retain the active budget and original
+        # error. The existing outer cleanup freezes creators and owns recovery.
+        yield
+        self.end_transient(name)
+
+    def observe_mcp_writer(self, cid):
+        with self.lock:
+            require(self.active_transient == 'mcp' and self.error is None and not self.done.is_set(),
+                    'MCP writer observation requires its admitted live window')
+            # The existing fault scenario has paused the controller, not its
+            # child. Capture that actual child now, not a later periodic frame.
+            rows = self.sample()
+            actual = [row for row in rows if row['containerId'] == cid and row['service'] == 'mcp-child']
+            require(len(actual) == 1 and actual[0]['running'] and actual[0]['peakBytes'] > 0,
+                    'The observed MCP writer lost its live cgroup before the control fault')
+            return copy.deepcopy(actual[0])
 
     def rows(self):
         ctx = self.runtime
@@ -318,6 +517,7 @@ class RuntimeResources:
     def sample(self):
         ctx = self.runtime; probe = host_probe(ctx.directory)
         reasons = []
+        probe['transientAdmission'] = self.active_transient
         if 'latestProbeAtUnix' in self.summary and probe['capturedAtUnix'] - self.summary['latestProbeAtUnix'] > 2:
             reasons.append('PROBE_INTERVAL_EXCEEDED')
         self.summary['latestProbeAtUnix'] = probe['capturedAtUnix']
@@ -329,6 +529,7 @@ class RuntimeResources:
             probe['phase'] = self.phase['phase']; probe['hostDiskLossUpperBoundBytes'] = loss
             probe['diskLossOwnershipProof'] = False
         containers = []
+        transient_memory = 0
         # Stop on pressure before any Docker metadata operation can stall.
         if not reasons:
             for row in self.rows():
@@ -373,6 +574,13 @@ class RuntimeResources:
                                 'A running runtime process lost its resource observation')
                         row = current  # An intentional restart can remove its old cgroup.
                 if row['State'].get('OOMKilled') or memory['oom'] or memory['oomKills']: reasons.append('OWNED_OOM')
+                if row['State']['Running'] and service in {'mcp-child', 'bge-verifier', 'bge-qdrant', 'collaboration-browser'}:
+                    if self.active_transient is None or service not in transient_services(self.active_transient):
+                        reasons.append('UNADMITTED_TRANSIENT')
+                    transient_memory += actual_limit
+                elif row['State']['Running'] and service == 'owned-helper' and self.active_transient:
+                    if service not in transient_services(self.active_transient): reasons.append('UNADMITTED_TRANSIENT')
+                    transient_memory += actual_limit
                 previous = self.summary['containers'].get(cid, {})
                 item = {'service': service, 'containerId': cid, 'image': row['Image'], 'memoryLimitBytes': actual_limit,
                     **memory, 'peakBytes': max(memory['peakBytes'], previous.get('peakBytes', 0)),
@@ -380,6 +588,8 @@ class RuntimeResources:
                     'oomKills': max(memory['oomKills'], previous.get('oomKills', 0)),
                     'running': row['State']['Running'], 'exitCode': row['State']['ExitCode']}
                 self.summary['containers'][cid] = item; containers.append(item)
+        if self.active_transient and transient_memory > transient_budget(self.active_transient):
+            reasons.append('TRANSIENT_MEMORY_BOUND')
         self.summary['samples'] += 1
         for key in ('diskAvailableBytes', 'memoryAvailableBytes'):
             name = 'minimum' + key[0].upper() + key[1:]
@@ -391,6 +601,7 @@ class RuntimeResources:
             os.chmod(self.raw, 0o600)
             stream.write(entry); stream.flush()
         require(not reasons, 'Owned runtime resource boundary reached: ' + ','.join(reasons))
+        return containers
 
     def start(self):
         require(self.phase is not None and self.thread is None, 'Runtime resource phase must be admitted first')
@@ -429,7 +640,7 @@ class RuntimeResources:
             self.thread.join(timeout=5)
             require(not self.thread.is_alive(), 'Owned resource observer did not stop')
         if self.previous_signal is not None: signal.signal(signal.SIGUSR1, self.previous_signal)
-        self.summary['status'] = ('FAILED_OR_UNKNOWN' if self.error else
+        self.summary['status'] = ('FAILED_OR_UNKNOWN' if self.error or self.active_transient else
             'MEASURED_FOR_BOUNDED_SCENARIOS' if self.summary['samples'] else 'NOT_MEASURED')
         self.summary['rawProbeSha256'] = sha_file(self.raw) if self.raw.exists() else None
         self.runtime.common.write_json(file, self.summary)
@@ -1009,8 +1220,17 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
             '--label', 'io.doorhandle.rehearsal=' + self.project, '--mount', 'type=volume,src=' + volume + ',dst=/target',
             '--entrypoint', 'python', self.images['mem0'], '-B', '-c', code, data=raw, timeout=30)
 
+    def verify_redis_policy(self):
+        policy = json.loads(self.ops.docker('exec', self.row('redis')['Id'], 'sh', '-ec',
+            'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -2 --json CONFIG GET maxmemory maxmemory-policy', timeout=15))
+        require(isinstance(policy, list) and len(policy) == 4
+                and dict(zip(policy[::2], policy[1::2])) == {'maxmemory': str(64 * MIB), 'maxmemory-policy': 'noeviction'},
+                'Actual candidate Redis memory/eviction policy differs')
+
     def start(self):
         self.stable_identity.preflight(self)
+        require(set(self.config['services']) == set(SERVICE_MEMORY_MIB) - set(TRANSIENT_SERVICE_MEMORY_MIB),
+                'Complete runtime startup requires all nineteen services')
         declared = sum(int(spec.get('mem_limit', 0)) for spec in self.config['services'].values())
         physical = allocated_bytes(Path(self.fixture_owner['dataDirectory']) / self.owner['targetSchema'])
         retained = allocated_bytes(self.checkout / 'work/compact-fixtures')
@@ -1033,7 +1253,7 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
             'logLimitBytes': logs, 'kafkaPartitionRetentionEnvelopeBytes': 8 * 64 * MIB,
             'newWritableMeasurementEnvelopeBytes': 256 * MIB,
             'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'},
-            declared + MCP_CHILD_MEMORY + BGE_VERIFIER_MEMORY + SERVICE_MEMORY_MIB['qdrant'] * MIB)
+            declared)
         self.resources.start()
         self.owner['nativeMaterialization'] = self.native.materialize_runtime(self); self.save()
         self.install_key(self.master_key)
@@ -1046,6 +1266,7 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         self.ops.docker('network', 'connect', '--alias', 'mysql', network['Id'], self.owner['mysqlContainerId'])
         self.owner['mysqlAttachedNetwork'] = network['Id']; self.save('STARTING')
         self.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '300', timeout=420)
+        self.verify_redis_policy()
         for name in ('backend', 'detection-worker', 'mem0', 'nginx', 'model-fixture'):
             row = self.row(name)
             require(self.ops.healthy(row['Id']) and (name not in self.images or row['Image'] == self.images[name]),
@@ -1345,6 +1566,7 @@ print(json.dumps(acknowledged[0]))
                         self.ops.docker('pause', runner['Id']); paused = True
                         actual = json.loads(self.ops.docker('inspect', runner['Id']))[0]
                         require(actual['State'].get('Paused') is True, 'The real MCP controller was not suspended')
+                        writer_resource = self.resources.observe_mcp_writer(child['Id'])
                         break
                 require(worker.is_alive(), 'The Fetch completed before an actual writer/control fault was observed')
                 time.sleep(0.05)
@@ -1393,6 +1615,7 @@ print(json.dumps(acknowledged[0]))
         require(not live, 'The reconciled actual Fetch writer still exists')
         return {'executionId': selected['executionId'], 'runId': selected['runId'], 'poolId': selected['pool'],
             'observedWriterId': child['Id'], 'pausedControllerId': runner['Id'], 'unknownState': uncertain['state'],
+            'writerResourceObservation': writer_resource,
             'actualSdkFaultOutcome': outcome.get('failureType') or outcome.get('run', {}).get('phase'),
             'newInstallationBlockedHttpStatus': 409, 'newInstallationBlockedReason': 'PENDING_EXECUTION_EXIT',
             'denialResponseSha256': hashlib.sha256(denied_body).hexdigest(),
@@ -1772,7 +1995,10 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         self.record('detection-pth-worker-kafka-receipts', {**self.worker_observations, 'actualUnknownResultFence': fence})
         self.collaboration_http.claim(self)
         self.http.run_report_scenario(self)
-        self.sdk_scenario(); self.mcp_scenario(); self.skill_scenario(); self.memory_scenario(); self.recovery_scenario()
+        self.sdk_scenario()
+        with self.resources.transient('mcp'):
+            self.mcp_scenario()
+        self.skill_scenario(); self.memory_scenario(); self.recovery_scenario()
         required = {item['id'] for item in self.profile['runtimeAcceptance']['scenarios']}
         require(set(self.owner['scenarios']) == required, 'Not every mandatory runtime scenario actually completed')
         state = self.fixture('GET', '/__fixture/state')
@@ -1787,6 +2013,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         collaboration_http = self.collaboration_http.require_receipts(self)
         stream_probes = self.stream_probes.arm_model_stream_probes(self)
         browser = self.browser.run(self)
+        self.resources.end_transient('browser')
         # Read the real provider again after the browser consumed its newly armed
         # responses; the earlier SDK state cannot prove these two streams ran.
         state = self.fixture('GET', '/__fixture/state')
@@ -1814,12 +2041,16 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
                 raw = self.resources.raw.read_bytes()
                 summary = {**copy.deepcopy(self.resources.summary), 'status': 'MEASURED_FOR_BOUNDED_SCENARIOS',
                            'rawProbeSha256': hashlib.sha256(raw).hexdigest()}
-            validate_resource_evidence(summary, raw, self.context(), self.project)
+            validate_resource_evidence(summary, raw, self.context(), self.project, manual_pending=True)
             daemons = set(self.config['services']) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
             require(daemons <= {row['service'] for row in summary['containers'].values() if row['peakBytes'] > 0},
                     'Every actual service peak must be observed before manual acceptance')
         self.save('ASSERTIONS_PASSED')
-        manual_acceptance = self.manual.wait(self, runtime_execution(self))
+        if getattr(self.args, 'manual_acceptance_seconds', 0):
+            with self.resources.transient('manual'):
+                manual_acceptance = self.manual.wait(self, runtime_execution(self))
+        else:
+            manual_acceptance = self.manual.wait(self, runtime_execution(self))
         self.cleanup()
         require(self.resources.error is None, 'Runtime resource observation failed; bounded acceptance cannot pass')
         daemons = set(self.config['services']) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
@@ -1853,7 +2084,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
                 'verifications': self.owner.get('nativeVerifications', {}), 'materialization': self.owner['nativeMaterialization']},
             'loadScope': {'profile': RUNTIME_PROFILE, 'productionPerformanceVerified': False,
                           'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True,
-                          'observabilityRequired': True},
+                          'observabilityRequired': True, 'transientAdmissionPolicy': TRANSIENT_POLICY},
             'resourceEvidence': {'file': (self.directory / 'resource-summary.json').relative_to(self.attempt).as_posix(),
                                  'sha256': sha_file(self.directory / 'resource-summary.json')},
             'migrationReceiptSha256': self.owner['migrationReceiptSha256'],

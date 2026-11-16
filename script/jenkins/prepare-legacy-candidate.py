@@ -1501,6 +1501,13 @@ def runtime_qdrant_state(ctx):
 
 
 def verify_runtime(ctx, phase):
+    # Includes the serial snapshot helper and the concurrent verifier/Qdrant
+    # pair. Their original receipts and context-manager cleanup stay unchanged.
+    with ctx.resources.transient('bge-' + phase):
+        return _verify_runtime(ctx, phase)
+
+
+def _verify_runtime(ctx, phase):
     value, descriptor_sha, work = admit_runtime(ctx)
     need(phase in SEMANTIC_PHASES, 'Unregistered native runtime verification phase')
     actual = runtime_qdrant_state(ctx)

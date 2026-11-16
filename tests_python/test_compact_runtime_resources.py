@@ -84,7 +84,7 @@ def evidence(include_browser=False, observability=True):
     project = 'doorhandle-rehearsal-' + 'f' * 12
     daemons = sorted(runtime.CORE_DAEMON_SERVICES if observability else runtime.CORE_DAEMON_SERVICES - {'prometheus', 'alertmanager'})
     metrics = [{'containerId': format(index + 1, '064x'), 'service': name, 'image': 'sha256:' + '1' * 64,
-        'memoryLimitBytes': runtime.SERVICE_MEMORY_MIB[name] * runtime.MIB, 'currentBytes': 128,
+        'memoryLimitBytes': (256 if name == 'redis' else runtime.SERVICE_MEMORY_MIB[name]) * runtime.MIB, 'currentBytes': 128,
         'peakBytes': 256, 'oom': 0, 'oomKills': 0, 'running': True, 'exitCode': 0} for index, name in enumerate(daemons)]
     if include_browser:
         metrics.extend([{'containerId': 'e' * 64, 'service': 'bge-qdrant', 'image': 'sha256:' + '3' * 64,
@@ -126,13 +126,16 @@ def test_bounded_profile_changes_real_cgroups_jvm_heaps_and_keeps_source_unchang
                              for name in set(runtime.SERVICE_MEMORY_MIB) - set(runtime.TRANSIENT_SERVICE_MEMORY_MIB)}}
     bounded = runtime.bounded_config(original)
     assert original['services']['backend']['mem_limit'] == 10 * runtime.GIB
-    assert sum(v['mem_limit'] for v in bounded['services'].values()) == (8448 + runtime.SERVICE_MEMORY_MIB['qdrant-storage-init'] + 640) * runtime.MIB
+    assert sum(v['mem_limit'] for v in bounded['services'].values()) == 9024 * runtime.MIB
     assert 'chroma' not in bounded['services'] and 'bge-qdrant' not in bounded['services']
     assert bounded['services']['qdrant']['mem_limit'] == 512 * runtime.MIB
     assert all(v['mem_limit'] == v['memswap_limit'] for v in bounded['services'].values())
     assert '-Xmx1024m' in bounded['services']['backend']['environment']['JAVA_OPTS']
     assert '-Xmx512m' in bounded['services']['kafka']['environment']['KAFKA_HEAP_OPTS']
     assert bounded['services']['detection-worker']['mem_limit'] == 2 * runtime.GIB
+    assert bounded['services']['redis']['mem_limit'] == 128 * runtime.MIB
+    assert bounded['services']['redis']['command'] == ['sh', '-c',
+        'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD" --maxmemory 64mb --maxmemory-policy noeviction']
 
 
 def test_unbudgeted_service_fails_closed():
@@ -220,6 +223,374 @@ def test_pressure_records_raw_probe_before_any_container_operation(tmp_path, mon
     monkeypatch.setattr(monitor, 'rows', lambda: (_ for _ in ()).throw(AssertionError('must not query Docker after pressure')))
     with pytest.raises(ValueError, match='DISK_FLOOR'): monitor.sample()
     assert json.loads(monitor.raw.read_text())['stopReasons'] == ['DISK_FLOOR']
+
+
+def transient_monitor(tmp_path, monkeypatch, *, manual=False):
+    directory = tmp_path / 'checkout/work/runtime-acceptance'; directory.mkdir(parents=True)
+    prefix = 'checkout/work/runtime-acceptance/'
+    owner = {'mysqlContainerId': '1' * 64, 'mcpPoolId': '2' * 32, 'runtimeMcpImage': 'sha256:' + '3' * 64,
+        'browserContainerId': '4' * 64, 'browserImage': 'sha256:' + '5' * 64,
+        'nativeVerifications': {phase: {'file': prefix + 'native-readback-' + phase + '.json', 'sha256': '6' * 64}
+                               for phase in ('after-start', 'after-restart', 'after-volume-restore')},
+        'scenarios': {'private-mcp-install-fetch-cancel-reconcile': {
+            'file': prefix + 'scenario-private-mcp-install-fetch-cancel-reconcile.json', 'sha256': '7' * 64}},
+        'browserEvidence': {'file': prefix + 'browser-manifest.json', 'sha256': '8' * 64},
+        'manualAcceptance': {'enabled': True, 'status': 'ACCEPTED', 'executionId': '9' * 32}}
+    ctx = SimpleNamespace(directory=directory, attempt=tmp_path, project='doorhandle-rehearsal-' + 'a' * 12,
+        token='a' * 12, context=lambda: {}, owner=owner, config={}, args=SimpleNamespace(manual_acceptance_seconds=3600 if manual else 0),
+        settings={'sourceMysqlContainerId': 'b' * 64}, accounts={'inspector': {'userId': 7}},
+        images={'mem0': 'sha256:' + 'c' * 64}, qdrant_image='sha256:' + 'd' * 64,
+        common=SimpleNamespace(write_json=lambda path, value: path.write_text(json.dumps(value), encoding='utf8')))
+    clock = [100.0]
+    def probe(_):
+        clock[0] += .05
+        return {'capturedAtUnix': clock[0], 'diskTotalBytes': 40 * runtime.GIB,
+                'diskAvailableBytes': 8 * runtime.GIB, 'memoryAvailableBytes': 12 * runtime.GIB}
+    monkeypatch.setattr(runtime, 'host_probe', probe)
+    monitor = runtime.RuntimeResources(ctx); ctx.resources = monitor
+    monitor.thread = SimpleNamespace(is_alive=lambda: True)
+    monkeypatch.setattr(monitor, 'rows', lambda: [])
+    monitor.admit('runtime-start', runtime.GIB, {'fixed': True}, 9024 * runtime.MIB)
+    return ctx, monitor
+
+
+@pytest.mark.parametrize('field', ['memoryAvailableBytes', 'diskAvailableBytes'])
+def test_transient_rejection_is_saved_before_the_real_launcher(tmp_path, monkeypatch, field):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch)
+    probe = runtime.host_probe(ctx.directory)
+    probe[field] = (runtime.transient_budget('bge-after-start') + runtime.MEMORY_FLOOR - 1
+                    if field == 'memoryAvailableBytes' else runtime.DISK_FLOOR - 1)
+    monkeypatch.setattr(runtime, 'host_probe', lambda _: probe)
+    calls = []
+    with pytest.raises(ValueError, match='fresh memory/disk'):
+        with monitor.transient('bge-after-start'): calls.append('launcher')
+    assert calls == [] and monitor.active_transient is None
+    original = json.loads((ctx.directory / 'transient-admissions.json').read_text())
+    assert original[0]['status'] == 'REJECTED' and original[0]['admission']['baselineProbe'] == probe
+
+
+@pytest.mark.parametrize('damage', ['closed', 'failed', 'unstarted', 'dead-thread', 'out-of-order', 'nested'])
+def test_transient_cannot_bypass_the_observer_or_original_sequence(tmp_path, monkeypatch, damage):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch)
+    name = 'bge-after-start'
+    if damage == 'closed': monitor.done.set()
+    elif damage == 'failed': monitor.error = 'ValueError'
+    elif damage == 'unstarted': monitor.thread = None
+    elif damage == 'dead-thread': monitor.thread = SimpleNamespace(is_alive=lambda: False)
+    elif damage == 'out-of-order': name = 'mcp'
+    else: monitor.begin_transient(name)
+    before = copy.deepcopy(monitor.summary['transientAdmissions'])
+    with pytest.raises(ValueError): monitor.begin_transient(name)
+    assert monitor.summary['transientAdmissions'] == before
+
+
+def test_transient_original_failure_stays_active_until_owned_cleanup(tmp_path, monkeypatch):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match='original launcher'):
+        with monitor.transient('bge-after-start'): raise RuntimeError('original launcher')
+    assert monitor.active_transient == 'bge-after-start'
+    assert monitor.summary['transientAdmissions'][0]['status'] == 'ADMITTED'
+    with pytest.raises(ValueError): monitor.begin_transient('mcp')
+
+
+@pytest.mark.parametrize('damage', ['running', 'restarting', 'paused', 'pid', 'oom', 'foreign-owner'])
+def test_transient_entry_reads_actual_prior_owned_child_state(tmp_path, monkeypatch, damage):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch)
+    state = {'Running': False, 'Restarting': False, 'Paused': False, 'Pid': 0, 'OOMKilled': False}
+    labels = {'doorhandle.mcp.managed': 'true', 'doorhandle.mcp.pool': ctx.owner['mcpPoolId'], 'doorhandle.mcp.owner': '7'}
+    if damage == 'foreign-owner': labels['doorhandle.mcp.owner'] = '99'
+    else: state[{'running': 'Running', 'restarting': 'Restarting', 'paused': 'Paused', 'pid': 'Pid', 'oom': 'OOMKilled'}[damage]] = 123 if damage == 'pid' else True
+    row = {'Id': 'e' * 64, 'Image': ctx.owner['runtimeMcpImage'], 'Config': {'Labels': labels}, 'State': state}
+    monkeypatch.setattr(monitor, 'rows', lambda: [row])
+    with pytest.raises(ValueError): monitor.begin_transient('bge-after-start')
+    assert monitor.summary['transientAdmissions'] == []
+
+
+def test_transient_release_requires_the_original_completion_and_fresh_absence(tmp_path, monkeypatch):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch)
+    monitor.begin_transient('bge-after-start')
+    original = ctx.owner['nativeVerifications'].pop('after-start')
+    with pytest.raises(ValueError, match='original successful'): monitor.end_transient('bge-after-start')
+    ctx.owner['nativeVerifications']['after-start'] = original
+    monitor.end_transient('bge-after-start')
+    entry = monitor.summary['transientAdmissions'][0]
+    assert entry['status'] == 'COMPLETED' and entry['completionReceipt'] == original
+    assert entry['quiescentBefore'] == entry['quiescentAfter'] == []
+    assert monitor.active_transient is None and entry['lastSample'] >= entry['firstSample']
+
+
+def test_all_three_real_native_entrypoints_use_the_same_transient_guard(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    native = load('actual_bge_transient_caller', 'script/jenkins/prepare-legacy-candidate.py')
+    calls = []
+    @contextmanager
+    def boundary(name):
+        calls.append(('admit', name)); yield; calls.append(('released', name))
+    ctx = SimpleNamespace(resources=SimpleNamespace(transient=boundary))
+    monkeypatch.setattr(native, '_verify_runtime', lambda actual, phase: calls.append(('original', phase)) or {'phase': phase})
+    for phase in ('after-start', 'after-restart', 'after-volume-restore'):
+        assert native.verify_runtime(ctx, phase) == {'phase': phase}
+    assert calls == [item for phase in ('after-start', 'after-restart', 'after-volume-restore')
+                     for item in [('admit', 'bge-' + phase), ('original', phase), ('released', 'bge-' + phase)]]
+
+
+def test_real_native_launcher_is_not_called_after_failed_transient_admission(tmp_path, monkeypatch):
+    native = load('actual_bge_transient_rejection', 'script/jenkins/prepare-legacy-candidate.py')
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch)
+    monkeypatch.setattr(native, '_verify_runtime', lambda *_: pytest.fail('native process must not start'))
+    monitor.done.set()
+    with pytest.raises(ValueError): native.verify_runtime(ctx, 'after-start')
+
+
+def test_manual_budget_is_fresh_and_requires_browser_release(tmp_path, monkeypatch):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch, manual=True)
+    for name in runtime.TRANSIENT_ORDER[:-1]:
+        with monitor.transient(name): pass
+    monitor.admit('runtime-browser', runtime.GIB, {'browser': True}, runtime.BROWSER_MEMORY)
+    with pytest.raises(ValueError): monitor.begin_transient('manual')
+    monitor.end_transient('browser')
+    with monitor.transient('manual'):
+        assert monitor.active_transient == 'manual'
+    final = monitor.summary['transientAdmissions'][-1]
+    assert final['admission']['memoryAdmissionBytes'] == 512 * runtime.MIB
+    assert final['completionReceipt'] == ctx.owner['manualAcceptance']
+
+
+def test_real_runtime_keeps_mcp_browser_and_manual_inside_their_boundaries():
+    import ast
+    tree = ast.parse((ROOT / 'script/docker/compact-runtime-acceptance.py').read_text(encoding='utf8'))
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Runtime')
+    run = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+    blocks = {node.items[0].context_expr.args[0].value: node for node in ast.walk(run)
+              if isinstance(node, ast.With) and isinstance(node.items[0].context_expr, ast.Call)
+              and isinstance(node.items[0].context_expr.func, ast.Attribute) and node.items[0].context_expr.func.attr == 'transient'}
+    assert {'mcp', 'manual'} <= set(blocks)
+    assert 'self.mcp_scenario()' in ast.unparse(blocks['mcp'])
+    assert 'self.manual.wait(' in ast.unparse(blocks['manual'])
+    source = ast.unparse(run)
+    assert source.index('self.browser.run(self)') < source.index("self.resources.end_transient('browser')") < source.index('self.manual.wait(')
+    assert source.index('self.cleanup()') > source.index('self.manual.wait(')
+    runner = (ROOT / 'deploy/mcp/runner.py').read_text(encoding='utf8')
+    store = (ROOT / 'deploy/mcp/execution_store.py').read_text(encoding='utf8')
+    assert 'asyncio.Semaphore(2)' in runner and "'--memory=256m'" in runner
+    assert 'COUNT(*) FROM execution WHERE status<>\'REMOVED\'' in store and '.fetchone()[0] >= 2' in store
+
+
+def staged_evidence(*, manual=False):
+    summary, _, context, project = evidence(include_browser=True)
+    summary.update(transientAdmissionPolicy=runtime.TRANSIENT_POLICY, manualTransientRequired=manual, transientAdmissions=[])
+    metrics = {cid: copy.deepcopy(row) for cid, row in summary['containers'].items() if row['service'] in runtime.CORE_DAEMON_SERVICES}
+    next(row for row in metrics.values() if row['service'] == 'redis')['memoryLimitBytes'] = 128 * runtime.MIB
+    events = []; phase = ['runtime-start']; plans = {}
+    def probe():
+        return {'capturedAtUnix': 100 + (len(events) + 1) / 10, 'diskTotalBytes': 40 * runtime.GIB,
+                'diskAvailableBytes': 8 * runtime.GIB, 'memoryAvailableBytes': 12 * runtime.GIB}
+    def emit(active=None):
+        current = probe()
+        if phase[0] not in plans:
+            memory = 9024 * runtime.MIB if phase[0] == 'runtime-start' else runtime.BROWSER_MEMORY if phase[0] == 'runtime-browser' else 0
+            plans[phase[0]] = runtime.phase_admission(phase[0], current, runtime.GIB, memory,
+                {'observabilityWritableGrowthEnvelopeBytes': runtime.OBSERVABILITY_GROWTH_BYTES})
+        events.append({'probe': {**current, 'phase': phase[0], 'hostDiskLossUpperBoundBytes': 0,
+                                'diskLossOwnershipProof': False, 'transientAdmission': active},
+                       'containers': copy.deepcopy(list(metrics.values())), 'stopReasons': []})
+    names = (*runtime.TRANSIENT_ORDER, 'manual') if manual else runtime.TRANSIENT_ORDER
+    for index, name in enumerate(names):
+        if name == 'bge-after-volume-restore':
+            phase[0] = 'runtime-backup'; emit()
+            phase[0] = 'runtime-restore'; emit()
+        if name == 'browser': phase[0] = 'runtime-browser'
+        plan = runtime.transient_plan(name, probe()); first = len(events) + 1
+        emit(name)
+        services = (('bge-qdrant', 'bge-verifier') if name.startswith('bge-') else
+                    ('mcp-child',) if name == 'mcp' else ('collaboration-browser',) if name == 'browser' else ())
+        new_ids = []
+        for offset, service in enumerate(services):
+            cid = format(1000 + index * 3 + offset, '064x'); new_ids.append(cid)
+            maximum = (runtime.BGE_VERIFIER_MEMORY if service == 'bge-verifier' else runtime.BROWSER_MEMORY
+                       if service == 'collaboration-browser' else 256 * runtime.MIB if service == 'mcp-child' else 512 * runtime.MIB)
+            metrics[cid] = {'containerId': cid, 'service': service, 'image': 'sha256:' + '3' * 64,
+                'memoryLimitBytes': maximum, 'currentBytes': 128, 'peakBytes': 1024,
+                'oom': 0, 'oomKills': 0, 'running': True, 'exitCode': 0}
+        emit(name)
+        for cid in new_ids: metrics[cid].update(running=False, currentBytes=0)
+        emit(name)
+        prefix = 'checkout/work/runtime-acceptance/'
+        path = ('native-readback-' + name[4:] + '.json' if name.startswith('bge-') else
+                'scenario-private-mcp-install-fetch-cancel-reconcile.json' if name == 'mcp' else 'browser-manifest.json')
+        receipt = {'enabled': True, 'status': 'ACCEPTED'} if name == 'manual' else {'file': prefix + path, 'sha256': 'a' * 64}
+        summary['transientAdmissions'].append({'admission': plan, 'status': 'COMPLETED', 'firstSample': first,
+            'lastSample': len(events), 'quiescentBefore': [], 'quiescentAfter': [], 'completionReceipt': receipt})
+    summary.update(phasePlans=plans, samples=len(events), containers=metrics,
+        latestProbeAtUnix=events[-1]['probe']['capturedAtUnix'])
+    return summary, events, context, project
+
+
+def resource_raw(summary, events):
+    raw = b''.join((json.dumps(row) + '\n').encode() for row in events)
+    summary['rawProbeSha256'] = hashlib.sha256(raw).hexdigest()
+    return raw
+
+
+@pytest.mark.parametrize('manual', [False, True])
+def test_staged_raw_evidence_proves_each_transient_and_keeps_four_original_disk_phases(manual):
+    summary, events, context, project = staged_evidence(manual=manual)
+    assert runtime.validate_resource_evidence(summary, resource_raw(summary, events), context, project)['status'] == 'VERIFIED'
+    assert summary['phasePlans']['runtime-start']['memoryAdmissionBytes'] == 9024 * runtime.MIB
+    assert len(summary['phases']) == 4
+
+
+@pytest.mark.parametrize('damage', ['missing-admission', 'reordered', 'unreleased', 'cheap-budget', 'stale',
+    'overlap', 'active-boundary', 'unadmitted', 'overflow', 'missing-peak', 'missing-original', 'foreign-original',
+    'manual-omitted', 'old-redis-cap', 'start-omits-service', 'hidden-policy'])
+def test_staged_raw_evidence_rejects_missing_lifecycle_or_real_budget(damage):
+    summary, events, context, project = staged_evidence()
+    entries = summary['transientAdmissions']; first = entries[0]; middle = events[1]
+    if damage == 'missing-admission': entries.pop()
+    elif damage == 'reordered': entries[0], entries[1] = entries[1], entries[0]
+    elif damage == 'unreleased': first['status'] = 'ADMITTED'
+    elif damage == 'cheap-budget': first['admission']['memoryAdmissionBytes'] -= 1
+    elif damage == 'stale': first['admission']['baselineProbe']['capturedAtUnix'] -= 3
+    elif damage == 'overlap': entries[1]['firstSample'] = first['lastSample']
+    elif damage == 'active-boundary': events[0]['containers'].append(copy.deepcopy(middle['containers'][-1]))
+    elif damage == 'unadmitted': middle['probe']['transientAdmission'] = None
+    elif damage == 'overflow':
+        extra = copy.deepcopy(middle['containers'][-1]); extra['containerId'] = 'a' * 64; middle['containers'].append(extra)
+    elif damage == 'missing-peak':
+        for row in middle['containers']:
+            if row['service'] == 'bge-verifier': row['running'] = False
+    elif damage == 'missing-original': first.pop('completionReceipt')
+    elif damage == 'foreign-original': first['completionReceipt']['file'] = 'another-attempt/native-readback-after-start.json'
+    elif damage == 'manual-omitted': summary['manualTransientRequired'] = True
+    elif damage == 'old-redis-cap':
+        for event in events:
+            next(row for row in event['containers'] if row['service'] == 'redis')['memoryLimitBytes'] = 256 * runtime.MIB
+    elif damage == 'start-omits-service': summary['phasePlans']['runtime-start']['memoryAdmissionBytes'] -= 128 * runtime.MIB
+    else: summary['transientAdmissionPolicy'] = 'UNREVIEWED'
+    with pytest.raises(ValueError): runtime.validate_resource_evidence(summary, resource_raw(summary, events), context, project)
+
+
+def test_pending_manual_is_allowed_only_at_the_pre_ready_automatic_gate():
+    summary, events, context, project = staged_evidence(); summary['manualTransientRequired'] = True
+    raw = resource_raw(summary, events)
+    assert runtime.validate_resource_evidence(summary, raw, context, project, manual_pending=True)['status'] == 'VERIFIED'
+    with pytest.raises(ValueError): runtime.validate_resource_evidence(summary, raw, context, project)
+
+
+@pytest.mark.parametrize('damage', ['none', 'policy', 'string-boolean', 'manual', 'original'])
+def test_file_consumer_binds_new_policy_and_real_completion_before_reading_probes(tmp_path, monkeypatch, damage):
+    validator = load('staged_resource_file_consumer', 'script/jenkins/validate-runtime-resources.py')
+    summary, events, context, project = staged_evidence()
+    resource_raw(summary, events)
+    references = {entry['admission']['name']: entry['completionReceipt'] for entry in summary['transientAdmissions']}
+    proof = {**context, 'project': project, 'status': 'PASS',
+        'loadScope': {'profile': runtime.RUNTIME_PROFILE, 'productionPerformanceVerified': False,
+            'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True,
+            'observabilityRequired': True, 'transientAdmissionPolicy': runtime.TRANSIENT_POLICY},
+        'manualAcceptance': {'enabled': False, 'status': 'NOT_REQUESTED'},
+        'legacyData': {'verifications': {name[4:]: value for name, value in references.items() if name.startswith('bge-')}},
+        'scenarios': {'private-mcp-install-fetch-cancel-reconcile': references['mcp']}}
+    cleanup = {**context, 'project': project, 'status': 'STOPPED', 'browserEvidence': references['browser']}
+    if damage == 'policy': proof['loadScope'].pop('transientAdmissionPolicy')
+    elif damage == 'string-boolean': proof['loadScope']['productionCapacityVerified'] = 'false'
+    elif damage == 'manual': proof['manualAcceptance']['enabled'] = True
+    elif damage == 'original': proof['legacyData']['verifications']['after-start'] = {'file': 'different', 'sha256': 'b' * 64}
+    def write(name, value):
+        path = tmp_path / name; path.write_text(json.dumps(value), encoding='utf8'); return path
+    summary_file = write('resource-summary.json', summary)
+    reference = {'file': 'checkout/work/runtime-acceptance/resource-summary.json', 'sha256': runtime.sha_file(summary_file)}
+    proof['resourceEvidence'] = reference; cleanup['resourceEvidence'] = reference
+    proof_file, cleanup_file = write('proof.json', proof), write('cleanup.json', cleanup)
+    probes = tmp_path / 'resource-probes.jsonl'
+    class RawValidationBoundary(Exception): pass
+    original = validator.raw_file
+    def read(path, maximum):
+        if Path(path) == probes: raise RawValidationBoundary('original raw validation next')
+        return original(path, maximum)
+    monkeypatch.setattr(validator, 'raw_file', read)
+    with pytest.raises(RawValidationBoundary if damage == 'none' else ValueError):
+        validator.validate_files(proof_file, cleanup_file, summary_file, probes, tmp_path)
+
+
+@pytest.mark.parametrize('name,count', [('manual', 3), ('bge-after-start', 3)])
+def test_live_observer_enforces_transient_aggregate_cgroups(tmp_path, monkeypatch, name, count):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch, manual=True)
+    monitor.active_transient = name
+    service = 'mcp-child' if name == 'manual' else 'bge-verifier' if name.startswith('bge-') else 'collaboration-browser'
+    limit = 256 * runtime.MIB if service == 'mcp-child' else runtime.BGE_VERIFIER_MEMORY if service == 'bge-verifier' else runtime.BROWSER_MEMORY
+    rows, files = [], {}
+    for index in range(count):
+        cid = format(2000 + index, '064x'); pid = 700 + index
+        labels = {'io.doorhandle.rehearsal': ctx.project}
+        image = ctx.images['mem0']
+        if service == 'mcp-child':
+            labels.update({'doorhandle.mcp.managed': 'true', 'doorhandle.mcp.pool': ctx.owner['mcpPoolId'], 'doorhandle.mcp.owner': '7'})
+            image = ctx.owner['runtimeMcpImage']
+        elif service == 'bge-verifier': labels['io.doorhandle.bge-verifier'] = ctx.token
+        else:
+            labels['io.doorhandle.collaboration-browser'] = ctx.token
+            image = ctx.owner['browserImage']; ctx.owner.pop('browserContainerId', None)
+            ctx.owner['browserContainerName'] = 'owned-browser'
+        rows.append({'Id': cid, 'Name': '/owned-browser', 'Image': image, 'Config': {'Labels': labels},
+            'HostConfig': {'Memory': limit, 'MemorySwap': limit},
+            'State': {'Running': True, 'Pid': pid, 'OOMKilled': False, 'ExitCode': 0}})
+        base = '/sys/fs/cgroup/system.slice/docker-' + cid + '.scope/'
+        files.update({f'/proc/{pid}/cgroup': '0::/system.slice/docker-' + cid + '.scope\n',
+            base + 'memory.max': str(limit), base + 'memory.swap.max': '0', base + 'memory.events': 'oom 0\noom_kill 0\n',
+            base + 'memory.current': '100', base + 'memory.peak': '200'})
+    original = Path.read_text
+    monkeypatch.setattr(Path, 'read_text', lambda path, *args, **kwargs: files[str(path)] if str(path) in files else original(path, *args, **kwargs))
+    monkeypatch.setattr(monitor, 'rows', lambda: rows)
+    with pytest.raises(ValueError, match='TRANSIENT_MEMORY_BOUND'): monitor.sample()
+    assert 'TRANSIENT_MEMORY_BOUND' in json.loads(monitor.raw.read_text().splitlines()[-1])['stopReasons']
+
+
+@pytest.mark.parametrize('reply', [
+    ['maxmemory', str(64 * runtime.MIB), 'maxmemory-policy', 'noeviction'],
+    ['maxmemory-policy', 'noeviction', 'maxmemory', str(64 * runtime.MIB)]])
+def test_actual_candidate_redis_policy_uses_bundled_resp2_cli_without_exporting_auth(reply):
+    calls = []
+    ctx = SimpleNamespace(row=lambda name: {'Id': 'f' * 64},
+        ops=SimpleNamespace(docker=lambda *args, **kwargs: calls.append((args, kwargs)) or json.dumps(reply).encode()))
+    runtime.Runtime.verify_redis_policy(ctx)
+    args, kwargs = calls[0]
+    assert args[:4] == ('exec', 'f' * 64, 'sh', '-ec') and kwargs == {'timeout': 15}
+    assert 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -2 --json CONFIG GET' in args[-1]
+
+
+@pytest.mark.parametrize('reply', [[], {'maxmemory': str(64 * runtime.MIB)},
+    ['maxmemory', '0', 'maxmemory-policy', 'noeviction'],
+    ['maxmemory', str(128 * runtime.MIB), 'maxmemory-policy', 'noeviction'],
+    ['maxmemory', str(64 * runtime.MIB), 'maxmemory-policy', 'allkeys-lru'],
+    ['maxmemory', str(64 * runtime.MIB), 'maxmemory', str(64 * runtime.MIB)]])
+def test_actual_candidate_redis_policy_rejects_a_healthy_but_unbounded_or_evicting_instance(reply):
+    ctx = SimpleNamespace(row=lambda name: {'Id': 'f' * 64},
+        ops=SimpleNamespace(docker=lambda *args, **kwargs: json.dumps(reply).encode()))
+    with pytest.raises(ValueError, match='Redis memory/eviction'): runtime.Runtime.verify_redis_policy(ctx)
+
+
+@pytest.mark.parametrize('damage', ['none', 'absent', 'foreign-id', 'exited', 'no-peak'])
+def test_mcp_fault_control_point_captures_its_actual_writer_not_a_periodic_guess(tmp_path, monkeypatch, damage):
+    ctx, monitor = transient_monitor(tmp_path, monkeypatch)
+    monitor.active_transient = 'mcp'; cid = 'e' * 64
+    row = {'containerId': cid, 'service': 'mcp-child', 'image': ctx.owner['runtimeMcpImage'],
+           'running': True, 'peakBytes': 1024}
+    rows = [row]
+    if damage == 'absent': rows = []
+    elif damage == 'foreign-id': row['containerId'] = 'f' * 64
+    elif damage == 'exited': row['running'] = False
+    elif damage == 'no-peak': row['peakBytes'] = 0
+    calls = []
+    monkeypatch.setattr(monitor, 'sample', lambda: calls.append('real sample') or rows)
+    if damage == 'none':
+        assert monitor.observe_mcp_writer(cid) == row
+    else:
+        with pytest.raises(ValueError, match='lost its live cgroup'): monitor.observe_mcp_writer(cid)
+    assert calls == ['real sample']
+    source = (ROOT / 'script/docker/compact-runtime-acceptance.py').read_text(encoding='utf8')
+    body = source.split('    def mcp_unknown_control(self, account):', 1)[1].split('    def mcp_scenario', 1)[0]
+    assert body.index("require(actual['State'].get('Paused') is True") < body.index("self.resources.observe_mcp_writer(child['Id'])") < body.index('            deadline = time.monotonic() + 150')
+    assert "'observedWriterId': child['Id']" in body and "'writerResourceObservation': writer_resource" in body
 
 
 def worker_dependency_fixture(tmp_path, *, installed_pymysql=False, current_requirements=False):

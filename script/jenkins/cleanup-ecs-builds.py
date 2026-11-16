@@ -56,8 +56,13 @@ GENERATED_SOURCE_PACKAGE_KINDS = frozenset({'GENERATED_SOURCE_DEPENDENCIES', 'GE
 # Compare syntax only; never execute an old source or infer ownership by name.
 NPM_ROUTING_AST = {
     'safe_environment': 'f3d236e9e74747545aa36f74a1cebf7de1675e2dbafb300d9d506068d7f3b3d6',
-    'command': 'b44e28ef754376c8a1dcb792f34bf4200a6d4d85da7e52a345fa0aa1eac18bc7',
+    'command': 'ff6e9e6d55434b5fa0b9468c031afc842c69dbffdb2a0244ee88b7ed605afd83',
 }
+# The integer memory/JVM change leaves npm and Python output routing intact.
+# Keep the prior exact recipe usable for already-finished archived sources.
+NPM_LEGACY_ROUTING_AST = {**NPM_ROUTING_AST,
+    'command': 'b44e28ef754376c8a1dcb792f34bf4200a6d4d85da7e52a345fa0aa1eac18bc7'}
+NPM_ROUTING_RECIPES = (NPM_ROUTING_AST, NPM_LEGACY_ROUTING_AST)
 NPM_INSTALL_ARGUMENTS = ['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund']
 PYTEST_TMP_SUFFIX = 'work/ci-evidence/tmp/pytest'
 # Reviewed native runs contain ordinary synthetic control-test copies as well
@@ -377,7 +382,7 @@ def npm_cache_provenance(root, source, commit, manifest, inner, catalog, tools, 
                 functions[node.name] = routing_ast_sha(node)
     except (SyntaxError, UnicodeError, ValueError):
         return skipped('NPM_ROUTING_NOT_REVIEWED')
-    if functions != NPM_ROUTING_AST:
+    if functions not in NPM_ROUTING_RECIPES:
         return skipped('NPM_ROUTING_NOT_REVIEWED')
     executor_sha = sha(raw)
     if not isinstance(manifest.get('files'), dict) or manifest['files'].get('executor.py') != executor_sha:
@@ -467,7 +472,7 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
                 if node.name in routing: return skipped('PYTEST_ROUTING_NOT_REVIEWED')
                 routing[node.name] = routing_ast_sha(node)
     except (SyntaxError, UnicodeError, ValueError): return skipped('PYTEST_RUNNER_NOT_REVIEWED')
-    if routing != NPM_ROUTING_AST: return skipped('PYTEST_ROUTING_NOT_REVIEWED')
+    if routing not in NPM_ROUTING_RECIPES: return skipped('PYTEST_ROUTING_NOT_REVIEWED')
     checkout = Path(manifest['checkout']); runner_sha, executor_sha = sha(runner), sha(executor)
     try:
         actual_runner = owned_chain(checkout / 'script/jenkins/verify-ecs.py', root, maximum=1024 ** 2)

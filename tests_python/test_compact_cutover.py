@@ -88,7 +88,7 @@ def attach_runtime_resources(directory, context, project, proof, images, fixture
         if service == 'model-fixture': image = fixture_images['model']
         if service == 'mcp-runner': image = fixture_images['mcp']
         metrics.append({'containerId': format(index, '064x'), 'service': service, 'image': image,
-            'memoryLimitBytes': runtime.SERVICE_MEMORY_MIB[service] * runtime.MIB,
+            'memoryLimitBytes': (256 if service == 'redis' else runtime.SERVICE_MEMORY_MIB[service]) * runtime.MIB,
             'currentBytes': runtime.MIB, 'peakBytes': 2 * runtime.MIB, 'oom': 0, 'oomKills': 0,
             'running': True, 'exitCode': 0})
     metrics.append({'containerId': 'e' * 64, 'service': 'bge-qdrant',
@@ -103,7 +103,7 @@ def attach_runtime_resources(directory, context, project, proof, images, fixture
         'memoryLimitBytes': runtime.BROWSER_MEMORY, 'currentBytes': 0, 'peakBytes': 2 * runtime.MIB,
         'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0})
     phases, plans, samples = [], {}, []
-    declared_memory = sum(runtime.SERVICE_MEMORY_MIB.values()) * runtime.MIB + 512 * runtime.MIB + runtime.BGE_VERIFIER_MEMORY
+    declared_memory = (sum(runtime.SERVICE_MEMORY_MIB.values()) + 128) * runtime.MIB + 512 * runtime.MIB + runtime.BGE_VERIFIER_MEMORY
     for index, phase in enumerate(('runtime-start', 'runtime-backup', 'runtime-restore', 'runtime-browser'), 1):
         baseline = {'capturedAtUnix': 100 + index, 'diskTotalBytes': 40 * runtime.GIB,
             'diskAvailableBytes': 8 * runtime.GIB, 'memoryAvailableBytes': 12 * runtime.GIB}

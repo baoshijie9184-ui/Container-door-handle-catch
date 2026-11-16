@@ -15,6 +15,9 @@ SPEC.loader.exec_module(verifier)
 REMOTE_SPEC = importlib.util.spec_from_file_location('middleware_remote_verifier', ROOT / 'script/jenkins/verify-remote.py')
 remote = importlib.util.module_from_spec(REMOTE_SPEC)
 REMOTE_SPEC.loader.exec_module(remote)
+TOOLS_SPEC = importlib.util.spec_from_file_location('middleware_admission_tool_runtime', ROOT / 'script/jenkins/ecs-tool-runtime.py')
+tool_runtime = importlib.util.module_from_spec(TOOLS_SPEC)
+TOOLS_SPEC.loader.exec_module(tool_runtime)
 JAVA = 'com.ruanzhu.doorhandle.framework.semantic.QdrantSemanticIntegrationTest'
 PYTHON = 'test_real_native_qdrant_keeps_public_id_vector_direction_and_account_filters'
 OBSERVABILITY_JAVA = 'com.ruanzhu.doorhandle.module.app.config.PrometheusScrapeIntegrationTest'
@@ -208,11 +211,11 @@ def test_failure_without_traceback_has_no_invented_source_location(tmp_path):
 @pytest.mark.parametrize('prepared', [True, False])
 def test_memory_admission_keeps_nested_python_java_and_passes_owned_fixture_readers(prepared):
     watch = mock.Mock()
-    runtime = SimpleNamespace(MEMORY={'mvn': 4, 'python': 4, 'java': 2, 'npm': 3, 'node': 2})
     vector, metrics, redis = mock.Mock(), mock.Mock(), mock.Mock()
-    remote.admit_fixture_memory(watch, runtime, {} if prepared else None, vector, metrics, redis)
+    remote.admit_fixture_memory(watch, tool_runtime, {} if prepared else None, vector, metrics, redis)
     args, keywords = watch.admit.call_args
-    assert args == (6 * 1024 ** 3 if prepared else 0,)
+    assert args == (5888 * 1024 ** 2 if prepared else 0,)
+    assert type(args[0]) is int
     owners = keywords['fixture_owners']
     assert set(owners) == {'qdrant', 'prometheus', 'alertmanager', 'redis'}
     for callback in owners.values(): callback()
@@ -222,7 +225,8 @@ def test_memory_admission_keeps_nested_python_java_and_passes_owned_fixture_read
 
 def test_serial_larger_tool_is_not_falsely_added_to_the_nested_java_bound():
     watch = mock.Mock()
-    runtime = SimpleNamespace(MEMORY={'mvn': 8, 'python': 4, 'java': 2, 'npm': 3, 'node': 2})
+    runtime = SimpleNamespace(BINARIES=tool_runtime.BINARIES,
+        runtime_limits=lambda tool: {'containerMemoryBytes': 8 * 1024 ** 3} if tool == 'mvn' else tool_runtime.runtime_limits(tool))
     remote.admit_fixture_memory(watch, runtime, {})
     watch.admit.assert_called_once_with(8 * 1024 ** 3, fixture_owners={})
 

@@ -505,8 +505,10 @@ def admit_fixture_memory(fixture_watch, tool_runtime, tool_value, middleware_fix
                          observability_fixture=None, redis_fixture=None):
     # Python whole-migration orchestration can synchronously launch one
     # separate Java tool. Other top-level tools execute serially.
-    tool_bound = (max(max(tool_runtime.MEMORY.values()), tool_runtime.MEMORY['python'] + tool_runtime.MEMORY['java']) * 1024 ** 3
-                  if tool_value is not None else 0)
+    tool_bound = 0
+    if tool_value is not None:
+        limits = {tool: tool_runtime.runtime_limits(tool)['containerMemoryBytes'] for tool in tool_runtime.BINARIES}
+        tool_bound = max(max(limits.values()), limits['python'] + limits['java'])
     # These fixtures already consume host memory. Their own inspectors
     # authenticate the exact containers before the kernel probe credits
     # anonymous pages; retaining their full caps here double-counts use.
