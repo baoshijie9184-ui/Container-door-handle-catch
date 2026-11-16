@@ -1,5 +1,7 @@
 {
   "owner": {
+    "schemaVersion": 1,
+    "kind": "doorhandle-compact-fixture-owner",
     "release": "ci-389-a3519753be01",
     "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
     "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23",
@@ -9,8 +11,19 @@
       "machineId": "1ebe8f77e3104ab6a49a9386e38abd20"
     },
     "phase": "OWNED_SERVER_STOPPED",
+    "work": "/home/ecs-user/doorhandle-ci/verification/ci-389-a3519753be01/checkout/work/compact-fixtures",
     "containerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "sourceContainerId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "dataDirectory": "/home/ecs-user/doorhandle-ci/verification/ci-389-a3519753be01/checkout/work/compact-fixtures/mysql-data",
+    "containerName": "doorhandle-compact-fixture-1111111111",
+    "image": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "port": 33306,
+    "binaryLoggingDisabled": true,
+    "mysqlRuntimeConfiguration": {
+      "bufferPoolBytes": 268435456,
+      "maxConnections": 120,
+      "tableOpenCacheInstances": 1
+    },
     "fixtureWatchStartFailure": {
       "bootId": "11111111-2222-3333-4444-555555555555",
       "exitCode": 2,
@@ -22,8 +35,7 @@
       "status": "STOPPED_BEFORE_READY",
       "watchStopped": true
     },
-    "manifest": "/home/ecs-user/doorhandle-ci/verification/ci-389-a3519753be01/checkout/work/compact-fixtures/manifest.json",
-    "manifestSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    "token": "1111111111"
   },
   "cleanup": {
     "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
@@ -99,23 +111,183 @@
     "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23"
   },
   "watchOwner": {
-    "version": 1,
-    "kind": "doorhandle-fixture-watch-owner",
-    "release": "ci-389-a3519753be01",
+    "bootId": "11111111-2222-3333-4444-555555555555",
     "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
-    "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23",
+    "containerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "groupToken": "33333333333333333333333333333333",
     "identity": {
       "executionLocation": "ECS",
       "instanceId": "i-2zeieuov2aum486jm1ek",
       "machineId": "1ebe8f77e3104ab6a49a9386e38abd20"
     },
-    "containerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "kernelIdentity": {
+      "pid": 54321,
+      "startTicks": 654321,
+      "relative": "/docker/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "directory": [
+        64771,
+        12345
+      ]
+    },
+    "kind": "doorhandle-fixture-watch-owner",
+    "memoryLimitBytes": 3221225472,
+    "mysqlConfiguration": {
+      "bufferPoolBytes": 268435456,
+      "maxConnections": 120,
+      "tableOpenCacheInstances": 1
+    },
+    "ownerToken": "22222222222222222222222222222222",
     "process": {
-      "group": 43210,
       "pid": 43210,
+      "group": 43210,
       "session": 43210,
       "startTicks": 123456
     },
-    "bootId": "11111111-2222-3333-4444-555555555555"
+    "release": "ci-389-a3519753be01",
+    "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23",
+    "swapLimitBytes": 0,
+    "version": 1
+  },
+  "watchStatus": {
+    "bootId": "11111111-2222-3333-4444-555555555555",
+    "capturedMonotonic": 123.0,
+    "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
+    "containerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "failure": {
+      "errorType": "KeyboardInterrupt",
+      "locations": [
+        {
+          "function": "run",
+          "line": 2000
+        }
+      ]
+    },
+    "failureState": {
+      "Dead": false,
+      "ExitCode": 0,
+      "FinishedAt": "2026-01-01T00:00:00Z",
+      "OOMKilled": false,
+      "Paused": false,
+      "Pid": 54321,
+      "Restarting": false,
+      "Running": true,
+      "StartedAt": "2026-01-01T00:00:00Z",
+      "Status": "running"
+    },
+    "finishedAtUtc": "2026-01-01T00:00:00Z",
+    "firstProbe": {
+      "capturedAtUtc": "2026-01-01T00:00:00Z",
+      "cgroup": "/docker/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_group_kill": 0,
+        "oom_kill": 0
+      },
+      "hostMemoryAvailableBytes": 11741212672,
+      "memoryCurrentBytes": 577536000,
+      "memoryLimitBytes": 3221225472,
+      "memoryPeakBytes": 598396928,
+      "pid": 54321,
+      "startTicks": 654321,
+      "state": {
+        "Dead": false,
+        "ExitCode": 0,
+        "FinishedAt": "2026-01-01T00:00:00Z",
+        "OOMKilled": false,
+        "Paused": false,
+        "Pid": 54321,
+        "Restarting": false,
+        "Running": true,
+        "StartedAt": "2026-01-01T00:00:00Z",
+        "Status": "running"
+      },
+      "swapLimitBytes": 0
+    },
+    "fullAcceptanceResourcesMeasured": false,
+    "identity": {
+      "executionLocation": "ECS",
+      "instanceId": "i-2zeieuov2aum486jm1ek",
+      "machineId": "1ebe8f77e3104ab6a49a9386e38abd20"
+    },
+    "kernelPeakMemoryBytes": 598396928,
+    "kind": "doorhandle-fixture-runtime",
+    "lastKernelObservation": {
+      "cgroup": "/docker/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_group_kill": 0,
+        "oom_kill": 0
+      },
+      "memoryCurrentBytes": 577536000,
+      "memoryLimitBytes": 3221225472,
+      "memoryPeakBytes": 598396928,
+      "pid": 54321,
+      "startTicks": 654321,
+      "swapLimitBytes": 0
+    },
+    "lastKernelObservationRole": "LAST_SUCCESSFUL_KERNEL_PROBE",
+    "lastProbe": {
+      "capturedAtUtc": "2026-01-01T00:00:00Z",
+      "cgroup": "/docker/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "events": {
+        "high": 0,
+        "low": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_group_kill": 0,
+        "oom_kill": 0
+      },
+      "hostMemoryAvailableBytes": 11741212672,
+      "memoryCurrentBytes": 577536000,
+      "memoryLimitBytes": 3221225472,
+      "memoryPeakBytes": 598396928,
+      "pid": 54321,
+      "startTicks": 654321,
+      "state": {
+        "Dead": false,
+        "ExitCode": 0,
+        "FinishedAt": "2026-01-01T00:00:00Z",
+        "OOMKilled": false,
+        "Paused": false,
+        "Pid": 54321,
+        "Restarting": false,
+        "Running": true,
+        "StartedAt": "2026-01-01T00:00:00Z",
+        "Status": "running"
+      },
+      "swapLimitBytes": 0
+    },
+    "memoryLimitBytes": 3221225472,
+    "mysqlConfiguration": {
+      "bufferPoolBytes": 268435456,
+      "maxConnections": 120,
+      "tableOpenCacheInstances": 1
+    },
+    "ownerToken": "22222222222222222222222222222222",
+    "probeCount": 1,
+    "process": {
+      "pid": 43210,
+      "group": 43210,
+      "session": 43210,
+      "startTicks": 123456
+    },
+    "release": "ci-389-a3519753be01",
+    "sampledPeakMemoryBytes": 577536000,
+    "sampledWatchPeakRssBytes": 50454528,
+    "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23",
+    "startedAtUtc": "2026-01-01T00:00:00Z",
+    "status": "FAILED",
+    "stopScope": "OWNED_ATTEMPT_ONLY",
+    "swapLimitBytes": 0,
+    "version": 1,
+    "watchAddressSpaceLimitBytes": 3221225472,
+    "watchRssLimitBytes": 268435456,
+    "watchStopped": false
   }
 }

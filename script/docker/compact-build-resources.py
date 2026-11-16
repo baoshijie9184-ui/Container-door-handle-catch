@@ -1643,7 +1643,9 @@ def historical_fixture_watch_proof(root, context, identity, owner, proof):
             and '..' not in Path(kernel['relative']).parts and type(kernel['directory']) is list
             and len(kernel['directory']) == 2 and all(type(item) is int and item >= 0 for item in kernel['directory']),
             'Stopped fixture watcher kernel identity differs')
-    require(owner.get('fixtureWatch') == {'file': work + '/fixture-watch-owner.json'}
+    parent_cancelled = 'terminationAuthority' in proof
+    require(('fixtureWatch' not in owner if parent_cancelled else
+             owner.get('fixtureWatch') == {'file': work + '/fixture-watch-owner.json'})
             and owner.get('mysqlRuntimeConfiguration') == WATCHED_MYSQL_CONFIGURATION,
             'Watched fixture owner contract differs')
     files = proof.get('files'); expected = {
@@ -1760,7 +1762,8 @@ def historical_mysql_fixture_remove(descriptor, inspect_fn, remove_fn, list_fn, 
             root = Path(descriptor['dataDirectory']).parents[5]
             historical_fixture_watch_proof(root, {key: descriptor[key] for key in ('release', 'commit', 'sourceSha256')},
                 descriptor['identity'], {'containerId': cid,
-                    'fixtureWatch': {'file': str(Path(descriptor['dataDirectory']).parent / 'fixture-watch-owner.json')},
+                    **({} if type(descriptor.get('fixtureWatchProof')) is dict and 'terminationAuthority' in descriptor['fixtureWatchProof'] else
+                       {'fixtureWatch': {'file': str(Path(descriptor['dataDirectory']).parent / 'fixture-watch-owner.json')}}),
                     'mysqlRuntimeConfiguration': WATCHED_MYSQL_CONFIGURATION}, descriptor.get('fixtureWatchProof'))
     require(SHA.fullmatch(cid) and cid != descriptor['sourceContainerId']
             and SHA.fullmatch(descriptor.get('rawInspectSha256', '')), 'Reviewed MySQL retirement descriptor required')

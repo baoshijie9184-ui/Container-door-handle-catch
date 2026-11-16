@@ -38,7 +38,7 @@ fixture 将 `DOORHANDLE_CACHE_REDIS_TEST_HOST/PORT/DATABASE` 及 `DOORHANDLE_REQ
 
 `manifest-pre-runtime-outputs-v1` 继续只按独立私有清单处理已结束轮次的两份未发布 JAR 和派生 MySQL，源 SQL、源码和报告保留。#389 的原失败发生在 watcher 就绪前；`post` 的 Generated 收尾随后复制了 `verify-remote.py`，该文件存在不代表验证 driver 已启动。
 
-这一形状仅在原源码中的 preparer/verifier 匹配审核过的 a351 字节、原 Jenkins 为 FAILURE、原 failure 记录 `FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED`、owner 和 cleanup 一致确认同一进程组已停止，并且 ready、claim、driver、验证回执和上传标记全部不存在时准入。实际容器退役同样读取原 watcher 的 `FAILED/watchStopped=false` 和父取消原件，确认原进程已不存在后才接受父确认停止，不要求伪造 driver 报告。保留原失败回执，不补造退出码；任一未知生产者、启动标记或未闭合收尾仍拒绝。原无 helper 的 NOT_STARTED 路径以及 SQL 完整、主机/目录身份、全 UID 引用和原件绑定门保持不变。源码支持不等于本批已回收，实际清理仍须统一控制验证后经 Jenkins 执行一次精确清单。
+这一形状仅在原源码中的 preparer/verifier 匹配审核过的 a351 字节、原 Jenkins 为 FAILURE、原 failure 记录 `FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED`、parent owner 按原异常路径移除了 `fixtureWatch`（独立 watch-owner 原件仍保留）、owner 和 cleanup 一致确认同一进程组已停止，并且 ready、claim、driver、验证回执和上传标记全部不存在时准入。实际容器退役同样读取原 watcher 的 `FAILED/watchStopped=false` 和父取消原件，确认原进程已不存在后才接受父确认停止，不要求伪造 driver 报告。保留原失败回执，不补造退出码；任一未知生产者、启动标记或未闭合收尾仍拒绝。原无 helper 的 NOT_STARTED 路径以及 SQL 完整、主机/目录身份、全 UID 引用和原件绑定门保持不变。源码支持不等于本批已回收，实际清理仍须统一控制验证后经 Jenkins 执行一次精确清单。
 
 ## 同一 29 表候选的人工验收
 

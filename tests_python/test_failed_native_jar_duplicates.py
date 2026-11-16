@@ -4004,19 +4004,25 @@ def test_public_cache_controller_has_an_independent_capture_complete_counts_and_
 def pre_ready_derived_fixture(derived_database_fixture, monkeypatch):
     state = derived_database_fixture; s = state.native; retirement = state.retirement
     work = s.data.parent
-    descriptor = json.loads(s.watch_files['owner'].read_bytes())
-    stopped = {'kind': 'doorhandle-fixture-watch-start-failure', 'status': 'STOPPED_BEFORE_READY',
-        'processCreated': True, 'watchStopped': True, 'groupCancellationConfirmed': True, 'exitCode': 2,
-        'pid': descriptor['process']['pid'], 'startTicks': descriptor['process']['startTicks'], 'bootId': descriptor['bootId']}
-    owner = json.loads(state.owner_path.read_bytes()); owner['fixtureWatchStartFailure'] = stopped
-    cleanup_path = work / 'cleanup-receipt.json'
-    cleanup = json.loads(cleanup_path.read_bytes()); cleanup['fixtureWatch'] = dict(stopped)
-    failure = json.loads((Path(__file__).with_name('fixtures') / 'ci-389-watch-start-failure.json').read_text())['failure']
+    # Start from all five redacted failure originals, not a normal watched
+    # owner: a351 explicitly pops fixtureWatch after confirmed cancellation.
+    originals = json.loads((Path(__file__).with_name('fixtures') / 'ci-389-watch-start-failure.json').read_text())
+    owner, cleanup, failure, descriptor, status = (originals[name] for name in
+        ('owner', 'cleanup', 'failure', 'watchOwner', 'watchStatus'))
+    assert 'fixtureWatch' not in owner and status['status'] == 'FAILED' and status['watchStopped'] is False
+    synthetic_owner = json.loads(state.owner_path.read_bytes())
+    # Only adapt runtime locations/identities to the existing synthetic Docker
+    # descriptor. Field presence and the failure lifecycle come from originals.
+    for key in ('token', 'work', 'dataDirectory', 'containerName', 'image', 'port', 'sourceContainerId'):
+        owner[key] = synthetic_owner[key]
+    for document in (owner, cleanup, descriptor, status):
+        document.update(s.context, identity=s.request['identity'], containerId=s.fid)
     failure.update(s.context)
-    status = json.loads(s.watch_files['status'].read_bytes())
-    status.update(status='FAILED', watchStopped=False, probeCount=1)
+    cleanup.update(dataDirectoryRetained=owner['dataDirectory'], sourceContainerUntouched=owner['sourceContainerId'])
+    stopped = owner['fixtureWatchStartFailure']
+    cleanup_path = work / 'cleanup-receipt.json'
     files = {state.owner_path: owner, cleanup_path: cleanup, work / 'failure.json': failure,
-             s.watch_files['status']: status}
+             s.watch_files['owner']: descriptor, s.watch_files['status']: status}
     for path, document in files.items(): path.write_bytes(encoded(document)); path.chmod(0o600)
     s.watch_files.pop('runtime').unlink()  # Actual pre-ready lifecycle has no driver-produced public report.
     state.watch_originals = {role: path.read_bytes() for role, path in s.watch_files.items()}
@@ -4068,7 +4074,7 @@ def test_pre_ready_parent_cancellation_reaches_actual_candidate_capture_and_remo
 @pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
 @pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
 @pytest.mark.parametrize('damage', ['missing-proof', 'wrong-parent-proof', 'parent-not-cancelled', 'failure-stage',
-    'source', 'missing-status', 'original-session-alive', 'container-running', 'public-runtime-appeared'])
+    'source', 'missing-status', 'original-session-alive', 'container-running', 'public-runtime-appeared', 'parent-has-watch'])
 def test_pre_ready_capture_refuses_unproven_parent_or_live_original(pre_ready_derived_fixture, monkeypatch, damage):
     state = pre_ready_derived_fixture; s = state.native; keeper = state.keepers[0]
     if damage == 'missing-proof': keeper.pop('reports')
@@ -4080,6 +4086,10 @@ def test_pre_ready_capture_refuses_unproven_parent_or_live_original(pre_ready_de
         monkeypatch.setattr(retirer, 'stopped_fixture_watch_process', alive)
     elif damage == 'container-running': s.rows[s.fid]['State'].update(Status='running', Running=True, Pid=1234)
     elif damage == 'public-runtime-appeared': (s.data.parent.parent / 'ci-evidence/fixture-runtime.json').write_bytes(b'{}')
+    elif damage == 'parent-has-watch':
+        document = json.loads(state.owner_path.read_bytes())
+        document['fixtureWatch'] = {'file': str(s.watch_files['owner']), 'ownerToken': '2' * 32, 'groupToken': '3' * 32}
+        state.owner_path.write_bytes(encoded(document)); keeper['ownerSha256'] = sha(state.owner_path.read_bytes())
     elif damage == 'failure-stage':
         path = s.data.parent / 'failure.json'; document = json.loads(path.read_bytes()); document['phase'] = 'UNKNOWN'
         path.write_bytes(encoded(document)); keeper['reports']['failureReceiptSha256'] = sha(path.read_bytes())

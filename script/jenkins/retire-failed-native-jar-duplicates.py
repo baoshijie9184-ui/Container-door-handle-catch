@@ -2504,10 +2504,16 @@ def fixture_watch_controls(root, historical, builder, *, preparation_failure=Non
              and signature == original_ref['metadata'], 'ORIGINAL_FIXTURE_WATCH_OWNER_CHANGED')
         original = decode(raw)
     watch = original.get('fixtureWatch')
-    need(type(watch) is dict and set(watch) == {'file', 'ownerToken', 'groupToken'}
-         and watch['file'] == str(work / 'fixture-watch-owner.json')
-         and all(type(watch[key]) is str and re.fullmatch(r'[a-f0-9]{32}', watch[key])
-                 for key in ('ownerToken', 'groupToken')), 'ORIGINAL_FIXTURE_WATCH_REFERENCE_REQUIRED')
+    if preparation_failure is None:
+        need(type(watch) is dict and set(watch) == {'file', 'ownerToken', 'groupToken'}
+             and watch['file'] == str(work / 'fixture-watch-owner.json')
+             and all(type(watch[key]) is str and re.fullmatch(r'[a-f0-9]{32}', watch[key])
+                     for key in ('ownerToken', 'groupToken')), 'ORIGINAL_FIXTURE_WATCH_REFERENCE_REQUIRED')
+    else:
+        # The reviewed a351 exception path pops fixtureWatch after cancelling
+        # the child. Its separate descriptor, not a fabricated parent reference,
+        # retains the tokens; its process is bound to the parent cancellation.
+        need('fixtureWatch' not in original, 'PRE_READY_PARENT_WATCH_REFERENCE_MUST_BE_ABSENT')
     paths = {'owner': work / 'fixture-watch-owner.json', 'status': work / 'fixture-watch-status.json'}
     if preparation_failure is None:
         paths['runtime'] = work.parent / 'ci-evidence/fixture-runtime.json'
@@ -2526,7 +2532,9 @@ def fixture_watch_controls(root, historical, builder, *, preparation_failure=Non
                 'memoryLimitBytes': 3 * 1024 ** 3, 'swapLimitBytes': 0, 'mysqlConfiguration': configuration}
     need(descriptor.get('version') == 1 and descriptor.get('kind') == 'doorhandle-fixture-watch-owner'
          and all(descriptor.get(key) == value for key, value in expected.items())
-         and all(descriptor.get(key) == watch[key] for key in ('ownerToken', 'groupToken')),
+         and all(type(descriptor.get(key)) is str and re.fullmatch(r'[a-f0-9]{32}', descriptor[key])
+                 for key in ('ownerToken', 'groupToken'))
+         and (preparation_failure is not None or all(descriptor[key] == watch[key] for key in ('ownerToken', 'groupToken'))),
          'ORIGINAL_FIXTURE_WATCH_DESCRIPTOR_DIFFERS')
     process, boot_id = descriptor.get('process'), descriptor.get('bootId')
     need(type(process) is dict and set(process) == {'pid', 'startTicks', 'group', 'session'}
@@ -2536,7 +2544,7 @@ def fixture_watch_controls(root, historical, builder, *, preparation_failure=Non
          'ORIGINAL_FIXTURE_WATCH_PROCESS_IDENTITY_DIFFERS')
     need(status.get('version') == 1 and status.get('kind') == 'doorhandle-fixture-runtime'
          and all(status.get(key) == value for key, value in expected.items())
-         and status.get('ownerToken') == watch['ownerToken'] and status.get('process') == process
+         and status.get('ownerToken') == descriptor['ownerToken'] and status.get('process') == process
          and status.get('bootId') == boot_id and status.get('status') in ('STOPPED', 'FAILED')
          and status.get('watchStopped') is (True if preparation_failure is None else False)
          and type(status.get('probeCount')) is int and status['probeCount'] > 0,
