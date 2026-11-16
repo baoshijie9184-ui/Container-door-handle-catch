@@ -2399,7 +2399,14 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
     repaired = (integrated[0], 'b825b85d9364214c597447697fbc6cedc92a0281650e468db12897fc1bfd0336', integrated[2])
     host_admission = (integrated[0], '13f49d1beab427afd024fb748cff22b4383f254fd3ec1d7ac36aba4186e39834', '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e')
     historical_derived = ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9', '737075bebaadbdcbd82841f759deb0a435891fcf8e92596e3584a84522d0d355', host_admission[2])
-    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup, integrated, repaired, host_admission, historical_derived})
+    redis_native = ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9', 'fbf0db208bba6959ae154321f4aef72e39b05d48e66b163de7f5f69afa49a8ca', '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e')
+    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup, integrated, repaired, host_admission, historical_derived, redis_native})
+    assert retirer.database_verification_recipe(redis_native[:2], redis_native[2]) is True
+    assert redis_native[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert redis_native[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    for index in range(3):
+        changed = list(redis_native); changed[index] = '0' * 64
+        assert retirer.database_verification_recipe(changed[:2], changed[2]) is False
     assert retirer.database_verification_recipe(historical_derived[:2], historical_derived[2]) is True
     assert historical_derived[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
     assert historical_derived[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
@@ -2449,7 +2456,7 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
 def test_diagnostic_archive_recipe_remains_bound_to_the_three_current_source_members():
     paths = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
     recipe = tuple(sha((MODULE.parents[2] / path).read_bytes().replace(b'\r\n', b'\n')) for path in paths)
-    assert recipe == ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9', '737075bebaadbdcbd82841f759deb0a435891fcf8e92596e3584a84522d0d355', '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e')
+    assert recipe == ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9', 'fbf0db208bba6959ae154321f4aef72e39b05d48e66b163de7f5f69afa49a8ca', '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e')
     assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is True
     assert recipe[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
 

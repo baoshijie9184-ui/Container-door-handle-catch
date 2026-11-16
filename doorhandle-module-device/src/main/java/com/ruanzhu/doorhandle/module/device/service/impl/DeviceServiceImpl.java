@@ -15,6 +15,7 @@ import com.ruanzhu.doorhandle.module.device.entity.DeviceCaptureAlert;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
 import com.ruanzhu.doorhandle.module.device.service.DeviceService;
+import com.ruanzhu.doorhandle.module.device.service.DeviceUsageRecordService;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -39,6 +40,7 @@ import java.util.UUID;
 public class DeviceServiceImpl implements DeviceService {
     private final DeviceMapper deviceMapper;
     private final DeviceCaptureAlertMapper deviceCaptureAlertMapper;
+    private final DeviceUsageRecordService deviceUsageRecordService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -190,7 +192,7 @@ public class DeviceServiceImpl implements DeviceService {
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="removeEmployeeFromDevice",supervisorOnly=true)
     public boolean removeEmployeeFromDevice(Long deviceId) {
         // 检查设备是否存在
-        Device existingDevice = deviceMapper.selectById(deviceId);
+        Device existingDevice = deviceMapper.selectForUsageUpdate(deviceId);
         if (existingDevice == null) {
             throw new RuntimeException("设备不存在");
         }
@@ -200,13 +202,15 @@ public class DeviceServiceImpl implements DeviceService {
             return true;
         }
 
-        // 更新设备状态为"IDLE"
-        existingDevice.setEmployeeId(null);
-        existingDevice.setStatus("IDLE");
-        existingDevice.setUpdatedTime(LocalDateTime.now());
-
-        // 解除设备与员工的关联并更新状态
-        return deviceMapper.updateById(existingDevice) > 0;
+        // Close the same current receipt as employee-side unassignment before
+        // clearing its live assignment. Historical receipts are never rewritten.
+        if (deviceUsageRecordService.updateRecordOnUnassign(deviceId, "设备已归还")) return true;
+        // Legacy assignments may have no matching open receipt; explicit NULL
+        // must not be filtered by the entity's normal NOT_NULL patch strategy.
+        if (deviceMapper.updateEmployeeId(deviceId, null) != 1) {
+            throw new com.ruanzhu.doorhandle.common.BusinessException(409, "设备已被其他主管修改，请刷新后重试");
+        }
+        return true;
     }
 
     @Override

@@ -358,7 +358,7 @@
         "doorhandle.core.copy.target.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DeviceUsageHistoryMySqlTest.java",
-      "minimumTests": 3,
+      "minimumTests": 11,
       "coverage": [
         "retained usage snapshots, real parent-reference locks and stale receipt isolation"
       ]
@@ -1158,7 +1158,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.device.service.impl.DeviceUsageHistoryServiceTest",
-        "minimumTests": 20,
+        "minimumTests": 27,
         "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/service/impl/DeviceUsageHistoryServiceTest.java"
       },
       {
@@ -1230,6 +1230,21 @@
         "className": "com.ruanzhu.doorhandle.module.ai.agent.AgentTelemetryMiddlewareTest",
         "minimumTests": 1,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/agent/AgentTelemetryMiddlewareTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.RedisCacheSerializationTest",
+        "minimumTests": 6,
+        "source": "doorhandle-server/src/test/java/com/ruanzhu/doorhandle/server/RedisCacheSerializationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.model.RedisModelCircuitTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/RedisModelCircuitTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.DeviceUsageRedisCacheTest",
+        "minimumTests": 21,
+        "source": "doorhandle-server/src/test/java/com/ruanzhu/doorhandle/server/DeviceUsageRedisCacheTest.java"
       }
     ]
   },
@@ -1529,7 +1544,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 203,
+        "minimumTests": 225,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1831,6 +1846,12 @@
         "module": "tests_python.test_semantic_mysql_fixture",
         "minimumTests": 27,
         "source": "tests_python/test_semantic_mysql_fixture.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_redis_fixture",
+        "minimumTests": 101,
+        "source": "tests_python/test_redis_fixture.py",
         "allowedSkippedTests": []
       }
     ]

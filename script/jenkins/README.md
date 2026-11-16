@@ -10,6 +10,12 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 新建工具准备前只读检查 apt 服务和内核包管理锁，活动升级未结束时拒绝开始；原件回读及清理不受此门影响，不停止或禁用系统更新。长轮验证前还须核对实际更新计时器，选择不重叠的窗口。MySQL 内核限额检查失败时分别保存两个控制文件的读数及采样阶段；`lastKernelObservation` 仅代表上次成功探针，不能当作失败现场。限额和失败即停止规则保持不变。
 
+## 真实 Redis 验证
+
+固定源码的完整 ECS 验证由现有 `verify-remote.py` 创建一个合成 Redis fixture，仅复用正式 Redis 的 immutable image，不读取正式凭据或数据。临时服务映射随机回环端口、无持久卷，内存上限 256 MiB、Redis 数据上限 64 MiB；监督器负责就绪检查、运行观察、失败收尾和原始回执。
+
+fixture 将 `DOORHANDLE_CACHE_REDIS_TEST_HOST/PORT/DATABASE` 及 `DOORHANDLE_REQUIRE_REDIS_TESTS=true` 传给现有测试工具。原缓存真实 put/get 和 3 项跨客户端熔断检查必须实际执行，另有 21 项领用缓存提交/回滚检查；缺失、条件跳过或失败不能通过完整验收。未提供该隔离环境的既有独立调用仍保持原选择规则，不启用生产服务。`reports/redis-fixture.json` 与实际 Java XML 一起归档，PASS 还要求自有 Redis 已 STOPPED。
+
 ## 已结束的 15 个历史 MySQL 副本
 
 **本批已由 #380 完成，15 项清单已消费，不得再次执行。** 实际回收 4,004,081,664 B；下文保留入口与原件核对方法。

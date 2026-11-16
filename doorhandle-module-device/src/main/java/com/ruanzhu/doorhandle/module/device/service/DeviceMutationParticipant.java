@@ -86,7 +86,7 @@ public class DeviceMutationParticipant implements BusinessMutationParticipant,Bu
         for(var item:previous)references.put(item.resourceType()+":"+item.resourceId(),mapping(item.resourceType()));
         if(id!=null&&"EMPLOYEE".equals(domain)&&"delete".equals(action))for(Long device:jdbc.queryForList("SELECT id FROM device_management WHERE employee_id=? ORDER BY id",Long.class,Long.parseLong(id)))references.put("DEVICE:"+device,DEVICE);
         // Compound assignment commands own the newly allocated/returned receipt, not all past history.
-        if(id!=null&&"DEVICE".equals(domain)&&Set.of("assignDeviceToEmployee","USAGE_ASSIGN","UNASSIGN_EMPLOYEE","USAGE_RETURN").contains(action))
+        if(id!=null&&"DEVICE".equals(domain)&&Set.of("assignDeviceToEmployee","USAGE_ASSIGN","UNASSIGN_EMPLOYEE","USAGE_RETURN","removeEmployeeFromDevice").contains(action))
             for(Long usage:jdbc.queryForList("SELECT id FROM device_usage WHERE device_id=? ORDER BY id DESC LIMIT 1",Long.class,Long.parseLong(id)))references.put("DEVICE_USAGE:"+usage,USAGE);
         if(id!=null&&"DEVICE".equals(domain)&&"deleteDevice".equals(action))for(Long alert:jdbc.queryForList("SELECT id FROM device_alert WHERE device_id=? ORDER BY id",Long.class,Long.parseLong(id)))references.put("DEVICE_ALERT:"+alert,ALERT);
         if("DEVICE_USAGE".equals(domain)){

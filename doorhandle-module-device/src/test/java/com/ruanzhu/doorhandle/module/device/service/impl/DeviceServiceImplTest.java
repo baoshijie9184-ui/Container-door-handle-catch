@@ -42,6 +42,9 @@ class DeviceServiceImplTest {
     @Mock
     private DeviceCaptureAlertMapper deviceCaptureAlertMapper;
 
+    @Mock
+    private com.ruanzhu.doorhandle.module.device.service.DeviceUsageRecordService deviceUsageRecordService;
+
     @InjectMocks
     private DeviceServiceImpl deviceService;
 

@@ -770,7 +770,7 @@ def clear_java_reports(build_root, output):
     return [remove_owned_build(path, build_root) for path in sorted(build_root.glob('*/surefire-reports'))]
 
 
-def java_maven_arguments(suite, tools, build_root, *, initial, source_regression=False):
+def java_maven_arguments(suite, tools, build_root, *, initial, source_regression=False, environment=None):
     arguments = [tools['MAVEN_CMD'], '-B', '-ntp', '-Ddoorhandle.isolated-verification=true',
                  '-Ddoorhandle.verification-root=' + str(build_root),
                  '-Dmaven.repo.local=' + tools.get('MAVEN_REPOSITORY', str(ROOT / 'work' / 'ecs-maven-repository'))]
@@ -785,6 +785,14 @@ def java_maven_arguments(suite, tools, build_root, *, initial, source_regression
         if suite['fixtureProperties'] and len(suite['javaSelection']) > 1:
             arguments += ['-DforkCount=1', '-DreuseForks=false', '-Djunit.jupiter.execution.parallel.enabled=false']
     arguments += suite['fixtureOptions']
+    environment = environment or {}
+    if environment.get('DOORHANDLE_REQUIRE_REDIS_TESTS') == 'true':
+        host = environment.get('DOORHANDLE_CACHE_REDIS_TEST_HOST')
+        port = environment.get('DOORHANDLE_CACHE_REDIS_TEST_PORT', '')
+        if host != '127.0.0.1' or not re.fullmatch(r'[0-9]{1,5}', port) \
+                or not 1024 <= int(port) <= 65535 or environment.get('DOORHANDLE_CACHE_REDIS_TEST_DATABASE') != '0':
+            raise ValueError('Real Redis tests require this attempt isolated loopback fixture')
+        arguments += ['-Dagent.redis.test=true', '-Dagent.redis.test.port=' + port]
     module = suite.get('mavenModule')
     if module is not None:
         if initial or source_regression or not suite['fixtureProperties'] or not isinstance(module, str) \
@@ -792,6 +800,29 @@ def java_maven_arguments(suite, tools, build_root, *, initial, source_regression
             raise ValueError('Only a warm native command may select one explicit reactor module')
         arguments += ['-pl', module, '-am']
     return arguments
+
+
+def redis_protocol_reports(output):
+    """Only the four actual Redis cases satisfy the component evidence gate."""
+    expected = {
+        'com.ruanzhu.doorhandle.server.RedisCacheSerializationTest': {
+            'realRedisCacheHitRestoresModelWithoutTouchingApplicationKeys'},
+        'com.ruanzhu.doorhandle.module.ai.model.RedisModelCircuitTest$RealRedis': {
+            'independentInstancesShareQuotaAndOnlyOneRecoveryProbeIsAllowed',
+            'cancelledOrDeadProbeCannotReleaseANewerOwner', 'revisionsAndModelsHaveIndependentHealth'},
+    }
+    cases = []
+    for directory in ('java', 'source-regression/java'):
+        for file in sorted((Path(output) / directory).glob('*/surefire-reports/TEST-*.xml')):
+            cases.extend(case for case in ET.parse(file).getroot().iter('testcase')
+                         if case.get('name') in expected.get(case.get('classname'), set()))
+    identities = [(case.get('classname'), case.get('name')) for case in cases]
+    required = {(name, case) for name, names in expected.items() for case in names}
+    if len(identities) != len(required) or set(identities) != required or any(
+            case.find(tag) is not None for case in cases for tag in ('failure', 'error', 'skipped')):
+        raise RuntimeError('Actual Redis cache and circuit cases are missing, duplicated, failed or skipped')
+    return {'status': 'PASS', 'nativeCases': len(cases), 'sourceData': 'SYNTHETIC_ONLY',
+            'productionCacheAccessed': False}
 
 
 def middleware_protocol_reports(output):
@@ -1052,7 +1083,9 @@ def main():
                'DOORHANDLE_TEST_PROMETHEUS_URL', 'DOORHANDLE_TEST_ALERTMANAGER_URL',
                'DOORHANDLE_TEST_OBSERVABILITY_TARGETS', 'DOORHANDLE_TEST_OBSERVABILITY_TOKEN_FILE',
                'DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS', 'DOORHANDLE_TEST_SEMANTIC_MYSQL_CONFIG',
-               'DOORHANDLE_REQUIRE_SEMANTIC_MYSQL_TESTS')}
+               'DOORHANDLE_REQUIRE_SEMANTIC_MYSQL_TESTS', 'DOORHANDLE_CACHE_REDIS_TEST_HOST',
+               'DOORHANDLE_CACHE_REDIS_TEST_PORT', 'DOORHANDLE_CACHE_REDIS_TEST_DATABASE',
+               'DOORHANDLE_REQUIRE_REDIS_TESTS')}
     env.update(HOME=str(output / 'profile'), TMPDIR=str(output / 'tmp'),
                JAVA_TOOL_OPTIONS='-Xmx1536m -XX:MaxMetaspaceSize=512m -XX:+ExitOnOutOfMemoryError',
                PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHON_DOTENV_DISABLED='1',
@@ -1125,7 +1158,8 @@ def main():
             suite = {**suite, 'commandLabel': label}; entry['commandLabel'] = label
             entry['compiledBuildRoot'] = build_root.relative_to(output).as_posix()
             destination = output / ('source-regression/java' if source_regression else 'java')
-            arguments = java_maven_arguments(suite, tools, build_root, initial=initial, source_regression=source_regression)
+            arguments = java_maven_arguments(suite, tools, build_root, initial=initial,
+                                            source_regression=source_regression, environment=env)
             command_failure = None
             try:
                 require_unchanged_inputs(suite.get('privateInputs', {}))
@@ -1155,11 +1189,11 @@ def main():
             entry['sourceInputsSha256'] = hashlib.sha256(json.dumps(source_inputs, sort_keys=True).encode()).hexdigest()
             if source_regression:
                 # Opt-in infrastructure suites may skip in the ordinary reactor;
-                # each explicitly audited pure-logic class must execute in full.
+                # every required regression class must execute in full.
                 for required in profile['sourceRegression']['requiredClasses']:
                     tally = entry['selectedJavaClasses'][required['className']]
                     if tally['passed'] < required['minimumTests'] or tally['skipped']:
-                        raise RuntimeError('Ordinary Java regression omitted a required pure-logic class')
+                        raise RuntimeError('Ordinary Java regression omitted a required regression class')
             entry['status'] = 'PASS'
             entry['reportOutputCleanup'] = clear_java_reports(build_root, output)
             return True
@@ -1194,6 +1228,8 @@ def main():
         if args.source_regression:
             required = java_classes([item['className'] for item in profile['sourceRegression']['requiredClasses']])
             run_java({'id': 'source-regression', 'javaSelection': required, 'fixtureProperties': [], 'fixtureOptions': []}, source_regression=True)
+        if env.get('DOORHANDLE_REQUIRE_REDIS_TESTS') == 'true':
+            receipt['redisProtocol'] = redis_protocol_reports(output)
         receipt['sharedJavaBuildCleanup'] = remove_owned_build(shared_build_root, output)
         if not args.java_only:
             require_unchanged_inputs({file: digest for file, digest in (

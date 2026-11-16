@@ -13,6 +13,7 @@ import com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper;
 import com.ruanzhu.doorhandle.module.device.service.DeviceUsageRecordService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -119,6 +120,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="createDeviceUsageRecord",resource="arg0.id",supervisorOnly=true)
     public void createDeviceUsageRecord(DeviceUsageRecord deviceUsageRecord) {
         validateChangedReferences(deviceUsageRecord, null);
@@ -149,6 +151,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="updateDeviceUsageRecord",resource="arg0.id",supervisorOnly=true)
     public void updateDeviceUsageRecord(DeviceUsageRecord deviceUsageRecord) {
         log.info("更新设备使用记录: {}", deviceUsageRecord);
@@ -176,6 +179,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="deleteDeviceUsageRecord",supervisorOnly=true)
     public void deleteDeviceUsageRecord(Long id) {
         log.info("删除设备使用记录ID={}", id);
@@ -200,6 +204,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="createRecord",supervisorOnly=true)
     public boolean createRecord(DeviceUsageRecord record) {
         validateChangedReferences(record, null);
@@ -217,6 +222,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="updateRecord",supervisorOnly=true)
     public boolean updateRecord(DeviceUsageRecord record) {
         DeviceUsageRecord existing = deviceUsageRecordMapper.selectForReferenceUpdate(record.getId());
@@ -226,6 +232,8 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     }
 
     @Override
+    @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="deleteRecord",supervisorOnly=true)
     public boolean deleteRecord(Long id) {
         return removeById(id);
@@ -255,6 +263,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="returnDevice",supervisorOnly=true)
     public boolean returnDevice(Long id, String remarks) {
         DeviceUsageRecord record = deviceUsageRecordMapper.selectForReferenceUpdate(id);
@@ -282,6 +291,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="USAGE_ASSIGN",supervisorOnly=true)
     public boolean createRecordOnAssign(Long deviceId, Long employeeId, String remarks) {
         if (deviceId == null || employeeId == null) {
@@ -317,9 +327,11 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
         
         // 更新设备状态
         if (saved) {
-            device.setStatus("IN_USE");
+            device.setStatus("MAINTENANCE".equals(employee.getEmployeeType()) ? "MAINTENANCE" : "IN_USE");
             device.setEmployeeId(employeeId);
-            deviceMapper.updateById(device);
+            if (deviceMapper.updateById(device) != 1) {
+                throw new BusinessException(409, "设备已被其他主管修改，请刷新后重试");
+            }
         }
         
         return saved;
@@ -362,6 +374,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="USAGE_RETURN",supervisorOnly=true)
     public boolean updateRecordOnUnassign(Long deviceId, String remarks) {
         if (deviceId == null) {
@@ -388,11 +401,10 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
             record.setRemarks(remarks);
         }
         
-        boolean updated = updateById(record);
-        
-        // 更新设备状态
-        if (updated) releaseCurrentAssignment(device);
-        
-        return updated;
+        if (!updateById(record)) {
+            throw new BusinessException(409, "设备领用记录已变化，请刷新后重试");
+        }
+        releaseCurrentAssignment(device);
+        return true;
     }
 } 

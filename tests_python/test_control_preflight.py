@@ -37,7 +37,7 @@ def test_current_fixed_profile_contains_every_focused_module():
         'test_local_mysql_custody', 'test_local_mysql_source_classification',
         'test_project_mysql_custody',
         'test_jenkins_suite_evidence', 'test_jenkins_evidence_recollection', 'test_jenkins_maven_dependency_cache',
-        'test_control_preflight', 'test_middleware_fixture', 'test_observability_fixture', 'test_semantic_mysql_fixture',
+        'test_control_preflight', 'test_middleware_fixture', 'test_observability_fixture', 'test_semantic_mysql_fixture', 'test_redis_fixture',
         'test_runtime_manual_acceptance', 'test_compact_image_inputs_identity',
     }
     assert minimum['test_public_buildkit_layer_retirement'] >= 34

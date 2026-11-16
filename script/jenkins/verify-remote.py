@@ -227,7 +227,7 @@ def unpack_source(archive, destination, commit):
 
 
 def allowed_evidence(name):
-    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json", "reports/tool-runtime.json", "reports/fixture-runtime.json", "reports/middleware-fixture.json", "reports/observability-fixture.json", "reports/semantic-mysql-fixture.json"):
+    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json", "reports/tool-runtime.json", "reports/fixture-runtime.json", "reports/middleware-fixture.json", "reports/observability-fixture.json", "reports/semantic-mysql-fixture.json", "reports/redis-fixture.json"):
         return True
     if name.startswith("reports/") and name[len("reports/"):] in LOG_NAMES:
         return True
@@ -239,7 +239,7 @@ def allowed_evidence(name):
 def evidence_files(checkout, evidence, driver):
     candidates = [("driver.log", driver)]
     candidates += [("reports/" + name, evidence / name)
-                   for name in ("receipt.json", "python.xml", "migration.json", "tool-runtime.json", "fixture-runtime.json", "middleware-fixture.json", "observability-fixture.json", "semantic-mysql-fixture.json", *sorted(LOG_NAMES))]
+                   for name in ("receipt.json", "python.xml", "migration.json", "tool-runtime.json", "fixture-runtime.json", "middleware-fixture.json", "observability-fixture.json", "semantic-mysql-fixture.json", "redis-fixture.json", *sorted(LOG_NAMES))]
     candidates += [("reports/" + path.name, path) for path in sorted(evidence.glob("java-*.log"))
                    if allowed_evidence("reports/" + path.name)]
     candidates += [("reports/java/" + path.relative_to(evidence / "java").as_posix(), path)
@@ -536,6 +536,7 @@ def run_verification(args):
     middleware_fixture = None
     observability_fixture = None
     semantic_mysql_fixture = None
+    redis_fixture = None
     exit_code = 1
     try:
         unpack_source(archive, checkout, args.commit)
@@ -594,6 +595,14 @@ def run_verification(args):
                 'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity})
             observability_fixture.prepare()
             record['observabilityFixture'] = {'required': True}
+            file = checkout / 'script/jenkins/redis-fixture.py'
+            regular_file(file, MAX_FILE_BYTES)
+            spec = importlib.util.spec_from_file_location('admitted_redis_fixture', file)
+            helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+            redis_fixture = helper.Fixture(checkout, {'release': args.tag,
+                'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity})
+            redis_fixture.prepare()
+            record['redisFixture'] = {'required': True, 'containerId': redis_fixture.container}
         if args.scope == "mysql":
             require(bool(args.fixture_manifest), "MySQL verification requires an explicit private manifest")
             manifest = Path(args.fixture_manifest)
@@ -618,6 +627,8 @@ def run_verification(args):
             environment.update(semantic_mysql_fixture.environment)
         if observability_fixture is not None:
             environment.update(observability_fixture.environment)
+        if redis_fixture is not None:
+            environment.update(redis_fixture.environment)
         if fixture_watch is not None:
             # Python whole-migration orchestration can synchronously launch one
             # separate Java tool. Other top-level tools execute serially.
@@ -625,6 +636,7 @@ def run_verification(args):
                           if tool_value is not None else 0)
             if middleware_fixture is not None: tool_bound += 512 * 1024 ** 2
             if observability_fixture is not None: tool_bound += 640 * 1024 ** 2
+            if redis_fixture is not None: tool_bound += 256 * 1024 ** 2
             record['fixtureRuntime']['memoryAdmission'] = fixture_watch.admit(tool_bound)
         with driver.open("xb") as output:
             os.chmod(driver, 0o600)
@@ -632,7 +644,8 @@ def run_verification(args):
                                        stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             wait_for_verifier(process, args, fixture_watch=fixture_watch, middleware_fixture=middleware_fixture,
-                              observability_fixture=observability_fixture, semantic_mysql_fixture=semantic_mysql_fixture)
+                              observability_fixture=observability_fixture, semantic_mysql_fixture=semantic_mysql_fixture,
+                              redis_fixture=redis_fixture)
         record["verificationExitCode"] = process.returncode
         result_file = evidence / "receipt.json"
         regular_file(result_file, MAX_RECEIPT_BYTES)
@@ -646,6 +659,13 @@ def run_verification(args):
         require(type(counts.get("passed")) is int and counts["passed"] > 0 and counts.get("failed") == 0,
                 "Verifier did not record actual passing Java tests")
         validate_java_suites(result, evidence, mysql=args.scope == 'mysql')
+        if redis_fixture is not None:
+            protocol = result.get('redisProtocol', {})
+            require(protocol.get('status') == 'PASS' and protocol.get('nativeCases') == 4
+                    and protocol.get('sourceData') == 'SYNTHETIC_ONLY'
+                    and protocol.get('productionCacheAccessed') is False,
+                    'Actual isolated Redis cache and circuit cases did not execute in full')
+            record['redisProtocol'] = protocol
         if middleware_fixture is not None:
             protocol = result.get('middlewareProtocol', {})
             require(protocol.get('status') == 'PASS' and protocol.get('javaNativeCases', 0) > 0
@@ -726,6 +746,20 @@ def run_verification(args):
                         write_json(file, fixture_watch.evidence())
                 except BaseException:
                     pass
+        if redis_fixture is not None:
+            evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                stopped = redis_fixture.stop()
+                file = evidence / 'redis-fixture.json'; write_json(file, stopped)
+                record.setdefault('redisFixture', {'required': True}).update(
+                    status=stopped['status'], cleanupConfirmed=stopped['cleanupConfirmed'],
+                    protocolHealthy=stopped['protocolHealthy'], evidenceSha256=digest(file))
+                require(stopped['cleanupConfirmed'] is True and stopped['status'] == 'STOPPED'
+                        and stopped['protocolHealthy'] is True,
+                        'Redis fixture terminal health or cleanup is unresolved')
+            except BaseException as error:
+                record.update(status='FAILED', redisCleanupErrorType=type(error).__name__)
+                exit_code = 1
         if observability_fixture is not None:
             evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
             try:
@@ -808,7 +842,7 @@ def supervisor_start(pid):
 
 
 def wait_for_verifier(process, args, fixture_watch=None, middleware_fixture=None,
-                      observability_fixture=None, semantic_mysql_fixture=None):
+                      observability_fixture=None, semantic_mysql_fixture=None, redis_fixture=None):
     deadline = time.monotonic() + VERIFY_TIMEOUT_SECONDS
     while True:
         if fixture_watch is not None:
@@ -817,12 +851,13 @@ def wait_for_verifier(process, args, fixture_watch=None, middleware_fixture=None
             middleware_fixture.check()
         if observability_fixture is not None: observability_fixture.check()
         if semantic_mysql_fixture is not None: semantic_mysql_fixture.check()
+        if redis_fixture is not None: redis_fixture.check()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired('owned verification', VERIFY_TIMEOUT_SECONDS)
         try:
             observed = any(item is not None for item in
-                           (fixture_watch, middleware_fixture, observability_fixture, semantic_mysql_fixture))
+                           (fixture_watch, middleware_fixture, observability_fixture, semantic_mysql_fixture, redis_fixture))
             result = process.wait(timeout=min(0.5 if observed else 30, remaining))
             if fixture_watch is not None:
                 fixture_watch.check()  # Close the successful-exit/OOM race before accepting PASS.
@@ -830,6 +865,7 @@ def wait_for_verifier(process, args, fixture_watch=None, middleware_fixture=None
                 middleware_fixture.check()
             if observability_fixture is not None: observability_fixture.check()
             if semantic_mysql_fixture is not None: semantic_mysql_fixture.check()
+            if redis_fixture is not None: redis_fixture.check()
             return result
         except subprocess.TimeoutExpired:
             progress({'release': args.tag, 'attempt': args.attempt, 'status': 'RUNNING',
@@ -953,7 +989,8 @@ def validate_envelope(record, args):
                 'Passing middleware evidence requires actual SDK cases and confirmed owned cleanup')
     for field, report, protocol in (
             ('observabilityFixture', 'reports/observability-fixture.json', 'observabilityProtocol'),
-            ('semanticMysqlFixture', 'reports/semantic-mysql-fixture.json', 'semanticMysqlProtocol')):
+            ('semanticMysqlFixture', 'reports/semantic-mysql-fixture.json', 'semanticMysqlProtocol'),
+            ('redisFixture', 'reports/redis-fixture.json', 'redisProtocol')):
         if record.get(field) is not None and record['status'] == 'PASS':
             fixture = record[field]
             require(fixture.get('required') is True and fixture.get('status') == 'STOPPED'
@@ -963,6 +1000,13 @@ def validate_envelope(record, args):
                     'Passing component evidence requires its original report, native cases and confirmed cleanup')
             if field == 'observabilityFixture':
                 require(fixture.get('metricsAcceptance') == 'PASS', 'Actual Prometheus/alert readback is incomplete')
+            if field == 'redisFixture':
+                proof = record[protocol]
+                require(SHA.fullmatch(fixture.get('containerId', '')) and fixture.get('protocolHealthy') is True
+                        and proof.get('nativeCases') == 4
+                        and proof.get('sourceData') == 'SYNTHETIC_ONLY'
+                        and proof.get('productionCacheAccessed') is False,
+                        'Passing Redis evidence requires the exact isolated native cases and container')
     return catalog
 
 

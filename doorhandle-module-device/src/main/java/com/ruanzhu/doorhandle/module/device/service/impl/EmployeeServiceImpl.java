@@ -265,7 +265,9 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
                 remarks = "设备分配给采集人员进行使用";
             }
             
-            deviceUsageRecordService.createRecordOnAssign(deviceId, employeeId, remarks);
+            if (!deviceUsageRecordService.createRecordOnAssign(deviceId, employeeId, remarks)) {
+                throw new com.ruanzhu.doorhandle.common.BusinessException(409, "设备领用记录未保存，请刷新后重试");
+            }
         }
         
         return result;

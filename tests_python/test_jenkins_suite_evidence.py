@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 import pytest
@@ -1318,3 +1319,97 @@ def test_original_terminal_json_is_published_atomically_before_bounded_evidence_
     assert json.loads((checkout.parent / 'verification-receipt.json').read_text()) == record
     with tarfile.open(archive) as package:
         assert json.loads(package.extractfile('verification-receipt.json').read()) == record
+
+
+def test_real_redis_switch_uses_only_the_admitted_loopback_component(tmp_path):
+    suite = {'javaSelection': [], 'fixtureProperties': [], 'fixtureOptions': []}
+    environment = {'DOORHANDLE_REQUIRE_REDIS_TESTS': 'true', 'DOORHANDLE_CACHE_REDIS_TEST_HOST': '127.0.0.1',
+                   'DOORHANDLE_CACHE_REDIS_TEST_PORT': '34121', 'DOORHANDLE_CACHE_REDIS_TEST_DATABASE': '0'}
+    arguments = inner.java_maven_arguments(suite, {'MAVEN_CMD': '/fixed/mvn'}, tmp_path,
+                                         initial=False, source_regression=True, environment=environment)
+    assert '-Dagent.redis.test=true' in arguments and '-Dagent.redis.test.port=34121' in arguments
+    assert not any(value.startswith('-Dtest=') or 'skipTests' in value for value in arguments)
+    ordinary = inner.java_maven_arguments(suite, {'MAVEN_CMD': '/fixed/mvn'}, tmp_path,
+                                        initial=False, source_regression=True)
+    assert not any('agent.redis.test' in value for value in ordinary)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('DOORHANDLE_CACHE_REDIS_TEST_HOST', 'redis.production'),
+    ('DOORHANDLE_CACHE_REDIS_TEST_PORT', '0'),
+    ('DOORHANDLE_CACHE_REDIS_TEST_PORT', '65536'),
+    ('DOORHANDLE_CACHE_REDIS_TEST_PORT', '34121 -Dother=true'),
+    ('DOORHANDLE_CACHE_REDIS_TEST_DATABASE', '1'),
+])
+def test_real_redis_switch_refuses_an_unadmitted_endpoint(tmp_path, key, value):
+    environment = {'DOORHANDLE_REQUIRE_REDIS_TESTS': 'true', 'DOORHANDLE_CACHE_REDIS_TEST_HOST': '127.0.0.1',
+                   'DOORHANDLE_CACHE_REDIS_TEST_PORT': '34121', 'DOORHANDLE_CACHE_REDIS_TEST_DATABASE': '0'}
+    environment[key] = value
+    with pytest.raises(ValueError, match='isolated loopback fixture'):
+        inner.java_maven_arguments({'javaSelection': [], 'fixtureProperties': [], 'fixtureOptions': []},
+                                  {'MAVEN_CMD': '/fixed/mvn'}, tmp_path, initial=False, environment=environment)
+
+
+@pytest.mark.parametrize('mutation', ['pass', 'missing', 'skipped', 'failure', 'error', 'duplicate'])
+def test_redis_protocol_requires_all_four_real_cases_not_the_adjacent_mock(tmp_path, mutation):
+    cache = 'com.ruanzhu.doorhandle.server.RedisCacheSerializationTest'
+    circuit = 'com.ruanzhu.doorhandle.module.ai.model.RedisModelCircuitTest$RealRedis'
+    cases = [(cache, 'realRedisCacheHitRestoresModelWithoutTouchingApplicationKeys'),
+             (circuit, 'independentInstancesShareQuotaAndOnlyOneRecoveryProbeIsAllowed'),
+             (circuit, 'cancelledOrDeadProbeCannotReleaseANewerOwner'),
+             (circuit, 'revisionsAndModelsHaveIndependentHealth')]
+    if mutation == 'missing': cases.pop()
+    if mutation == 'duplicate': cases.append(cases[0])
+    root = ET.Element('testsuite')
+    for index, (name, method) in enumerate(cases):
+        case = ET.SubElement(root, 'testcase', classname=name, name=method)
+        if index == 0 and mutation in ('skipped', 'failure', 'error'): ET.SubElement(case, mutation)
+    ET.SubElement(root, 'testcase', classname=circuit, name='coordinationFailureNeverCallsPrimaryOrFallbackSupplier')
+    directory = tmp_path / 'source-regression/java/doorhandle-server/surefire-reports'
+    directory.mkdir(parents=True)
+    ET.ElementTree(root).write(directory / 'TEST-redis.xml')
+    if mutation == 'pass':
+        assert inner.redis_protocol_reports(tmp_path) == {'status': 'PASS', 'nativeCases': 4,
+            'sourceData': 'SYNTHETIC_ONLY', 'productionCacheAccessed': False}
+    else:
+        with pytest.raises(RuntimeError, match='Actual Redis'):
+            inner.redis_protocol_reports(tmp_path)
+
+
+def test_redis_evidence_is_collected_and_owned_runtime_is_observed_on_success(tmp_path):
+    assert remote.allowed_evidence('reports/redis-fixture.json')
+    assert not remote.allowed_evidence('reports/redis-secret.json')
+    observed = []
+    class Redis:
+        def check(self): observed.append('redis')
+    class Process:
+        def wait(self, timeout):
+            assert timeout <= .5
+            return 0
+    assert remote.wait_for_verifier(Process(), SimpleNamespace(tag='ci-1-' + 'a' * 12, attempt='b' * 32, scope='mysql'),
+                                    redis_fixture=Redis()) == 0
+    assert observed == ['redis', 'redis']
+
+
+@pytest.mark.parametrize('mutation', [None, 'not-stopped', 'missing-original', 'changed-binding',
+                                     'missing-native', 'production', 'unbound-container', 'missing-protocol', 'terminal-unhealthy'])
+def test_passing_redis_envelope_requires_real_cases_and_owned_cleanup(tmp_path, mutation):
+    args, record, _, _, _ = collector_archive(tmp_path)
+    record['redisFixture'] = {'required': True, 'containerId': 'e' * 64, 'status': 'STOPPED',
+                              'cleanupConfirmed': True, 'protocolHealthy': True, 'evidenceSha256': 'f' * 64}
+    record['redisProtocol'] = {'status': 'PASS', 'nativeCases': 4,
+                              'sourceData': 'SYNTHETIC_ONLY', 'productionCacheAccessed': False}
+    record['reportFiles'].append({'path': 'reports/redis-fixture.json', 'bytes': 2, 'sha256': 'f' * 64})
+    if mutation == 'not-stopped': record['redisFixture']['cleanupConfirmed'] = False
+    if mutation == 'missing-original': record['reportFiles'].pop()
+    if mutation == 'changed-binding': record['redisFixture']['evidenceSha256'] = '0' * 64
+    if mutation == 'missing-native': record['redisProtocol']['nativeCases'] = 3
+    if mutation == 'production': record['redisProtocol']['productionCacheAccessed'] = True
+    if mutation == 'unbound-container': record['redisFixture']['containerId'] = ''
+    if mutation == 'missing-protocol': record.pop('redisProtocol')
+    if mutation == 'terminal-unhealthy': record['redisFixture']['protocolHealthy'] = False
+    if mutation is None:
+        assert 'reports/redis-fixture.json' in remote.validate_envelope(record, args)
+    else:
+        with pytest.raises(remote.VerificationError, match='component evidence|Passing Redis'):
+            remote.validate_envelope(record, args)

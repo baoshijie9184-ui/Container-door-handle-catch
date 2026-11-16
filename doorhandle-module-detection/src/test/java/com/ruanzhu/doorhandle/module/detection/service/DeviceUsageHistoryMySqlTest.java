@@ -12,9 +12,15 @@ import com.ruanzhu.doorhandle.module.device.mapper.DeviceUsageRecordMapper;
 import com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper;
 import com.ruanzhu.doorhandle.module.device.service.DeviceMutationParticipant;
 import com.ruanzhu.doorhandle.module.device.service.impl.DeviceUsageRecordServiceImpl;
+import com.ruanzhu.doorhandle.module.device.service.impl.DeviceServiceImpl;
+import com.ruanzhu.doorhandle.module.device.service.impl.EmployeeServiceImpl;
+import com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper;
+import com.ruanzhu.doorhandle.module.device.service.DeviceUsageRecordService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -43,6 +49,8 @@ class DeviceUsageHistoryMySqlTest {
     private TransactionTemplate tx;
     private DeviceUsageRecordServiceImpl service;
     private DeviceMutationParticipant participant;
+    private DeviceServiceImpl devices;
+    private EmployeeServiceImpl employees;
     private final AgentActor actor = new AgentActor(1, "supervisor", AgentActor.Role.SUPERVISOR);
 
     @BeforeEach void setup() throws Exception {
@@ -59,6 +67,11 @@ class DeviceUsageHistoryMySqlTest {
         ReflectionTestUtils.setField(service, "deviceUsageRecordMapper", sql.getMapper(DeviceUsageRecordMapper.class));
         ReflectionTestUtils.setField(service, "employeeMapper", sql.getMapper(EmployeeMapper.class));
         ReflectionTestUtils.setField(service, "deviceMapper", sql.getMapper(DeviceMapper.class));
+        devices = new DeviceServiceImpl(sql.getMapper(DeviceMapper.class), mock(DeviceCaptureAlertMapper.class), service);
+        employees = new EmployeeServiceImpl();
+        ReflectionTestUtils.setField(employees, "employeeMapper", sql.getMapper(EmployeeMapper.class));
+        ReflectionTestUtils.setField(employees, "deviceMapper", sql.getMapper(DeviceMapper.class));
+        ReflectionTestUtils.setField(employees, "deviceUsageRecordService", service);
         tx = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
         var users = mock(BusinessUserDirectory.class);
         when(users.current(1, "supervisor")).thenReturn(new BusinessUserDirectory.Identity(1, "supervisor", true));
@@ -152,6 +165,71 @@ class DeviceUsageHistoryMySqlTest {
         });
         assertThat(service.getById(43L).getEndTime()).isNotNull();
         assertThat(jdbc.queryForObject("SELECT employee_id FROM device_management WHERE id=9", Long.class)).isNull();
+    }
+
+    @Test void deviceUnassignClearsNullableColumnClosesAuditedReceiptAndIsIdempotent() {
+        tx.executeWithoutResult(status -> {
+            var before = participant.related(actor, "DEVICE", "removeEmployeeFromDevice", "9", new Object[]{9L}, List.of(), true);
+            assertThat(before).extracting(item -> item.resourceId()).containsExactly("41");
+            assertThat(devices.removeEmployeeFromDevice(9L)).isTrue();
+            var after = participant.related(actor, "DEVICE", "removeEmployeeFromDevice", "9", new Object[]{9L}, before, false);
+            assertThat(after).singleElement().satisfies(item -> {
+                assertThat(item.fields()).containsEntry("status", "RETURNED");
+                assertThat(item.fields().get("end_time")).isNotNull();
+            });
+            participant.advanceVersion(before.get(0), after.get(0));
+        });
+        assertThat(jdbc.queryForObject("SELECT employee_id FROM device_management WHERE id=9", Long.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM device_management WHERE id=9", String.class)).isEqualTo("IDLE");
+        assertThat(service.getById(41L).getVersion()).isEqualTo(1L);
+        var receipt = jdbc.queryForMap("SELECT * FROM device_usage WHERE id=41");
+        assertThat(tx.<Boolean>execute(status -> devices.removeEmployeeFromDevice(9L))).isTrue();
+        assertThat(jdbc.queryForMap("SELECT * FROM device_usage WHERE id=41")).isEqualTo(receipt);
+    }
+
+    @Test void explicitDeviceUnassignDoesNotRewriteAnOlderOpenReceipt() {
+        jdbc.update("INSERT INTO device_usage(id,device_id,employee_id,status,start_time,end_time) VALUES(42,9,11,'RETURNED','2021-01-01','2021-01-02')");
+        var before = jdbc.queryForList("SELECT * FROM device_usage ORDER BY id");
+        assertThat(tx.<Boolean>execute(status -> devices.removeEmployeeFromDevice(9L))).isTrue();
+        assertThat(jdbc.queryForObject("SELECT employee_id FROM device_management WHERE id=9", Long.class)).isNull();
+        assertThat(jdbc.queryForList("SELECT * FROM device_usage ORDER BY id")).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"DETECTION,DETECTION,IN_USE", "IMAGE_CAPTURE,COLLECTION,IN_USE",
+            "DETECTION,MAINTENANCE,MAINTENANCE", "IMAGE_CAPTURE,MAINTENANCE,MAINTENANCE"})
+    void assignmentAndReceiptKeepTheIntendedDeviceState(String deviceType, String employeeType, String expectedStatus) {
+        jdbc.update("UPDATE employee SET employee_type=?,status='ACTIVE' WHERE id=11", employeeType);
+        jdbc.update("UPDATE device_management SET employee_id=NULL,status='IDLE',device_type=? WHERE id=9", deviceType);
+        assertThat(tx.<Boolean>execute(status -> employees.assignDeviceToEmployee(11L, 9L))).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM device_management WHERE id=9", String.class)).isEqualTo(expectedStatus);
+        assertThat(jdbc.queryForObject("SELECT employee_id FROM device_management WHERE id=9", Long.class)).isEqualTo(11L);
+        var newest = jdbc.queryForMap("SELECT * FROM device_usage ORDER BY id DESC LIMIT 1");
+        assertThat(newest).containsEntry("status", "IN_USE").containsEntry("employee_name", "Current employee");
+        assertThat(newest.get("end_time")).isNull();
+    }
+
+    @Test void receiptFailureRollsBackTheAlreadyWrittenAssignment() {
+        jdbc.update("UPDATE employee SET employee_type='MAINTENANCE',status='ACTIVE' WHERE id=11");
+        jdbc.update("UPDATE device_management SET employee_id=NULL,status='IDLE',device_type='DETECTION' WHERE id=9");
+        var before = jdbc.queryForMap("SELECT * FROM device_management WHERE id=9");
+        var failingHistory = mock(DeviceUsageRecordService.class);
+        ReflectionTestUtils.setField(employees, "deviceUsageRecordService", failingHistory);
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> employees.assignDeviceToEmployee(11L, 9L)))
+                .isInstanceOf(BusinessException.class);
+        assertThat(jdbc.queryForMap("SELECT * FROM device_management WHERE id=9")).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_usage", Integer.class)).isEqualTo(1);
+    }
+
+    @Test void failedDeviceReleaseRollsBackTheClosedReceipt() {
+        var failingDevices = mock(DeviceMapper.class);
+        when(failingDevices.selectForUsageUpdate(9L)).thenReturn(devices.getDeviceById(9L));
+        ReflectionTestUtils.setField(service, "deviceMapper", failingDevices);
+        var before = jdbc.queryForMap("SELECT * FROM device_usage WHERE id=41");
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> devices.removeEmployeeFromDevice(9L)))
+                .isInstanceOf(BusinessException.class);
+        assertThat(jdbc.queryForMap("SELECT * FROM device_usage WHERE id=41")).isEqualTo(before);
+        assertLiveAssignment();
     }
 
     private void assertLiveAssignment() {

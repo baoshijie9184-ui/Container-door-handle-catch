@@ -181,6 +181,7 @@ class DeviceUsageHistoryServiceTest {
         Device device = new Device(); device.setDeviceCode("D9");
         when(employees.selectForUsageReference(11L)).thenReturn(employee);
         when(devices.selectForUsageReference(9L)).thenReturn(device);
+        when(devices.updateById(device)).thenReturn(1);
         assertThat(service.createRecordOnAssign(9L, 11L, "Assigned")).isTrue();
         var captured = org.mockito.ArgumentCaptor.forClass(DeviceUsageRecord.class);
         verify(service).save(captured.capture());
@@ -245,7 +246,7 @@ class DeviceUsageHistoryServiceTest {
 
     @Test void deletingDeviceMasterDataDoesNotExplicitlyDeleteItsUsageHistory() {
         when(devices.selectById(9L)).thenReturn(new Device()); when(devices.deleteById(9L)).thenReturn(1);
-        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class));
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
         assertThat(master.deleteDevice(9L)).isTrue();
         verifyNoInteractions(records, employees);
     }
@@ -262,6 +263,79 @@ class DeviceUsageHistoryServiceTest {
         assertThat(master.delete(11L)).isTrue();
         verify(organization).assertEmployeeUnbound(11L); verify(devices).removeEmployeeFromDevices(11L);
         verifyNoInteractions(history, records);
+    }
+
+    @Test void deviceUnassignExplicitlyClearsLegacyAssignmentWithoutAnOpenReceipt() {
+        Device current = new Device(); current.setId(9L); current.setEmployeeId(11L);
+        when(devices.selectForUsageUpdate(9L)).thenReturn(current);
+        when(devices.updateEmployeeId(9L, null)).thenReturn(1);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        assertThat(master.removeEmployeeFromDevice(9L)).isTrue();
+        verify(devices).updateEmployeeId(9L, null);
+        verify(devices, never()).updateById(any(Device.class));
+        verify(service, never()).updateById(any(DeviceUsageRecord.class));
+    }
+
+    @Test void deviceUnassignClosesCurrentReceiptAndDoesNotClearTwice() {
+        Device current = new Device(); current.setId(9L); current.setEmployeeId(11L);
+        when(devices.selectForUsageUpdate(9L)).thenReturn(current);
+        DeviceUsageRecord receipt = history(); receipt.setStatus("IN_USE");
+        when(records.selectNewestForDeviceUpdate(9L)).thenReturn(receipt);
+        when(devices.updateEmployeeId(9L, null)).thenReturn(1);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        assertThat(master.removeEmployeeFromDevice(9L)).isTrue();
+        assertThat(receipt.getStatus()).isEqualTo("RETURNED");
+        verify(service).updateById(receipt);
+        verify(devices, times(1)).updateEmployeeId(9L, null);
+    }
+
+    @Test void alreadyUnassignedDeviceDoesNotTouchHistoryOrWriteAgain() {
+        Device current = new Device(); current.setId(9L);
+        when(devices.selectForUsageUpdate(9L)).thenReturn(current);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        assertThat(master.removeEmployeeFromDevice(9L)).isTrue();
+        verifyNoInteractions(records);
+        verify(devices, never()).updateEmployeeId(anyLong(), any());
+    }
+
+    @Test void failedCurrentReceiptWriteDoesNotFallBackToClearingDevice() {
+        Device current = new Device(); current.setId(9L); current.setEmployeeId(11L);
+        when(devices.selectForUsageUpdate(9L)).thenReturn(current);
+        DeviceUsageRecord receipt = history(); receipt.setStatus("IN_USE");
+        when(records.selectNewestForDeviceUpdate(9L)).thenReturn(receipt);
+        doReturn(false).when(service).updateById(receipt);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        assertThatThrownBy(() -> master.removeEmployeeFromDevice(9L)).isInstanceOf(BusinessException.class);
+        verify(devices, never()).updateEmployeeId(anyLong(), any());
+    }
+
+    @Test void failedExplicitUnassignRaisesConflictInsteadOfReportingSuccess() {
+        Device current = new Device(); current.setId(9L); current.setEmployeeId(11L);
+        when(devices.selectForUsageUpdate(9L)).thenReturn(current);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        assertThatThrownBy(() -> master.removeEmployeeFromDevice(9L)).isInstanceOf(BusinessException.class);
+        verify(devices).updateEmployeeId(9L, null);
+    }
+
+    @Test void maintenanceReceiptRetainsMaintenanceDeviceState() {
+        Employee employee = new Employee(); employee.setEmployeeType("MAINTENANCE");
+        Device device = new Device(); device.setId(9L); device.setStatus("MAINTENANCE");
+        when(employees.selectForUsageReference(11L)).thenReturn(employee);
+        when(devices.selectForUsageReference(9L)).thenReturn(device);
+        when(devices.updateById(device)).thenReturn(1);
+        assertThat(service.createRecordOnAssign(9L, 11L, "Maintenance")).isTrue();
+        assertThat(device.getStatus()).isEqualTo("MAINTENANCE");
+        assertThat(device.getEmployeeId()).isEqualTo(11L);
+        var captured = org.mockito.ArgumentCaptor.forClass(DeviceUsageRecord.class);
+        verify(service).save(captured.capture());
+        assertThat(captured.getValue().getStatus()).isEqualTo("IN_USE");
+    }
+
+    @Test void failedAssignmentDeviceWriteRaisesConflictForTransactionRollback() {
+        when(employees.selectForUsageReference(11L)).thenReturn(new Employee());
+        when(devices.selectForUsageReference(9L)).thenReturn(new Device());
+        assertThatThrownBy(() -> service.createRecordOnAssign(9L, 11L, "Assignment"))
+                .isInstanceOf(BusinessException.class);
     }
 
     private static DeviceUsageRecord history() {
