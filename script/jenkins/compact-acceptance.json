@@ -1579,7 +1579,7 @@
       },
       {
         "module": "tests_python.test_jenkins_fixture_cgroup_probe",
-        "minimumTests": 74,
+        "minimumTests": 91,
         "source": "tests_python/test_jenkins_fixture_cgroup_probe.py",
         "allowedSkippedTests": []
       },

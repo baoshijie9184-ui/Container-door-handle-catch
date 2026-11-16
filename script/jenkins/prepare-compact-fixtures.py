@@ -898,6 +898,8 @@ def failure_details(error):
                 result['locations'].append({'function': function, 'line': frame.tb_lineno})
                 result['locations'] = result['locations'][-8:]
         frame = frame.tb_next
+    if isinstance(error, PrivateJsonError):
+        result['privateJsonFailure'] = error.observation
     return result
 
 
@@ -916,19 +918,85 @@ def canonical(value):
     return path
 
 
-def private_json(path):
+class PrivateJsonError(ValueError):
+    def __init__(self, observation):
+        super().__init__('Private bounded owned JSON required')
+        self.observation = observation
+
+
+def private_json(path, *, atomic_replace=False):
+    # Validate and read the same open inode, never stat one publication and
+    # reopen another. Only the watcher's explicitly mutable publications may
+    # retry an inode already unlinked by replace(), once and without a delay.
     path = canonical(path)
-    metadata = path.stat()
-    require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == os.getuid()
-            and metadata.st_nlink == 1 and not metadata.st_mode & 0o077
-            and metadata.st_size <= 16 * 1024 * 1024, 'Private bounded owned JSON required')
+    maximum = 16 * 1024 * 1024
+    observations = []
+
+    def reject(reason, fields=()):
+        raise PrivateJsonError({'reason': reason, 'fields': list(fields),
+                                'atomicReplace': atomic_replace, 'observations': observations})
+
+    def inspect(metadata, stage, *, links=True):
+        observations.append({'stage': stage, 'device': metadata.st_dev, 'inode': metadata.st_ino,
+            'uid': metadata.st_uid, 'gid': metadata.st_gid, 'mode': stat.S_IMODE(metadata.st_mode),
+            'fileType': stat.S_IFMT(metadata.st_mode), 'links': metadata.st_nlink,
+            'bytes': metadata.st_size, 'mtimeNs': metadata.st_mtime_ns, 'ctimeNs': metadata.st_ctime_ns})
+        invalid = [key for key, valid in (
+            ('regularFile', stat.S_ISREG(metadata.st_mode)), ('uid', metadata.st_uid == os.getuid()),
+            ('mode', not metadata.st_mode & 0o077), ('size', 0 <= metadata.st_size <= maximum),
+            ('links', not links or metadata.st_nlink == 1)) if not valid]
+        if invalid:
+            reject('METADATA', invalid)
+
+    def replacement(previous):
+        current = canonical(path).lstat()
+        inspect(current, 'REPLACEMENT')
+        if (current.st_dev, current.st_ino) == (previous.st_dev, previous.st_ino):
+            reject('UNLINKED_WITHOUT_REPLACEMENT')
+
+    detached = None
+    for attempt in range(2 if atomic_replace else 1):
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(descriptor)
+            inspect(before, 'OPEN', links=False)
+            if before.st_nlink != 1:
+                if not atomic_replace or attempt != 0 or before.st_nlink != 0:
+                    reject('METADATA', ('links',))
+                replacement(before)
+                detached = (before.st_dev, before.st_ino)
+                continue
+            if detached == (before.st_dev, before.st_ino):
+                reject('UNLINKED_WITHOUT_REPLACEMENT')
+            with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+                raw = stream.read(maximum + 1)
+            after = os.fstat(descriptor)
+            inspect(after, 'READ', links=False)
+            if len(raw) > maximum or len(raw) != before.st_size:
+                reject('READ_SIZE_CHANGED', ('size',))
+            signature = lambda value: (value.st_dev, value.st_ino, value.st_uid, value.st_gid,
+                                        value.st_mode, value.st_size, value.st_mtime_ns)
+            if signature(before) != signature(after):
+                reject('OPEN_OBJECT_CHANGED')
+            if after.st_nlink == 0 and atomic_replace:
+                replacement(after)
+                # Keep this complete, validated snapshot. In particular, do
+                # not replace an already-read FAILED/STOPPED or wrong identity
+                # with a newer RUNNING publication. The caller checks it.
+            elif after.st_nlink != 1:
+                reject('METADATA', ('links',))
+            elif before.st_ctime_ns != after.st_ctime_ns:
+                reject('OPEN_OBJECT_CHANGED')
+            break
+        finally:
+            os.close(descriptor)
     def pairs(items):
         result = {}
         for key, value in items:
             require(key not in result, 'Repeated private JSON field')
             result[key] = value
         return result
-    return json.loads(path.read_bytes(), object_pairs_hook=pairs)
+    return json.loads(raw, object_pairs_hook=pairs)
 
 
 def write_json(path, value, *, replace=False):
@@ -1825,7 +1893,7 @@ class FixtureWatch:
 
     def read_status(self):
         require(private_json(self.file) == self.descriptor, 'Fixture watcher descriptor changed')
-        value = private_json(self.status_file)
+        value = private_json(self.status_file, atomic_replace=True)
         require(value.get('ownerToken') == self.descriptor['ownerToken']
                 and value.get('process') == self.descriptor['process']
                 and value.get('containerId') == self.descriptor['containerId']
@@ -1862,8 +1930,10 @@ class FixtureWatch:
                 if attempt == 0 and valid and age > 2:
                     continue
                 require(False, 'Owned fixture watcher measurement is stale')
-        except BaseException:
+        except BaseException as error:
             self.check_failure = {**observation, 'phase': phase}
+            if isinstance(error, PrivateJsonError):
+                self.check_failure['privateJsonFailure'] = error.observation
             raise
 
     def container_memory(self, component, owned, limit):
@@ -2098,7 +2168,7 @@ def main():
         elif args.phase == 'watch':
             instance.load()
             deadline = time.monotonic() + 5
-            while 'process' not in private_json(instance.work / 'fixture-watch-owner.json'):
+            while 'process' not in private_json(instance.work / 'fixture-watch-owner.json', atomic_replace=True):
                 require(time.monotonic() < deadline, 'Fixture watcher process registration was not completed')
                 time.sleep(0.01)
             return FixtureWatch(instance).run()

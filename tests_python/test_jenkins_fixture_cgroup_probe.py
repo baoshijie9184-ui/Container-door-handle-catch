@@ -20,6 +20,153 @@ preparer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(preparer)
 
 
+class PrivateJsonPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack(); self.addCleanup(self.stack.close)
+        self.temp = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.file = self.temp / 'private.json'
+        preparer.write_json(self.file, {'generation': 1})
+
+    def replace_during_fstat(self, *, before_validation, repeat=False, value=None):
+        original = os.fstat; calls = []
+        def inspect(descriptor):
+            metadata = original(descriptor); calls.append(metadata)
+            if repeat or len(calls) == 1:
+                preparer.write_json(self.file, value or {'generation': 2}, replace=True)
+                if before_validation:
+                    metadata = original(descriptor)
+            return metadata
+        return inspect, calls
+
+    def test_ordinary_private_inputs_keep_owner_only_modes_and_json_shape(self):
+        for mode in (0o400, 0o600, 0o700):
+            with self.subTest(mode=mode):
+                self.file.chmod(mode)
+                self.assertEqual({'generation': 1}, preparer.private_json(self.file))
+
+    def test_check_and_read_use_one_inode_not_a_second_path_open(self):
+        inspect, calls = self.replace_during_fstat(before_validation=False)
+        with patch.object(preparer.os, 'fstat', side_effect=inspect), \
+             patch.object(Path, 'read_bytes', side_effect=AssertionError('path must not reopen')):
+            self.assertEqual({'generation': 1}, preparer.private_json(self.file, atomic_replace=True))
+        self.assertEqual(2, len(calls))
+        self.assertEqual(1, calls[0].st_nlink); self.assertEqual(0, calls[1].st_nlink)
+        self.assertEqual({'generation': 2}, preparer.private_json(self.file))
+
+    def test_detached_before_validation_reopens_one_real_atomic_publication(self):
+        inspect, calls = self.replace_during_fstat(before_validation=True)
+        with patch.object(preparer.os, 'fstat', side_effect=inspect), \
+             patch.object(preparer.time, 'sleep', side_effect=AssertionError('no grace period')):
+            self.assertEqual({'generation': 2}, preparer.private_json(self.file, atomic_replace=True))
+        self.assertEqual(3, len(calls))
+        self.assertNotEqual(calls[0].st_ino, calls[1].st_ino)
+
+    def test_other_private_inputs_do_not_opt_into_detached_inode_retry(self):
+        inspect, calls = self.replace_during_fstat(before_validation=True)
+        with patch.object(preparer.os, 'fstat', side_effect=inspect):
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(self.file)
+        self.assertEqual(1, len(calls))
+        self.assertEqual(['links'], failed.exception.observation['fields'])
+
+    def test_a_second_detached_inode_is_rejected_without_a_third_open(self):
+        inspect, calls = self.replace_during_fstat(before_validation=True, repeat=True)
+        with patch.object(preparer.os, 'fstat', side_effect=inspect):
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(self.file, atomic_replace=True)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(['links'], failed.exception.observation['fields'])
+
+    def test_unlink_without_a_replacement_does_not_accept_the_open_snapshot(self):
+        original = os.fstat
+        def unlink(descriptor):
+            self.file.unlink()
+            return original(descriptor)
+        with patch.object(preparer.os, 'fstat', side_effect=unlink):
+            with self.assertRaises(FileNotFoundError):
+                preparer.private_json(self.file, atomic_replace=True)
+
+    def test_bad_opened_permissions_cannot_be_hidden_by_a_safe_replacement(self):
+        self.file.chmod(0o640)
+        inspect, calls = self.replace_during_fstat(before_validation=True)
+        with patch.object(preparer.os, 'fstat', side_effect=inspect):
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(self.file, atomic_replace=True)
+        self.assertEqual(1, len(calls))
+        self.assertEqual(['mode'], failed.exception.observation['fields'])
+
+    def test_unsafe_replacement_is_rejected_instead_of_returning_old_data(self):
+        original = os.fstat; calls = []
+        def replace(descriptor):
+            metadata = original(descriptor); calls.append(metadata)
+            if len(calls) == 1:
+                preparer.write_json(self.file, {'generation': 2}, replace=True)
+                self.file.chmod(0o640)
+            return metadata
+        with patch.object(preparer.os, 'fstat', side_effect=replace):
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(self.file, atomic_replace=True)
+        self.assertEqual('REPLACEMENT', failed.exception.observation['observations'][-1]['stage'])
+        self.assertEqual(['mode'], failed.exception.observation['fields'])
+
+    def test_nonregular_hardlinked_or_oversized_objects_still_fail_metadata(self):
+        directory = self.temp / 'directory'; directory.mkdir()
+        link = self.temp / 'link'; os.link(self.file, link)
+        oversized = self.temp / 'oversized'
+        with oversized.open('wb') as stream: stream.truncate(16 * 1024 * 1024 + 1)
+        oversized.chmod(0o600)
+        for path, field in ((directory, 'regularFile'), (link, 'links'), (oversized, 'size')):
+            with self.subTest(field=field), self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(path, atomic_replace=True)
+            self.assertIn(field, failed.exception.observation['fields'])
+
+    def test_wrong_uid_still_fails_before_read(self):
+        with patch.object(preparer.os, 'getuid', return_value=os.getuid() + 1):
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(self.file, atomic_replace=True)
+        self.assertEqual(['uid'], failed.exception.observation['fields'])
+
+    def test_symlink_leaf_parent_and_relative_paths_remain_rejected(self):
+        leaf = self.temp / 'leaf'; leaf.symlink_to(self.file)
+        parent = self.temp / 'parent'; parent.symlink_to(self.temp, target_is_directory=True)
+        for path in (leaf, parent / self.file.name, Path('private.json')):
+            with self.subTest(path=path), self.assertRaises(ValueError): preparer.private_json(path)
+
+    def test_in_place_content_or_mode_changes_are_not_atomic_publications(self):
+        original = os.fstat
+        for damage in ('size', 'mode'):
+            preparer.write_json(self.file, {'generation': 1}, replace=True)
+            seen = []
+            def mutate(descriptor):
+                metadata = original(descriptor); seen.append(metadata)
+                if len(seen) == 1:
+                    if damage == 'size': self.file.write_bytes(b'{"generation":12345}')
+                    else: self.file.chmod(0o640)
+                return metadata
+            with self.subTest(damage=damage), patch.object(preparer.os, 'fstat', side_effect=mutate):
+                with self.assertRaises(preparer.PrivateJsonError):
+                    preparer.private_json(self.file, atomic_replace=True)
+
+    def test_json_errors_are_not_replaced_with_a_new_valid_publication(self):
+        for body in (b'{"password":"synthetic-private",', b'{"same":1,"same":2}'):
+            self.file.write_bytes(body)
+            inspect, calls = self.replace_during_fstat(before_validation=False)
+            with self.subTest(body=body), patch.object(preparer.os, 'fstat', side_effect=inspect):
+                with self.assertRaises(ValueError): preparer.private_json(self.file, atomic_replace=True)
+            self.assertEqual(2, len(calls))
+
+    def test_reader_uses_the_existing_sixteen_mib_bound_not_unbounded_read(self):
+        original = os.fdopen; sizes = []
+        class Reader:
+            def __init__(self, *args, **kwargs): self.stream = original(*args, **kwargs)
+            def __enter__(self): return self
+            def __exit__(self, *args): self.stream.close()
+            def read(self, size): sizes.append(size); return self.stream.read(size)
+        with patch.object(preparer.os, 'fdopen', side_effect=Reader):
+            self.assertEqual({'generation': 1}, preparer.private_json(self.file))
+        self.assertEqual([16 * 1024 * 1024 + 1], sizes)
+
+
 class FixtureCgroupProbeTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
@@ -478,6 +625,63 @@ class FixtureWatchTests(unittest.TestCase):
                 self.status(**{key: change})
                 with self.assertRaises(ValueError):
                     self.watch.read_status()
+
+    def test_replaced_but_already_read_terminal_or_wrong_owner_is_not_hidden(self):
+        original = os.fstat
+        for damage in ('FAILED', 'STOPPED', 'owner'):
+            self.status(damage if damage != 'owner' else 'RUNNING',
+                        **({'ownerToken': '0' * 32} if damage == 'owner' else {}))
+            inode = self.watch.status_file.stat().st_ino; changed = []
+            def replace(descriptor):
+                metadata = original(descriptor)
+                if metadata.st_ino == inode and not changed:
+                    changed.append(True); self.status('RUNNING')
+                return metadata
+            with self.subTest(damage=damage), patch.object(preparer.os, 'fstat', side_effect=replace), \
+                 patch.object(self.watch, 'process_alive', return_value=True), \
+                 patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as reads:
+                with self.assertRaises(ValueError): self.watch.check()
+            self.assertEqual(1, reads.call_count)
+            self.assertEqual('STATUS_IDENTITY' if damage == 'owner' else 'RUNNING', self.watch.check_failure['phase'])
+
+    def test_detached_status_retry_still_checks_the_new_identity_and_terminal_state(self):
+        original = os.fstat
+        for damage in ('FAILED', 'STOPPED', 'owner'):
+            self.status(); inode = self.watch.status_file.stat().st_ino; changed = []
+            def replace(descriptor):
+                metadata = original(descriptor)
+                if metadata.st_ino == inode and not changed:
+                    changed.append(True)
+                    self.status(damage if damage != 'owner' else 'RUNNING',
+                                **({'ownerToken': '0' * 32} if damage == 'owner' else {}))
+                    return original(descriptor)
+                return metadata
+            with self.subTest(damage=damage), patch.object(preparer.os, 'fstat', side_effect=replace), \
+                 patch.object(self.watch, 'process_alive', return_value=True), \
+                 patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as reads:
+                with self.assertRaises(ValueError): self.watch.check()
+            self.assertEqual(1, reads.call_count)
+            self.assertEqual([], self.watch.check_failure['samples'])
+
+    def test_status_metadata_failure_reaches_original_receipt_without_json_or_password(self):
+        self.status(password='synthetic-private-password')
+        self.watch.status_file.chmod(0o640)
+        with patch.object(self.watch, 'process_alive', return_value=True):
+            with self.assertRaises(preparer.PrivateJsonError) as failed: self.watch.check()
+        observation = self.watch.check_failure['privateJsonFailure']
+        self.assertEqual('STATUS_IDENTITY', self.watch.check_failure['phase'])
+        self.assertEqual(['mode'], observation['fields'])
+        self.assertEqual(0o640, observation['observations'][0]['mode'])
+        self.assertEqual(self.watch.status_file.stat().st_ino, observation['observations'][0]['inode'])
+        self.assertEqual(observation, preparer.failure_details(failed.exception)['privateJsonFailure'])
+        spec = importlib.util.spec_from_file_location('private_json_failure_remote', MODULE.with_name('verify-remote.py'))
+        remote = importlib.util.module_from_spec(spec); spec.loader.exec_module(remote)
+        receipt = {'status': 'FAILED'}
+        remote.record_verification_failure(receipt, failed.exception, MODULE.parents[2], self.watch)
+        self.assertEqual(self.watch.check_failure, receipt['fixtureRuntime']['checkFailure'])
+        raw = json.dumps(receipt)
+        for private in ('synthetic-private-password', 'ownerToken', self.descriptor['ownerToken'], str(self.temp)):
+            self.assertNotIn(private, raw)
 
     def test_stale_failed_stopped_and_dead_watch_cannot_admit_another_command(self):
         for status, alive, age in (('RUNNING', True, 3), ('FAILED', False, 0), ('STOPPED', False, 0), ('RUNNING', False, 0)):
