@@ -820,7 +820,11 @@ class FixtureWatchTests(unittest.TestCase):
         preparation, _ = self.closed_admission_preparation()
         self.file.unlink(); self.status()
         child = Mock(pid=6000, returncode=None)
-        with patch.object(preparer.secrets, 'token_hex', side_effect=['e' * 32, 'f' * 32]), \
+        owner_tokens = iter(['e' * 32, 'f' * 32])
+        token_hex = preparer.secrets.token_hex
+        # Pin only ownership tokens; atomic JSON publication still needs its own random suffixes.
+        with patch.object(preparer.secrets, 'token_hex', side_effect=lambda size:
+                 next(owner_tokens) if size == 16 else token_hex(size)), \
              patch.object(preparer, 'proc_identity', side_effect=lambda pid:
                  dict(self.process) if pid == 6000 else {'pid': 31415, 'startTicks': 100}), \
              patch.object(preparer.FixtureWatch, 'process_alive', return_value=True), \

@@ -6,6 +6,8 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131 表**，目标 **29 表**未切换，生产发布与旧库演练门关闭。功能验收固定 2 个检测人员、2 个主管，各 2 个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
+**#391 控制 FAILURE**（固定 `45858b34`）：3,750 项中 3,749 通过、1 失败；新初始 watcher 回归将 `token_hex` 固定为仅两次返回，真实 JSON 原子写入还需临时文件随机后缀，夹具因此先抛出 `StopIteration`，尚未进入目标断言。现只固定两个 16 字节 owner token，6 字节文件名后缀仍调用真实生成函数；生产代码、全部断言和 3,750 项统一控制范围不变。#387 维护未执行，整库及功能验收继续等待控制复测。
+
 **#389 前置控制全过，整轮 FAILURE**（固定 `a3519753`）：33 模块、3,735 项全过；随后夹具 watcher 初始握手失败。新内存读取调用了已经关闭的准备阶段进程监控通道，`group_stream.write/flush` 抛出 `ValueError`；不是内存容量比较失败。完整 Python、原生 MySQL、Redis 和页面验收均未启动。已将启动前和运行期统一回已移交的 watcher 固定内核探针，并在关闭的进程入口创建子进程前拒绝；补齐 4 项生命周期回归，原身份、限额、OOM 和时效门保留。静态及独立短核通过，新增回归尚待 ECS 执行。31 份原件共 **19,398,146 B** 已保全于 `ci-389-raw-receipts`；自有工具及 fixture STOPPED、工具剩余为空，派生 MySQL 数据仍保留。
 
 **#390 维护 FAILURE，未执行删除**：#387 原件中的 `tool-runtime.json` 本就没有 `identity` 字段，新兼容 consumer 和合成夹具却错误要求该字段，plan 以 `PRE_DRIVER_REPORT_CONTEXT_DIFFERS` 拒绝，apply 未开始。已集中改按真实 producer 的 release、commit、sourceSha 和 manifestSha 绑定；其余四份原件的外层身份检查不变，测试直接消费真实工具 producer 的输出。新增 11 个负例与 watcher 修复一起整合，先统一控制验证，再消费未执行的 #387 精确清单；不改写原件。11 份原件 **553,218 B** 已保全。此时可用 **9,317,453,824 B**，#387 三个原目标仍在；#389 两份 OCI 生成物已实际回收 **239,820,800 B**，但其 MySQL/JAR 因既有准入证据形状不支持继续保留。
