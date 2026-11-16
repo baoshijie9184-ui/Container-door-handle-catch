@@ -383,8 +383,15 @@ def test_actual_profile_batches_all_65_classes_and_original_paths_without_proper
     requirements, provisioned = provisioned_profile()
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
-    # Core copy includes six session-history cases; original usage service cases remain.
-    assert len(requirements) == 65 and sum(item['minimumTests'] for item in requirements) == 815
+    # Packing must retain the current coverage floor without rejecting later
+    # testcase additions; each class still uses its own acceptance-profile gate.
+    assert len(requirements) == 65 and sum(item['minimumTests'] for item in requirements) >= 837
+    minimums = {item['id']: item['minimumTests'] for item in requirements}
+    assert all(minimums[name] >= minimum for name, minimum in {
+        'DeviceUsageHistoryMySqlTest': 11,
+        'SupportCopyMigrationMySqlTest': 21,
+        'AgentWorkbenchServiceTest': 42,
+    }.items())
     core = next(item for item in requirements if item['id'] == 'CoreCopyMigrationMySqlTest')
     assert core['minimumTests'] == 29
     assert (SOURCE.parents[2] / core['source']).read_text(encoding='utf8').count('@Test void ') == core['minimumTests']
