@@ -235,6 +235,20 @@ TASK_BATCH = 'current-task-failed-verify-mysql-v1'
 TASK_ID = '01a1a46b-d37a-7fb2-8638-afe345c73531'
 FINISHED_BATCH = 'manifest-pre-runtime-outputs-v1'
 FINISHED_TASK_ID = '01a1de46-3b28-7a21-84e7-4f403268fa01'
+# Original #385 failed after its two journaled JAR removals, before any DB
+# removal. This is one closed continuation, not permission to ignore missing JARs.
+FINISHED_DB_CONTINUATIONS = {
+    'ci-383-5400127dd813': {
+        'attempt': 'ci-385-74a0f42e52f3',
+        'commit': '74a0f42e52f3600a93e83c7123ba52f86e90932b',
+        'sourceSha256': '8784cd57e638a8a011eccf78c26e83187a5a4ef8e02b6c4afe803a73684283b5',
+        'requestSha256': '6099b996d8d23ead8f6c14b9619d7992e8f8865265f7509a98c18f386055f6d6',
+        'planSha256': '646ec0ec18a1ff2a87fecbb473bed4187cf45cb1f4da7715cabcf5482aca8739',
+        'receiptSha256': 'eceb1338f60d5a7ccfa253b290206a3949fdf0c4541ad6ce93aceeeabbd083ad',
+        'journalSha256': 'b0916ad8a2fbbd5651beac2a98dab3a6d40e9e9d3a2fc0d27d0b49c3064839c9',
+        'buildXmlSha256': '5e535bb22a49a295c650fc330743645513e72bd09c89ddebc61e7089540e7747',
+    },
+}
 
 
 class TaskBatch:
@@ -281,10 +295,33 @@ def failure_reason_code(error, *, _seen=()):
     context = error.__cause__ or error.__context__
     if prefixes and context is not None:
         inner = failure_reason_code(context, _seen=(*_seen, id(error)))
-        if (inner != 'UNCLASSIFIED_ERROR' and any(error.args[0] == prefix + inner for prefix in prefixes)
-                and re.fullmatch(r'[A-Z][A-Z0-9_]{1,160}', error.args[0])):
-            return error.args[0]
+        for prefix in prefixes:
+            # Older cleanup codecs omit direct ``raise ValueError`` literals.
+            # Resolve only the authenticated inner guard, never a guessed suffix.
+            if (inner != 'UNCLASSIFIED_ERROR'
+                    and error.args[0] in (prefix + inner, prefix + 'UNCLASSIFIED_VALIDATION_ERROR')
+                    and re.fullmatch(r'[A-Z][A-Z0-9_]{1,160}', prefix + inner)):
+                return prefix + inner
     return 'UNCLASSIFIED_ERROR'
+
+
+def failure_locations(error):
+    """Bounded source coordinates only; no exception text, arguments or paths."""
+    locations = []; seen = set()
+    while error is not None and id(error) not in seen and len(seen) < 4:
+        seen.add(id(error)); trace = error.__traceback__
+        while trace is not None:
+            source = trace.tb_frame.f_globals.get('LOADED_SOURCE')
+            if type(source) is bytes and len(source) <= MIB:
+                names = {node.name for node in ast.walk(ast.parse(source)) if isinstance(node, ast.FunctionDef)}
+                code = trace.tb_frame.f_code; name = Path(code.co_filename).name
+                if (name in ('retire-derived-mysql-data.py', 'retire-failed-native-jar-duplicates.py',
+                             'cleanup-ecs-builds.py', 'compact-build-resources.py', 'verify-remote.py')
+                        and code.co_name in names and 0 < trace.tb_lineno <= len(source.splitlines())):
+                    locations.append({'file': name, 'function': code.co_name, 'line': trace.tb_lineno})
+            trace = trace.tb_next
+        error = error.__cause__ or error.__context__
+    return locations[-8:]
 
 
 def batch_configuration(batch=BATCH):
@@ -871,6 +908,8 @@ def task_request(binding):
                  'EXACT_ORIGINAL_TASK_CONTROL_REQUIRED')
         if finished:
             validate_finished_selection(row)
+    if any('completedAttempt' in row.get('retirement', {}) for row in value['candidates']):
+        need(len(value['candidates']) == 1, 'CLOSED_CONTINUATION_CANNOT_MIX_TARGETS')
     return value
 
 
@@ -878,6 +917,7 @@ def validate_finished_selection(row):
     """A reviewed manifest chooses resources; it cannot choose filesystem paths."""
     item = row['retirement']
     need(set(item) == {'policy', 'publicationRecipe', 'jarSha256', 'jarBytes', 'dataIdentity', 'jarIdentities'}
+         | ({'completedAttempt'} if 'completedAttempt' in item else set())
          and item['policy'] == FINISHED_BATCH and type(item['publicationRecipe']) is list
          and len(item['publicationRecipe']) == 3
          and all(type(value) is str and SHA.fullmatch(value) for value in item['publicationRecipe'])
@@ -888,6 +928,58 @@ def validate_finished_selection(row):
          and all(type(value) is list and len(value) == 2 and all(type(part) is int and part > 0 for part in value)
                  for value in identities) and len({tuple(value) for value in identities}) == 3,
          'EXACT_FINISHED_RESOURCE_INODES_REQUIRED')
+    if 'completedAttempt' in item:
+        approved = FINISHED_DB_CONTINUATIONS.get(row['release'])
+        need(approved is not None and item['completedAttempt'] == approved['attempt'],
+             'UNREGISTERED_FINISHED_DB_CONTINUATION')
+
+
+def finished_completed_binaries(binding, row):
+    """Bind the original failed operation and its completed deletions, read-only."""
+    if 'completedAttempt' not in row['retirement']: return None
+    validate_finished_selection(row)
+    approved = FINISHED_DB_CONTINUATIONS[row['release']]
+    original = ROOT / 'inbox' / approved['attempt']
+    directory = original / 'derived-failed-mysql-retirement'
+    files = {
+        'sourceSha256': original / 'cleanup-source.tar.gz',
+        'requestSha256': directory / 'request.json',
+        'planSha256': directory / 'plan-private.json',
+        'receiptSha256': directory / 'receipt.json',
+        'journalSha256': directory / 'jar-journal.jsonl',
+        'buildXmlSha256': ROOT / 'inbox' / binding['tag'] / 'failed-mysql-data-controls' /
+                             row['release'] / 'completed-maintenance-build.xml',
+    }
+    raw = {key: read(path, 8 * MIB) for key, path in files.items()}
+    need(all(digest(body) == approved[key] for key, body in raw.items()), 'ORIGINAL_CONTINUATION_EVIDENCE_CHANGED')
+    terminal = ET.fromstring(raw['buildXmlSha256'].decode('utf-8').replace('version="1.1"', 'version="1.0"', 1))
+    need(terminal.findtext('result') == 'FAILURE' and terminal.findtext('completed') == 'true'
+         and terminal.findtext('execution/done') == 'true', 'ORIGINAL_FAILED_MAINTENANCE_REQUIRED')
+    request, plan, receipt = (json.loads(raw[key]) for key in ('requestSha256', 'planSha256', 'receiptSha256'))
+    expected = {key: value for key, value in row.items() if key != 'retirement'}
+    expected['retirement'] = {key: value for key, value in row['retirement'].items() if key != 'completedAttempt'}
+    need(request['candidates'] == [expected] and request['builds'] == [row['release'].split('-')[1]]
+         and request['current'] == {'release': approved['attempt'], 'commit': approved['commit'],
+                                   'sourceSha256': approved['sourceSha256']}, 'CONTINUATION_ORIGINAL_SELECTION_DIFFERS')
+    need(receipt['status'] == 'FAILED_OR_UNKNOWN' and receipt['removed'] == []
+         and receipt['requestSha256'] == approved['requestSha256'] and receipt['planSha256'] == approved['planSha256']
+         and plan['roots'][row['release']][:2] == row['retirement']['dataIdentity'], 'CONTINUATION_ORIGINAL_STATE_DIFFERS')
+    journal = [json.loads(line) for line in raw['journalSha256'].splitlines()]
+    need(len(journal) == 6 and journal[0] == {'phase': 'STARTED', 'planSha256': approved['planSha256'],
+                                           'requestSha256': approved['requestSha256']}
+         and journal[-1] == {'phase': 'FINISHED', 'deletedFiles': 2}
+         and len(receipt['jarRetirements']) == len(plan['jarTargets']) == 2, 'COMPLETED_BINARY_JOURNAL_REQUIRED')
+    for index, target in enumerate(plan['jarTargets']):
+        need(journal[2 * index + 1]['phase'] == 'DELETE_STARTED'
+             and journal[2 * index + 1]['path'] == target['path']
+             and journal[2 * index + 2] == {'phase': 'DELETE_FINISHED', **receipt['jarRetirements'][index]}
+             and receipt['jarRetirements'][index]['path'] == target['path'], 'COMPLETED_BINARY_PATHS_DIFFER')
+        path = ROOT / target['path']
+        need(not path.exists() and not path.is_symlink(), 'COMPLETED_BINARY_PATH_REAPPEARED')
+    return {'release': row['release'], 'completedAttempt': approved['attempt'],
+            'originalStatus': 'FAILED_OR_UNKNOWN', 'planSha256': approved['planSha256'],
+            'receiptSha256': approved['receiptSha256'], 'journalSha256': approved['journalSha256'],
+            'alreadyRetiredJarBytes': sum(item['allocatedBytes'] for item in receipt['jarRetirements'])}
 
 
 def finished_runtime_absence(row, preparation, transport, recipe, identity):
@@ -1076,7 +1168,9 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
             'sourceSqlSha256': sql_sha, 'sourceSqlBytes': sql_bytes, 'sourceSnapshotSha256': owner['sourceSnapshotSha256'],
             'sourceRecipe': recipe, 'publicationReferences': publication,
             'reports': task_reports(row, verifier, metadata_only=metadata_only),
-            **({'preRuntimeAbsence': absence} if finished else {})})
+            **({'preRuntimeAbsence': absence} if finished else {}),
+            **({'completedBinaryRetirement': finished_completed_binaries(binding, row)}
+               if finished and 'completedAttempt' in row['retirement'] else {})})
     return keepers
 
 
@@ -1207,6 +1301,9 @@ def finished_jar_targets(value, helpers):
     targets = []
     for row in value['candidates']:
         item = row['retirement']; tag = row['release']
+        if 'completedAttempt' in item:
+            validate_finished_selection(row)
+            continue  # Original bound journal is revalidated by task_admitted.
         copy = native.describe_duplicate(ROOT, tag, item['jarSha256'], item['jarBytes'])
         canonical = native.describe_canonical_jar(ROOT, tag, item['jarSha256'], item['jarBytes'], failed_native=True)
         need([canonical['metadata'][:2], copy['metadata'][:2]] == item['jarIdentities'],
@@ -1317,6 +1414,8 @@ def task_run(args):
                     'processProbe': measured['processProbe']}
             if finished:
                 plan['jarTargets'] = finished_jar_targets(value, helpers)
+                plan['completedBinaryRetirements'] = [item['completedBinaryRetirement'] for item in keepers
+                                                       if 'completedBinaryRetirement' in item]
             write(plan_file, plan)
             public = {**public_binding, 'planSha256': digest(encoded(plan)), 'sourceSqlAndReportsRetained': True,
                 'targets': [{key: target[key] for key in ('release', 'path', 'allocatedBytes', 'files', 'inventorySha256')}
@@ -1326,6 +1425,7 @@ def task_run(args):
                     'status': 'STOPPED_OBJECT_ADMITTED' if item['fixture'] else 'ALREADY_ABSENT'} for item in fixtures]}
             if finished:
                 public['jarTargets'] = plan['jarTargets']
+                public['completedBinaryRetirements'] = plan['completedBinaryRetirements']
             write(output / 'plan.json', public)
             return {'status': 'PLANNED', **public_binding, 'planSha256': public['planSha256']}
         raw = read(plan_file, 8 * MIB); plan = json.loads(raw)
@@ -1341,7 +1441,9 @@ def task_run(args):
         receipt = {**public_binding, 'status': 'FAILED_OR_UNKNOWN', 'planSha256': args.plan_sha256,
                    'removed': [], 'fixtureRetirements': [], 'sourceSqlAndReportsRetained': True,
                    'availableBytesBefore': os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize}
-        if finished: receipt['jarRetirements'] = []
+        if finished:
+            receipt['jarRetirements'] = []
+            receipt['completedBinaryRetirements'] = plan['completedBinaryRetirements']
         try:
             measurement = privileged({'phase': 'task-inventory', 'binding': binding, 'roots': plan['roots']})
             need(measurement['targets'] == plan['targets'] and measurement['processProbe']['status'] == 'QUIESCENT',
@@ -1371,6 +1473,7 @@ def task_run(args):
         except BaseException as error:
             receipt['errorType'] = type(error).__name__
             receipt['reasonCode'] = failure_reason_code(error)
+            receipt['failureLocations'] = failure_locations(error)
             raise
         finally:
             receipt['availableBytesAfter'] = os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize
@@ -1393,7 +1496,8 @@ def main():
         print(json.dumps(run(args))); return 0
     except BaseException as error:
         print(json.dumps({'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__,
-                          'reasonCode': failure_reason_code(error), 'phase': args.phase}), file=sys.stderr)
+                          'reasonCode': failure_reason_code(error), 'phase': args.phase,
+                          'failureLocations': failure_locations(error)}), file=sys.stderr)
         return 2
 
 

@@ -1224,31 +1224,18 @@ def main():
                 entry['sourceInputsSha256'] = hashlib.sha256(json.dumps(source_inputs, sort_keys=True).encode()).hexdigest()
                 return outcome
             return run_java_command(suite, entry, initial=initial, source_regression=source_regression)
-        run_native_java_groups(args.java_suites, run_java, receipt)
-        if args.source_regression:
-            required = java_classes([item['className'] for item in profile['sourceRegression']['requiredClasses']])
-            run_java({'id': 'source-regression', 'javaSelection': required, 'fixtureProperties': [], 'fixtureOptions': []}, source_regression=True)
-        if env.get('DOORHANDLE_REQUIRE_REDIS_TESTS') == 'true':
-            receipt['redisProtocol'] = redis_protocol_reports(output)
-        receipt['sharedJavaBuildCleanup'] = remove_owned_build(shared_build_root, output)
-        if not args.java_only:
+        # The whole-copy bridge uses the uploaded candidate JAR, not these
+        # native test classes. Its independent schemas are admitted before tests.
+        ordinary_source = not fixture_options and not args.fixture_manifest \
+            and not args.compact_migration_config and not args.worker_mysql_config
+        def run_python_suites():
             require_unchanged_inputs({file: digest for file, digest in (
                 (args.compact_migration_config, args.compact_migration_config_sha256),
                 (args.worker_mysql_config, args.worker_mysql_config_sha256)) if file})
-            ordinary_source = not fixture_options and not args.fixture_manifest \
-                and not args.compact_migration_config and not args.worker_mysql_config
             receipt['pythonTemporaryCleanup'] = {'status': 'RETAINED_PYTHON_NOT_PASSED' if ordinary_source else 'RETAINED_NATIVE_EVIDENCE'}
             execute('python', [tools['PYTHON_EXE'], '-B', '-m', 'pytest', 'tests_python', '-q',
                               '--basetemp=' + str(output / 'tmp' / 'pytest'), '--junitxml=' + str(output / 'python.xml')], ROOT, environment=python_env)
             receipt['pythonTests'], receipt['selectedPythonSuites'] = python_report_counts(output / 'python.xml')
-            if env.get('DOORHANDLE_REQUIRE_QDRANT_TESTS') == 'true':
-                receipt['middlewareProtocol'] = middleware_protocol_reports(output)
-            if env.get('DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS') == 'true':
-                receipt['observabilityProtocol'] = observability_protocol_reports(output)
-            if semantic_mysql_class is not None:
-                receipt['semanticMysqlProtocol'] = semantic_mysql_protocol_reports(output)
-            cleanup_source_pytest_temporary(output, receipt, ordinary_source=ordinary_source, python_succeeded=True,
-                                            stop_tools=tools.get('_cleanup_owned_tools'))
             if args.worker_mysql_config:
                 worker_tally = receipt['selectedPythonSuites'].get('tests_python.test_detection_worker_receipts', empty_counts())
                 if not worker_tally['passed'] or worker_tally['failed'] or worker_tally['skipped']:
@@ -1272,6 +1259,33 @@ def main():
                     raise RuntimeError('Whole migration proof summary is incomplete or contains unapproved fields')
                 receipt['wholeMigrationTests'] = {'passed': len(cases), 'failed': 0, 'skipped': 0}
                 receipt['wholeMigrationSummarySha256'] = hashlib.sha256(proof_file.read_bytes()).hexdigest()
+        def run_java_suites():
+            run_native_java_groups(args.java_suites, run_java, receipt)
+            if args.source_regression:
+                required = java_classes([item['className'] for item in profile['sourceRegression']['requiredClasses']])
+                run_java({'id': 'source-regression', 'javaSelection': required, 'fixtureProperties': [], 'fixtureOptions': []}, source_regression=True)
+            if env.get('DOORHANDLE_REQUIRE_REDIS_TESTS') == 'true':
+                receipt['redisProtocol'] = redis_protocol_reports(output)
+            receipt['sharedJavaBuildCleanup'] = remove_owned_build(shared_build_root, output)
+        python_first = bool(args.compact_migration_config)
+        if python_first:
+            if args.java_only:
+                raise ValueError('Whole migration acceptance requires Python execution, not javaOnly')
+            run_python_suites()
+        run_java_suites()
+        if not args.java_only and not python_first:
+            run_python_suites()
+        if not args.java_only:
+            # These summaries consume both languages' original reports. They
+            # must follow both groups even when the whole Python run was first.
+            if env.get('DOORHANDLE_REQUIRE_QDRANT_TESTS') == 'true':
+                receipt['middlewareProtocol'] = middleware_protocol_reports(output)
+            if env.get('DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS') == 'true':
+                receipt['observabilityProtocol'] = observability_protocol_reports(output)
+            if semantic_mysql_class is not None:
+                receipt['semanticMysqlProtocol'] = semantic_mysql_protocol_reports(output)
+            cleanup_source_pytest_temporary(output, receipt, ordinary_source=ordinary_source, python_succeeded=True,
+                                            stop_tools=tools.get('_cleanup_owned_tools'))
             for frontend in ('frontend', 'frontend-agent'):
                 frontend_result = {'selectedTestFiles': frontend_test_files(profile, frontend)}
                 receipt.setdefault('frontendResults', {})[frontend] = frontend_result

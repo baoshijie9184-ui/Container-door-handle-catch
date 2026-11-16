@@ -45,9 +45,10 @@ ALTER TABLE chat_project
  ADD CONSTRAINT fk_chat_project_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE RESTRICT,
  ADD CONSTRAINT fk_chat_project_username FOREIGN KEY(username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE chat_session
- ADD CONSTRAINT fk_chat_session_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE RESTRICT,
- ADD CONSTRAINT fk_chat_session_username FOREIGN KEY(username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE,
- ADD CONSTRAINT fk_chat_session_project FOREIGN KEY(project_id) REFERENCES chat_project(project_id) ON DELETE SET NULL ON UPDATE RESTRICT;
+ ADD CONSTRAINT fk_chat_session_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE RESTRICT;
+-- Observed sessions retain historical username/project_id without parent FKs.
+-- Tenant ownership is user_id; explicit project moves/deletion validate owners
+-- and update the current association in the application transaction.
 ALTER TABLE chat_message
  ADD CONSTRAINT fk_chat_message_session FOREIGN KEY(session_id) REFERENCES chat_session(session_id) ON DELETE CASCADE ON UPDATE CASCADE;
 -- Original V44/V45/V66 evidence identities are retained independently of live

@@ -297,3 +297,43 @@ def test_mysql_generated_clock_join_binds_the_source_and_rejects_changed_target_
     else:
         result = json.loads(connection.script(command, database=database, label='clock-join-admission').splitlines()[-1])
         assert result == {'sourceRows': 1, 'targetRows': 1, 'guardRows': 1, 'valid': 1}
+
+
+@pytest.mark.skipif(os.environ.get('DOORHANDLE_COMPACT_MIGRATION_TESTS') != '1', reason='Explicit admitted ECS MySQL fixture required')
+@pytest.mark.parametrize('unknown', [False, True])
+@pytest.mark.parametrize('legacy_id', ['0', '18446744073709551615'])
+@pytest.mark.parametrize('corrupt_id', [False, True])
+def test_mysql_sdk_original_unsigned_id_is_recoverable_and_reconciled(tmp_path, unknown, legacy_id, corrupt_id):
+    connection, database = mysql(tmp_path)
+    statements = list(split_top_level(without_comments(
+        (ROOT / 'sql/mysql/compact/copy/33-sdk-checkpoint.sql').read_text('utf8')), ';'))
+    projection = next(value for value in statements if value.startswith('INSERT INTO runtime_state(')
+                      and 'FROM `__SOURCE_SCHEMA__`.agent_workbench_sdk_state' in value)
+    reconciliation = next(value for value in statements if 'NOT(clock_target.legacy_clock_json<=>' in value)
+    source = clock.catalog()['agent_workbench_sdk_state']
+    target = clock.targets()['runtime_state']
+    columns = lambda table: ','.join('`' + name + '` ' + value['type'] for name, value in table['columns'].items())
+    # Actual generated projection and full-row reconciliation, temporary tables
+    # only. Preserve unsigned endpoints without a JSON double or signed cast.
+    command = ('CREATE TEMPORARY TABLE agent_workbench_sdk_state(' + columns(source) + ');\n'
+               'CREATE TEMPORARY TABLE sdk_identity_target(' + columns(target) + ');\n'
+               'CREATE TEMPORARY TABLE compact_sdk_guard(valid INT NOT NULL CHECK(valid=1));\n'
+               'SET @compact_source_clock_unresolved=' + ('1' if unknown else '0') + ';\n'
+               "SET @compact_validation_wall_offset='+08:00';\n"
+               "INSERT INTO agent_workbench_sdk_state VALUES(" + legacy_id
+               + ",'7','Original:Session','State:Key',17,' { \"value\": null } ','2026-01-02 03:04:05.123456');\n")
+    command += projection.replace('INSERT INTO runtime_state(', 'INSERT INTO sdk_identity_target(').replace('`__SOURCE_SCHEMA__`.', '') + ';\n'
+    if corrupt_id:
+        command += "UPDATE sdk_identity_target SET payload_json=JSON_SET(payload_json,'$.legacyId','1');\n"
+    command += reconciliation.replace('LEFT JOIN runtime_state clock_target', 'LEFT JOIN sdk_identity_target clock_target').replace('`__SOURCE_SCHEMA__`.', '') + ';\n'
+    command = command.replace('__SOURCE_SNAPSHOT_SHA256__', 'a' * 64)
+    command += ("SELECT JSON_OBJECT('legacyId',JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.legacyId')),"
+                "'originalState',JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.stateJson')),'rows',COUNT(*)) FROM sdk_identity_target GROUP BY payload_json;")
+    if corrupt_id:
+        with pytest.raises(ValueError, match='MySQL operation failed'):
+            connection.script(command, database=database, label='sdk-original-id-rejection')
+        error = (tmp_path / 'private' / (str(connection.sequence).zfill(4) + '-sdk-original-id-rejection.stderr')).read_text('utf8')
+        assert 'ERROR 3819' in error and 'compact_sdk_guard' in error
+    else:
+        result = json.loads(connection.script(command, database=database, label='sdk-original-id-copy').splitlines()[-1])
+        assert result == {'legacyId': legacy_id, 'originalState': ' { "value": null } ', 'rows': 1}

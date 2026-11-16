@@ -630,12 +630,13 @@ def test_task_privileged_worker_refuses_extra_or_missing_arguments(root_identity
 @pytest.mark.parametrize('changed,objects,finished', [
     (changed, objects, finished) for changed in (False, True)
     for objects in ('absent', 'stopped', 'remove-failed') for finished in (False, True)
-] + [(False, 'builder-changed', True), (False, 'fixture-reappeared', True)])
+] + [(False, 'builder-changed', True), (False, 'fixture-reappeared', True), (False, 'completed-binaries', True)])
 def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, monkeypatch, changed, objects, finished):
     args = SimpleNamespace(phase='plan', batch=retirement.FINISHED_BATCH if finished else retirement.TASK_BATCH, tag='ci-300-' + 'f' * 12,
         commit='f' * 40, source_sha256='e' * 64, request_sha256='d' * 64, failed_builds='287,289', plan_sha256=None)
     root = tmp_path / 'ci'; output = root / 'inbox' / args.tag / 'derived-failed-mysql-retirement'; output.mkdir(parents=True)
     tags = ['ci-287-' + 'a' * 12, 'ci-289-' + 'b' * 12]
+    if objects == 'completed-binaries': tags = tags[:1]; args.failed_builds = '287'
     protected = root / 'verification/ci-266-cccccccccccc/checkout/work/compact-fixtures/mysql-data'
     protected.mkdir(parents=True); (protected / 'keep.ibd').write_bytes(b'recovery point')
     states = {}
@@ -650,7 +651,9 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
     identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
     value = {'candidates': [{'release': tag, 'commit': tag[-12:] + '0' * 28} for tag in tags]}
     keepers = [{'release': tag, 'token': 'a' * 10, 'backupManifestSha256': 'c' * 64} for tag in tags]
-    remaining = set(tags) if objects != 'absent' else set()
+    if objects == 'completed-binaries':
+        keepers[0]['completedBinaryRetirement'] = {'completedAttempt': 'ci-299-' + 'e' * 12, 'alreadyRetiredJarBytes': 8192}
+    remaining = set(tags) if objects not in ('absent', 'completed-binaries') else set()
     def strict_quiescent(*_args, **_kwargs):
         assert not remaining, 'Data removal must never ignore an existing fixture object'
     helpers = {'verify-remote.py': SimpleNamespace(ecs_identity=lambda *_: identity),
@@ -682,7 +685,7 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
     monkeypatch.setattr(retirement, 'lock', lambda _: nullcontext()); monkeypatch.setattr(retirement, 'attempt_lock', lambda _: nullcontext())
     calls = []
     if finished:
-        jar_targets = [{'path': tag + '/' + name} for tag in tags for name in ('copy.jar', 'canonical.jar')]
+        jar_targets = [] if objects == 'completed-binaries' else [{'path': tag + '/' + name} for tag in tags for name in ('copy.jar', 'canonical.jar')]
         monkeypatch.setattr(retirement, 'finished_jar_targets', lambda *_: jar_targets)
         def remove_jars(_output, targets, _helpers, quiescent, receipt):
             assert not remaining and all(state.path.exists() for state in states.values())
@@ -741,8 +744,12 @@ def test_task_real_plan_apply_preserves_sql_reports_and_protected_266(tmp_path, 
             assert marker['taskThreadId'] == (retirement.FINISHED_TASK_ID if finished else retirement.TASK_ID) and marker['status'] == 'REMOVED'
         assert calls == ['task-inventory', 'task-inventory',
                          *(['remove-stopped-object'] * 2 if objects == 'stopped' else []),
-                         *(['remove-jars'] if finished else []), 'task-remove', 'task-remove']
-        assert len(json.loads((output / 'receipt.json').read_bytes())['fixtureRetirements']) == 2
+                         *(['remove-jars'] if finished else []), *(['task-remove'] * len(tags))]
+        final = json.loads((output / 'receipt.json').read_bytes())
+        assert len(final['fixtureRetirements']) == len(tags)
+        if objects == 'completed-binaries':
+            assert final['jarRetirements'] == []
+            assert final['completedBinaryRetirements'] == [keepers[0]['completedBinaryRetirement']]
     assert (protected / 'keep.ibd').read_bytes() == b'recovery point'
     for state in states.values():
         assert (state.parent / 'data.sql').read_bytes() == b'original SQL'
@@ -1373,8 +1380,11 @@ def test_task_main_preserves_only_literal_failure_codes_and_phase(monkeypatch, c
     assert retirement.main() == 2
     captured = capsys.readouterr()
     assert captured.out == ''
-    assert json.loads(captured.err) == {'status': 'FAILED_OR_UNKNOWN', 'errorType': 'ValueError',
-                                       'reasonCode': expected, 'phase': 'plan'}
+    diagnostic = json.loads(captured.err)
+    locations = diagnostic.pop('failureLocations')
+    assert diagnostic == {'status': 'FAILED_OR_UNKNOWN', 'errorType': 'ValueError',
+                          'reasonCode': expected, 'phase': 'plan'}
+    assert locations and all(row['file'] == FILE.name and row['function'] == 'main' for row in locations)
 
 
 def test_task_failure_reason_preserves_loaded_cleanup_literal_without_arbitrary_messages():
@@ -1967,3 +1977,142 @@ def test_historical_custody_staging_preserves_existing_original_formats_and_priv
         assert 'Remove-Item' not in source and 'rm -' not in source and 'sudo' not in source
         assert 'fixture-cleanup.json' not in source and 'Set-Content' not in source
         assert 'authorization.json' in source and 'sourceDump' not in source
+
+
+@pytest.fixture
+def completed_binary_attempt(tmp_path, monkeypatch):
+    """Synthetic prior failed operation, not a real maintenance receipt copy."""
+    tag = 'ci-383-5400127dd813'; attempt = 'ci-385-74a0f42e52f3'
+    approved = dict(retirement.FINISHED_DB_CONTINUATIONS[tag])
+    row = {'release': tag, 'commit': '5' * 40, 'sourceSha256': 'a' * 64,
+           'controls': {'synthetic': True}, 'retirement': {**_finished_selection(), 'completedAttempt': attempt}}
+    binding = {'tag': 'ci-390-' + 'f' * 12}
+    original = tmp_path / 'inbox' / attempt
+    directory = original / 'derived-failed-mysql-retirement'
+    copy = 'verification/' + tag + '/checkout/work/compact-fixtures/candidate-app.jar'
+    canonical = 'inbox/' + tag + '/application.jar'
+    source = b'fixed synthetic maintenance source archive'
+    approved['sourceSha256'] = retirement.digest(source)
+    selection = {**row, 'retirement': {key: value for key, value in row['retirement'].items() if key != 'completedAttempt'}}
+    request = {'candidates': [selection], 'builds': ['383'], 'current': {'release': attempt,
+        'commit': approved['commit'], 'sourceSha256': approved['sourceSha256']}}
+    plan = {'roots': {tag: [*_finished_selection()['dataIdentity'], stat.S_IFDIR | 0o700, 999, 1000]},
+            'jarTargets': [{'path': copy}, {'path': canonical}]}
+    retired = [{'path': copy, 'allocatedBytes': 4096}, {'path': canonical, 'allocatedBytes': 4096}]
+    receipt = {'status': 'FAILED_OR_UNKNOWN', 'removed': [], 'jarRetirements': retired}
+    terminal = '<flow-build><result>FAILURE</result><completed>true</completed><execution><done>true</done></execution></flow-build>'
+    paths = {'sourceSha256': original / 'cleanup-source.tar.gz', 'requestSha256': directory / 'request.json',
+        'planSha256': directory / 'plan-private.json', 'receiptSha256': directory / 'receipt.json',
+        'journalSha256': directory / 'jar-journal.jsonl', 'buildXmlSha256': tmp_path / 'inbox' / binding['tag'] /
+            'failed-mysql-data-controls' / tag / 'completed-maintenance-build.xml'}
+    state = SimpleNamespace(row=row, binding=binding, approved=approved, paths=paths,
+        request=request, plan=plan, receipt=receipt, terminal=terminal, root=tmp_path, journal=None)
+    def refresh():
+        raw = {'sourceSha256': source, 'requestSha256': retirement.encoded(request),
+               'planSha256': retirement.encoded(plan), 'buildXmlSha256': state.terminal.encode()}
+        approved.update({key: retirement.digest(body) for key, body in raw.items()})
+        receipt.update(requestSha256=approved['requestSha256'], planSha256=approved['planSha256'])
+        journal = [{'phase': 'STARTED', 'planSha256': approved['planSha256'], 'requestSha256': approved['requestSha256']}]
+        for item in retired: journal.extend([{'phase': 'DELETE_STARTED', 'path': item['path']}, {'phase': 'DELETE_FINISHED', **item}])
+        journal.append({'phase': 'FINISHED', 'deletedFiles': 2})
+        state.journal = journal
+        raw.update(receiptSha256=retirement.encoded(receipt),
+                   journalSha256=b'\n'.join(retirement.encoded(event) for event in journal) + b'\n')
+        for key, body in raw.items():
+            approved[key] = retirement.digest(body); paths[key].parent.mkdir(parents=True, exist_ok=True); paths[key].write_bytes(body)
+    state.refresh = refresh; refresh()
+    monkeypatch.setattr(retirement, 'ROOT', tmp_path)
+    monkeypatch.setattr(retirement, 'FINISHED_DB_CONTINUATIONS', {tag: approved})
+    def read(path, maximum=2 * retirement.MIB):
+        assert path in paths.values() and maximum == 8 * retirement.MIB
+        return path.read_bytes()
+    monkeypatch.setattr(retirement, 'read', read)
+    return state
+
+
+@pytest.mark.parametrize('tampered', [None, 'sourceSha256', 'requestSha256', 'planSha256',
+                                    'receiptSha256', 'journalSha256', 'buildXmlSha256'])
+def test_completed_binary_continuation_binds_every_original_before_omitting_jars(completed_binary_attempt, tampered):
+    state = completed_binary_attempt
+    if tampered: state.paths[tampered].write_bytes(b'changed preserved original')
+    if tampered:
+        with pytest.raises(ValueError, match='ORIGINAL_CONTINUATION_EVIDENCE_CHANGED'):
+            retirement.finished_completed_binaries(state.binding, state.row)
+    else:
+        proof = retirement.finished_completed_binaries(state.binding, state.row)
+        assert proof['completedAttempt'] == state.approved['attempt'] and proof['alreadyRetiredJarBytes'] == 8192
+        native = SimpleNamespace(describe_duplicate=lambda *_: pytest.fail('Never reconstruct a retired duplicate'),
+                                 describe_canonical_jar=lambda *_a, **_k: pytest.fail('Never reconstruct a retired canonical JAR'))
+        assert retirement.finished_jar_targets({'candidates': [state.row]}, {'retire-failed-native-jar-duplicates.py': native}) == []
+
+
+@pytest.mark.parametrize('damage', ['terminal', 'selection', 'data-inode', 'complete', 'already-removed',
+                                   'journal-incomplete', 'journal-path', 'jar-reappeared', 'jar-symlink'])
+def test_completed_binary_continuation_rejects_wrong_state_even_with_bound_input_bytes(completed_binary_attempt, damage):
+    state = completed_binary_attempt
+    if damage == 'terminal': state.terminal = state.terminal.replace('FAILURE', 'SUCCESS')
+    elif damage == 'selection': state.request['candidates'] = []
+    elif damage == 'data-inode': state.plan['roots'][state.row['release']][1] += 1
+    elif damage == 'complete': state.receipt['status'] = 'COMPLETE'
+    elif damage == 'already-removed': state.receipt['removed'] = [{'status': 'REMOVED'}]
+    state.refresh()
+    if damage in ('journal-incomplete', 'journal-path'):
+        journal = state.journal
+        if damage == 'journal-incomplete': journal.pop()
+        else: journal[2]['path'] = 'inbox/another/application.jar'
+        raw = b'\n'.join(retirement.encoded(event) for event in journal)
+        state.paths['journalSha256'].write_bytes(raw); state.approved['journalSha256'] = retirement.digest(raw)
+    if damage in ('jar-reappeared', 'jar-symlink'):
+        path = state.root / state.plan['jarTargets'][0]['path']; path.parent.mkdir(parents=True)
+        if damage == 'jar-reappeared': path.write_bytes(b'new candidate must be protected')
+        else: path.symlink_to(state.root / 'missing')
+    with pytest.raises(ValueError): retirement.finished_completed_binaries(state.binding, state.row)
+
+
+@pytest.mark.parametrize('damage', ['another-attempt', 'another-target', 'protected-target'])
+def test_partial_finished_recovery_is_one_closed_registered_pair(damage):
+    row = {'release': 'ci-383-5400127dd813', 'retirement': {**_finished_selection(), 'completedAttempt': 'ci-385-74a0f42e52f3'}}
+    if damage == 'another-attempt': row['retirement']['completedAttempt'] = 'ci-384-' + 'a' * 12
+    elif damage == 'another-target': row['release'] = 'ci-381-' + 'a' * 12
+    else: row['release'] = 'ci-266-' + 'a' * 12
+    with pytest.raises(ValueError, match='UNREGISTERED_FINISHED_DB_CONTINUATION'): retirement.validate_finished_selection(row)
+
+
+def test_partial_recovery_controller_keeps_failed_terminal_and_counts_only_new_deletions():
+    source = TASK_DIAGNOSTIC_CONTROLLER
+    assert "$candidate.retirement.completedAttempt -ceq 'ci-385-74a0f42e52f3'" in source
+    assert "$prior.result -ceq 'FAILURE'" in source and "$prior.executionDone -eq $true" in source
+    assert "file='completed-maintenance-build.xml'" in source
+    assert source.index("file='completed-maintenance-build.xml'") < source.index('& scp.exe')
+    assert 'else{$expectedNewJarCount+=2}' in source and '$count=$expectedNewJarCount' in source
+    assert '@($plan.jarTargets).Count -eq $expectedNewJarCount' in source
+    assert '@($receipt.completedBinaryRetirements).Count -eq 1' in source
+
+
+def test_empty_new_binary_plan_writes_zero_deletion_journal_without_native_calls(tmp_path):
+    receipt = {'planSha256': 'a' * 64, 'requestSha256': 'b' * 64, 'jarRetirements': []}
+    retirement.finished_remove_jars(tmp_path, [], {'retire-failed-native-jar-duplicates.py': SimpleNamespace()},
+        lambda: pytest.fail('There is no new JAR operation'), receipt)
+    events = [json.loads(line) for line in (tmp_path / 'jar-journal.jsonl').read_text().splitlines()]
+    assert events == [{'phase': 'STARTED', 'planSha256': 'a' * 64, 'requestSha256': 'b' * 64},
+                      {'phase': 'FINISHED', 'deletedFiles': 0}]
+    assert receipt['jarRetirements'] == []
+
+
+@pytest.mark.parametrize('guard', ['LIVE_PROCESS_METADATA_DISAPPEARED', 'PROCESS_DESCRIPTOR_CHANGED_DURING_SCAN'])
+def test_authenticated_direct_process_guard_survives_older_wrapper_codec(finished_builder_controls, monkeypatch, guard):
+    case = finished_builder_controls
+    # The loaded helper contains these direct ValueError literals. This reproduces
+    # the old diagnostic codec's omission, without asserting which one hit #385.
+    def reject(*_args, **_kwargs): raise ValueError(guard)
+    monkeypatch.setattr(case.cleanup, 'quiescent', reject)
+    try:
+        case.native.recent_fixture_references(retirement.ROOT,
+            {'historical': case.historical, 'fixture': case.fixture}, case.cleanup, case.builder)
+    except ValueError as error:
+        # Synthetic rejection must carry the authenticated helper source just as
+        # the real process scanner's globals do.
+        reject.__globals__['LOADED_SOURCE'] = case.cleanup.LOADED_SOURCE
+        try: assert retirement.failure_reason_code(error) == 'HISTORICAL_OBJECTS_NOT_QUIESCENT_' + guard
+        finally: reject.__globals__.pop('LOADED_SOURCE', None)
+    else: pytest.fail('The real rejection must remain a failure')

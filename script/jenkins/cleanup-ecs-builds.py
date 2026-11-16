@@ -95,7 +95,11 @@ SYNTHETIC_PYTEST_SUPPORT = frozenset({
 # includes its nested execute callback, source environment and exact basetemp.
 PYTEST_MIDDLEWARE_RUNNER_MAIN_AST = 'd19221763b3a72097db8a78a317667d793c56d18b98d74dcd85826142d98f09f'
 PYTEST_NATIVE_COLLECTION_RUNNER_MAIN_AST = 'e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
+# Redis uses a separate synthetic fixture; whole-migration Python runs first.
+# The source-only command, basetemp and native evidence exclusions are unchanged.
+PYTEST_CURRENT_RUNNER_MAIN_AST = 'a362c12eddc18948a12006c464a50b872bdcab1a9d4038d60d9295b6c968d07f'
 PYTEST_RUNNER_MAIN_AST = {
+    PYTEST_CURRENT_RUNNER_MAIN_AST,
     # bb38f0fc adds opt-in synthetic middleware protocols, not a new basetemp.
     # Its semantic MySQL opt-in is excluded below; legacy receipts lack that flag.
     PYTEST_MIDDLEWARE_RUNNER_MAIN_AST,
@@ -454,7 +458,7 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
                  and node.name == 'main']
         main_sha = routing_ast_sha(mains[0]) if len(mains) == 1 and isinstance(mains[0], ast.FunctionDef) else None
         if main_sha not in PYTEST_RUNNER_MAIN_AST: return skipped('PYTEST_RUNNER_NOT_REVIEWED')
-        if (main_sha == PYTEST_MIDDLEWARE_RUNNER_MAIN_AST
+        if (main_sha in (PYTEST_MIDDLEWARE_RUNNER_MAIN_AST, PYTEST_CURRENT_RUNNER_MAIN_AST)
                 and inner.get('semanticMysqlComponentRequested') is not False):
             return skipped('PYTEST_SOURCE_SCOPE_REQUIRED')
         routing = {}

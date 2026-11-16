@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.app.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatProjectRequest;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatProjectResponse;
@@ -13,6 +14,7 @@ import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -79,8 +81,9 @@ public class ChatProjectServiceImpl implements ChatProjectService {
     }
 
     @Override
+    @Transactional
     public void deleteProject(String username, String projectId) {
-        ChatProject project = getProjectOwnedByUser(username, projectId);
+        ChatProject project = getProjectOwnedByUser(username, projectId, true);
 
         // 将项目中的会话移出项目
         LambdaQueryWrapper<ChatSession> sessionQuery = new LambdaQueryWrapper<ChatSession>()
@@ -95,9 +98,11 @@ public class ChatProjectServiceImpl implements ChatProjectService {
                     ? userId.equals(session.getUserId())
                     : username.equals(session.getUsername());
             if (!owned) continue;
-            session.setProjectId(null);
-            session.setUpdatedAt(LocalDateTime.now());
-            chatSessionMapper.updateById(session);
+            var update = ownedSessionUpdate(username, session.getSessionId(), userId)
+                    .eq(ChatSession::getProjectId, projectId)
+                    .set(ChatSession::getProjectId, null)
+                    .set(ChatSession::getUpdatedAt, LocalDateTime.now());
+            chatSessionMapper.update(null, update);
         }
 
         // 删除项目
@@ -105,6 +110,7 @@ public class ChatProjectServiceImpl implements ChatProjectService {
     }
 
     @Override
+    @Transactional
     public void moveSessionToProject(String username, String sessionId, String projectId) {
         LambdaQueryWrapper<ChatSession> query = new LambdaQueryWrapper<ChatSession>()
                 .eq(ChatSession::getSessionId, sessionId);
@@ -119,15 +125,16 @@ public class ChatProjectServiceImpl implements ChatProjectService {
 
         if (projectId != null) {
             // 校验目标项目属于当前用户
-            getProjectOwnedByUser(username, projectId);
+            getProjectOwnedByUser(username, projectId, true);
         }
 
-        session.setProjectId(projectId);
-        session.setUpdatedAt(LocalDateTime.now());
-        chatSessionMapper.updateById(session);
+        chatSessionMapper.update(null, ownedSessionUpdate(username, sessionId, userId)
+                .set(ChatSession::getProjectId, projectId)
+                .set(ChatSession::getUpdatedAt, LocalDateTime.now()));
     }
 
     @Override
+    @Transactional
     public void removeSessionFromProject(String username, String sessionId) {
         moveSessionToProject(username, sessionId, null);
     }
@@ -136,18 +143,29 @@ public class ChatProjectServiceImpl implements ChatProjectService {
      * 获取项目并校验所有权
      */
     private ChatProject getProjectOwnedByUser(String username, String projectId) {
+        return getProjectOwnedByUser(username, projectId, false);
+    }
+
+    private ChatProject getProjectOwnedByUser(String username, String projectId, boolean lock) {
         LambdaQueryWrapper<ChatProject> query = new LambdaQueryWrapper<ChatProject>()
                 .eq(ChatProject::getProjectId, projectId);
         Long userId = currentUserId();
         if (userId != null) query.eq(ChatProject::getUserId, userId);
         else query.eq(ChatProject::getUsername, username);
-        ChatProject project = chatProjectMapper.selectOne(query.last("limit 1"));
+        ChatProject project = chatProjectMapper.selectOne(query.last(lock ? "limit 1 FOR UPDATE" : "limit 1"));
 
         if (project == null) {
             throw new BusinessException(404, "项目不存在");
         }
 
         return project;
+    }
+
+    private LambdaUpdateWrapper<ChatSession> ownedSessionUpdate(String username, String sessionId, Long userId) {
+        var update = new LambdaUpdateWrapper<ChatSession>().eq(ChatSession::getSessionId, sessionId);
+        if (userId != null) update.eq(ChatSession::getUserId, userId);
+        else update.eq(ChatSession::getUsername, username);
+        return update;
     }
 
     private ChatProjectResponse buildProjectResponse(ChatProject project) {

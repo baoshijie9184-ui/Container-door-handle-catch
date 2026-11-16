@@ -77,6 +77,7 @@ $identity=@{instanceId=$env:DOORHANDLE_ECS_INSTANCE_ID;machineId=$env:DOORHANDLE
 $request=[ordered]@{schemaVersion=1;kind='doorhandle-authorized-failed-mysql-data-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=$identity;
     authorization=@{taskThreadId=$task;sourceSha256=$authorizationSha;endsWithTask=$true;allowArbitraryPath=$false};builds=$numbers;candidates=@()}
 $uploads=@();$originalCustody=@()
+$expectedNewJarCount=0
 $names=@{buildXml='build.xml';release='release.json';localBuild='local-build.json';fixtureCleanupPublic='fixture-cleanup.json'}
 if($finished){
     Require-TaskData ([IO.Path]::IsPathFullyQualified($finishedManifest) -and [string]::IsNullOrEmpty($env:FAILED_NATIVE_BUILD_NUMBER) -and $env:GENERATED_ARTIFACTS_ONLY -cne 'true') 'Finished outputs require a separate exact manifest and no mixed policy.'
@@ -119,6 +120,20 @@ if($finished){
             $controls[$role]=@{bytes=$file.bytes;sha256=$file.sha256};$uploads+=@{source=$file.source;release=$candidate.release;file=$name;bytes=$file.bytes;sha256=$file.sha256}
             $custodyFiles+=@{role=$role;source=$file.source;origin=$file.origin;bytes=$file.bytes;sha256=$file.sha256}
         }
+        if($candidate.retirement.ContainsKey('completedAttempt')){
+            Require-TaskData ($manifest.candidates.Count -eq 1 -and $candidate.release -ceq 'ci-383-5400127dd813' -and
+                $candidate.retirement.completedAttempt -ceq 'ci-385-74a0f42e52f3') 'Only the registered partial finished-output continuation is admitted.'
+            $priorFolder='D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107/ci-385-raw-receipts'
+            Assert-TaskControlPath "$priorFolder/preservation.json"
+            $prior=Get-Content -LiteralPath "$priorFolder/preservation.json" -Raw -Encoding utf8|ConvertFrom-Json -AsHashtable
+            $priorXml="$priorFolder/build.xml";Assert-TaskControlPath $priorXml
+            Require-TaskData ($prior.build -eq 385 -and $prior.commit -ceq '74a0f42e52f3600a93e83c7123ba52f86e90932b' -and
+                $prior.result -ceq 'FAILURE' -and $prior.completed -eq $true -and $prior.executionDone -eq $true -and
+                $prior.buildXmlSha256 -ceq '5e535bb22a49a295c650fc330743645513e72bd09c89ddebc61e7089540e7747' -and
+                (Get-FileHash -LiteralPath $priorXml -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $prior.buildXmlSha256) 'The original failed maintenance terminal evidence changed.'
+            $uploads+=@{source=$priorXml;release=$candidate.release;file='completed-maintenance-build.xml';bytes=(Get-Item -LiteralPath $priorXml).Length;sha256=$prior.buildXmlSha256}
+            $custodyFiles+=@{role='completedMaintenanceBuild';source=$priorXml;origin='PRESERVED_JENKINS_ORIGINAL';bytes=(Get-Item -LiteralPath $priorXml).Length;sha256=$prior.buildXmlSha256}
+        }else{$expectedNewJarCount+=2}
         $request.candidates+=@{release=$candidate.release;commit=$candidate.commit;sourceSha256=$candidate.sourceSha256;controls=$controls;retirement=$candidate.retirement}
         $originalCustody+=@{release=$candidate.release;commit=$candidate.commit;sourceSha256=$candidate.sourceSha256;files=$custodyFiles;preservation="$folder/preservation.json"}
     }
@@ -245,7 +260,7 @@ try {
     Require-TaskData ($null -ne $plan -and @($plan.targets).Count -eq $numbers.Count -and $plan.planSha256 -cmatch '\A[a-f0-9]{64}\z') 'The first administrator metadata plan is incomplete.'
     $currentStep='AUTHORIZATION_RECHECK'
     Require-TaskData ((Read-TaskDataAuthorization) -ceq $authorizationSha) 'Task authorization changed after metadata planning; retain all data.'
-    if($finished){Require-TaskData ((Get-FileHash -LiteralPath $finishedManifest -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $manifestSha -and @($plan.jarTargets).Count -eq (2*$numbers.Count)) 'Exact finished-output manifest or binary plan changed.'}
+    if($finished){Require-TaskData ((Get-FileHash -LiteralPath $finishedManifest -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $manifestSha -and @($plan.jarTargets).Count -eq $expectedNewJarCount) 'Exact finished-output manifest or binary plan changed.'}
     $attempted=$true
     $currentPhase='apply';$currentStep='APPLY_REMOTE'
     $applied=Invoke-TaskDataRemote 'apply' "python3 -I -B '$helper' apply $binding --plan-sha256 '$($plan.planSha256)'"
@@ -293,7 +308,7 @@ try {
             & scp.exe @SshOptions -P $PortText "${Destination}:$directory/jar-journal.jsonl" artifacts/derived-mysql-jar-journal.jsonl
             Require-TaskData ($LASTEXITCODE -eq 0 -and (Get-Item -LiteralPath artifacts/derived-mysql-jar-journal.jsonl).Length -le 2MB) 'Original binary retirement journal is required.'
             $events=@(Get-Content -LiteralPath artifacts/derived-mysql-jar-journal.jsonl -Encoding utf8|ForEach-Object{$_|ConvertFrom-Json})
-            $count=2*$numbers.Count
+            $count=$expectedNewJarCount
             Require-TaskData ($events.Count -eq (2*$count+2) -and $events[0].phase -ceq 'STARTED' -and $events[0].planSha256 -ceq $plan.planSha256 -and
                 $events[0].requestSha256 -ceq $requestSha -and $events[-1].phase -ceq 'FINISHED' -and $events[-1].deletedFiles -eq $count -and
                 @($receipt.jarRetirements).Count -eq $count) 'The binary retirement journal is incomplete.'
@@ -301,6 +316,11 @@ try {
                 Require-TaskData ($events[2*$index+1].phase -ceq 'DELETE_STARTED' -and $events[2*$index+2].phase -ceq 'DELETE_FINISHED' -and
                     $events[2*$index+1].path -ceq $plan.jarTargets[$index].path -and $events[2*$index+2].path -ceq $plan.jarTargets[$index].path -and
                     $receipt.jarRetirements[$index].path -ceq $plan.jarTargets[$index].path) 'The binary deletion paths differ from the exact plan.'
+            }
+            if($expectedNewJarCount -eq 0){
+                Require-TaskData (@($plan.completedBinaryRetirements).Count -eq 1 -and @($receipt.completedBinaryRetirements).Count -eq 1 -and
+                    $plan.completedBinaryRetirements[0].completedAttempt -ceq 'ci-385-74a0f42e52f3' -and
+                    ($plan.completedBinaryRetirements|ConvertTo-Json -Depth 8 -Compress) -ceq ($receipt.completedBinaryRetirements|ConvertTo-Json -Depth 8 -Compress)) 'The original completed binary retirement proof was not preserved.'
             }
             $jarEvidenceComplete=$true
         }catch{$secondaryFailures.Add(@{errorType='ControllerError';reasonCode='BINARY_RETIREMENT_EVIDENCE_INCOMPLETE';phase='evidence';file='jar-journal.jsonl'})}

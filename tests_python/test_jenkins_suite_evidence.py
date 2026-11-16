@@ -1413,3 +1413,157 @@ def test_passing_redis_envelope_requires_real_cases_and_owned_cleanup(tmp_path, 
     else:
         with pytest.raises(remote.VerificationError, match='component evidence|Passing Redis'):
             remote.validate_envelope(record, args)
+
+
+@pytest.fixture
+def language_order_main(tmp_path, monkeypatch):
+    """Run the real inner orchestration with synthetic command/report producers."""
+    from contextlib import nullcontext
+    checkout = tmp_path / 'checkout'; (checkout / 'work').mkdir(parents=True)
+    output = checkout / 'work/ci-evidence'
+    for name, variable in (('mvn', 'MAVEN_CMD'), ('python', 'PYTHON_EXE'), ('node', 'NODE_EXE'), ('npm', 'NPM_CMD')):
+        file = tmp_path / name; file.write_text('synthetic executable identity')
+        monkeypatch.setenv(variable, str(file))
+    for variable in ('DOORHANDLE_REQUIRE_REDIS_TESTS', 'DOORHANDLE_REQUIRE_QDRANT_TESTS',
+                     'DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS'):
+        monkeypatch.setenv(variable, 'true')
+    monkeypatch.setattr(inner, 'ROOT', checkout)
+    monkeypatch.setattr(inner.sys, 'argv', ['verify-ecs.py', '--output', str(output)])
+    monkeypatch.setattr(inner.signal, 'signal', lambda *_: None)
+    identity = {'instanceId': 'i-2zeieuov2aum486jm1ek', 'machineId': 'a' * 32, 'executionLocation': 'ECS'}
+    monkeypatch.setattr(inner, 'require_ecs_execution', lambda: identity)
+    state = SimpleNamespace(mode='whole', failure=None, calls=[], command=None, environment=None,
+                            output=output, checkout=checkout, xml=None)
+    def admission(args, actual):
+        assert actual == identity
+        whole = state.mode in ('whole', 'whole-java-only')
+        args.compact_migration_config = str(checkout / 'work/whole.json') if whole else None
+        args.compact_migration_config_sha256 = 'b' * 64 if whole else None
+        args.worker_mysql_config = str(checkout / 'work/worker.json') if whole else None
+        args.worker_mysql_config_sha256 = 'c' * 64 if whole else None
+        selected = ['org.example.NativeTest'] if whole else []
+        properties = ['doorhandle.feature.mysql.config'] if whole else []
+        options = ['-Ddoorhandle.feature.mysql.config=' + str(checkout / 'work/native.json')] if whole else []
+        args.java_suites = [{'id': 'suite-001', 'javaSelection': selected,
+                            'fixtureProperties': properties, 'fixtureOptions': options,
+                            'privateInputs': {str(checkout / 'work/native.json'): 'f' * 64} if whole else {}}]
+        args.java_tests = ','.join(selected) if selected else None
+        args.source_regression = False
+        args.java_only = state.mode in ('java-only', 'whole-java-only')
+        args.fixture_manifest = checkout / 'work/manifest.json' if whole else None
+        return options, selected, None
+    monkeypatch.setattr(inner, 'fixture_arguments', admission)
+    monkeypatch.setattr(inner, 'semantic_mysql_source_suite', lambda *_: None)
+    monkeypatch.setattr(inner, 'acceptance_profile', lambda: ({'frontends': [
+        {'directory': name, 'minimumTests': 1} for name in ('frontend', 'frontend-agent')]}, 'd' * 64))
+    monkeypatch.setattr(inner, 'require_unchanged_inputs', lambda _: state.calls.append('private-inputs'))
+    def native(suites, run, receipt):
+        state.calls.append('native')
+        if state.failure == 'native': raise RuntimeError('synthetic native failure')
+    monkeypatch.setattr(inner, 'run_native_java_groups', native)
+    monkeypatch.setattr(inner, 'remove_owned_build', lambda *_: state.calls.append('java-cleanup') or {'status': 'REMOVED'})
+    def protocol(name):
+        def read(directory):
+            assert directory == output and 'native' in state.calls
+            if name != 'redis': assert (output / 'python.xml').is_file()
+            state.calls.append(name)
+            return {'status': 'PASS'}
+        return read
+    for name, function in (('redis', 'redis_protocol_reports'), ('qdrant', 'middleware_protocol_reports'),
+                           ('observability', 'observability_protocol_reports')):
+        monkeypatch.setattr(inner, function, protocol(name))
+    monkeypatch.setattr(inner, 'cleanup_source_pytest_temporary',
+        lambda *args, **kwargs: state.calls.append('python-cleanup'))
+    monkeypatch.setattr(inner, 'frontend_test_files', lambda *_: ['unchanged.test.js'])
+    monkeypatch.setattr(inner, 'frontend_dependencies', lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(inner, 'node_tap_counts', lambda _: {'passed': 1, 'failed': 0, 'skipped': 0})
+    monkeypatch.setattr(inner, 'owned_directory', lambda path, _: path)
+    monkeypatch.setattr(inner, 'tree_inventory', lambda *_args, **_kwargs: {})
+    class Command:
+        def __init__(self, command, **options):
+            label = Path(options['stdout'].name).stem
+            state.calls.append(label); self.pid = 1234; self.returncode = 0
+            options['stdout'].write(b'original synthetic command output\n')
+            if label != 'python': return
+            state.command = list(command); state.environment = dict(options['env'])
+            document = ET.Element('testsuite')
+            ET.SubElement(document, 'testcase', classname='tests_python.test_plain', name='unchanged')
+            if state.mode == 'whole':
+                if state.failure != 'worker-missing':
+                    ET.SubElement(document, 'testcase', classname='tests_python.test_detection_worker_receipts', name='real-worker-contract')
+                if state.failure != 'whole-missing':
+                    case = ET.SubElement(document, 'testcase',
+                        classname='tests_python.test_compact_migration_orchestration_ecs', name='whole-copy-both-restores')
+                    if state.failure in ('whole-failed', 'whole-skipped'):
+                        ET.SubElement(case, 'failure' if state.failure == 'whole-failed' else 'skipped')
+                if state.failure != 'proof-missing':
+                    proof = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration-acceptance', 'status': 'VERIFIED',
+                        'sourceTableCount': 131, 'targetTableCount': 29}
+                    proof.update({name: 'e' * 64 for name in ('migrationReceiptSha256', 'sourceSnapshotSha256',
+                        'targetSnapshotSha256', 'sourceRecoveryReceiptSha256', 'targetRecoveryReceiptSha256')})
+                    if state.failure == 'proof-invalid': proof['sourceRecoveryReceiptSha256'] = 'missing'
+                    (output / 'migration.json').write_text(json.dumps(proof), encoding='utf8')
+            state.xml = ET.tostring(document)
+            (output / 'python.xml').write_bytes(state.xml)
+            if state.failure == 'python-exit': self.returncode = 1
+        def wait(self, timeout):
+            assert timeout == 3600
+            return self.returncode
+    monkeypatch.setattr(inner.subprocess, 'Popen', Command)
+    return state
+
+
+@pytest.mark.parametrize('mode', ['whole', 'source', 'java-only'])
+def test_real_main_reorders_only_complete_migration_and_runs_each_language_once(language_order_main, mode):
+    state = language_order_main; state.mode = mode
+    inner.main()
+    receipt = json.loads((state.output / 'receipt.json').read_text())
+    assert receipt['status'] == 'PASS' and state.calls.count('native') == 1
+    if mode == 'java-only':
+        assert state.calls == ['native', 'redis', 'java-cleanup']
+        assert not (state.output / 'python.xml').exists()
+        return
+    python = ['private-inputs', 'python']; java = ['native', 'redis', 'java-cleanup']
+    expected = (python + java) if mode == 'whole' else (java + python)
+    assert state.calls == expected + ['qdrant', 'observability', 'python-cleanup',
+        'frontend-install', 'frontend-test', 'frontend-build',
+        'frontend-agent-install', 'frontend-agent-test', 'frontend-agent-build']
+    assert state.command[1:] == ['-B', '-m', 'pytest', 'tests_python', '-q',
+        '--basetemp=' + str(state.output / 'tmp/pytest'), '--junitxml=' + str(state.output / 'python.xml')]
+    assert (state.output / 'python.xml').read_bytes() == state.xml
+    assert [row['label'] for row in receipt['commands']].count('python') == 1
+    assert (state.environment.get('DOORHANDLE_COMPACT_MIGRATION_TESTS') == '1') is (mode == 'whole')
+    if mode == 'whole':
+        assert receipt['wholeMigrationTests'] == {'passed': 1, 'failed': 0, 'skipped': 0}
+        assert receipt['wholeMigrationSummarySha256'] == hashlib.sha256((state.output / 'migration.json').read_bytes()).hexdigest()
+        assert receipt['pythonTemporaryCleanup'] == {'status': 'RETAINED_NATIVE_EVIDENCE'}
+
+
+@pytest.mark.parametrize('failure', ['python-exit', 'worker-missing', 'whole-missing', 'whole-failed',
+                                    'whole-skipped', 'proof-missing', 'proof-invalid'])
+def test_full_migration_python_or_proof_failure_stops_before_native_without_losing_xml(language_order_main, failure):
+    state = language_order_main; state.failure = failure
+    with pytest.raises(RuntimeError): inner.main()
+    assert state.calls == ['private-inputs', 'python']
+    assert (state.output / 'python.xml').read_bytes() == state.xml
+    receipt = json.loads((state.output / 'receipt.json').read_text())
+    assert receipt['status'] == 'FAILED' and receipt['javaSuites'] == []
+    assert receipt['commands'][0]['label'] == 'python'
+    assert 'wholeMigrationTests' not in receipt and 'middlewareProtocol' not in receipt
+
+
+def test_native_failure_after_early_python_still_blocks_protocols_and_frontends(language_order_main):
+    state = language_order_main; state.failure = 'native'
+    with pytest.raises(RuntimeError, match='synthetic native failure'): inner.main()
+    assert state.calls == ['private-inputs', 'python', 'native']
+    assert (state.output / 'python.xml').read_bytes() == state.xml
+    receipt = json.loads((state.output / 'receipt.json').read_text())
+    assert receipt['status'] == 'FAILED' and receipt['wholeMigrationTests']['passed'] == 1
+    assert 'frontendResults' not in receipt and 'middlewareProtocol' not in receipt
+
+
+def test_language_order_cannot_skip_python_for_a_whole_migration(language_order_main):
+    state = language_order_main; state.mode = 'whole-java-only'
+    with pytest.raises(ValueError, match='requires Python'): inner.main()
+    assert state.calls == []
+    assert json.loads((state.output / 'receipt.json').read_text())['status'] == 'FAILED'

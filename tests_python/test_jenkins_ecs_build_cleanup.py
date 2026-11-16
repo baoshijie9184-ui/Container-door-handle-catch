@@ -287,10 +287,16 @@ def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy'):
     executor = (ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
     main = next(node for node in ast.parse(runner).body if isinstance(node, ast.FunctionDef) and node.name == 'main')
     expected_main = ('e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
-                     if recipe == 'legacy' else cleanup.PYTEST_MIDDLEWARE_RUNNER_MAIN_AST)
+                     if recipe == 'legacy' else cleanup.PYTEST_CURRENT_RUNNER_MAIN_AST)
     assert cleanup.routing_ast_sha(main) == expected_main
     if damage == 'changed-runner':
         changed = runner.replace(b'def main():', b'def main():\n    unreviewed_fixture_routing = True', 1)
+        assert changed != runner; runner = changed
+    elif damage == 'changed-python-order':
+        changed = runner.replace(b'python_first = bool(args.compact_migration_config)', b'python_first = False', 1)
+        assert changed != runner; runner = changed
+    elif damage == 'changed-python-command':
+        changed = runner.replace(b"'-m', 'pytest', 'tests_python', '-q'", b"'-m', 'pytest', 'unreviewed_tests', '-q'", 1)
         assert changed != runner; runner = changed
     elif damage == 'duplicate-runner':
         runner += b'\ndef main():\n    pass\n'
@@ -1583,3 +1589,15 @@ def test_dual_root_inbox_is_derived_from_authenticated_checkout_and_never_follow
     state.inbox.symlink_to(saved, target_is_directory=True)
     with pytest.raises(ValueError, match='PROCESS_PROBE_INBOX_NOT_CANONICAL'):
         cleanup.checked_probe_inbox(state.checkout)
+
+
+@pytest.mark.parametrize('damage', ['changed-python-order', 'changed-python-command'])
+def test_current_nested_python_routing_cannot_escape_the_reviewed_main(state, monkeypatch, damage):
+    cases = add_pytest_cases(state, monkeypatch, damage, recipe='middleware')
+    before = preserved_bytes(state)
+    value = plan(state); candidate = value['candidates'][0]
+    assert candidate['pytestTmp'] == {'status': 'SKIPPED', 'reason': 'PYTEST_RUNNER_NOT_REVIEWED'}
+    assert all(row['kind'] != 'PYTEST_CASE_DIRECTORY' for row in candidate['targets'])
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and cases.first.is_dir() and cases.second.is_dir()
+    assert preserved_bytes(state) == before

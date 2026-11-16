@@ -33,6 +33,57 @@ COPY_SESSION_PREAMBLES = {
 }
 
 
+@pytest.mark.parametrize('target', ['chat_project', 'chat_session', 'chat_message'])
+def test_parent_references_and_reconciliation_cannot_substitute_for_a_target_row_producer(tmp_path, monkeypatch, target):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    migration = module('compact_migration_runtime')
+    model = json.loads((ROOT / 'docs/database/compact-schema-contract.json').read_text('utf8'))
+    copy = tmp_path / 'sql/mysql/compact/copy'
+    shutil.copytree(ROOT / 'sql/mysql/compact/copy', copy)
+    java = Path('doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchLegacyMigration.java')
+    (tmp_path / java).parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / java, tmp_path / java)
+    path = copy / '12-chat-and-fingerprints.sql'; body = path.read_text('utf8')
+    # Leave every source reference and full-row reconciliation in place, while
+    # removing the actual direct/prepared INSERT producer (both session branches).
+    body, count = re.subn(r'INSERT INTO `' + target + r'`\(', 'INSERT INTO `not_a_business_target`(', body)
+    assert count == (2 if target == 'chat_session' else 1)
+    path.write_text(body, encoding='utf8')
+    monkeypatch.setattr(migration, 'ROOT', tmp_path)
+    with pytest.raises(ValueError, match='no row producer for target tables: ' + target):
+        migration.copy_plan(model)
+
+
+def test_support_source_generator_and_all_its_checked_in_outputs_stay_in_sync(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    author = module('author_support_copy')
+    catalog = tmp_path / 'docs/database/compact-support-source-map.json'
+    catalog.parent.mkdir(parents=True)
+    shutil.copyfile(author.CATALOG, catalog)
+    (tmp_path / 'sql/mysql/compact/copy').mkdir(parents=True)
+    monkeypatch.setattr(author, 'ROOT', tmp_path); monkeypatch.setattr(author, 'CATALOG', catalog)
+    author.main()
+    for name in ('sql/mysql/compact/copy/12-chat-and-fingerprints.sql',
+                 'sql/mysql/compact/copy/50-owner-locks.sql',
+                 'doorhandle-module-app/src/test/resources/compact-support-source.sql'):
+        assert (tmp_path / name).read_bytes() == (ROOT / name).read_bytes()
+
+
+def test_session_copy_catalog_keeps_every_canonical_field_and_the_observed_project_extension():
+    catalog = json.loads((ROOT / 'docs/database/compact-support-source-map.json').read_text('utf8'))
+    observed = builder.parse_table(builder.without_comments(catalog['tables']['chat_session']['ddl']), 'observed')
+    canonical_sql = next(sql for sql in builder.split_top_level(builder.without_comments(
+        (ROOT / 'sql/mysql/schema.sql').read_text('utf8')), ';') if re.match(r'CREATE TABLE IF NOT EXISTS `chat_session`\s*\(', sql))
+    canonical = builder.parse_table(canonical_sql.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TABLE', 1), 'canonical')
+    assert set(observed['columns']) == set(canonical['columns']) | {'project_id'}
+    assert len(observed['columns']) == 15 and len(canonical['columns']) == 14
+    sql = (ROOT / 'sql/mysql/compact/copy/12-chat-and-fingerprints.sql').read_text('utf8')
+    for column in observed['columns']:
+        assert 's.`' + column + '`' in sql and 't.`' + column + '`' in sql
+    assert sql.index('ALTER TABLE `chat_session` AUTO_INCREMENT=') < sql.index('START TRANSACTION;')
+    assert sql.index('INSERT INTO `chat_session`(') < sql.index('INSERT INTO `chat_message`(')
+
+
 def test_all_copy_segments_have_only_the_reviewed_external_session_variables():
     paths = sorted((ROOT / 'sql/mysql/compact/copy').glob('*.sql'))
     assert len(paths) == 30

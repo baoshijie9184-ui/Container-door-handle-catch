@@ -10,6 +10,12 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 新建工具准备前只读检查 apt 服务和内核包管理锁，活动升级未结束时拒绝开始；原件回读及清理不受此门影响，不停止或禁用系统更新。长轮验证前还须核对实际更新计时器，选择不重叠的窗口。MySQL 内核限额检查失败时分别保存两个控制文件的读数及采样阶段；`lastKernelObservation` 仅代表上次成功探针，不能当作失败现场。限额和失败即停止规则保持不变。
 
+## 完整迁移先于 native Java
+
+带 `wholeMigrationConfig` 的完整 MySQL 验收先执行一次原全量 Python，再执行全部 native Java、普通 Java 回归及前端。这样真实 131→29 复制或双恢复失败会先停止，不必等待约两小时的 native 用例。整库 Java bridge 使用本轮上传的固定候选 JAR，无需先编译测试源码；worker 使用自己预先创建的独立空库。普通 source 和 java-only 入口顺序不变。
+
+用例、fixture 输入、原始 XML 路径和通过门不变；跨语言协议汇总在两种语言完成后进行，Java 输出仍在 Java 结束后清理。迁移、Python 临时物会更早与后续 Java 输出共存，不能将旧顺序的磁盘峰值视为新顺序的容量保证；原实时磁盘保底、资源采样和失败收尾保持生效。
+
 ## 真实 Redis 验证
 
 固定源码的完整 ECS 验证由现有 `verify-remote.py` 创建一个合成 Redis fixture，仅复用正式 Redis 的 immutable image，不读取正式凭据或数据。临时服务映射随机回环端口、无持久卷，内存上限 256 MiB、Redis 数据上限 64 MiB；监督器负责就绪检查、运行观察、失败收尾和原始回执。

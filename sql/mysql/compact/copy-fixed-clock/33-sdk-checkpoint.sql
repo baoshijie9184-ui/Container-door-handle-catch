@@ -14,7 +14,7 @@ INSERT INTO compact_sdk_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`
  OR revision<1 OR JSON_VALID(state_json)=0 OR CONVERT_TZ(updated_at,'__SOURCE_SDK_OFFSET__','+00:00') IS NULL;
 INSERT INTO runtime_state(namespace,owner_id,scope_key,session_id,state_key,revision,state_code,payload_version,payload_json,created_at,updated_at)
  SELECT 'SDK_CHECKPOINT',CAST(user_id AS SIGNED),SHA2(CONCAT(OCTET_LENGTH(CONVERT(session_id USING utf8mb4)),':',session_id,':',OCTET_LENGTH(CONVERT(state_key USING utf8mb4)),':',state_key),256),
- session_id,state_key,revision,'LIVE',1,JSON_OBJECT('stateJson',state_json),NULL,CONVERT_TZ(updated_at,'__SOURCE_SDK_OFFSET__','+00:00')
+ session_id,state_key,revision,'LIVE',1,JSON_OBJECT('stateJson',state_json,'legacyId',CAST(id AS CHAR)),NULL,CONVERT_TZ(updated_at,'__SOURCE_SDK_OFFSET__','+00:00')
  FROM `__SOURCE_SCHEMA__`.agent_workbench_sdk_state ORDER BY id;
 -- The old mutex has no source timestamps; NULL created_at is intentional.
 INSERT INTO runtime_state(namespace,owner_id,scope_key,revision,created_at)
@@ -26,6 +26,7 @@ INSERT INTO compact_sdk_guard SELECT IF(COUNT(*)=0,1,0)
  FROM `__SOURCE_SCHEMA__`.agent_workbench_sdk_state s LEFT JOIN runtime_state r
  ON r.namespace='SDK_CHECKPOINT' AND r.owner_id=CAST(s.user_id AS SIGNED) AND BINARY r.session_id=BINARY s.session_id AND BINARY r.state_key=BINARY s.state_key
  WHERE r.owner_id IS NULL OR r.revision<>s.revision OR NOT (BINARY JSON_UNQUOTE(JSON_EXTRACT(r.payload_json,'$.stateJson'))<=>BINARY s.state_json)
+ OR NOT(BINARY JSON_UNQUOTE(JSON_EXTRACT(r.payload_json,'$.legacyId'))<=>BINARY CAST(s.id AS CHAR))
  OR BINARY r.scope_key<>BINARY SHA2(CONCAT(OCTET_LENGTH(CONVERT(s.session_id USING utf8mb4)),':',s.session_id,':',OCTET_LENGTH(CONVERT(s.state_key USING utf8mb4)),':',s.state_key),256)
  OR r.updated_at<>CONVERT_TZ(s.updated_at,'__SOURCE_SDK_OFFSET__','+00:00');
 COMMIT;

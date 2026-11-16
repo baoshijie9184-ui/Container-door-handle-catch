@@ -11,7 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /** Actual support source DDL and the complete target in two pre-provisioned ECS schemas. */
 public final class SupportCopyMySqlFixture implements AutoCloseable {
-    public static final List<String> SUPPORT=List.of("chat_project","chat_message","detection_image_fingerprint",
+    public static final List<String> SUPPORT=List.of("chat_project","chat_session","chat_message","detection_image_fingerprint",
             "agent_research_storage_owner","agent_skill_download_owner");
     private static final Set<String> SOURCES=Set.of("users","chat_session","chat_project","chat_message",
             "detection_image_fingerprint","agent_research_storage_owner","agent_skill_download_owner");
@@ -28,7 +28,7 @@ public final class SupportCopyMySqlFixture implements AutoCloseable {
         try {
             String core=Files.readString(Path.of("../sql/mysql/schema.sql"));
             // Use the real referenced core declarations, including their foreign keys.
-            for(String table:List.of("users","chat_session")) {
+            for(String table:List.of("users")) {
                 var declaration=Pattern.compile("(?is)CREATE TABLE IF NOT EXISTS `?"+table+"`?\\s*\\(.*?\\)\\s*ENGINE[^;]*;").matcher(core);
                 if(!declaration.find())throw new IllegalStateException("Actual support reference DDL missing: "+table);
                 schemas.executeSource(declaration.group());
@@ -42,7 +42,7 @@ public final class SupportCopyMySqlFixture implements AutoCloseable {
 
     /** Copy only the independently seeded core references; they are not support copy inputs. */
     public void copyReferences() {
-        for(String table:List.of("users","chat_session")) {
+        for(String table:List.of("users")) {
             var columns=source().queryForList("SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? ORDER BY ordinal_position",String.class,table);
             String names=String.join(",",columns.stream().map(column->"`"+column+"`").toList());
             target().update("INSERT INTO `"+table+"`("+names+") SELECT "+names+" FROM `"+schemas.sourceName()+"`.`"+table+"`");
@@ -50,6 +50,18 @@ public final class SupportCopyMySqlFixture implements AutoCloseable {
     }
     public void copyChatAndFingerprints() throws Exception {copy("12-chat-and-fingerprints.sql");}
     public void copyOwnerLocks() throws Exception {copy("50-owner-locks.sql");}
+
+    /** Match whole-copy ordering: owned empty tables first, reviewed relations last. */
+    public void deferTargetRelations() {
+        for(var row:target().queryForList("SELECT table_name,constraint_name FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND constraint_type='FOREIGN KEY'")) {
+            String table=row.get("table_name").toString(),name=row.get("constraint_name").toString();
+            if(!table.matches("[a-z_]+")||!name.matches("[a-z_]+"))throw new IllegalStateException("Unexpected fixture relation identity");
+            target().execute("ALTER TABLE `"+table+"` DROP FOREIGN KEY `"+name+"`");
+        }
+    }
+    public void installTargetRelations() throws Exception {
+        schemas.executeTarget(Files.readString(Path.of("../sql/mysql/compact/baseline/40-relations.sql")));
+    }
 
     private void copy(String name) throws Exception {
         String sql=Files.readString(Path.of("../sql/mysql/compact/copy",name)).replace("__SOURCE_SCHEMA__",schemas.sourceName());

@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.ai.workbench;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import io.agentscope.core.state.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -16,7 +17,15 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
     private final String expectedUser,expectedSession;
     private static final class Lease { long latest; final Set<Long> versions=new HashSet<>(); Lease(long version){latest=version;versions.add(version);} }
     /** The inner JSON string is retained byte-for-byte; SDK encoding is independent of the shared envelope. */
-    public record CheckpointV1(String stateJson) { public CheckpointV1 { Objects.requireNonNull(stateJson,"stateJson"); } }
+    public record CheckpointV1(String stateJson,@JsonInclude(JsonInclude.Include.NON_NULL) String legacyId) {
+        public CheckpointV1(String stateJson){this(stateJson,null);}
+        public CheckpointV1 {
+            Objects.requireNonNull(stateJson,"stateJson");
+            if(legacyId!=null&&(!legacyId.matches("0|[1-9][0-9]{0,19}")
+                    ||new java.math.BigInteger(legacyId).compareTo(new java.math.BigInteger("18446744073709551615"))>0))
+                throw new IllegalArgumentException("Invalid original SDK checkpoint id");
+        }
+    }
     private record Snapshot(long revision,int payloadVersion,String payload,LegacyClockEvidence clock) { }
     public JdbcWorkbenchStateStore(WorkbenchStore store){this(store,false);}
     public JdbcWorkbenchStateStore(WorkbenchStore store,boolean sdkAttempt){this(store,sdkAttempt,()->{});}
@@ -39,18 +48,27 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
                     if(!scope(session,key).equals(rs.getString("scope_key")))throw new IllegalStateException("SDK checkpoint natural key differs");
                     LegacyClockEvidence clock=null;String raw=rs.getString("legacy_clock_json");
                     if(raw!=null)try{
-                        var id=json.readTree(raw).path("sourceKey").path("id");if(!id.isIntegralNumber()||id.bigIntegerValue().signum()<=0)throw new IllegalStateException();
+                        var id=json.readTree(raw).path("sourceKey").path("id");if(!id.isIntegralNumber()||id.bigIntegerValue().signum()<0)throw new IllegalStateException();
                         clock=LegacyClockEvidence.parse(raw,"agent_workbench_sdk_state",Map.of("id",id.bigIntegerValue()));
                     }catch(Exception error){throw new IllegalStateException("SDK original clock provenance differs");}
                     return new Snapshot(rs.getLong(1),rs.getInt(2),rs.getString(3),clock);
                 },NAMESPACE,owner,session,key);
         return rows.isEmpty()?null:rows.get(0);
     }
+    private CheckpointV1 checkpoint(Snapshot row){
+        if(row.payloadVersion()!=1)throw new IllegalStateException("Unsupported SDK checkpoint version");
+        try{
+            var value=json.readValue(row.payload(),CheckpointV1.class);
+            if(value.legacyId()!=null&&row.clock()!=null
+                    &&!new java.math.BigInteger(value.legacyId()).equals(row.clock().sourceKey().get("id")))
+                throw new IllegalStateException("Original SDK checkpoint identity differs");
+            return value;
+        }
+        catch(Exception error){throw new IllegalStateException("SDK 检查点封装不可读",error);}
+    }
     private String state(Snapshot row){
         if(sdkAttempt&&row.clock()!=null)throw WorkbenchStore.fail(409,"历史 SDK 时钟待核对，不能自动恢复执行");
-        if(row.payloadVersion()!=1)throw new IllegalStateException("Unsupported SDK checkpoint version");
-        try{return json.readValue(row.payload(),CheckpointV1.class).stateJson();}
-        catch(Exception error){throw new IllegalStateException("SDK 检查点封装不可读",error);}
+        return checkpoint(row).stateJson();
     }
     @Override public boolean supportsVersioning(){return true;}
     @Override public <T extends State>VersionedState<T> getVersioned(String user,String session,String key,Class<T> type){
@@ -70,12 +88,13 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
     }
     private long saveCas(String user,String session,String key,String state,long version){
         binding(user,session);
-        long owner=account(user);String scope=scope(session,key);String envelope=store.encode(new CheckpointV1(state));
+        long owner=account(user);String scope=scope(session,key);
         return store.locked(owner,()->{
             assertClaim.run();
             var row=snapshot(owner,session,key);long current=row==null?0:row.revision();
             if(row!=null&&row.clock()!=null)throw WorkbenchStore.fail(409,"历史 SDK 时钟待核对，不能覆盖检查点");
             if(version!=UNVERSIONED&&version!=current)return UNVERSIONED;
+            String envelope=store.encode(new CheckpointV1(state,row==null?null:checkpoint(row).legacyId()));
             if(row==null)jdbc.update("""
                     INSERT INTO runtime_state(namespace,owner_id,scope_key,session_id,state_key,revision,state_code,payload_version,payload_json,created_at,updated_at)
                     VALUES(?,?,?,?,?,1,'LIVE',1,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))

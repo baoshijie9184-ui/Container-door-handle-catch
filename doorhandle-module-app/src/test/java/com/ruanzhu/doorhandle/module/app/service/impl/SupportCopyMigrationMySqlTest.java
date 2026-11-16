@@ -14,7 +14,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import static org.assertj.core.api.Assertions.*;
 
-/** Five actual legacy sources, exact bytes/NULL clocks, independent compact projections and ECS only. */
+/** Six actual legacy sources, exact bytes/NULL clocks, independent compact projections and ECS only. */
 @EnabledIfSystemProperty(named="doorhandle.support.source.config",matches=".+")
 @EnabledIfSystemProperty(named="doorhandle.support.mysql.config",matches=".+")
 class SupportCopyMigrationMySqlTest {
@@ -32,7 +32,7 @@ class SupportCopyMigrationMySqlTest {
         fixture.copyChatAndFingerprints();fixture.copyOwnerLocks();
         assertThat(snapshot()).isEqualTo(original);
         assertThat(target.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'",Integer.class)).isEqualTo(29);
-        for(String table:List.of("chat_project","chat_message")) {
+        for(String table:List.of("chat_project","chat_session","chat_message")) {
             String columns=columns(table);
             assertThat(target.queryForList("SELECT "+columns+" FROM `"+table+"` ORDER BY id"))
                     .isEqualTo(source.queryForList("SELECT "+columns+" FROM `"+table+"` ORDER BY id"));
@@ -85,7 +85,6 @@ class SupportCopyMigrationMySqlTest {
     @Test void originalCaseInsensitivePadSpaceParentKeysAndTextCollationsSurviveWithoutRewritingTheirBytes() throws Exception {
         source.update("INSERT INTO chat_session(id,session_id,username,user_id,title,status,pinned,created_at,updated_at,state_json,checkpoint_version,checkpoint_node,checkpoint_exit_reason,checkpoint_updated_at) VALUES(32,'Session-CI ','SOURCE-USER ',7,'旧父键','ACTIVE',0,NULL,NULL,NULL,0,'Node-CI','Reason-CI',NULL)");
         source.update("INSERT INTO chat_message(id,session_id,role,message_type,content,intent,action_id,created_at) VALUES(59,'SESSION-ci','assistant','TEXT','父子键大小写和尾空格原样保留',NULL,NULL,NULL)");
-        target.update("INSERT INTO chat_session(id,session_id,username,user_id,title,status,pinned,created_at,updated_at,state_json,checkpoint_version,checkpoint_node,checkpoint_exit_reason,checkpoint_updated_at) VALUES(32,'Session-CI ','SOURCE-USER ',7,'旧父键','ACTIVE',0,NULL,NULL,NULL,0,'Node-CI','Reason-CI',NULL)");
         var original=snapshot();fixture.copyChatAndFingerprints();assertThat(snapshot()).isEqualTo(original);
         assertThat(target.queryForObject("SELECT session_id FROM chat_message WHERE id=59",String.class)).isEqualTo("SESSION-ci");
         assertThat(target.queryForObject("SELECT session_id FROM chat_session WHERE id=32",String.class)).isEqualTo("Session-CI ");
@@ -104,6 +103,106 @@ class SupportCopyMigrationMySqlTest {
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
     }
 
+    @Test void canonicalSessionWithoutProjectColumnPreservesAllFourteenOriginalFields() throws Exception {
+        source.execute("ALTER TABLE chat_session DROP COLUMN project_id");
+        source.execute("ALTER TABLE chat_session ADD CONSTRAINT fk_chat_session_user FOREIGN KEY(username) REFERENCES users(username) ON DELETE CASCADE ON UPDATE CASCADE");
+        var original=snapshot();
+        fixture.copyChatAndFingerprints();
+        assertThat(snapshot()).isEqualTo(original);
+        assertThat(target.queryForList("SELECT "+columns("chat_session")+" FROM chat_session ORDER BY id"))
+                .isEqualTo(source.queryForList("SELECT * FROM chat_session ORDER BY id"));
+        assertThat(target.queryForObject("SELECT project_id FROM chat_session WHERE id=31",String.class)).isNull();
+        assertThat(target.queryForObject("SELECT auto_increment FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='chat_session'",Long.class)).isEqualTo(70000L);
+    }
+
+    @Test void sessionCheckpointProjectNullsAndHistoricalHighWaterAreNotReconstructed() throws Exception {
+        String raw=" { \"raw\": [null, \"Case  \", 9007199254740993] } ";
+        source.update("UPDATE chat_session SET title=NULL,pinned=NULL,project_id='P-EXACT ',state_json=?,checkpoint_version=17,checkpoint_node='Node-CI ',checkpoint_exit_reason='Reason-CI ',checkpoint_updated_at=?,updated_at=NULL WHERE id=31",raw,WALL);
+        source.update("INSERT INTO chat_session(id,session_id,username,user_id,title,status,pinned,project_id,created_at,updated_at,state_json,checkpoint_version,checkpoint_node,checkpoint_exit_reason,checkpoint_updated_at) VALUES(?,'large-session','source-user',7,'unused historical id','ARCHIVED',NULL,NULL,?,NULL,NULL,0,NULL,NULL,NULL)",LARGE_ID,WALL);
+        source.execute("ALTER TABLE chat_session AUTO_INCREMENT=9007199254741099");
+        var original=snapshot();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_session",Integer.class)).isZero();
+        fixture.copyChatAndFingerprints();
+        assertThat(snapshot()).isEqualTo(original);
+        assertThat(target.queryForList("SELECT "+columns("chat_session")+" FROM chat_session ORDER BY id"))
+                .isEqualTo(source.queryForList("SELECT * FROM chat_session ORDER BY id"));
+        assertThat(target.queryForObject("SELECT state_json FROM chat_session WHERE id=31",String.class)).isEqualTo(raw);
+        assertThat(target.queryForList("SELECT fork_owner_user_id,fork_request_id,fork_source_session_id,fork_through_message_id,fork_legacy_id FROM chat_session"))
+                .allSatisfy(row->assertThat(row.values()).containsOnlyNulls());
+        assertThat(target.queryForObject("SELECT auto_increment FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='chat_session'",Long.class)).isEqualTo(9007199254741099L);
+        target.update("INSERT INTO chat_session(session_id,username,user_id) VALUES('after-import','source-user',7)");
+        assertThat(target.queryForObject("SELECT id FROM chat_session WHERE session_id='after-import'",Long.class)).isEqualTo(9007199254741099L);
+    }
+
+    @Test void supportCopyKeepsAlreadyCopiedOtherContentAndRuntimeDomainsUntouched() throws Exception {
+        target.update("INSERT INTO content_asset(asset_id,asset_kind,title,visibility,created_at,updated_at) VALUES('other-domain','DETECTION_MODEL','other','SYSTEM',?,?)",WALL,WALL);
+        target.update("INSERT INTO content_revision(asset_id,asset_kind,version,created_at) VALUES('other-domain','DETECTION_MODEL',1,?)",WALL);
+        target.update("INSERT INTO runtime_state(namespace,owner_id,scope_key,created_at,updated_at) VALUES('SKILL_DOWNLOAD',99,'',NULL,NULL)");
+        var asset=target.queryForMap("SELECT * FROM content_asset WHERE asset_id='other-domain'");
+        var revision=target.queryForMap("SELECT * FROM content_revision WHERE asset_id='other-domain'");
+        var state=target.queryForMap("SELECT * FROM runtime_state WHERE namespace='SKILL_DOWNLOAD'");
+        fixture.copyChatAndFingerprints();
+        assertThat(target.queryForMap("SELECT * FROM content_asset WHERE asset_id='other-domain'")).isEqualTo(asset);
+        assertThat(target.queryForMap("SELECT * FROM content_revision WHERE asset_id='other-domain'")).isEqualTo(revision);
+        assertThat(target.queryForMap("SELECT * FROM runtime_state WHERE namespace='SKILL_DOWNLOAD'")).isEqualTo(state);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_session",Integer.class)).isEqualTo(1);
+    }
+
+    @Test void preexistingSessionIsNotOverwrittenOrAcceptedAsTheMissingProducer() {
+        target.update("INSERT INTO chat_session(id,session_id,username,user_id,title) VALUES(31,'session-source','source-user',7,'preexisting')");
+        var prior=targetSnapshot();var original=snapshot();
+        assertThatThrownBy(fixture::copyChatAndFingerprints).isInstanceOf(Exception.class).hasStackTraceContaining("compact_support_guard");
+        assertThat(targetSnapshot()).isEqualTo(prior);assertThat(snapshot()).isEqualTo(original);
+    }
+
+    @Test void observedHistoricalUsernameAndProjectReferencesSurviveCopyAndRelationInstallation() throws Exception {
+        source.update("UPDATE chat_session SET username='retired-name',project_id='missing-project',updated_at=NULL WHERE id=31");
+        source.update("INSERT INTO chat_session(id,session_id,username,user_id,project_id,created_at,updated_at) VALUES(32,'linked-session','source-user',7,'p-exact',NULL,NULL)");
+        var original=snapshot();fixture.deferTargetRelations();fixture.copyChatAndFingerprints();fixture.installTargetRelations();
+        var copied=target.queryForList("SELECT "+columns("chat_session")+" FROM chat_session ORDER BY id");
+        assertThat(copied).isEqualTo(source.queryForList("SELECT * FROM chat_session ORDER BY id"));
+        target.update("DELETE FROM chat_project WHERE project_id='p-exact'");
+        target.update("UPDATE users SET username='renamed-user' WHERE id=7");
+        assertThat(target.queryForList("SELECT "+columns("chat_session")+" FROM chat_session ORDER BY id")).isEqualTo(copied);
+        assertThat(snapshot()).isEqualTo(original);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM information_schema.referential_constraints WHERE constraint_schema=DATABASE() AND table_name='chat_session'",Integer.class)).isEqualTo(1);
+    }
+
+    @Test void explicitProjectRemovalAndDeletionClearOnlyTheOwnedCurrentAssociation() throws Exception {
+        fixture.copyChatAndFingerprints();var service=projectService();
+        service.moveSessionToProject("source-user","session-source","p-null");
+        service.removeSessionFromProject("source-user","session-source");
+        assertThat(target.queryForObject("SELECT project_id FROM chat_session WHERE id=31",String.class)).isNull();
+        service.moveSessionToProject("source-user","session-source","p-null");
+        service.deleteProject("source-user","p-null");
+        assertThat(target.queryForObject("SELECT project_id FROM chat_session WHERE id=31",String.class)).isNull();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_project WHERE project_id='p-null'",Integer.class)).isZero();
+    }
+
+    @Test void failedProjectDeletionRollsBackTheExplicitDetachInTheSameTransaction() throws Exception {
+        fixture.copyChatAndFingerprints();var service=projectService();
+        service.moveSessionToProject("source-user","session-source","p-null");
+        var original=targetSnapshot();
+        target.execute("CREATE TRIGGER reject_project_delete BEFORE DELETE ON chat_project FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='synthetic deletion rejection'");
+        assertThatThrownBy(()->service.deleteProject("source-user","p-null")).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(targetSnapshot()).isEqualTo(original);
+    }
+
+    private ChatProjectServiceImpl projectService() throws Exception {
+        var configuration=new com.baomidou.mybatisplus.core.MybatisConfiguration();configuration.setMapUnderscoreToCamelCase(true);
+        configuration.addMapper(com.ruanzhu.doorhandle.module.app.mapper.ChatProjectMapper.class);
+        configuration.addMapper(com.ruanzhu.doorhandle.module.app.mapper.ChatSessionMapper.class);
+        var factory=new com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean();
+        factory.setDataSource(target.getDataSource());factory.setConfiguration(configuration);
+        var session=new org.mybatis.spring.SqlSessionTemplate(factory.getObject());
+        var service=new ChatProjectServiceImpl(session.getMapper(com.ruanzhu.doorhandle.module.app.mapper.ChatProjectMapper.class),session.getMapper(com.ruanzhu.doorhandle.module.app.mapper.ChatSessionMapper.class));
+        var proxy=new org.springframework.aop.framework.ProxyFactory(service);proxy.setProxyTargetClass(true);
+        proxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(target.getDataSource()),
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        return (ChatProjectServiceImpl)proxy.getProxy();
+    }
+
     @Test void repeatingEitherCopyRefusesToReplaceAnyPriorRows() throws Exception {
         fixture.copyChatAndFingerprints();fixture.copyOwnerLocks();var original=snapshot();
         var imported=targetSnapshot();
@@ -112,19 +211,27 @@ class SupportCopyMigrationMySqlTest {
         assertThat(targetSnapshot()).isEqualTo(imported);assertThat(snapshot()).isEqualTo(original);
     }
 
-    @ParameterizedTest @ValueSource(strings={"unknown_column","invalid_sha","damaged_projection","damaged_current_pointer"})
+    @ParameterizedTest @ValueSource(strings={"unknown_column","invalid_sha","damaged_projection","damaged_current_pointer",
+            "unknown_session_column","wrong_session_project_type","damaged_session_checkpoint","damaged_session_project","invalid_session_state"})
     void invalidSourceOrChangedProjectionRollsBackChatAndFingerprintTogether(String mutation) {
         switch(mutation) {
             case "unknown_column"->source.execute("ALTER TABLE detection_image_fingerprint ADD unreviewed_column VARCHAR(12) NULL");
             case "invalid_sha"->source.update("UPDATE detection_image_fingerprint SET sha256=REPEAT('X',64),updated_at=? WHERE id=61",WALL);
             case "damaged_projection"->target.execute("CREATE TRIGGER corrupt_support BEFORE INSERT ON runtime_state FOR EACH ROW SET NEW.current_ref=IF(NEW.namespace='DETECTION_FINGERPRINT','wrong-task',NEW.current_ref)");
             case "damaged_current_pointer"->target.execute("CREATE TRIGGER corrupt_current_pointer BEFORE UPDATE ON content_asset FOR EACH ROW SET NEW.current_version=IF(NEW.asset_kind='DETECTION_IMAGE',NULL,NEW.current_version)");
+            case "unknown_session_column"->source.execute("ALTER TABLE chat_session ADD unreviewed_column INT NULL");
+            case "wrong_session_project_type"->source.execute("ALTER TABLE chat_session MODIFY project_id VARCHAR(63) COLLATE utf8mb4_unicode_ci NULL");
+            case "damaged_session_checkpoint"->target.execute("CREATE TRIGGER corrupt_session_checkpoint BEFORE INSERT ON chat_session FOR EACH ROW SET NEW.checkpoint_node='invented-checkpoint'");
+            case "damaged_session_project"->target.execute("CREATE TRIGGER corrupt_session_project BEFORE INSERT ON chat_session FOR EACH ROW SET NEW.project_id='p-null'");
+            case "invalid_session_state"->source.update("UPDATE chat_session SET state_json='legacy opaque text',updated_at=NULL WHERE id=31");
             default->throw new AssertionError(mutation);
         }
         var original=snapshot();
         var rejected=assertThatThrownBy(fixture::copyChatAndFingerprints).isInstanceOf(Exception.class);
         if(mutation.equals("damaged_current_pointer"))rejected.hasStackTraceContaining("compact_support_guard");
+        if(mutation.equals("invalid_session_state"))rejected.hasStackTraceContaining("compact_support_session_state_json_chk");
         assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_project",Integer.class)).isZero();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_session",Integer.class)).isZero();
         assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_message",Integer.class)).isZero();
         assertThat(target.queryForObject("SELECT COUNT(*) FROM content_asset",Integer.class)).isZero();
         assertThat(target.queryForObject("SELECT COUNT(*) FROM content_revision",Integer.class)).isZero();
@@ -150,6 +257,7 @@ class SupportCopyMigrationMySqlTest {
     }
     private Map<String,Object> targetSnapshot() {
         return Map.of("projects",target.queryForList("SELECT * FROM chat_project ORDER BY id"),
+                "sessions",target.queryForList("SELECT * FROM chat_session ORDER BY id"),
                 "messages",target.queryForList("SELECT * FROM chat_message ORDER BY id"),
                 "assets",target.queryForList("SELECT * FROM content_asset ORDER BY id"),
                 "revisions",target.queryForList("SELECT * FROM content_revision ORDER BY id"),
@@ -171,6 +279,7 @@ class SupportCopyMigrationMySqlTest {
         source.update("INSERT INTO agent_research_storage_owner(user_id,created_at) VALUES(7,?),(42,?)",WALL.withNano(123456000),WALL.withNano(654321000));
         source.update("INSERT INTO agent_skill_download_owner(owner_user_id) VALUES(7),(42)");
         source.execute("ALTER TABLE chat_project AUTO_INCREMENT=50000");
+        source.execute("ALTER TABLE chat_session AUTO_INCREMENT=70000");
         source.execute("ALTER TABLE chat_message AUTO_INCREMENT=60000");
         source.execute("ALTER TABLE detection_image_fingerprint AUTO_INCREMENT=9007199254741099");
     }

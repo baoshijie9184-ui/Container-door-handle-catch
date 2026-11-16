@@ -7,6 +7,7 @@ import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
 import com.ruanzhu.doorhandle.module.app.mapper.ChatProjectMapper;
 import com.ruanzhu.doorhandle.module.app.mapper.ChatSessionMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -21,7 +22,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -68,10 +71,12 @@ class ChatProjectServiceImplTest {
 
         chatProjectService.deleteProject("admin", "proj_admin_001");
 
-        assertThat(ownSession.getProjectId()).isNull();
+        ArgumentCaptor<LambdaUpdateWrapper<ChatSession>> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         assertThat(otherSession.getProjectId()).isEqualTo("proj_admin_001");
-        verify(chatSessionMapper).updateById(ownSession);
-        verify(chatSessionMapper, never()).updateById(otherSession);
+        verify(chatSessionMapper).update(isNull(), update.capture());
+        assertThat(update.getValue().getSqlSet()).contains("project_id");
+        assertThat(update.getValue().getSqlSegment()).contains("username", "session_id", "project_id");
+        assertThat(update.getValue().getParamNameValuePairs()).containsValue(null).containsValue("admin").containsValue("sess_admin_001").doesNotContainValue("other");
         verify(chatProjectMapper).deleteById(10L);
     }
 
@@ -123,5 +128,32 @@ class ChatProjectServiceImplTest {
         chatProjectService.moveSessionToProject("alice", session.getSessionId(), null);
 
         assertThat(captor.getValue().getSqlSegment()).contains("user_id").doesNotContain("username");
+        ArgumentCaptor<LambdaUpdateWrapper<ChatSession>> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(chatSessionMapper).update(isNull(), update.capture());
+        assertThat(update.getValue().getSqlSet()).contains("project_id");
+        assertThat(update.getValue().getSqlSegment()).contains("user_id", "session_id").doesNotContain("username");
+        assertThat(update.getValue().getParamNameValuePairs()).containsValue(null).containsValue(42L);
+    }
+
+    @Test
+    void missingOrForeignProjectCannotBeAssignedAfterTheForeignKeyIsRemoved() {
+        ChatSession session = new ChatSession();session.setSessionId("owned");session.setUsername("alice");
+        when(chatSessionMapper.selectOne(any())).thenReturn(session);
+        ArgumentCaptor<LambdaQueryWrapper<ChatProject>> query = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(chatProjectMapper.selectOne(query.capture())).thenReturn(null);
+        assertThatThrownBy(() -> chatProjectService.moveSessionToProject("alice", "owned", "other-project"))
+                .isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class);
+        assertThat(query.getValue().getSqlSegment()).contains("username", "project_id", "FOR UPDATE");
+        assertThat(query.getValue().getParamNameValuePairs()).containsValue("alice").containsValue("other-project");
+        verify(chatSessionMapper, never()).update(any(), any());
+    }
+
+    @Test
+    void missingOrForeignSessionCannotBeMovedOrDetached() {
+        when(chatSessionMapper.selectOne(any())).thenReturn(null);
+        assertThatThrownBy(() -> chatProjectService.removeSessionFromProject("alice", "foreign-session"))
+                .isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class);
+        verify(chatSessionMapper, never()).update(any(), any());
+        verify(chatProjectMapper, never()).selectOne(any());
     }
 }

@@ -218,6 +218,35 @@ class AgentWorkbenchServiceTest {
         assertThat(first.saveIfVersion("1","sdk-session","agent_state",state,0)).isEqualTo(1);assertThat(second.getVersioned("1","sdk-session","agent_state",AgentState.class).value().getContext().get(0).getTextContent()).isEqualTo("PRIVATE_STATE");
         assertThat(second.saveIfVersion("1","sdk-session","agent_state",state,0)).isEqualTo(AgentStateStore.UNVERSIONED);assertThat(second.get("2","sdk-session","agent_state",AgentState.class)).isEmpty();assertThatThrownBy(()->first.exists(null,"sdk-session")).isInstanceOf(SecurityException.class);
     }
+    @Test void importedSdkUnsignedIdentitySurvivesReadAndCasWhileNewWritesKeepTheirOldEnvelope()throws Exception{
+        var sdk=new JdbcWorkbenchStateStore(store);var state=AgentState.builder().userId("1").sessionId("imported").context(List.of(new UserMessage("original"))).build();
+        assertThat(sdk.saveIfVersion("1","imported","agent_state",state,0)).isEqualTo(1);
+        String select="SELECT payload_json FROM runtime_state WHERE namespace='SDK_CHECKPOINT' AND session_id='imported'";
+        var fresh=new ObjectMapper().readTree(store.jdbc().queryForObject(select,String.class));
+        assertThat(fresh.size()).isEqualTo(1);assertThat(fresh.has("stateJson")).isTrue();
+        String maximum="18446744073709551615";
+        store.jdbc().update("UPDATE runtime_state SET payload_json=JSON_SET(payload_json,'$.legacyId',?) WHERE namespace='SDK_CHECKPOINT' AND session_id='imported'",maximum);
+        assertThat(sdk.getVersioned("1","imported","agent_state",AgentState.class).value().getContext().get(0).getTextContent()).isEqualTo("original");
+        String original=store.jdbc().queryForObject(select,String.class);
+        assertThat(sdk.saveIfVersion("1","imported","agent_state",state,0)).isEqualTo(AgentStateStore.UNVERSIONED);
+        assertThat(store.jdbc().queryForObject(select,String.class)).isEqualTo(original);
+        assertThat(sdk.saveIfVersion("1","imported","agent_state",state,1)).isEqualTo(2);
+        assertThat(new ObjectMapper().readTree(store.jdbc().queryForObject(select,String.class)).path("legacyId").textValue()).isEqualTo(maximum);
+        assertThat(new JdbcWorkbenchStateStore.CheckpointV1("{}","0").legacyId()).isEqualTo("0");
+    }
+    @Test void malformedSdkOriginalIdsAreRejectedByTheEnvelopeAndDatabaseWithoutLosingState(){
+        var sdk=new JdbcWorkbenchStateStore(store);var state=AgentState.builder().userId("1").sessionId("bad-id").context(List.of(new UserMessage("retain"))).build();
+        assertThat(sdk.saveIfVersion("1","bad-id","agent_state",state,0)).isEqualTo(1);
+        String select="SELECT payload_json FROM runtime_state WHERE namespace='SDK_CHECKPOINT' AND session_id='bad-id'";
+        String original=store.jdbc().queryForObject(select,String.class);
+        for(String id:List.of("-1","01","18446744073709551616","100000000000000000000")){
+            assertThatThrownBy(()->new JdbcWorkbenchStateStore.CheckpointV1("{}",id)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(()->store.jdbc().update("UPDATE runtime_state SET payload_json=JSON_SET(payload_json,'$.legacyId',?) WHERE namespace='SDK_CHECKPOINT' AND session_id='bad-id'",id)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+            assertThat(store.jdbc().queryForObject(select,String.class)).isEqualTo(original);
+        }
+        assertThatThrownBy(()->store.jdbc().update("UPDATE runtime_state SET payload_json=JSON_SET(payload_json,'$.legacyId',NULL) WHERE namespace='SDK_CHECKPOINT' AND session_id='bad-id'")).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(store.jdbc().queryForObject(select,String.class)).isEqualTo(original);
+    }
     @Test void completedToolResultIsReusedAfterReloadWithoutReexecutingItsBody(){
         var scope=scope("查看任务");var calls=new AtomicInteger();AgentTool underlying=new AgentTool(){public String getName(){return "lookup";}public String getDescription(){return "read";}public boolean isReadOnly(){return true;}public Map<String,Object>getParameters(){return Map.of();}public Mono<ToolResultBlock>callAsync(ToolCallParam param){calls.incrementAndGet();return Mono.just(ToolResultBlock.text("fact"));}};
         var wrapped=scope.wrap(underlying);var request=ToolCallParam.builder().toolUseBlock(new ToolUseBlock("same-call","lookup",Map.of())).input(Map.of()).build();

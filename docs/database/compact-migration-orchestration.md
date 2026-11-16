@@ -6,9 +6,15 @@
 
 `script/schema/migrate_compact.py` 提供 `observe`、`migrate`、`verify` 三个阶段。`script/schema/restore_compact.py` 提供单独的备份恢复验证。共享实现为 `script/schema/compact_migration_runtime.py`，Workbench 的受控 Java 入口为 `CompactWorkbenchMigrationCli`，实际调用现有 `WorkbenchLegacyMigration.copy` 和 `verifyCommitted`。
 
-源表全集来自 `compact-schema-contract.json` 的 131 张表；目标必须是契约规定的 29 张 InnoDB 实体表，没有兼容视图。复制计划核对当前目录中每一个 SQL 文件及其 SHA，拒绝缺段、额外段、依赖环、未知占位符和未覆盖的源表。源库还必须实际具有精确的 131 张表，并且不能是没有业务记录的空库。
+源表全集来自 `compact-schema-contract.json` 的 131 张表；目标必须是契约规定的 29 张 InnoDB 实体表，没有兼容视图。复制计划核对当前目录中每一个 SQL 文件及其 SHA，拒绝缺段、额外段、依赖环、未知占位符和未覆盖的源表；另核对 29 张目标各自具有实际 INSERT 生产者，父表查询、快照或对账不能代替复制。源库还必须实际具有精确的 131 张表，并且不能是没有业务记录的空库。
 
-执行顺序由生产者依赖决定。`12-chat-and-fingerprints.sql` 先复制项目、消息和图像指纹；`43-workspace.sql` 生产完整会话后，才运行 `24-chat-evidence.sql`。Workbench 在会话、运行、模型及 SDK checkpoint 已就绪后调用 Java，立即核对已提交结果；之后才运行依赖它的报告、上下文和 MCP。`49-digests.sql` 复制 V65 的五张日报表，`50-owner-locks.sql` 复制研究与技能下载 owner 锁。计划覆盖数是实际输入关系集合校验，不是仅填写一份映射清单。
+执行顺序由生产者依赖决定。`12-chat-and-fingerprints.sql` 先完整复制项目、会话、消息和图像指纹；`43-workspace.sql` 只为已有会话追加分叉投影，随后才运行 `24-chat-evidence.sql`。Workbench 在会话、运行、模型及 SDK checkpoint 已就绪后调用 Java，立即核对已提交结果；之后才运行依赖它的报告、上下文和 MCP。`49-digests.sql` 复制 V65 的五张日报表，`50-owner-locks.sql` 复制研究与技能下载 owner 锁。131 张源表引用覆盖与 29 张目标行生产者覆盖分别检查；各域仍须执行原逐行、逐字段对账，不能仅凭两项覆盖数量报告数据保全。
+
+会话本体由 `compact-support-source-map.json` 记录两种已核实来源：原 `schema.sql` 的 14 列，以及 #341/#366 观察到的 15 列（新增可空 `project_id`）。前者仅为缺失的项目字段写入 NULL；后者连同项目原值复制全部 15 列。原 ID、会话编号、用户名、NULL、JSON 文本、checkpoint 和原 DATETIME 均按完整行摘要核对，源 AUTO_INCREMENT 的历史空洞保留到目标；新的 5 个分叉字段先保持 NULL，再由 43 的独立来源生产。支持域夹具只预置 users，不再手工复制会话来掩盖生产者缺失。共享 content/runtime 表继续仅拒绝本域已有行，不要求其他已复制域为空。
+
+观察到的会话来源只声明 `user_id → users.id` 租户外键，因此目标保留该外键，不再给历史 `username`、`project_id` 增加删除或改键级联；缺失或已改名的原关联值仍完整保留。canonical14 来源已有的用户名外键继续检查原声明和关联有效性。正常入口的用户名来自认证身份，项目移动继续核对会话与项目所有者并锁定目标项目；显式移出和删除项目用明确 NULL 更新，删除项目的清关联与删除在同一事务。原 `state_json` 表示序列化 JSON；保留 JSON 约束，异常非 JSON 在复制前以 `compact_support_session_state_json_chk` 明确拒绝，不改写原文本。
+
+SDK checkpoint 的原无符号 `id` 在已知偏移与 `UNRESOLVED` 两种分支都写入 `payload_json.legacyId`，以十进制字符串保存完整 `0..18446744073709551615` 范围；逐行核对不能只检查业务自然键或时钟 sidecar。既有新写仍使用 `{stateJson}`，读取兼容无 `legacyId` 的旧记录；导入后 CAS 更新保留已有原 ID，不改变 owner/session/state-key 查询键。目标 CHECK 与 Java reader 拒绝越界原 ID，双恢复继续按完整 payload 字节、全部列及源序列核对。
 
 ## ECS、连接与私有配置
 

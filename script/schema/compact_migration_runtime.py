@@ -720,7 +720,7 @@ def copy_plan(contract):
     paths = {path.name: path for path in (ROOT / 'sql/mysql/compact/copy').glob('*.sql')}
     expected = set(COPY_DEPENDENCIES) - {'workbench-java'}
     require(set(paths) == expected, 'The complete reviewed copy plan is missing or has unregistered SQL segments')
-    covered, steps, done = set(), [], set()
+    covered, produced, steps, done = set(), set(), [], set()
     while len(done) < len(COPY_DEPENDENCIES):
         ready = sorted(name for name, dependencies in COPY_DEPENDENCIES.items() if name not in done and set(dependencies) <= done)
         require(ready, 'Copy plan has a dependency cycle or missing producer')
@@ -728,6 +728,7 @@ def copy_plan(contract):
             if name == 'workbench-java':
                 source = ROOT / 'doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchLegacyMigration.java'
                 sources = sorted(WORKBENCH_SOURCES)
+                produced.update(('workflow_instance', 'audit_event'))
                 steps.append({'name': name, 'kind': 'java', 'sourceTables': sources, 'sha256': sha_file(source),
                               'requires': list(COPY_DEPENDENCIES[name])})
             else:
@@ -736,12 +737,17 @@ def copy_plan(contract):
                 sources = sorted(set(re.findall(r'`__SOURCE_SCHEMA__`\s*\.\s*`?([a-z][a-z0-9_]*)', sql)))
                 require(sources, 'Each SQL segment must declare its actual source relations')
                 executable_sql = without_comments(sql)
+                # A referenced parent is not a copied row producer. Include the
+                # reviewed prepared INSERT branches as well as direct INSERTs.
+                produced.update(re.findall(r'\bINSERT\s+INTO\s+`?([a-z][a-z0-9_]*)`?\s*\(', executable_sql, re.I))
                 require(not re.search(r'\bFOREIGN_KEY_CHECKS\s*=\s*0\b|\b(?:DROP|TRUNCATE)\s+(?:TABLE|DATABASE)\b(?!\s+compact_)', executable_sql, re.I),
                         'A copy segment attempts destructive or constraint-disabling operations')
                 steps.append({'name': name, 'kind': 'sql', 'sourceTables': sources, 'sha256': sha_file(source),
                               'requires': list(COPY_DEPENDENCIES[name])})
             covered.update(sources); done.add(name)
     require(covered == set(contract['sourceTables']), 'The actual SQL/Java copy plan does not cover all 131 observed source tables')
+    missing = set(contract['expectedTargetTables']) - produced
+    require(not missing, 'The copy plan has no row producer for target tables: ' + ','.join(sorted(missing)))
     return steps
 
 
