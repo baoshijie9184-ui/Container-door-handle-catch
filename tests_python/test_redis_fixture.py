@@ -129,7 +129,10 @@ def test_prepare_uses_only_formal_image_projection_and_fresh_bounded_server(stat
     assert create[create.index('--pull') + 1] == 'never'
     assert create[create.index('--publish') + 1] == '127.0.0.1::6379'
     assert create[create.index('--user') + 1] == '1000:1000'
-    assert create[create.index('--memory') + 1] == create[create.index('--memory-swap') + 1] == '256m'
+    assert fixture.MEMORY == 128 * fixture.MIB == 2 * fixture.MAXMEMORY
+    assert create[create.index('--memory') + 1] == create[create.index('--memory-swap') + 1] == '134217728'
+    assert create[create.index('--maxmemory') + 1] == '67108864'
+    assert create[create.index('--maxmemory-policy') + 1] == 'noeviction'
     assert create[create.index('--cpus') + 1] == '0.5' and create[create.index('--pids-limit') + 1] == '64'
     assert create[create.index('--entrypoint') + 1] == fixture.ENTRYPOINT
     assert create[create.index('--save') + 1] == '' and create[create.index('--appendonly') + 1] == 'no'
@@ -170,7 +173,7 @@ def test_formal_projection_rejects_wrong_identity_or_extra_fields(field, value):
 
 @pytest.mark.parametrize('damage', ['cid', 'name', 'image', 'token', 'release', 'commit', 'source',
     'user', 'entrypoint', 'command', 'workdir', 'network', 'restart', 'privileged', 'rootfs',
-    'memory', 'swap', 'cpu', 'pids', 'capdrop', 'capadd', 'device', 'bind', 'security', 'tmpfs',
+    'memory', 'swap', 'old-memory', 'old-swap', 'cpu', 'pids', 'capdrop', 'capadd', 'device', 'bind', 'security', 'tmpfs',
     'log', 'requested-port', 'actual-port', 'persistent-volume'])
 def test_ownership_rejects_each_widened_identity_or_resource(state, damage):
     row = state.row; row['State'].update(Running=True, Pid=1234)
@@ -189,7 +192,8 @@ def test_ownership_rejects_each_widened_identity_or_resource(state, damage):
     else:
         key, changed = {'network': ('NetworkMode', 'host'), 'restart': ('RestartPolicy', {'Name': 'always'}),
             'privileged': ('Privileged', True), 'rootfs': ('ReadonlyRootfs', False), 'memory': ('Memory', 0),
-            'swap': ('MemorySwap', -1), 'cpu': ('NanoCpus', 0), 'pids': ('PidsLimit', 0),
+            'swap': ('MemorySwap', -1), 'old-memory': ('Memory', 256 * fixture.MIB),
+            'old-swap': ('MemorySwap', 256 * fixture.MIB), 'cpu': ('NanoCpus', 0), 'pids': ('PidsLimit', 0),
             'capdrop': ('CapDrop', []), 'capadd': ('CapAdd', ['SYS_ADMIN']), 'device': ('Devices', ['/dev/sda']),
             'bind': ('Binds', ['/production:/data']), 'security': ('SecurityOpt', []), 'tmpfs': ('Tmpfs', {}),
             'log': ('LogConfig', {}), 'requested-port': ('PortBindings', {'6379/tcp': [{'HostIp': '0.0.0.0', 'HostPort': ''}]})}[damage]
@@ -320,6 +324,7 @@ def test_stop_preserves_terminal_originals_removes_only_own_container_and_is_ide
     assert result['protocolHealthy'] is True and result['terminalValidationErrorType'] is None
     assert result['identity'] == CONTEXT['identity'] and result['sourceData'] == 'SYNTHETIC_ONLY'
     assert result['persistentVolumes'] is False and result['database'] == 0 and result['providerCalls'] == 0
+    assert result['memoryLimitBytes'] == 128 * fixture.MIB and result['redisMaxmemoryBytes'] == 64 * fixture.MIB
     assert (value.folder / 'container.stdout.log').read_bytes() == b'synthetic Redis stdout\n'
     assert (value.folder / 'container.stderr.log').read_bytes() == b'synthetic Redis stderr\n'
     assert (value.folder / 'owner.json').is_file() and result['privateOriginals']

@@ -1459,7 +1459,7 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 355,
+        "minimumTests": 387,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },
@@ -1579,7 +1579,7 @@
       },
       {
         "module": "tests_python.test_jenkins_fixture_cgroup_probe",
-        "minimumTests": 61,
+        "minimumTests": 70,
         "source": "tests_python/test_jenkins_fixture_cgroup_probe.py",
         "allowedSkippedTests": []
       },
@@ -1831,7 +1831,7 @@
       },
       {
         "module": "tests_python.test_middleware_evidence",
-        "minimumTests": 47,
+        "minimumTests": 52,
         "source": "tests_python/test_middleware_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1855,7 +1855,7 @@
       },
       {
         "module": "tests_python.test_redis_fixture",
-        "minimumTests": 101,
+        "minimumTests": 103,
         "source": "tests_python/test_redis_fixture.py",
         "allowedSkippedTests": []
       }

@@ -18,7 +18,7 @@ import time
 
 MIB = 1024 ** 2
 GIB = 1024 ** 3
-MEMORY = 256 * MIB
+MEMORY = 128 * MIB
 MAXMEMORY = 64 * MIB
 LABEL = 'io.doorhandle.redis-fixture'
 PROJECT = 'doorhandlecatch-monolith'
@@ -234,7 +234,7 @@ class Fixture:
         self._evidence('image-source.json', json.dumps({'formal': formal, 'image': image}, sort_keys=True).encode())
         args = ['create', '--pull', 'never', '--name', self.name, '--restart', 'no', '--user', '1000:1000',
             '--network', 'bridge', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
-            '--memory', '256m', '--memory-swap', '256m', '--cpus', '0.5', '--pids-limit', '64',
+            '--memory', str(MEMORY), '--memory-swap', str(MEMORY), '--cpus', '0.5', '--pids-limit', '64',
             '--log-driver', 'json-file', '--log-opt', 'max-size=1m', '--log-opt', 'max-file=1',
             '--label', LABEL + '=' + self.token, '--label', 'io.doorhandle.release=' + self.context['release'],
             '--label', 'io.doorhandle.commit=' + self.context['commit'],

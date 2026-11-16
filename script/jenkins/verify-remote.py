@@ -102,6 +102,8 @@ def record_verification_failure(record, error, checkout, fixture_watch=None):
         # Constructed by the fixed-source watcher from numeric sample metadata,
         # before stop() replaces its status; no exception text or private JSON.
         record.setdefault('fixtureRuntime', {})['checkFailure'] = fixture_watch.check_failure
+    if fixture_watch is not None and getattr(fixture_watch, 'memory_admission', None) is not None:
+        record.setdefault('fixtureRuntime', {})['memoryAdmission'] = fixture_watch.memory_admission
     if isinstance(error, VerificationError):
         record['error'] = str(error)
 
@@ -499,6 +501,24 @@ def validate_java_suites(result, evidence, *, mysql):
                 'Ordinary Java regression omitted or skipped an audited pure-logic class')
 
 
+def admit_fixture_memory(fixture_watch, tool_runtime, tool_value, middleware_fixture=None,
+                         observability_fixture=None, redis_fixture=None):
+    # Python whole-migration orchestration can synchronously launch one
+    # separate Java tool. Other top-level tools execute serially.
+    tool_bound = (max(max(tool_runtime.MEMORY.values()), tool_runtime.MEMORY['python'] + tool_runtime.MEMORY['java']) * 1024 ** 3
+                  if tool_value is not None else 0)
+    # These fixtures already consume host memory. Their own inspectors
+    # authenticate the exact containers before the kernel probe credits
+    # anonymous pages; retaining their full caps here double-counts use.
+    owners = {}
+    if middleware_fixture is not None: owners['qdrant'] = middleware_fixture.owned
+    if observability_fixture is not None:
+        owners['prometheus'] = lambda: observability_fixture.owned('prometheus')
+        owners['alertmanager'] = lambda: observability_fixture.owned('alertmanager')
+    if redis_fixture is not None: owners['redis'] = redis_fixture.owned
+    return fixture_watch.admit(tool_bound, fixture_owners=owners)
+
+
 def admitted_root(args):
     root = Path(args.root)
     require(root.is_absolute() and len(root.parts) > 2 and root.parts[1] in ("home", "srv", "opt")
@@ -630,16 +650,17 @@ def run_verification(args):
         if redis_fixture is not None:
             environment.update(redis_fixture.environment)
         if fixture_watch is not None:
-            # Python whole-migration orchestration can synchronously launch one
-            # separate Java tool. Other top-level tools execute serially.
-            tool_bound = ((max(tool_runtime.MEMORY.values()) + tool_runtime.MEMORY['java']) * 1024 ** 3
-                          if tool_value is not None else 0)
-            if middleware_fixture is not None: tool_bound += 512 * 1024 ** 2
-            if observability_fixture is not None: tool_bound += 640 * 1024 ** 2
-            if redis_fixture is not None: tool_bound += 256 * 1024 ** 2
-            record['fixtureRuntime']['memoryAdmission'] = fixture_watch.admit(tool_bound)
+            try:
+                record['fixtureRuntime']['memoryAdmission'] = admit_fixture_memory(
+                    fixture_watch, tool_runtime, tool_value, middleware_fixture, observability_fixture, redis_fixture)
+            except BaseException:
+                admission = getattr(fixture_watch, 'memory_admission', None)
+                if isinstance(admission, dict) and admission.get('capacityVerdict') == 'REJECTED':
+                    record['driverStart'] = {'requested': False, 'blockedBy': 'FIXTURE_MEMORY_ADMISSION'}
+                raise
         with driver.open("xb") as output:
             os.chmod(driver, 0o600)
+            record['driverStart'] = {'requested': True}
             process = subprocess.Popen(command, cwd=checkout, env=environment,
                                        stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, start_new_session=True)

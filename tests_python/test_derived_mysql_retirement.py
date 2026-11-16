@@ -2116,3 +2116,130 @@ def test_authenticated_direct_process_guard_survives_older_wrapper_codec(finishe
         try: assert retirement.failure_reason_code(error) == 'HISTORICAL_OBJECTS_NOT_QUIESCENT_' + guard
         finally: reject.__globals__.pop('LOADED_SOURCE', None)
     else: pytest.fail('The real rejection must remain a failure')
+
+
+@pytest.fixture
+def pre_driver_reports(tmp_path, monkeypatch):
+    """Five synthetic lifecycle originals; no real environment or SQL is copied."""
+    module_spec = importlib.util.spec_from_file_location('pre_driver_report_verifier', FILE.with_name('verify-remote.py'))
+    verifier = importlib.util.module_from_spec(module_spec); module_spec.loader.exec_module(verifier)
+    root = tmp_path / 'ci'
+    legacy = {'release': 'ci-387-d0b540e67ab0', 'commit': 'd0b540e67ab0f17a4539b2f69d557b7b73846933',
+              'sourceSha256': '8e2c062f3c8194b334c0fd5be6f449cf606a89b2e8f11d808f8ed54179a70534'}
+    state = SimpleNamespace(root=root, verifier=verifier, raw_change=None, omitted=None, catalog_omit=None)
+    def prepare(modern):
+        context = {'release': 'ci-400-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64} if modern else legacy.copy()
+        row = {**context, 'retirement': {'policy': retirement.FINISHED_BATCH}}
+        identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
+        shared = {**context, 'identity': identity}
+        tools = {**shared, 'kind': 'doorhandle-ecs-tool-evidence', 'manifestSha256': 'd' * 64,
+                 'cleanup': {'status': 'STOPPED', 'remaining': [], 'release': row['release'], 'manifestSha256': 'd' * 64}}
+        fixture = {**shared, 'kind': 'doorhandle-fixture-runtime', 'containerId': '1' * 64,
+                   'status': 'STOPPED', 'watchStopped': True, 'stopScope': 'OWNED_ATTEMPT_ONLY'}
+        reports = {'reports/tool-runtime.json': tools, 'reports/fixture-runtime.json': fixture}
+        receipt = {'schema': 1, 'kind': 'doorhandle-ecs-ci', **shared, 'attempt': 'c' * 32, 'scope': 'mysql',
+            'status': 'FAILED', 'verificationExitCode': None, 'lifecycle': 'managed-outside-jenkins',
+            'fixtureReadinessValidated': True, 'fixtureManifestProvided': True, 'errorType': 'ValueError',
+            'fixtureRuntime': {'required': True, 'containerId': '1' * 64},
+            'toolRuntime': {'manifestSha256': 'd' * 64, 'cleanupStatus': 'STOPPED'}}
+        for field, name, number in [('middlewareFixture', 'middleware', '2'),
+                                    ('observabilityFixture', 'observability', '3'), ('redisFixture', 'redis', '4')]:
+            reports['reports/' + name + '-fixture.json'] = {**shared, 'kind': 'doorhandle-' + name + '-fixture',
+                'status': 'STOPPED', 'cleanupConfirmed': True, 'containerId': number * 64}
+            receipt[field] = {'required': True, 'status': 'STOPPED', 'cleanupConfirmed': True, 'containerId': number * 64}
+        reports['reports/observability-fixture.json']['cleanupErrors'] = []
+        # Metrics acceptance remains FAILED; resource closure must not turn it into PASS.
+        reports['reports/observability-fixture.json']['metricsAcceptance'] = 'FAILED'
+        if modern:
+            receipt['driverStart'] = {'requested': False, 'blockedBy': 'FIXTURE_MEMORY_ADMISSION'}
+            receipt['fixtureRuntime']['memoryAdmission'] = {'capacityVerdict': 'REJECTED',
+                'hostMemoryAvailableBytes': 100, 'requiredAvailableMemoryBytes': 101, 'memoryShortfallBytes': 1,
+                'creditPolicy': 'OWNED_ANONYMOUS_ONLY', 'fullAcceptanceResourcesMeasured': False}
+        else:
+            source = 'script/jenkins/prepare-compact-fixtures.py'
+            receipt['failureLocation'] = {'source': source, 'line': 1859}
+            receipt['failureLocations'] = [{'source': source, 'line': 1859, 'function': 'admit'},
+                                           {'source': source, 'line': 817, 'function': 'require'}]
+        attempt = root / 'verification' / row['release']; inbox = root / 'inbox' / row['release']
+        (attempt / '.verification-claimed').mkdir(parents=True); inbox.mkdir(parents=True)
+        checkout = attempt / 'checkout'; (checkout / 'work/ci-evidence').mkdir(parents=True)
+        claim = {'schema': 1, 'kind': 'doorhandle-ci-claim', **shared, 'attempt': receipt['attempt'], 'scope': 'mysql'}
+        state.row, state.receipt, state.reports, state.claim = row, receipt, reports, claim
+        state.attempt, state.inbox, state.checkout = attempt, inbox, checkout
+        state.fixture_container_id = '1' * 64
+    def refresh():
+        bodies = {name: retirement.encoded(value) for name, value in state.reports.items()}
+        state.receipt['reportFiles'] = [{'path': name, 'bytes': len(body), 'sha256': retirement.digest(body)}
+            for name, body in bodies.items() if name != state.catalog_omit]
+        for field, name in [('toolRuntime', 'tool-runtime'), ('middlewareFixture', 'middleware-fixture'),
+                            ('observabilityFixture', 'observability-fixture'), ('redisFixture', 'redis-fixture')]:
+            state.receipt[field]['evidenceSha256'] = retirement.digest(bodies['reports/' + name + '.json'])
+        raw = retirement.encoded(state.receipt)
+        (state.attempt / 'verification-receipt.json').write_bytes(raw)
+        (state.attempt / '.verification-claimed/claim.json').write_bytes(retirement.encoded(state.claim))
+        with tarfile.open(state.inbox / 'verification-evidence.tar.gz', 'w:gz') as archive:
+            for name, body in [('verification-receipt.json', raw), *bodies.items()]:
+                if name == state.omitted: continue
+                if name == state.raw_change: body += b' '
+                member = tarfile.TarInfo(name); member.size = len(body); archive.addfile(member, io.BytesIO(body))
+        (state.inbox / 'verification-evidence.tar.gz').chmod(0o600)
+    state.prepare = prepare; state.refresh = refresh
+    monkeypatch.setattr(retirement, 'ROOT', root)
+    return state
+
+
+@pytest.mark.parametrize('modern', [False, True])
+@pytest.mark.parametrize('metadata_only', [False, True])
+def test_finished_pre_driver_rejection_preserves_failed_null_and_all_lifecycle_originals(pre_driver_reports, modern, metadata_only):
+    case = pre_driver_reports; case.prepare(modern); case.refresh()
+    before = (case.attempt / 'verification-receipt.json').read_bytes()
+    result = retirement.task_reports(case.row, case.verifier, metadata_only=metadata_only,
+                                     fixture_container_id=case.fixture_container_id)
+    assert result['verificationStatus'] == 'FAILED' and result['verificationExitCode'] is None
+    assert result['reportFiles'] == 5 and result['driverStarted'] is False
+    assert result['failureStage'] == 'FIXTURE_MEMORY_ADMISSION'
+    assert (case.attempt / 'verification-receipt.json').read_bytes() == before
+    assert not (case.checkout / 'driver.log').exists()
+
+
+@pytest.mark.parametrize('damage', [
+    'old-policy', 'legacy-source', 'legacy-location', 'legacy-memory-admitted', 'unknown-null',
+    'driver-requested', 'other-blocker', 'admitted', 'shortfall-arithmetic', 'boolean-memory',
+    'driver-file', 'driver-symlink', 'business-receipt', 'missing-report', 'extra-report',
+    'changed-original', 'missing-original', 'report-context', 'tools-running', 'tools-remaining',
+    'watch-running', 'watch-scope', 'owner-id', 'watch-id', 'middleware-running',
+    'redis-running', 'observability-running', 'observability-errors',
+])
+def test_finished_pre_driver_path_rejects_unknown_execution_or_unclosed_originals(pre_driver_reports, damage):
+    case = pre_driver_reports; case.prepare(not damage.startswith('legacy-'))
+    receipt, reports = case.receipt, case.reports
+    if damage == 'old-policy': case.row.pop('retirement')
+    elif damage == 'legacy-source': case.row['sourceSha256'] = receipt['sourceSha256'] = case.claim['sourceSha256'] = 'f' * 64
+    elif damage == 'legacy-location': receipt['failureLocation']['line'] = 1860
+    elif damage == 'legacy-memory-admitted': receipt['fixtureRuntime']['memoryAdmission'] = {'capacityVerdict': 'ADMITTED'}
+    elif damage == 'unknown-null': receipt.pop('driverStart')
+    elif damage == 'driver-requested': receipt['driverStart'] = {'requested': True}
+    elif damage == 'other-blocker': receipt['driverStart']['blockedBy'] = 'UNKNOWN'
+    elif damage == 'admitted': receipt['fixtureRuntime']['memoryAdmission']['capacityVerdict'] = 'ADMITTED'
+    elif damage == 'shortfall-arithmetic': receipt['fixtureRuntime']['memoryAdmission']['memoryShortfallBytes'] = 2
+    elif damage == 'boolean-memory': receipt['fixtureRuntime']['memoryAdmission']['memoryShortfallBytes'] = True
+    elif damage == 'driver-file': (case.checkout / 'driver.log').write_bytes(b'Popen could have been requested')
+    elif damage == 'driver-symlink': (case.checkout / 'driver.log').symlink_to(case.root / 'absent')
+    elif damage == 'business-receipt': (case.checkout / 'work/ci-evidence/receipt.json').write_text('{}')
+    elif damage == 'missing-report': case.catalog_omit = 'reports/fixture-runtime.json'
+    elif damage == 'extra-report': reports['driver.log'] = {'unexpected': True}
+    elif damage == 'changed-original': case.raw_change = 'reports/fixture-runtime.json'
+    elif damage == 'missing-original': case.omitted = 'reports/fixture-runtime.json'
+    elif damage == 'report-context': reports['reports/fixture-runtime.json']['commit'] = 'f' * 40
+    elif damage == 'tools-running': reports['reports/tool-runtime.json']['cleanup']['status'] = 'RUNNING'
+    elif damage == 'tools-remaining': reports['reports/tool-runtime.json']['cleanup']['remaining'] = ['owned-tool']
+    elif damage == 'watch-running': reports['reports/fixture-runtime.json']['watchStopped'] = False
+    elif damage == 'watch-scope': reports['reports/fixture-runtime.json']['stopScope'] = 'UNKNOWN'
+    elif damage == 'owner-id': case.fixture_container_id = 'f' * 64
+    elif damage == 'watch-id': reports['reports/fixture-runtime.json']['containerId'] = 'f' * 64
+    elif damage.endswith('-running'): reports['reports/' + damage.removesuffix('-running') + '-fixture.json']['status'] = 'RUNNING'
+    else: reports['reports/observability-fixture.json']['cleanupErrors'] = ['unresolved']
+    case.refresh()
+    # Root's metadata-only recheck still has to read these five bounded originals.
+    with pytest.raises((ValueError, case.verifier.VerificationError)):
+        retirement.task_reports(case.row, case.verifier, metadata_only=True, fixture_container_id=case.fixture_container_id)

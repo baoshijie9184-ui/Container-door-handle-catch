@@ -1042,7 +1042,88 @@ def task_source_recipe(native, row):
             'toolPreparationHelperSha256': digest(bodies[names[2]])}
 
 
-def task_reports(row, verifier, *, metadata_only=False):
+def pre_driver_memory_failure(row, receipt, catalog, fixture_container_id):
+    """Admit explicit pre-driver memory rejection, plus #387's legacy original."""
+    # The manifest binds the full original source through task_source_recipe.
+    # New producers emit driverStart only in the local memory-admission catch,
+    # before driver.open/Popen. #387 predates that marker and stays a closed case.
+    context = {'release': 'ci-387-d0b540e67ab0',
+               'commit': 'd0b540e67ab0f17a4539b2f69d557b7b73846933',
+               'sourceSha256': '8e2c062f3c8194b334c0fd5be6f449cf606a89b2e8f11d808f8ed54179a70534'}
+    source = 'script/jenkins/prepare-compact-fixtures.py'
+    runtime = receipt.get('fixtureRuntime', {})
+    need(row.get('retirement', {}).get('policy') == FINISHED_BATCH
+         and receipt['status'] == 'FAILED' and receipt['verificationExitCode'] is None
+         and receipt.get('errorType') == 'ValueError'
+         and receipt.get('fixtureManifestProvided') is True
+         and runtime.get('required') is True and runtime.get('containerId') == fixture_container_id
+         and type(fixture_container_id) is str and SHA.fullmatch(fixture_container_id),
+         'REVIEWED_PRE_DRIVER_MEMORY_FAILURE_REQUIRED')
+    if 'driverStart' in receipt:
+        admission = runtime.get('memoryAdmission', {})
+        fields = ('hostMemoryAvailableBytes', 'requiredAvailableMemoryBytes', 'memoryShortfallBytes')
+        need(receipt['driverStart'] == {'requested': False, 'blockedBy': 'FIXTURE_MEMORY_ADMISSION'}
+             and receipt['driverStart']['requested'] is False
+             and admission.get('capacityVerdict') == 'REJECTED'
+             and admission.get('creditPolicy') == 'OWNED_ANONYMOUS_ONLY'
+             and admission.get('fullAcceptanceResourcesMeasured') is False
+             and all(type(admission.get(key)) is int and admission[key] >= 0 for key in fields)
+             and admission['memoryShortfallBytes'] == admission['requiredAvailableMemoryBytes']
+                 - admission['hostMemoryAvailableBytes'] > 0,
+             'EXPLICIT_PRE_DRIVER_MEMORY_REJECTION_REQUIRED')
+    else:
+        need(all(row.get(key) == value for key, value in context.items())
+             and runtime == {'required': True, 'containerId': fixture_container_id}
+             and receipt.get('failureLocation') == {'source': source, 'line': 1859}
+             and receipt.get('failureLocations') == [{'source': source, 'line': 1859, 'function': 'admit'},
+                                                    {'source': source, 'line': 817, 'function': 'require'}],
+             'REVIEWED_LEGACY_PRE_DRIVER_FAILURE_REQUIRED')
+    checkout = ROOT / 'verification' / row['release'] / 'checkout'
+    need(all(not path.exists() and not path.is_symlink() for path in
+             (checkout / 'driver.log', checkout / 'work/ci-evidence/receipt.json')),
+         'PRE_DRIVER_FAILURE_HAS_DRIVER_OUTPUT')
+    need(set(catalog) == {'reports/' + name + '.json' for name in
+         ('tool-runtime', 'fixture-runtime', 'middleware-fixture', 'observability-fixture', 'redis-fixture')}
+         and all(0 < item['bytes'] <= MIB for item in catalog.values())
+         and sum(item['bytes'] for item in catalog.values()) <= MIB,
+         'COMPLETE_PRE_DRIVER_LIFECYCLE_REPORTS_REQUIRED')
+    for field, name in (('toolRuntime', 'tool-runtime'), ('middlewareFixture', 'middleware-fixture'),
+                        ('observabilityFixture', 'observability-fixture'), ('redisFixture', 'redis-fixture')):
+        need(receipt.get(field, {}).get('evidenceSha256') == catalog['reports/' + name + '.json']['sha256'],
+             'PRE_DRIVER_REPORT_BINDING_DIFFERS')
+
+
+def pre_driver_cleanup(receipt, reports):
+    """Original failed receipts stay failed; only owned-resource closure is used."""
+    context = {key: receipt[key] for key in ('release', 'commit', 'sourceSha256', 'identity')}
+    need(all(all(document.get(key) == value for key, value in context.items())
+             for document in reports.values()), 'PRE_DRIVER_REPORT_CONTEXT_DIFFERS')
+    tools, fixture = reports['reports/tool-runtime.json'], reports['reports/fixture-runtime.json']
+    need(tools.get('kind') == 'doorhandle-ecs-tool-evidence'
+         and tools.get('manifestSha256') == receipt['toolRuntime']['manifestSha256']
+         and receipt['toolRuntime'].get('cleanupStatus') == 'STOPPED'
+         and tools.get('cleanup', {}).get('status') == 'STOPPED'
+         and tools['cleanup'].get('remaining') == []
+         and tools['cleanup'].get('release') == receipt['release']
+         and tools['cleanup'].get('manifestSha256') == tools['manifestSha256'],
+         'PRE_DRIVER_TOOLS_CLEANUP_UNRESOLVED')
+    need(fixture.get('kind') == 'doorhandle-fixture-runtime' and fixture.get('status') == 'STOPPED'
+         and fixture.get('watchStopped') is True and fixture.get('stopScope') == 'OWNED_ATTEMPT_ONLY'
+         and fixture.get('containerId') == receipt['fixtureRuntime']['containerId'],
+         'PRE_DRIVER_FIXTURE_WATCH_UNRESOLVED')
+    for field, name in (('middlewareFixture', 'middleware'), ('observabilityFixture', 'observability'),
+                        ('redisFixture', 'redis')):
+        document = reports['reports/' + name + '-fixture.json']; summary = receipt.get(field, {})
+        need(document.get('kind') == 'doorhandle-' + name + '-fixture'
+             and document.get('status') == summary.get('status') == 'STOPPED'
+             and document.get('cleanupConfirmed') is True and summary.get('cleanupConfirmed') is True
+             and (name == 'observability' or document.get('containerId') == summary.get('containerId')),
+             'PRE_DRIVER_OWNED_CLEANUP_UNRESOLVED')
+    need(reports['reports/observability-fixture.json'].get('cleanupErrors') == [],
+         'PRE_DRIVER_OBSERVABILITY_CLEANUP_UNRESOLVED')
+
+
+def task_reports(row, verifier, *, metadata_only=False, fixture_container_id=None):
     receipt_path = ROOT / 'verification' / row['release'] / 'verification-receipt.json'
     if not receipt_path.exists() and not receipt_path.is_symlink():
         # A preparation failure can have a complete source backup without ever
@@ -1057,10 +1138,11 @@ def task_reports(row, verifier, *, metadata_only=False):
     receipt = json.loads(raw)
     args = SimpleNamespace(tag=row['release'], commit=row['commit'], source_sha256=row['sourceSha256'],
                            attempt=receipt.get('attempt'), scope='mysql', instance_id=INSTANCE, machine_id=MACHINE)
+    pre_driver = receipt.get('verificationExitCode') is None
     need(re.fullmatch(r'[a-f0-9]{32}', args.attempt or '') and receipt.get('status') in ('PASS', 'FAILED')
-         and type(receipt.get('verificationExitCode')) is int
-         and ((receipt['status'] == 'PASS' and receipt['verificationExitCode'] == 0)
-              or (receipt['status'] == 'FAILED' and receipt['verificationExitCode'] != 0))
+         and (pre_driver or (type(receipt.get('verificationExitCode')) is int
+              and ((receipt['status'] == 'PASS' and receipt['verificationExitCode'] == 0)
+                   or (receipt['status'] == 'FAILED' and receipt['verificationExitCode'] != 0))))
          and not receipt.get('evidenceOmissions'),
          'ORIGINAL_FAILED_VERIFICATION_REPORTS_REQUIRED')
     claim = json.loads(read(receipt_path.parent / '.verification-claimed/claim.json'))
@@ -1070,13 +1152,14 @@ def task_reports(row, verifier, *, metadata_only=False):
         'ORIGINAL_VERIFICATION_CLAIM_DIFFERS')
     catalog = verifier.validate_envelope(receipt, args)
     need(bool(catalog), 'ORIGINAL_VERIFICATION_REPORTS_REQUIRED')
+    if pre_driver: pre_driver_memory_failure(row, receipt, catalog, fixture_container_id)
     archive_path = safe(ROOT / 'inbox' / row['release'] / 'verification-evidence.tar.gz')
     before = archive_path.stat()
     need(stat.S_ISREG(before.st_mode) and before.st_uid == 1000 and before.st_nlink == 1
          and not before.st_mode & 0o022 and 0 < before.st_size <= verifier.MAX_EVIDENCE_ARCHIVE,
          'ORIGINAL_REPORT_ARCHIVE_REQUIRED')
-    if not metadata_only:
-        seen = set()
+    if not metadata_only or pre_driver:
+        seen = set(); lifecycle = {}
         with verifier.bounded_tar(archive_path, verifier.MAX_EVIDENCE_BYTES + 16 * MIB) as archive:
             for index, member in enumerate(archive, 1):
                 name = verifier.member_path(member.name).as_posix()
@@ -1088,15 +1171,23 @@ def task_reports(row, verifier, *, metadata_only=False):
                          archive.extractfile(member).read(len(raw) + 1) == raw, 'ORIGINAL_REPORT_RECEIPT_CHANGED')
                     continue
                 need(name in catalog and member.size == catalog[name]['bytes'], 'ORIGINAL_REPORT_CATALOG_DIFFERS')
+                if pre_driver:
+                    body = archive.extractfile(member).read(MIB + 1)
+                    need(len(body) == member.size and digest(body) == catalog[name]['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
+                    lifecycle[name] = json.loads(body)
+                    continue
                 check = hashlib.sha256()
                 with archive.extractfile(member) as stream:
                     for block in iter(lambda: stream.read(MIB), b''):
                         check.update(block)
                 need(check.hexdigest() == catalog[name]['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
         need(seen == {'verification-receipt.json', *catalog}, 'ORIGINAL_REPORT_ARCHIVE_INCOMPLETE')
+        if pre_driver: pre_driver_cleanup(receipt, lifecycle)
     need(signature(before) == signature(archive_path.stat()), 'ORIGINAL_REPORT_ARCHIVE_CHANGED')
     return {'verificationStatus': receipt['status'], 'receiptSha256': digest(raw),
-            'archiveMetadata': signature(before), 'reportFiles': len(catalog)}
+            'archiveMetadata': signature(before), 'reportFiles': len(catalog),
+            **({'verificationExitCode': None, 'driverStarted': False, 'failureStage': 'FIXTURE_MEMORY_ADMISSION'}
+               if pre_driver else {})}
 
 
 def task_admitted(binding, value, helpers, *, metadata_only=False):
@@ -1167,7 +1258,7 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
             'cleanupSha256': digest(raw_docs['fixtureCleanup']), 'backupManifestSha256': digest(manifest_raw),
             'sourceSqlSha256': sql_sha, 'sourceSqlBytes': sql_bytes, 'sourceSnapshotSha256': owner['sourceSnapshotSha256'],
             'sourceRecipe': recipe, 'publicationReferences': publication,
-            'reports': task_reports(row, verifier, metadata_only=metadata_only),
+            'reports': task_reports(row, verifier, metadata_only=metadata_only, fixture_container_id=owner['containerId']),
             **({'preRuntimeAbsence': absence} if finished else {}),
             **({'completedBinaryRetirement': finished_completed_binaries(binding, row)}
                if finished and 'completedAttempt' in row['retirement'] else {})})

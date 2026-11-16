@@ -203,3 +203,58 @@ def test_failure_location_exports_only_checkout_script_path_and_line(tmp_path, i
 
 def test_failure_without_traceback_has_no_invented_source_location(tmp_path):
     assert remote.failure_location(ValueError('private'), tmp_path) is None
+
+
+@pytest.mark.parametrize('prepared', [True, False])
+def test_memory_admission_keeps_nested_python_java_and_passes_owned_fixture_readers(prepared):
+    watch = mock.Mock()
+    runtime = SimpleNamespace(MEMORY={'mvn': 4, 'python': 4, 'java': 2, 'npm': 3, 'node': 2})
+    vector, metrics, redis = mock.Mock(), mock.Mock(), mock.Mock()
+    remote.admit_fixture_memory(watch, runtime, {} if prepared else None, vector, metrics, redis)
+    args, keywords = watch.admit.call_args
+    assert args == (6 * 1024 ** 3 if prepared else 0,)
+    owners = keywords['fixture_owners']
+    assert set(owners) == {'qdrant', 'prometheus', 'alertmanager', 'redis'}
+    for callback in owners.values(): callback()
+    vector.owned.assert_called_once_with(); redis.owned.assert_called_once_with()
+    assert metrics.owned.call_args_list == [mock.call('prometheus'), mock.call('alertmanager')]
+
+
+def test_serial_larger_tool_is_not_falsely_added_to_the_nested_java_bound():
+    watch = mock.Mock()
+    runtime = SimpleNamespace(MEMORY={'mvn': 8, 'python': 4, 'java': 2, 'npm': 3, 'node': 2})
+    remote.admit_fixture_memory(watch, runtime, {})
+    watch.admit.assert_called_once_with(8 * 1024 ** 3, fixture_owners={})
+
+
+def test_failed_memory_admission_preserves_numeric_observation_before_cleanup(tmp_path):
+    observation = {'capacityVerdict': 'REJECTED', 'hostMemoryAvailableBytes': 100,
+                   'requiredAvailableMemoryBytes': 200, 'memoryShortfallBytes': 100,
+                   'creditPolicy': 'OWNED_ANONYMOUS_ONLY'}
+    record = {'status': 'FAILED', 'fixtureRuntime': {'required': True}}
+    watch = SimpleNamespace(memory_admission=observation, check_failure=None)
+    remote.record_verification_failure(record, ValueError('secret not exported'), tmp_path, watch)
+    assert record['fixtureRuntime']['memoryAdmission'] == observation
+    assert 'secret' not in json.dumps(record)
+
+
+def test_driver_not_requested_marker_is_confined_to_rejected_admission_before_popen():
+    import ast
+    source = (ROOT / 'script/jenkins/verify-remote.py').read_text('utf8')
+    tree = ast.parse(source)
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'run_verification')
+    markers = [node for node in ast.walk(main) if isinstance(node, ast.Assign)
+               and any(isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant)
+                       and target.slice.value == 'driverStart' for target in node.targets)]
+    assert [ast.literal_eval(node.value) for node in sorted(markers, key=lambda node: node.lineno)] == [
+        {'requested': False, 'blockedBy': 'FIXTURE_MEMORY_ADMISSION'}, {'requested': True}]
+    rejection = next(node for node in ast.walk(main) if isinstance(node, ast.Try)
+                     and any(isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call)
+                             and isinstance(statement.value.func, ast.Name)
+                             and statement.value.func.id == 'admit_fixture_memory' for statement in node.body))
+    handler = rejection.handlers[0]
+    assert isinstance(handler.body[-1], ast.Raise)
+    assert "admission.get('capacityVerdict') == 'REJECTED'" in ast.get_source_segment(source, handler)
+    popen = next(node for node in ast.walk(main) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                 and isinstance(node.func.value, ast.Name) and node.func.value.id == 'subprocess' and node.func.attr == 'Popen')
+    assert all(node.lineno < popen.lineno for node in markers)

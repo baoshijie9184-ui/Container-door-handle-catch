@@ -26,6 +26,7 @@ import sys
 import tarfile
 import threading
 import time
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -365,8 +366,9 @@ class PreparationMonitor:
         if not self.cleaning:
             require(not self.failed.is_set(), 'Owned preparation supervision has failed')
 
-    def fixture_memory(self):
+    def fixture_memory(self, *, include_anonymous=False):
         self.fixture_limit_failure = None
+        memory_limit = getattr(self, 'fixture_memory_limit', MYSQL_MEMORY)
         journal = self.preparation.journal
         cached = getattr(self, '_fixture_cgroup', None)
         if not journal.get('containerId'):
@@ -395,8 +397,8 @@ class PreparationMonitor:
             # Docker proves ownership/configuration once. The hot probe then
             # pins the live kernel process/cgroup instead of spawning a CLI.
             row = self.preparation.inspect_owned()
-            require(row['Id'] == journal['containerId'] and row['HostConfig'].get('Memory') == MYSQL_MEMORY
-                    and row['HostConfig'].get('MemorySwap') == MYSQL_MEMORY, 'Owned fixture memory cgroup differs')
+            require(row['Id'] == journal['containerId'] and row['HostConfig'].get('Memory') == memory_limit
+                    and row['HostConfig'].get('MemorySwap') == memory_limit, 'Owned fixture memory cgroup differs')
             pid = row['State'].get('Pid')
             if not pid:
                 return 0, int(bool(row['State'].get('OOMKilled')))
@@ -442,13 +444,13 @@ class PreparationMonitor:
                 except (OSError, ValueError) as error:
                     controls[name] = {'status': 'READ_FAILED', 'errorType': type(error).__name__}
                     first_error = first_error or error
-            if first_error is None and values == {'memory.max': str(MYSQL_MEMORY), 'memory.swap.max': '0'}:
+            if first_error is None and values == {'memory.max': str(memory_limit), 'memory.swap.max': '0'}:
                 return
             error = first_error or ValueError('Owned fixture kernel memory limits ' +
                 ('differ' if phase == 'BEFORE_COUNTERS' else 'changed'))
             observation = {'phase': phase, 'controls': controls,
                 'capturedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                'expectedMemoryLimitBytes': MYSQL_MEMORY, 'expectedSwapLimitBytes': 0,
+                'expectedMemoryLimitBytes': memory_limit, 'expectedSwapLimitBytes': 0,
                 'pid': cached['pid'], 'startTicks': cached['startTicks'], 'cgroup': cached['relative'],
                 'identityVerifiedBeforeProbe': True, 'identityVerifiedAfterFailure': False}
             try:
@@ -463,6 +465,14 @@ class PreparationMonitor:
         check_limits('BEFORE_COUNTERS')
         memory = read_control('memory.current')
         events = dict(line.split() for line in read_control('memory.events').splitlines())
+        anonymous = None
+        if include_anonymous:
+            entries = [line.split() for line in read_control('memory.stat').splitlines()]
+            require(all(len(entry) == 2 and entry[1].isdecimal() for entry in entries)
+                    and len({entry[0] for entry in entries}) == len(entries),
+                    'Owned fixture memory breakdown differs')
+            anonymous = dict(entries).get('anon')
+            require(anonymous is not None, 'Owned fixture anonymous memory is unavailable')
         try:
             peak = read_control('memory.peak')
         except FileNotFoundError:
@@ -474,9 +484,11 @@ class PreparationMonitor:
         current_identity()
         self._fixture_cgroup = cached
         self.fixture_observation = {'memoryCurrentBytes': int(memory), 'memoryPeakBytes': int(peak) if peak is not None else None,
-            'memoryLimitBytes': MYSQL_MEMORY, 'swapLimitBytes': 0,
+            'memoryLimitBytes': memory_limit, 'swapLimitBytes': 0,
             'events': {key: int(value) for key, value in events.items()},
             'pid': cached['pid'], 'startTicks': cached['startTicks'], 'cgroup': cached['relative']}
+        if anonymous is not None:
+            self.fixture_observation['anonymousMemoryBytes'] = min(int(anonymous), int(memory))
         return int(memory), max(int(events['oom_kill']), cached['bootstrapOom'])
 
     @staticmethod
@@ -1658,7 +1670,11 @@ class Preparation:
                 require(process.poll() is None and time.monotonic() < deadline,
                         'Fixture watcher failed before its first complete probe')
                 time.sleep(0.05)
-            self.journal['fixtureWatchAdmission'] = watch.admit(0)
+            try:
+                self.journal['fixtureWatchAdmission'] = watch.admit(0)
+            finally:
+                if getattr(watch, 'memory_admission', None) is not None:
+                    self.journal['fixtureWatchAdmission'] = watch.memory_admission
         except BaseException:
             if process is not None:
                 stop_owned_group(process.pid, owner, group)
@@ -1849,19 +1865,75 @@ class FixtureWatch:
             self.check_failure = {**observation, 'phase': phase}
             raise
 
-    def admit(self, tool_memory_bytes):
-        value = self.check()
+    def container_memory(self, component, owned, limit):
+        """Reuse the pinned kernel probe only after the fixture's full owned check."""
+        row = owned(); state = row['State']
+        require(state.get('Running') is True and state.get('Restarting') is False
+                and state.get('Paused') is False and state.get('Dead') is False
+                and state.get('OOMKilled') is False, 'Memory admission needs a healthy owned fixture')
+        monitor = PreparationMonitor.__new__(PreparationMonitor)
+        monitor.fixture_memory_limit = limit
+        monitor.preparation = SimpleNamespace(journal={'containerId': row['Id']}, inspect_owned=lambda: row)
+        current, oom = monitor.fixture_memory(include_anonymous=True)
+        observation = monitor.fixture_observation
+        require(oom == 0 and observation['events'].get('oom', 0) == 0 and current <= limit,
+                'Owned fixture exceeded its admitted memory boundary')
+        return {'component': component, 'containerId': row['Id'], **observation,
+                'remainingMemoryBytes': limit - observation['anonymousMemoryBytes']}
+
+    def watch_anonymous_memory(self):
+        # Credit only this pinned root's anonymous RSS, not file-backed pages or
+        # children. The complete watcher/client tree retains its 256 MiB cap.
+        original = self.descriptor['process']
+        before = proc_identity(original['pid'])
+        require(before is not None and all(before.get(key) == value for key, value in original.items()),
+                'Fixture watcher memory identity changed')
+        raw = Path('/proc/' + str(original['pid']) + '/status').read_text()
+        matches = re.findall(r'^RssAnon:\s+([0-9]+) kB$', raw, re.M)
+        require(len(raw) <= 16384 and len(matches) == 1, 'Fixture watcher anonymous RSS is unavailable')
+        after = proc_identity(original['pid'])
+        require(after is not None and all(after.get(key) == value for key, value in original.items()),
+                'Fixture watcher memory identity changed')
+        amount = int(matches[0]) * 1024
+        require(amount <= WATCH_MEMORY, 'Fixture watcher exceeded its admitted RSS boundary')
+        return amount
+
+    def admit(self, tool_memory_bytes, *, fixture_owners=None):
+        self.memory_admission = None
+        self.check()
         require(type(tool_memory_bytes) is int and tool_memory_bytes >= 0, 'Explicit tool memory bound required')
-        available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
-                         if line.startswith('MemAvailable:'))
-        remaining = max(0, MYSQL_MEMORY - value['lastProbe']['memoryCurrentBytes'])
-        required = GIB + remaining + WATCH_MEMORY + tool_memory_bytes
-        require(available >= required, 'Actual host cannot admit fixture, watcher and active tool memory bounds')
-        return {'hostMemoryAvailableBytes': available, 'requiredAvailableMemoryBytes': required,
-            'remainingFixtureMemoryBytes': remaining, 'watchAddressSpaceLimitBytes': CONTROLLER_AS,
-            'watchRssLimitBytes': WATCH_MEMORY,
-            'toolMemoryBoundBytes': tool_memory_bytes, 'hostMemoryReserveBytes': GIB,
+        limits = {'qdrant': 512 * MIB, 'prometheus': 512 * MIB, 'alertmanager': 128 * MIB, 'redis': 128 * MIB}
+        owners = {} if fixture_owners is None else fixture_owners
+        require(type(owners) is dict and set(owners) <= set(limits) and all(callable(value) for value in owners.values()),
+                'Only the registered owned fixtures can contribute memory credit')
+        def available_memory():
+            values = re.findall(r'^MemAvailable:\s+([0-9]+) kB$', Path('/proc/meminfo').read_text(), re.M)
+            require(len(values) == 1, 'Actual host available memory is unavailable')
+            return int(values[0]) * 1024
+        started = time.monotonic(); before = available_memory()
+        components = [self.container_memory('mysql', self.preparation.inspect_owned, MYSQL_MEMORY)]
+        components += [self.container_memory(name, owned, limits[name]) for name, owned in sorted(owners.items())]
+        require(len({row['containerId'] for row in components}) == len(components)
+                and len({row['cgroup'] for row in components}) == len(components),
+                'Owned fixture memory cannot be credited twice')
+        watch_credit = self.watch_anonymous_memory()
+        after = available_memory(); available = min(before, after)
+        remaining = sum(row['remainingMemoryBytes'] for row in components)
+        required = GIB + remaining + WATCH_MEMORY - watch_credit + tool_memory_bytes
+        # MemAvailable already includes reclaimable file/slab estimates. Credit
+        # only charged anonymous memory, never the full memory.current/cache.
+        self.memory_admission = {'hostMemoryAvailableBytes': available,
+            'hostMemoryAvailableBeforeBytes': before, 'hostMemoryAvailableAfterBytes': after,
+            'requiredAvailableMemoryBytes': required, 'memoryShortfallBytes': max(0, required - available),
+            'capacityVerdict': 'ADMITTED' if available >= required else 'REJECTED',
+            'remainingFixtureMemoryBytes': components[0]['remainingMemoryBytes'], 'fixtures': components,
+            'watchAnonymousMemoryBytes': watch_credit, 'watchAddressSpaceLimitBytes': CONTROLLER_AS,
+            'watchRssLimitBytes': WATCH_MEMORY, 'toolMemoryBoundBytes': tool_memory_bytes,
+            'hostMemoryReserveBytes': GIB, 'creditPolicy': 'OWNED_ANONYMOUS_ONLY',
+            'measurementElapsedSeconds': time.monotonic() - started,
             'fullAcceptanceResourcesMeasured': False}
+        require(available >= required, 'Actual host cannot admit fixture, watcher and active tool memory bounds')
+        return self.memory_admission
 
     def sample(self):
         # Inspect State as well as the pinned kernel process. A dead/restarted

@@ -10,6 +10,8 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 新建工具准备前只读检查 apt 服务和内核包管理锁，活动升级未结束时拒绝开始；原件回读及清理不受此门影响，不停止或禁用系统更新。长轮验证前还须核对实际更新计时器，选择不重叠的窗口。MySQL 内核限额检查失败时分别保存两个控制文件的读数及采样阶段；`lastKernelObservation` 仅代表上次成功探针，不能当作失败现场。限额和失败即停止规则保持不变。
 
+启动完整验证 driver 前，以主机 `MemAvailable` 对照 1 GiB 保底、6 GiB Python/Java 实际重叠额度、全部自有 fixture 和 watcher 的剩余额度。已启动组件只抵扣身份核验后的匿名驻留内存，不抵扣文件缓存；按 MySQL 3 GiB、Qdrant 512 MiB、Prometheus 512 MiB、Alertmanager 128 MiB、Redis 128 MiB 和 watcher 256 MiB 上限计算。原回执 `fixtureRuntime.memoryAdmission` 保存可用量、各组件观测、所需量和差额；真实内存拒绝且尚未请求启动 driver 时，另记 `driverStart={requested:false,blockedBy:FIXTURE_MEMORY_ADMISSION}`。这不是全程峰值保证，后续原资源监控和失败收尾继续生效。
+
 ## 完整迁移先于 native Java
 
 带 `wholeMigrationConfig` 的完整 MySQL 验收先执行一次原全量 Python，再执行全部 native Java、普通 Java 回归及前端。这样真实 131→29 复制或双恢复失败会先停止，不必等待约两小时的 native 用例。整库 Java bridge 使用本轮上传的固定候选 JAR，无需先编译测试源码；worker 使用自己预先创建的独立空库。普通 source 和 java-only 入口顺序不变。
@@ -18,7 +20,7 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 ## 真实 Redis 验证
 
-固定源码的完整 ECS 验证由现有 `verify-remote.py` 创建一个合成 Redis fixture，仅复用正式 Redis 的 immutable image，不读取正式凭据或数据。临时服务映射随机回环端口、无持久卷，内存上限 256 MiB、Redis 数据上限 64 MiB；监督器负责就绪检查、运行观察、失败收尾和原始回执。
+固定源码的完整 ECS 验证由现有 `verify-remote.py` 创建一个合成 Redis fixture，仅复用正式 Redis 的 immutable image，不读取正式凭据或数据。临时服务映射随机回环端口、无持久卷，内存硬上限 128 MiB、Redis 数据上限 64 MiB；监督器负责就绪检查、运行观察、失败收尾和原始回执。现有 25 项真实 Redis 用例仅操作少量合成缓存条目或固定字段熔断 Hash；保留 64 MiB `maxmemory`、`noeviction` 和无 AOF/RDB，容器的额外 64 MiB 用于进程及客户端开销，不减少用例或宿主保底。
 
 fixture 将 `DOORHANDLE_CACHE_REDIS_TEST_HOST/PORT/DATABASE` 及 `DOORHANDLE_REQUIRE_REDIS_TESTS=true` 传给现有测试工具。原缓存真实 put/get 和 3 项跨客户端熔断检查必须实际执行，另有 21 项领用缓存提交/回滚检查；缺失、条件跳过或失败不能通过完整验收。未提供该隔离环境的既有独立调用仍保持原选择规则，不启用生产服务。`reports/redis-fixture.json` 与实际 Java XML 一起归档，PASS 还要求自有 Redis 已 STOPPED。
 

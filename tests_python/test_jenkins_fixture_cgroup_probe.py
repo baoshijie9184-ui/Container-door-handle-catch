@@ -62,6 +62,46 @@ class FixtureCgroupProbeTests(unittest.TestCase):
     def seed(self):
         self.assertEqual((1024, 0), self.monitor.fixture_memory())
 
+    def test_anonymous_admission_never_credits_file_cache_or_more_than_current(self):
+        self.write('memory.stat', 'anon 256\nfile 768\nslab_reclaimable 128')
+        self.monitor.fixture_memory(include_anonymous=True)
+        self.assertEqual(256, self.monitor.fixture_observation['anonymousMemoryBytes'])
+        self.write('memory.stat', 'anon 2048\nfile 4096')
+        self.monitor.fixture_memory(include_anonymous=True)
+        self.assertEqual(1024, self.monitor.fixture_observation['anonymousMemoryBytes'])
+
+    def test_missing_or_malformed_anonymous_measurement_cannot_receive_credit(self):
+        for body in ('file 1024', 'anon -1', 'anon 1\nanon 2', 'anon private-data', 'anon 1 extra'):
+            with self.subTest(body=body):
+                self.write('memory.stat', body)
+                with self.assertRaises(ValueError): self.monitor.fixture_memory(include_anonymous=True)
+
+    def test_registered_ancillary_fixture_reuses_actual_owned_kernel_limits(self):
+        limit = 128 * preparer.MIB
+        self.row['HostConfig'].update(Memory=limit, MemorySwap=limit)
+        self.row['State'].update(Running=True, Restarting=False, Paused=False, Dead=False)
+        self.write('memory.max', str(limit)); self.write('memory.stat', 'anon 256\nfile 768')
+        watch = preparer.FixtureWatch.__new__(preparer.FixtureWatch)
+        result = watch.container_memory('redis', self.inspect, limit)
+        self.assertEqual(limit - 256, result['remainingMemoryBytes'])
+        self.assertEqual(self.journal['containerId'], result['containerId'])
+        self.assertEqual(self.relative, result['cgroup'])
+        self.inspect.assert_called_once_with()
+        self.write('memory.swap.max', '1')
+        with self.assertRaisesRegex(ValueError, 'kernel memory limits'):
+            watch.container_memory('redis', self.inspect, limit)
+
+    def test_ancillary_owned_or_running_failure_precedes_kernel_credit(self):
+        watch = preparer.FixtureWatch.__new__(preparer.FixtureWatch)
+        with patch.object(preparer.PreparationMonitor, 'fixture_memory') as probe:
+            with self.assertRaises(ValueError):
+                watch.container_memory('redis', Mock(side_effect=ValueError('owner refused')), 128 * preparer.MIB)
+            for field in ('Running', 'Restarting', 'Paused', 'Dead', 'OOMKilled'):
+                self.row['State'].update(Running=True, Restarting=False, Paused=False, Dead=False, OOMKilled=False)
+                self.row['State'][field] = field != 'Running'
+                with self.assertRaises(ValueError): watch.container_memory('redis', self.inspect, 128 * preparer.MIB)
+            probe.assert_not_called()
+
     def test_no_container_before_bootstrap_needs_no_docker_probe(self):
         self.journal.pop('containerId')
         self.assertEqual((0, 0), self.monitor.fixture_memory())
@@ -558,6 +598,9 @@ class FixtureWatchTests(unittest.TestCase):
         meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 10000000 kB\n')
         original = preparer.Path
         with patch.object(self.watch, 'check', return_value=status), \
+             patch.object(self.watch, 'container_memory', return_value={'component': 'mysql', 'containerId': 'a' * 64,
+                 'cgroup': '/fixture/mysql', 'remainingMemoryBytes': 2 * preparer.GIB}), \
+             patch.object(self.watch, 'watch_anonymous_memory', return_value=0), \
              patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
             admitted = self.watch.admit(4 * preparer.GIB)
             self.assertEqual(7 * preparer.GIB + preparer.WATCH_MEMORY, admitted['requiredAvailableMemoryBytes'])
@@ -565,6 +608,79 @@ class FixtureWatchTests(unittest.TestCase):
             meminfo.write_text('MemAvailable: 1048576 kB\n')
             with self.assertRaisesRegex(ValueError, 'cannot admit'):
                 self.watch.admit(4 * preparer.GIB)
+            self.assertEqual('REJECTED', self.watch.memory_admission['capacityVerdict'])
+            self.assertEqual(6 * preparer.GIB + preparer.WATCH_MEMORY,
+                             self.watch.memory_admission['memoryShortfallBytes'])
+
+    def test_all_live_fixture_headroom_and_watch_credit_keep_the_full_limits(self):
+        limits = {'mysql': 3 * preparer.GIB, 'qdrant': 512 * preparer.MIB,
+                  'prometheus': 512 * preparer.MIB, 'alertmanager': 128 * preparer.MIB, 'redis': 128 * preparer.MIB}
+        def measured(name, owned, limit):
+            self.assertEqual(limits[name], limit)
+            return {'component': name, 'containerId': name, 'cgroup': '/' + name,
+                    'memoryLimitBytes': limit, 'anonymousMemoryBytes': 64 * preparer.MIB,
+                    'remainingMemoryBytes': limit - 64 * preparer.MIB}
+        meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 16777216 kB\n')
+        original = preparer.Path
+        with patch.object(self.watch, 'check'), patch.object(self.watch, 'container_memory', side_effect=measured), \
+             patch.object(self.watch, 'watch_anonymous_memory', return_value=32 * preparer.MIB), \
+             patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
+            result = self.watch.admit(6 * preparer.GIB, fixture_owners={name: Mock() for name in limits if name != 'mysql'})
+        expected = 7 * preparer.GIB + sum(limits.values()) + preparer.WATCH_MEMORY - 352 * preparer.MIB
+        self.assertEqual(expected, result['requiredAvailableMemoryBytes'])
+        self.assertEqual(6 * preparer.GIB, result['toolMemoryBoundBytes'])
+        self.assertEqual(preparer.GIB, result['hostMemoryReserveBytes'])
+        self.assertEqual('OWNED_ANONYMOUS_ONLY', result['creditPolicy'])
+        self.assertEqual(5, len(result['fixtures']))
+
+    def test_admission_uses_lower_before_after_available_and_keeps_exact_shortfall(self):
+        meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 1048576 kB\n')
+        original = preparer.Path
+        def measured(*args):
+            meminfo.write_text('MemAvailable: 16777216 kB\n')
+            return {'containerId': 'mysql', 'cgroup': '/mysql', 'remainingMemoryBytes': 2 * preparer.GIB}
+        with patch.object(self.watch, 'check'), patch.object(self.watch, 'container_memory', side_effect=measured), \
+             patch.object(self.watch, 'watch_anonymous_memory', return_value=0), \
+             patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
+            with self.assertRaisesRegex(ValueError, 'cannot admit'): self.watch.admit(6 * preparer.GIB)
+        result = self.watch.memory_admission
+        self.assertEqual(preparer.GIB, result['hostMemoryAvailableBytes'])
+        self.assertEqual(8 * preparer.GIB + preparer.WATCH_MEMORY, result['memoryShortfallBytes'])
+        self.assertEqual(16 * preparer.GIB, result['hostMemoryAvailableAfterBytes'])
+
+    def test_unknown_or_duplicate_fixture_identity_cannot_inflate_admission_credit(self):
+        with patch.object(self.watch, 'check'):
+            with self.assertRaisesRegex(ValueError, 'registered owned fixtures'):
+                self.watch.admit(0, fixture_owners={'production': Mock()})
+        meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 16777216 kB\n')
+        original = preparer.Path
+        for same in ('containerId', 'cgroup'):
+            def measured(name, *_):
+                row = {'containerId': name, 'cgroup': '/' + name, 'remainingMemoryBytes': preparer.GIB}
+                row[same] = 'same'; return row
+            with self.subTest(same=same), patch.object(self.watch, 'check'), \
+                 patch.object(self.watch, 'container_memory', side_effect=measured), \
+                 patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
+                with self.assertRaisesRegex(ValueError, 'credited twice'):
+                    self.watch.admit(0, fixture_owners={'redis': Mock()})
+
+    def test_watcher_credit_uses_only_pinned_root_anonymous_rss(self):
+        status = self.temp / 'proc-status'; status.write_text('VmRSS: 8192 kB\nRssAnon: 1024 kB\nRssFile: 7168 kB\n')
+        original = preparer.Path
+        with patch.object(preparer, 'Path', side_effect=lambda value: status if value == '/proc/6000/status' else original(value)), \
+             patch.object(preparer, 'proc_identity', return_value=dict(self.process)):
+            self.assertEqual(preparer.MIB, self.watch.watch_anonymous_memory())
+            status.write_text('VmRSS: 8192 kB\n')
+            with self.assertRaisesRegex(ValueError, 'anonymous RSS is unavailable'):
+                self.watch.watch_anonymous_memory()
+
+    def test_watcher_memory_process_replacement_is_not_credited(self):
+        status = self.temp / 'proc-status'; status.write_text('RssAnon: 1024 kB\n')
+        original = preparer.Path
+        with patch.object(preparer, 'Path', side_effect=lambda value: status if value == '/proc/6000/status' else original(value)), \
+             patch.object(preparer, 'proc_identity', side_effect=[dict(self.process), {**self.process, 'startTicks': 201}]):
+            with self.assertRaisesRegex(ValueError, 'memory identity changed'):
+                self.watch.watch_anonymous_memory()
 
     def test_dead_watcher_needs_terminal_original_before_exit_confirmation(self):
         self.status()
