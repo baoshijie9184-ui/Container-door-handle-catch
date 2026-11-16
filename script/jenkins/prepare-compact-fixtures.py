@@ -330,6 +330,7 @@ class PreparationMonitor:
 
     def popen(self, arguments, **kwargs):
         self.check()
+        require(not self.group_stream.closed, 'Closed preparation command owner cannot start another process')
         require(not kwargs.get('shell') and kwargs.get('start_new_session', True), 'Owned commands require their own process session')
         kwargs['start_new_session'] = True
         environment = dict(kwargs.get('env') or {key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL')})
@@ -1881,6 +1882,17 @@ class FixtureWatch:
         return {'component': component, 'containerId': row['Id'], **observation,
                 'remainingMemoryBytes': limit - observation['anonymousMemoryBytes']}
 
+    def mysql_memory(self):
+        # The fresh live watcher already inspects full MySQL ownership. Reuse
+        # its transferred original PID/cgroup, including all kernel identity
+        # and limit checks; the preparation command owner is closed by now.
+        current, oom = self.probe.fixture_memory(include_anonymous=True)
+        observation = self.probe.fixture_observation
+        require(oom == 0 and observation['events'].get('oom', 0) == 0 and current <= MYSQL_MEMORY,
+                'Owned fixture exceeded its admitted memory boundary')
+        return {'component': 'mysql', 'containerId': self.descriptor['containerId'], **observation,
+                'remainingMemoryBytes': MYSQL_MEMORY - observation['anonymousMemoryBytes']}
+
     def watch_anonymous_memory(self):
         # Credit only this pinned root's anonymous RSS, not file-backed pages or
         # children. The complete watcher/client tree retains its 256 MiB cap.
@@ -1911,7 +1923,7 @@ class FixtureWatch:
             require(len(values) == 1, 'Actual host available memory is unavailable')
             return int(values[0]) * 1024
         started = time.monotonic(); before = available_memory()
-        components = [self.container_memory('mysql', self.preparation.inspect_owned, MYSQL_MEMORY)]
+        components = [self.mysql_memory()]
         components += [self.container_memory(name, owned, limits[name]) for name, owned in sorted(owners.items())]
         require(len({row['containerId'] for row in components}) == len(components)
                 and len({row['cgroup'] for row in components}) == len(components),

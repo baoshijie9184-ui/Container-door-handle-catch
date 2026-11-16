@@ -1095,11 +1095,18 @@ def pre_driver_memory_failure(row, receipt, catalog, fixture_container_id):
 
 def pre_driver_cleanup(receipt, reports):
     """Original failed receipts stay failed; only owned-resource closure is used."""
-    context = {key: receipt[key] for key in ('release', 'commit', 'sourceSha256', 'identity')}
+    context = {key: receipt[key] for key in ('release', 'commit', 'sourceSha256')}
     need(all(all(document.get(key) == value for key, value in context.items())
-             for document in reports.values()), 'PRE_DRIVER_REPORT_CONTEXT_DIFFERS')
+             for document in reports.values())
+         and all(document.get('identity') == receipt['identity']
+                 for name, document in reports.items() if name != 'reports/tool-runtime.json'),
+         'PRE_DRIVER_REPORT_CONTEXT_DIFFERS')
     tools, fixture = reports['reports/tool-runtime.json'], reports['reports/fixture-runtime.json']
-    need(tools.get('kind') == 'doorhandle-ecs-tool-evidence'
+    # ecs-tool-runtime.evidence emits no identity field. Its source context and
+    # manifest digest bind it to the already authenticated outer receipt/claim;
+    # unlike the other four reports, it must not invent a second host identity.
+    need(tools.get('schema') == 1 and tools.get('kind') == 'doorhandle-ecs-tool-evidence'
+         and tools.get('identity', receipt['identity']) == receipt['identity']
          and tools.get('manifestSha256') == receipt['toolRuntime']['manifestSha256']
          and receipt['toolRuntime'].get('cleanupStatus') == 'STOPPED'
          and tools.get('cleanup', {}).get('status') == 'STOPPED'

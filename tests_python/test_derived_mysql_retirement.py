@@ -2123,6 +2123,8 @@ def pre_driver_reports(tmp_path, monkeypatch):
     """Five synthetic lifecycle originals; no real environment or SQL is copied."""
     module_spec = importlib.util.spec_from_file_location('pre_driver_report_verifier', FILE.with_name('verify-remote.py'))
     verifier = importlib.util.module_from_spec(module_spec); module_spec.loader.exec_module(verifier)
+    tool_spec = importlib.util.spec_from_file_location('pre_driver_actual_tool_producer', FILE.with_name('ecs-tool-runtime.py'))
+    tool_producer = importlib.util.module_from_spec(tool_spec); tool_spec.loader.exec_module(tool_producer)
     root = tmp_path / 'ci'
     legacy = {'release': 'ci-387-d0b540e67ab0', 'commit': 'd0b540e67ab0f17a4539b2f69d557b7b73846933',
               'sourceSha256': '8e2c062f3c8194b334c0fd5be6f449cf606a89b2e8f11d808f8ed54179a70534'}
@@ -2132,21 +2134,39 @@ def pre_driver_reports(tmp_path, monkeypatch):
         row = {**context, 'retirement': {'policy': retirement.FINISHED_BATCH}}
         identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
         shared = {**context, 'identity': identity}
-        tools = {**shared, 'kind': 'doorhandle-ecs-tool-evidence', 'manifestSha256': 'd' * 64,
-                 'cleanup': {'status': 'STOPPED', 'remaining': [], 'release': row['release'], 'manifestSha256': 'd' * 64}}
-        fixture = {**shared, 'kind': 'doorhandle-fixture-runtime', 'containerId': '1' * 64,
+        # Use the real public producer, not a guessed shared report schema.
+        # These files are synthetic; evidence() never starts Docker or a tool.
+        tool_folder = root / 'synthetic-tool-originals' / row['release']
+        (tool_folder / 'receipts').mkdir(parents=True)
+        tool_value = {**shared, 'directory': str(tool_folder), 'token': 'e' * 24,
+                      'images': {name: 'sha256:' + digit * 64 for name, digit in
+                                 [('maven', '5'), ('node', '6'), ('python', '7')]}}
+        tool_producer.write_json(tool_folder / 'manifest.json', tool_value)
+        manifest_sha = tool_producer.digest(tool_folder / 'manifest.json')
+        command = {**context, 'kind': 'doorhandle-ecs-tool-command', 'tool': 'java', 'containerId': '8' * 64,
+                   'argumentsSha256': '9' * 64, 'status': 'EXITED', 'exitCode': 0,
+                   'runtimeLimits': tool_producer.runtime_limits('java'),
+                   'cleanup': {'containerId': '8' * 64, 'image': tool_value['images']['maven'],
+                               'pid': 0, 'exitCode': 0, 'removed': True}}
+        tool_producer.write_json(tool_folder / 'receipts' / ('doorhandle-ci-tool-' + 'e' * 24 + '-' + 'f' * 12 + '.json'), command)
+        tools = tool_producer.evidence(tool_value, {'status': 'STOPPED', 'remaining': [], 'containers': [],
+                                                   'release': row['release'], 'manifestSha256': manifest_sha})
+        fixture = {**shared, 'version': 1, 'kind': 'doorhandle-fixture-runtime', 'containerId': '1' * 64,
                    'status': 'STOPPED', 'watchStopped': True, 'stopScope': 'OWNED_ATTEMPT_ONLY'}
         reports = {'reports/tool-runtime.json': tools, 'reports/fixture-runtime.json': fixture}
         receipt = {'schema': 1, 'kind': 'doorhandle-ecs-ci', **shared, 'attempt': 'c' * 32, 'scope': 'mysql',
             'status': 'FAILED', 'verificationExitCode': None, 'lifecycle': 'managed-outside-jenkins',
             'fixtureReadinessValidated': True, 'fixtureManifestProvided': True, 'errorType': 'ValueError',
             'fixtureRuntime': {'required': True, 'containerId': '1' * 64},
-            'toolRuntime': {'manifestSha256': 'd' * 64, 'cleanupStatus': 'STOPPED'}}
+            'toolRuntime': {'manifestSha256': manifest_sha, 'cleanupStatus': 'STOPPED'}}
         for field, name, number in [('middlewareFixture', 'middleware', '2'),
                                     ('observabilityFixture', 'observability', '3'), ('redisFixture', 'redis', '4')]:
             reports['reports/' + name + '-fixture.json'] = {**shared, 'kind': 'doorhandle-' + name + '-fixture',
-                'status': 'STOPPED', 'cleanupConfirmed': True, 'containerId': number * 64}
-            receipt[field] = {'required': True, 'status': 'STOPPED', 'cleanupConfirmed': True, 'containerId': number * 64}
+                'status': 'STOPPED', 'cleanupConfirmed': True,
+                **({'schemaVersion': 1, 'containers': []} if name == 'observability'
+                   else {'version': 1, 'containerId': number * 64})}
+            receipt[field] = {'required': True, 'status': 'STOPPED', 'cleanupConfirmed': True,
+                              **({} if name == 'observability' else {'containerId': number * 64})}
         reports['reports/observability-fixture.json']['cleanupErrors'] = []
         # Metrics acceptance remains FAILED; resource closure must not turn it into PASS.
         reports['reports/observability-fixture.json']['metricsAcceptance'] = 'FAILED'
@@ -2192,6 +2212,10 @@ def pre_driver_reports(tmp_path, monkeypatch):
 @pytest.mark.parametrize('metadata_only', [False, True])
 def test_finished_pre_driver_rejection_preserves_failed_null_and_all_lifecycle_originals(pre_driver_reports, modern, metadata_only):
     case = pre_driver_reports; case.prepare(modern); case.refresh()
+    tools = case.reports['reports/tool-runtime.json']
+    assert 'identity' not in tools and tools['schema'] == 1 and len(tools['commands']) == 1
+    assert tools['manifestSha256'] == case.receipt['toolRuntime']['manifestSha256']
+    assert 'containerId' not in case.reports['reports/observability-fixture.json']
     before = (case.attempt / 'verification-receipt.json').read_bytes()
     result = retirement.task_reports(case.row, case.verifier, metadata_only=metadata_only,
                                      fixture_container_id=case.fixture_container_id)
@@ -2241,5 +2265,28 @@ def test_finished_pre_driver_path_rejects_unknown_execution_or_unclosed_original
     else: reports['reports/observability-fixture.json']['cleanupErrors'] = ['unresolved']
     case.refresh()
     # Root's metadata-only recheck still has to read these five bounded originals.
+    with pytest.raises((ValueError, case.verifier.VerificationError)):
+        retirement.task_reports(case.row, case.verifier, metadata_only=True, fixture_container_id=case.fixture_container_id)
+
+
+@pytest.mark.parametrize('damage', ['release', 'commit', 'sourceSha256', 'manifestSha256',
+                                   'cleanup-manifest', 'schema', 'declared-other-identity',
+                                   'fixture-identity', 'middleware-identity', 'observability-identity',
+                                   'redis-identity'])
+def test_real_tool_report_shape_does_not_weaken_its_source_or_other_reports_host_binding(pre_driver_reports, damage):
+    case = pre_driver_reports; case.prepare(False)
+    tools = case.reports['reports/tool-runtime.json']
+    assert 'identity' not in tools
+    if damage in ('release', 'commit', 'sourceSha256', 'manifestSha256'): tools[damage] = 'other-source'
+    elif damage == 'cleanup-manifest': tools['cleanup']['manifestSha256'] = 'f' * 64
+    elif damage == 'schema': tools['schema'] = 2
+    elif damage == 'declared-other-identity': tools['identity'] = {'executionLocation': 'OTHER_HOST'}
+    else:
+        name = damage.removesuffix('-identity')
+        path = 'reports/fixture-runtime.json' if name == 'fixture' else 'reports/' + name + '-fixture.json'
+        case.reports[path]['identity'] = {'executionLocation': 'OTHER_HOST'}
+    # Rebind the synthetic archive/catalog: the semantic gate, not a stale hash,
+    # must refuse each inconsistent original.
+    case.refresh()
     with pytest.raises((ValueError, case.verifier.VerificationError)):
         retirement.task_reports(case.row, case.verifier, metadata_only=True, fixture_container_id=case.fixture_container_id)

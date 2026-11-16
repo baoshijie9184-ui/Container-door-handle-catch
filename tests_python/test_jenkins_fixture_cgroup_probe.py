@@ -1,6 +1,7 @@
 """Live fixture cgroup identity contracts; execute only on the admitted ECS."""
 from contextlib import ExitStack
 import importlib.util
+import io
 import os
 import json
 import subprocess
@@ -484,7 +485,7 @@ class FixtureWatchTests(unittest.TestCase):
                 self.status(status, capturedMonotonic=time.monotonic() - age)
                 with patch.object(self.watch, 'process_alive', return_value=alive):
                     with self.assertRaises(ValueError):
-                        self.watch.check()
+                        self.watch.admit(0)
 
     def test_slow_identity_scan_uses_the_latest_status_instead_of_aging_a_held_snapshot(self):
         clock = [100.0]
@@ -598,7 +599,7 @@ class FixtureWatchTests(unittest.TestCase):
         meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 10000000 kB\n')
         original = preparer.Path
         with patch.object(self.watch, 'check', return_value=status), \
-             patch.object(self.watch, 'container_memory', return_value={'component': 'mysql', 'containerId': 'a' * 64,
+             patch.object(self.watch, 'mysql_memory', return_value={'component': 'mysql', 'containerId': 'a' * 64,
                  'cgroup': '/fixture/mysql', 'remainingMemoryBytes': 2 * preparer.GIB}), \
              patch.object(self.watch, 'watch_anonymous_memory', return_value=0), \
              patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
@@ -623,6 +624,7 @@ class FixtureWatchTests(unittest.TestCase):
         meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 16777216 kB\n')
         original = preparer.Path
         with patch.object(self.watch, 'check'), patch.object(self.watch, 'container_memory', side_effect=measured), \
+             patch.object(self.watch, 'mysql_memory', side_effect=lambda: measured('mysql', None, preparer.MYSQL_MEMORY)), \
              patch.object(self.watch, 'watch_anonymous_memory', return_value=32 * preparer.MIB), \
              patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
             result = self.watch.admit(6 * preparer.GIB, fixture_owners={name: Mock() for name in limits if name != 'mysql'})
@@ -639,7 +641,7 @@ class FixtureWatchTests(unittest.TestCase):
         def measured(*args):
             meminfo.write_text('MemAvailable: 16777216 kB\n')
             return {'containerId': 'mysql', 'cgroup': '/mysql', 'remainingMemoryBytes': 2 * preparer.GIB}
-        with patch.object(self.watch, 'check'), patch.object(self.watch, 'container_memory', side_effect=measured), \
+        with patch.object(self.watch, 'check'), patch.object(self.watch, 'mysql_memory', side_effect=measured), \
              patch.object(self.watch, 'watch_anonymous_memory', return_value=0), \
              patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
             with self.assertRaisesRegex(ValueError, 'cannot admit'): self.watch.admit(6 * preparer.GIB)
@@ -660,6 +662,7 @@ class FixtureWatchTests(unittest.TestCase):
                 row[same] = 'same'; return row
             with self.subTest(same=same), patch.object(self.watch, 'check'), \
                  patch.object(self.watch, 'container_memory', side_effect=measured), \
+                 patch.object(self.watch, 'mysql_memory', side_effect=lambda: measured('mysql')), \
                  patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
                 with self.assertRaisesRegex(ValueError, 'credited twice'):
                     self.watch.admit(0, fixture_owners={'redis': Mock()})
@@ -791,6 +794,93 @@ class FixtureWatchTests(unittest.TestCase):
         self.assertEqual('STOPPED_BEFORE_READY', proof['status'])
         self.assertTrue(proof['watchStopped'] and proof['groupCancellationConfirmed'])
 
+    def closed_admission_preparation(self):
+        preparation = self.startup()
+        group = self.install_kernel_probe()
+        (group / 'memory.stat').write_text('anon 512\nfile 512\n')
+        (self.temp / 'meminfo').write_text('MemAvailable: 16777216 kB\n')
+        monitor = self.watch.probe
+        monitor.preparation = preparation
+        monitor.failed = threading.Event(); monitor.cleaning = False
+        monitor.group_stream = io.StringIO(); monitor.group_stream.close()
+        monitor.proxy = preparer.ControlledSubprocess(monitor)
+        preparation.resources = monitor; preparation.docker = Path('/usr/bin/docker')
+        return preparation, group
+
+    def test_closed_command_owner_refuses_before_intent_or_process_creation(self):
+        preparation, _ = self.closed_admission_preparation()
+        with patch.object(preparer, 'write_json') as intent, patch.object(preparer.subprocess, 'Popen') as spawn:
+            for cleaning in (False, True):
+                preparation.resources.cleaning = cleaning
+                with self.subTest(cleaning=cleaning), self.assertRaisesRegex(ValueError, 'Closed preparation command owner'):
+                    preparation.resources.proxy.run(['docker', 'inspect', 'owned'], capture_output=True)
+            intent.assert_not_called(); spawn.assert_not_called()
+
+    def test_initial_watch_admission_uses_real_pinned_kernel_after_command_owner_closed(self):
+        preparation, _ = self.closed_admission_preparation()
+        self.file.unlink(); self.status()
+        child = Mock(pid=6000, returncode=None)
+        with patch.object(preparer.secrets, 'token_hex', side_effect=['e' * 32, 'f' * 32]), \
+             patch.object(preparer, 'proc_identity', side_effect=lambda pid:
+                 dict(self.process) if pid == 6000 else {'pid': 31415, 'startTicks': 100}), \
+             patch.object(preparer.FixtureWatch, 'process_alive', return_value=True), \
+             patch.object(preparer.FixtureWatch, 'watch_anonymous_memory', return_value=0), \
+             patch.object(preparer.subprocess, 'Popen', return_value=child) as spawn:
+            preparation.start_fixture_watch()
+        self.assertEqual(1, spawn.call_count)  # Only the new owned watcher, never a closed-owner Docker command.
+        self.assertIn('watch', spawn.call_args.args[0])
+        self.assertTrue(preparation.resources.group_stream.closed)
+        self.assertNotIn('fixtureWatchStartFailure', preparation.journal)
+        admission = preparation.journal['fixtureWatchAdmission']
+        self.assertEqual('ADMITTED', admission['capacityVerdict'])
+        self.assertEqual(0, admission['toolMemoryBoundBytes'])
+        self.assertEqual(512, admission['fixtures'][0]['anonymousMemoryBytes'])
+        self.assertEqual(31415, admission['fixtures'][0]['pid'])
+
+    def test_remote_five_owner_admission_reuses_the_same_transferred_mysql_kernel(self):
+        preparation, _ = self.closed_admission_preparation()
+        watch = preparer.FixtureWatch(preparation); self.status()
+        spec = importlib.util.spec_from_file_location('admission_remote', MODULE.with_name('verify-remote.py'))
+        remote = importlib.util.module_from_spec(spec); spec.loader.exec_module(remote)
+        runtime = SimpleNamespace(MEMORY={'mvn': 4, 'python': 4, 'java': 2, 'npm': 3, 'node': 2})
+        vector, metrics, redis = Mock(), Mock(), Mock()
+        seen = []
+        def ancillary(name, owned, limit):
+            owned(); seen.append(name)
+            return {'component': name, 'containerId': name, 'cgroup': '/' + name,
+                    'remainingMemoryBytes': limit}
+        with patch.object(watch, 'process_alive', return_value=True), \
+             patch.object(watch, 'watch_anonymous_memory', return_value=0), \
+             patch.object(watch, 'container_memory', side_effect=ancillary), \
+             patch.object(preparer.subprocess, 'Popen') as spawn:
+            result = remote.admit_fixture_memory(watch, runtime, {}, vector, metrics, redis)
+        spawn.assert_not_called()
+        self.assertEqual(['alertmanager', 'prometheus', 'qdrant', 'redis'], seen)
+        vector.owned.assert_called_once_with(); redis.owned.assert_called_once_with()
+        self.assertEqual(['alertmanager', 'prometheus'], [call.args[0] for call in metrics.owned.call_args_list])
+        self.assertEqual('ADMITTED', result['capacityVerdict'])
+        self.assertEqual(5, len(result['fixtures']))
+        self.assertEqual(6 * preparer.GIB, result['toolMemoryBoundBytes'])
+        self.assertEqual(self.descriptor['containerId'], result['fixtures'][0]['containerId'])
+        self.assertEqual(512, result['fixtures'][0]['anonymousMemoryBytes'])
+
+    def test_transferred_mysql_admission_still_rejects_changed_kernel_or_oom(self):
+        preparation, group = self.closed_admission_preparation()
+        watch = preparer.FixtureWatch(preparation); self.status()
+        damages = [('memory.max', 'max'), ('memory.swap.max', '1'),
+                   ('memory.events', 'oom 1\noom_kill 0'), ('memory.stat', 'file 1024')]
+        with patch.object(watch, 'process_alive', return_value=True), patch.object(preparer.subprocess, 'Popen') as spawn:
+            for name, value in damages:
+                file = group / name; original = file.read_bytes(); file.write_text(value + '\n')
+                try:
+                    with self.subTest(name=name), self.assertRaises(ValueError): watch.admit(0)
+                finally:
+                    file.write_bytes(original)
+                self.assertIsNone(watch.memory_admission)
+            with patch.object(preparer, 'proc_identity', return_value={'pid': 31415, 'startTicks': 101}):
+                with self.assertRaisesRegex(ValueError, 'process identity changed'): watch.admit(0)
+            spawn.assert_not_called()
+
     def run_context(self):
         self.stack.enter_context(patch.dict(preparer.os.environ,
             {preparer.OWNER_ENV: 'e' * 32, preparer.GROUP_ENV: 'f' * 32}))
@@ -825,7 +915,7 @@ class FixtureWatchTests(unittest.TestCase):
         self.assertEqual(1, value['probeCount'])
 
     def install_kernel_probe(self):
-        group = self.temp / 'cgroup'; group.mkdir()
+        group = self.temp / 'cgroups/docker/fixture'; group.mkdir(parents=True)
         for name, body in {'memory.max': str(preparer.MYSQL_MEMORY), 'memory.swap.max': '0',
                            'memory.current': '1024', 'memory.events': 'oom 0\noom_kill 0'}.items():
             (group / name).write_text(body + '\n')
@@ -833,10 +923,14 @@ class FixtureWatchTests(unittest.TestCase):
         meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 10000000 kB\n')
         cache = self.watch.probe._fixture_cgroup
         cache.update(path=group, directory=(group.stat().st_dev, group.stat().st_ino))
+        self.descriptor['kernelIdentity']['directory'] = list(cache['directory'])
+        self.watch.descriptor['kernelIdentity']['directory'] = list(cache['directory'])
+        preparer.write_json(self.file, self.watch.descriptor, replace=self.file.exists())
         original_path = preparer.Path
         self.stack.enter_context(patch.object(preparer, 'Path', side_effect=lambda value:
             proc_group if str(value) == '/proc/31415/cgroup' else
-            meminfo if str(value) == '/proc/meminfo' else original_path(value)))
+            meminfo if str(value) == '/proc/meminfo' else
+            self.temp / 'cgroups' if str(value) == '/sys/fs/cgroup' else original_path(value)))
         self.stack.enter_context(patch.object(preparer, 'proc_identity',
             return_value={'pid': 31415, 'startTicks': 100}))
         self.preparation.inspect_owned.return_value = {'State': {'Running': True, 'Restarting': False,
