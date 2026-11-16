@@ -413,14 +413,18 @@ class ReportWorkflowMigrationMySqlTest {
             case "source"->"legacy_source=NULL,legacy_key=NULL";
             case "key"->"legacy_key='another-original'";
             case "status"->"status='FAILED',finished_at=NULL";
-            case "kind"->"kind='REPORT_COMMAND'";
-            case "claim"->"claim_token='new-worker',lease_expires_at=UTC_TIMESTAMP(6),fence=1";
+            // Keep the receipt/delivery lifecycle CHECKs valid: only the owner exception must refuse these moves.
+            case "kind"->"kind='REPORT_COMMAND',status='COMPLETED'";
+            case "claim"->"claim_token='new-worker',lease_expires_at=UTC_TIMESTAMP(6),fence=1,status='PROCESSING',finished_at=NULL";
             case "actor"->"actor_user_id=0";
             case "fence"->"fence=1";
             default->throw new IllegalArgumentException(corruption);
         };
         var before=jdbc.queryForMap("SELECT * FROM workflow_instance WHERE kind='REPORT_DELIVERY' AND request_id=?",orphan.eventId());
-        assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET "+assignment+" WHERE id=?",before.get("id")));
+        assertThat(((Number)before.get("owner_user_id")).longValue()).isZero();
+        assertThat(before).containsEntry("status","DELIVERED").containsEntry("legacy_clock_json",null);
+        assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET "+assignment+" WHERE id=?",before.get("id")),
+                "ck_workflow_owner");
         assertThat(jdbc.queryForMap("SELECT * FROM workflow_instance WHERE id=?",before.get("id"))).isEqualTo(before);
     }
 

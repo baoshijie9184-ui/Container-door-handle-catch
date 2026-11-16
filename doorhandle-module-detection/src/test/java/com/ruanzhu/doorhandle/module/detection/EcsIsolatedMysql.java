@@ -10,9 +10,11 @@ import java.nio.file.Path;
 public final class EcsIsolatedMysql {
     private EcsIsolatedMysql() {}
 
-    /** Checks the actual engine CHECK refusal, independent of Spring exception classification. */
+    /** Checks the actual engine CHECK refusal; at least one constraint name is required at compile time. */
     public static void assertCheckViolation(org.assertj.core.api.ThrowableAssert.ThrowingCallable command,
-            String... constraints) {
+            String requiredConstraint, String... additionalConstraints) {
+        String[] constraints = java.util.stream.Stream.concat(java.util.stream.Stream.of(requiredConstraint),
+                java.util.Arrays.stream(additionalConstraints)).toArray(String[]::new);
         org.assertj.core.api.Assertions.assertThat(constraints).isNotEmpty().doesNotContainNull();
         org.assertj.core.api.Assertions.assertThatThrownBy(command)
                 .isInstanceOf(org.springframework.dao.DataAccessException.class)
