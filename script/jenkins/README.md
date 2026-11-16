@@ -12,9 +12,11 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 ## 已结束的 15 个历史 MySQL 副本
 
+**本批已由 #380 完成，15 项清单已消费，不得再次执行。** 实际回收 4,004,081,664 B；下文保留入口与原件核对方法。
+
 既有 `ACTION=reclaim-build-outputs`、`DOORHANDLE_CI_SCOPE=source` 可选择精确策略 `NATIVE_RETENTION_POLICY=DerivedMysqlHistorical15`，仅处理 #154/#160/#162/#166/#168/#173/#187/#188/#189/#195/#198/#201/#204/#223/#224 的派生 MySQL 目录。所有其他选择器及 `finishedOutputsManifest` 保持空值，生产发布关闭，不先执行通用历史清理。
 
-私有清单位于 `work/table-switch-20261115/historical-derived-mysql-15-manifest.json`。本地先核对全部原件 custody，再上传原 build.xml、release.json 和既有用户授权；远端重新核对完整源 SQL、固定源码、原 owner/STOPPED、目录身份和全部活动引用，经原 plan/apply 执行。原始 SQL、源码、报告、业务库和保护恢复点保留。原统计约 3.73 GiB 仅用于选择批次，实际回收量由当轮受控计量及回执确定；源码与清单准备不等于已经删除。
+私有清单位于 `work/table-switch-20261115/historical-derived-mysql-15-manifest.json`。本地先核对全部原件 custody，再上传原 build.xml、release.json 和既有用户授权；远端重新核对完整源 SQL、固定源码、原 owner/STOPPED、目录身份和全部活动引用，经原 plan/apply 执行。原始 SQL、源码、报告、业务库和保护恢复点保留。本批受控计量与删除回执均为 4,004,081,664 B，15 项全部移除。
 
 ## 同一 29 表候选的人工验收
 

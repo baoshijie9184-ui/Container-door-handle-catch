@@ -1245,7 +1245,7 @@
       },
       {
         "module": "tests_python.test_legacy_clock_sql",
-        "minimumTests": 18,
+        "minimumTests": 75,
         "source": "tests_python/test_legacy_clock_sql.py",
         "allowedSkippedTests": []
       },
@@ -1307,7 +1307,7 @@
       },
       {
         "module": "tests_python.test_compact_schema_source",
-        "minimumTests": 38,
+        "minimumTests": 44,
         "source": "tests_python/test_compact_schema_source.py",
         "allowedSkippedTests": []
       },

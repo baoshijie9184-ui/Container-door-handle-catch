@@ -67,6 +67,8 @@
 
 迁移期间另由独立长连接持有全部 131 张源表的 `LOCK TABLES ... READ`。各 copy 段、Java helper 和 dump 使用其他连接，避免段内 `START TRANSACTION` 释放源锁。每段前及最终验证检查该锁连接仍存活。45/context、46/identity、48/MCP 的 source/target frozen 变量，以及 47/detection-runtime 的 `@compact_source_quiesced=1`，均在该段自己的新客户端会话内设置，只传递已成立的冻结状态，不作为停写证据。47 段还在同一会话显式设置 `REPEATABLE READ`，再执行原 SQL 的隔离级别检查；不依赖上一段的会话变量或修改全局隔离级别。
 
+历史时钟 SQL 的末尾核对会将来源表与目标表 `clock_target` 连接。生成器先为单一来源的裸列补齐原表或别名，再生成身份、载荷及时间比较，避免 `id`、`updated_at` 等目标同名列改变引用含义；多来源表达式必须显式指定别名。已有偏移与 `UNRESOLVED` 分支沿用同样的逐字段核对，不能因列歧义跳过检查。
+
 ## 实际执行阶段
 
 以下为 ECS 上的阶段命令，正式执行由 Jenkins 调度；示例路径需换成该固定提交 checkout 的真实绝对路径。

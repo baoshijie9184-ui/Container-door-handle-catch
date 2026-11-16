@@ -305,6 +305,33 @@ def identity_join(table, mapping, table_catalog):
     raise ValueError('No explicit target identity for complete clock provenance: ' + table)
 
 
+def source_expression(value, aliases, sources):
+    """Bind source columns before an added target JOIN changes name resolution."""
+    columns = {}
+    for alias, name in aliases.items():
+        # Some reviewed joins include an auxiliary source without a clock
+        # catalog. Already qualified expressions need no inferred ownership.
+        if name not in sources:
+            continue
+        for column in sources[name]['columns']:
+            columns.setdefault(column.lower(), []).append(alias)
+    tokens = r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_]*"
+
+    def qualify(match):
+        token = match[0]
+        if token.startswith(("'", '"')):
+            return token
+        owners = columns.get(token.strip('`').replace('``', '`').lower(), [])
+        before, after = value[:match.start()].rstrip(), value[match.end():].lstrip()
+        if not owners or before.endswith(('.', '@')) or after.startswith(('.', '(')):
+            return token
+        if len(owners) != 1 or len(aliases) != 1:
+            raise ValueError('Source column needs an explicit alias before clock reconciliation: ' + token)
+        return owners[0] + '.' + token
+
+    return re.sub(tokens, qualify, value)
+
+
 def compile_copy(text, filename, sources=None):
     if text.startswith(GENERATED):
         raise ValueError('Compile the fixed-source template, never an already generated copy')
@@ -354,18 +381,22 @@ def compile_copy(text, filename, sources=None):
                 columns.append('legacy_clock_json'); new.append(clock)
             statement = 'INSERT INTO ' + table + '(' + ','.join(columns) + ') SELECT ' + distinct + ','.join(new) + ' ' + tail
             if clocks:
-                mapping = dict(zip(columns, new))
+                # The original single-source INSERT may use bare columns. Its
+                # reconciliation also sees clock_target, whose id/times/payload
+                # can share those names; retain the original source binding.
+                mapping = {column: source_expression(value, aliases, sources)
+                           for column, value in zip(columns, new)}
                 join = identity_join(table, mapping, table_catalog)
                 boundary = min([p for p in (keyword(tail, 'ORDER'), keyword(tail, 'ON DUPLICATE'), keyword(tail, 'FOR')) if p >= 0], default=len(tail))
                 domain_tail = tail[:boundary].rstrip()
                 where = keyword(domain_tail, 'WHERE')
                 if where >= 0:
                     base, condition = domain_tail[:where], domain_tail[where + 5:]
-                    condition = '(' + condition.strip() + ') AND '
+                    condition = '(' + source_expression(condition.strip(), aliases, sources) + ') AND '
                 else:
                     base, condition = domain_tail, ''
                 identity = 'clock_target.' + ('namespace' if table == 'runtime_state' else 'id')
-                verified = ['NOT(clock_target.legacy_clock_json<=>' + clock + ')']
+                verified = ['NOT(clock_target.legacy_clock_json<=>' + mapping['legacy_clock_json'] + ')']
                 temporal_columns = {name for name, metadata in table_catalog[table]['columns'].items()
                                     if metadata['type'].upper().startswith(('DATETIME', 'TIMESTAMP'))}
                 for column, value in mapping.items():

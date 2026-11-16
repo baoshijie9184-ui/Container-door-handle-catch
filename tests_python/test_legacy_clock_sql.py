@@ -230,3 +230,70 @@ def test_mysql_json_schema_rejects_extra_keys_and_preserves_raw_null_clock(tmp_p
     query += '),\'extra\',JSON_SCHEMA_VALID(' + clock.q(json.dumps(contract)) + ',' + clock.q(json.dumps(malformed)) + '));'
     result = json.loads(connection.script(query, database=database, label='clock-schema').splitlines()[-1])
     assert result == {'valid': 1, 'extra': 0}
+
+
+@pytest.mark.skipif(os.environ.get('DOORHANDLE_COMPACT_MIGRATION_TESTS') != '1', reason='Explicit admitted ECS MySQL fixture required')
+@pytest.mark.parametrize('filename,source_name,target,time_column', [
+    ('32-agent-journal.sql', 'agent_run_event', 'audit_event', 'occurred_at'),
+    ('33-sdk-checkpoint.sql', 'agent_workbench_sdk_state', 'runtime_state', 'updated_at'),
+])
+@pytest.mark.parametrize('unknown', [False, True])
+@pytest.mark.parametrize('change_target_clock', [False, True])
+def test_mysql_generated_clock_join_binds_the_source_and_rejects_changed_target_time(
+        tmp_path, filename, source_name, target, time_column, unknown, change_target_clock):
+    connection, database = mysql(tmp_path)
+    catalog = clock.catalog()
+    text = (ROOT / 'sql/mysql/compact/copy' / filename).read_text('utf8')
+    statements = list(split_top_level(without_comments(text), ';'))
+    projection = next(value for value in statements if value.startswith('INSERT INTO ' + target + '(')
+                      and ('FROM `__SOURCE_SCHEMA__`.' + source_name) in value)
+    reconciliation = next(value for value in statements if 'NOT(clock_target.legacy_clock_json<=>' in value)
+    guard = reconciliation.split()[2]
+    target_name = 'clock_join_target'
+    source_columns = ','.join('`' + key + '` ' + column['type'] for key, column in catalog[source_name]['columns'].items())
+    # Reproduce the real shared source/target column names, including the
+    # auto-generated audit id. No persistent rows or original SQL are changed;
+    # only the exact generated reconciliation guard can reject the corruption.
+    target_columns = []
+    for name, column in clock.targets()[target]['columns'].items():
+        if column['generatedVirtual']:
+            continue
+        definition = '`' + name + '` ' + column['type']
+        if 'AUTO_INCREMENT' in column['declaration'].upper():
+            definition += ' AUTO_INCREMENT PRIMARY KEY'
+        target_columns.append(definition)
+    wall = "'2026-01-02 03:04:05.123456'"
+    if source_name == 'agent_run_event':
+        values = {'id': '1', 'run_id': "'run-A'", 'user_id': '7', 'sequence_no': '1',
+                  'event_type': "'NOTE'", 'occurred_at': wall, 'payload_json': "'{\"message\":\"clock\"}'"}
+    else:
+        values = {'id': '1', 'user_id': "'7'", 'session_id': "'Case:session'", 'state_key': "'State:key'",
+                  'revision': '1', 'state_json': "' { \"value\": 1 } '", 'updated_at': wall}
+    command = ('CREATE TEMPORARY TABLE ' + source_name + '(' + source_columns + ');\n'
+               'CREATE TEMPORARY TABLE ' + target_name + '(' + ','.join(target_columns) + ');\n'
+               'CREATE TEMPORARY TABLE ' + guard + '(valid INT NOT NULL CHECK(valid=1));\n'
+               'SET @compact_source_clock_unresolved=' + ('1' if unknown else '0') + ';\n'
+               "SET @compact_validation_wall_offset='+08:00';\n"
+               'INSERT INTO ' + source_name + '(' + ','.join(values) + ') VALUES(' + ','.join(values.values()) + ');\n')
+    projection = projection.replace('INSERT INTO ' + target + '(', 'INSERT INTO ' + target_name + '(')
+    reconciliation = reconciliation.replace('LEFT JOIN ' + target + ' clock_target', 'LEFT JOIN ' + target_name + ' clock_target')
+    for original in (projection, reconciliation):
+        assert ('`__SOURCE_SCHEMA__`.' + source_name) in original
+    command += projection.replace('`__SOURCE_SCHEMA__`.', '') + ';\n'
+    if change_target_clock:
+        changed = wall if unknown else 'TIMESTAMPADD(MICROSECOND,1,' + time_column + ')'
+        command += 'UPDATE ' + target_name + ' SET ' + time_column + '=' + changed + ';\n'
+    command += reconciliation.replace('`__SOURCE_SCHEMA__`.', '') + ';\n'
+    command = command.replace('__SOURCE_SNAPSHOT_SHA256__', 'a' * 64)
+    command += ('SELECT JSON_OBJECT(\'sourceRows\',(SELECT COUNT(*) FROM ' + source_name + '),'
+                "'targetRows',(SELECT COUNT(*) FROM " + target_name + '),'
+                "'guardRows',COUNT(*),'valid',MIN(valid)) FROM " + guard + ';')
+    if change_target_clock:
+        with pytest.raises(ValueError, match='MySQL operation failed'):
+            connection.script(command, database=database, label='clock-join-rejection')
+        evidence = tmp_path / 'private' / (str(connection.sequence).zfill(4) + '-clock-join-rejection.stderr')
+        error = evidence.read_text('utf8')
+        assert 'ERROR 3819' in error and guard in error
+    else:
+        result = json.loads(connection.script(command, database=database, label='clock-join-admission').splitlines()[-1])
+        assert result == {'sourceRows': 1, 'targetRows': 1, 'guardRows': 1, 'valid': 1}

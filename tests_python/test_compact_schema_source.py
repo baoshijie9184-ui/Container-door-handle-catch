@@ -555,3 +555,59 @@ def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_kee
         assert audit_values['t.legacy_key'] == ('BINARY t.legacy_key', 'BINARY CAST(s.id AS CHAR)')
         clock = next(line for line in guards if 'compact_mcp_snapshots s LEFT JOIN audit_event a ' in line)
         assert comparisons(clock)['a.occurred_at'] == ('a.occurred_at', 'CAST(@compact_mcp_imported_at AS DATETIME(6))')
+
+
+def test_clock_join_source_binding_preserves_literals_functions_variables_and_existing_qualifiers(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    clocks = module('author_legacy_clock_copy')
+    sources = {'original': {'columns': {key: {} for key in ('id', 'updated_at', 'payload_json', 'concat')}}}
+    value = ("CONCAT(id,`updated_at`,s.id,s . `id`,@id,@@SESSION.id,"
+             "'id updated_at','it''s id',\"payload_json\",JSON_EXTRACT(payload_json,'$.id'))")
+    assert clocks.source_expression(value, {'s': 'original'}, sources) == (
+        "CONCAT(s.id,s.`updated_at`,s.id,s . `id`,@id,@@SESSION.id,"
+        "'id updated_at','it''s id',\"payload_json\",JSON_EXTRACT(s.payload_json,'$.id'))")
+
+
+@pytest.mark.parametrize('auxiliary_catalogued', [True, False])
+def test_clock_join_never_guesses_a_bare_column_across_multiple_sources(monkeypatch, auxiliary_catalogued):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    clocks = module('author_legacy_clock_copy')
+    sources = {'original': {'columns': {'id': {}}}}
+    if auxiliary_catalogued:
+        sources['auxiliary'] = {'columns': {'id': {}}}
+    aliases = {'s': 'original', 'a': 'auxiliary'}
+    assert clocks.source_expression('s.id+a.id', aliases, sources) == 's.id+a.id'
+    with pytest.raises(ValueError, match='explicit alias before clock reconciliation'):
+        clocks.source_expression('id', aliases, sources)
+
+
+@pytest.mark.parametrize('filename,source,columns', [
+    ('32-agent-journal.sql', 'agent_run_event', ('id', 'occurred_at', 'payload_json')),
+    ('33-sdk-checkpoint.sql', 'agent_workbench_sdk_state', ('session_id', 'state_key', 'updated_at', 'state_json')),
+])
+def test_clock_join_compilation_qualifies_source_identity_payload_and_time(monkeypatch, filename, source, columns):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    clocks = module('author_legacy_clock_copy')
+    original = (ROOT / 'sql/mysql/compact/copy-fixed-clock' / filename).read_text('utf8')
+    compiled = clocks.compile_copy(original, filename)
+    assert compiled == (ROOT / 'sql/mysql/compact/copy' / filename).read_text('utf8')
+    guards = [line for line in compiled.splitlines() if 'NOT(clock_target.legacy_clock_json<=>' in line]
+    assert len(guards) == 1
+    # This independent token check excludes quoted data and already-qualified
+    # identifiers, not the source-binding function under test.
+    guard = re.sub(r"'(?:''|\\.|[^'\\])*'", "''", guards[0])
+    for column in columns:
+        assert source + '.' + column in guard
+        assert not re.search(r'(?<![.A-Za-z0-9_`])' + column + r'\b', guard)
+    assert 'LEFT JOIN ' in guard and 'clock_target.' in guard
+
+
+def test_clock_join_qualifies_the_original_source_filter_before_adding_a_target(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    clocks = module('author_legacy_clock_copy')
+    original = (ROOT / 'sql/mysql/compact/copy-fixed-clock/33-sdk-checkpoint.sql').read_text('utf8')
+    original = original.replace('agent_workbench_sdk_state ORDER BY id',
+                                'agent_workbench_sdk_state WHERE updated_at IS NOT NULL ORDER BY id')
+    compiled = clocks.compile_copy(original, '33-sdk-checkpoint.sql')
+    guard = next(line for line in compiled.splitlines() if 'NOT(clock_target.legacy_clock_json<=>' in line)
+    assert 'WHERE (agent_workbench_sdk_state.updated_at IS NOT NULL) AND ' in guard
