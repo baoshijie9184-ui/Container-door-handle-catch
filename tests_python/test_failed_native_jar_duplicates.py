@@ -3997,3 +3997,126 @@ def test_public_cache_controller_has_an_independent_capture_complete_counts_and_
     assert 'deletedFiles=25' in branch and branch.rstrip().endswith('}') and '    return\n}' in branch
     for forbidden in ('plan-builders', 'apply-builders', 'plan-canonical', 'apply-canonical', 'plan-python-build-cache', 'apply-python-build-cache'):
         assert forbidden not in branch
+
+
+
+@pytest.fixture
+def pre_ready_derived_fixture(derived_database_fixture, monkeypatch):
+    state = derived_database_fixture; s = state.native; retirement = state.retirement
+    work = s.data.parent
+    descriptor = json.loads(s.watch_files['owner'].read_bytes())
+    stopped = {'kind': 'doorhandle-fixture-watch-start-failure', 'status': 'STOPPED_BEFORE_READY',
+        'processCreated': True, 'watchStopped': True, 'groupCancellationConfirmed': True, 'exitCode': 2,
+        'pid': descriptor['process']['pid'], 'startTicks': descriptor['process']['startTicks'], 'bootId': descriptor['bootId']}
+    owner = json.loads(state.owner_path.read_bytes()); owner['fixtureWatchStartFailure'] = stopped
+    cleanup_path = work / 'cleanup-receipt.json'
+    cleanup = json.loads(cleanup_path.read_bytes()); cleanup['fixtureWatch'] = dict(stopped)
+    failure = json.loads((Path(__file__).with_name('fixtures') / 'ci-389-watch-start-failure.json').read_text())['failure']
+    failure.update(s.context)
+    status = json.loads(s.watch_files['status'].read_bytes())
+    status.update(status='FAILED', watchStopped=False, probeCount=1)
+    files = {state.owner_path: owner, cleanup_path: cleanup, work / 'failure.json': failure,
+             s.watch_files['status']: status}
+    for path, document in files.items(): path.write_bytes(encoded(document)); path.chmod(0o600)
+    s.watch_files.pop('runtime').unlink()  # Actual pre-ready lifecycle has no driver-produced public report.
+    state.watch_originals = {role: path.read_bytes() for role, path in s.watch_files.items()}
+    proof = retirer.source_proof(s.root, s.tag, s.context['commit'], s.context['sourceSha256'],
+        canonical_jar=True, failed_native=True, database_verification=True)
+    # Authenticate synthetic source bytes through the real reader; only this
+    # test's reviewed registration differs from the fixed a351 production pair.
+    monkeypatch.setattr(retirer, 'PRE_READY_WATCH_SOURCE', {
+        'preparer': proof['transportRecipeSha256'], 'verifier': '9' * 64})
+    row = state.value['candidates'][0]
+    row['retirement'] = {'policy': retirement.FINISHED_BATCH, 'publicationRecipe': [
+        proof['unpublishedPipelineSourceSha256'][name] for name in
+        ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1')] + [s.preparation_sha]}
+    keeper = state.keepers[0]
+    keeper.update(ownerSha256=sha(state.owner_path.read_bytes()), cleanupSha256=sha(cleanup_path.read_bytes()),
+        preRuntimeAbsence={'toolsSha256': '8' * 64}, reports={
+            'status': 'NOT_STARTED', 'originalJenkinsControlsRetained': True,
+            'failureStage': failure['phase'], 'failureReceiptSha256': sha((work / 'failure.json').read_bytes()),
+            'watchOwnerSha256': sha(s.watch_files['owner'].read_bytes()),
+            'retainedVerifierSha256': '9' * 64, 'watchStartFailure': dict(stopped)})
+    # This fixture has no builder. Independent builder preservation is covered
+    # by its original tests; exercise actual capture/descriptor/reference/remove.
+    monkeypatch.setattr(retirement, 'finished_preserved_builder', lambda *_: None)
+    state.cleanup_path = cleanup_path
+    state.originals = {path: path.read_bytes() for path in files}
+    return state
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('already_absent', [False, True])
+def test_pre_ready_parent_cancellation_reaches_actual_candidate_capture_and_remove(pre_ready_derived_fixture, already_absent):
+    state = pre_ready_derived_fixture; s = state.native; retirement = state.retirement
+    if already_absent: del s.rows[s.fid]
+    candidates = retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)
+    candidate = candidates[0]
+    proof = candidate['historical']['fixtureWatchProof']
+    assert proof['status'] == 'FAILED' and proof['watchStopped'] is True and proof['reportedWatchStopped'] is False
+    assert proof['terminationAuthority'] == 'PARENT_CANCELLED_BEFORE_READY'
+    assert set(proof['files']) == {'owner', 'status', 'parentOwner', 'parentCleanup', 'failure'}
+    retirement.task_fixture_quiescence(state.keepers, candidates, state.helpers)
+    result = retirement.task_remove_fixture(candidate, state.helpers)
+    assert result['status'] == ('ALREADY_ABSENT' if already_absent else 'REMOVED')
+    assert s.commands == ([] if already_absent else [('rm', s.fid)])
+    assert state.originals == {path: path.read_bytes() for path in state.originals}
+    assert_derived_fixture_preservation(state)
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('damage', ['missing-proof', 'wrong-parent-proof', 'parent-not-cancelled', 'failure-stage',
+    'source', 'missing-status', 'original-session-alive', 'container-running', 'public-runtime-appeared'])
+def test_pre_ready_capture_refuses_unproven_parent_or_live_original(pre_ready_derived_fixture, monkeypatch, damage):
+    state = pre_ready_derived_fixture; s = state.native; keeper = state.keepers[0]
+    if damage == 'missing-proof': keeper.pop('reports')
+    elif damage == 'wrong-parent-proof': keeper['reports']['watchStartFailure']['pid'] += 1
+    elif damage == 'source': monkeypatch.setitem(retirer.PRE_READY_WATCH_SOURCE, 'preparer', '0' * 64)
+    elif damage == 'missing-status': s.watch_files['status'].unlink()
+    elif damage == 'original-session-alive':
+        def alive(*_): raise retirer.RetirementError('FIXTURE_WATCH_PROCESS_STILL_PRESENT')
+        monkeypatch.setattr(retirer, 'stopped_fixture_watch_process', alive)
+    elif damage == 'container-running': s.rows[s.fid]['State'].update(Status='running', Running=True, Pid=1234)
+    elif damage == 'public-runtime-appeared': (s.data.parent.parent / 'ci-evidence/fixture-runtime.json').write_bytes(b'{}')
+    elif damage == 'failure-stage':
+        path = s.data.parent / 'failure.json'; document = json.loads(path.read_bytes()); document['phase'] = 'UNKNOWN'
+        path.write_bytes(encoded(document)); keeper['reports']['failureReceiptSha256'] = sha(path.read_bytes())
+    else:
+        for path in (state.owner_path, state.cleanup_path):
+            document = json.loads(path.read_bytes())
+            document['fixtureWatchStartFailure' if path == state.owner_path else 'fixtureWatch']['groupCancellationConfirmed'] = False
+            path.write_bytes(encoded(document))
+        keeper.update(ownerSha256=sha(state.owner_path.read_bytes()), cleanupSha256=sha(state.cleanup_path.read_bytes()))
+        keeper['reports']['watchStartFailure']['groupCancellationConfirmed'] = False
+    with pytest.raises((OSError, ValueError)):
+        state.retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)
+    assert s.commands == [] and s.fid in s.rows and s.production in s.rows
+    assert s.page.read_bytes() == s.page_bytes and state.sql.exists() and state.report.exists() and state.protected.exists()
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('changed', ['parent-after-plan', 'new-reference'])
+def test_pre_ready_remove_rechecks_parent_custody_and_all_container_references(pre_ready_derived_fixture, changed):
+    state = pre_ready_derived_fixture; s = state.native; retirement = state.retirement
+    candidate = retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)[0]
+    if changed == 'parent-after-plan': state.cleanup_path.write_bytes(state.cleanup_path.read_bytes() + b' ')
+    else: s.rows[s.production]['HostConfig']['NetworkMode'] = 'container:' + s.fid
+    with pytest.raises(ValueError): retirement.task_remove_fixture(candidate, state.helpers)
+    assert s.commands == [] and s.fid in s.rows and s.page.read_bytes() == s.page_bytes
+
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('database_only_failed_native_pair', ['reviewed'], indirect=True)
+@pytest.mark.parametrize('changed', ['authority', 'parent-cancellation'])
+def test_pre_ready_object_remove_does_not_accept_a_caller_asserted_stop(pre_ready_derived_fixture, changed):
+    state = pre_ready_derived_fixture; s = state.native; retirement = state.retirement
+    candidate = retirement.task_fixture_candidates(state.value, state.keepers, state.helpers)[0]
+    proof = candidate['fixture']['fixtureWatchProof']
+    if changed == 'authority': proof['terminationAuthority'] = 'CALLER_ASSERTED'
+    else: proof['parentCancellation']['groupCancellationConfirmed'] = False
+    with pytest.raises(ValueError): retirement.task_remove_fixture(candidate, state.helpers)
+    assert s.commands == [] and s.fid in s.rows and s.page.read_bytes() == s.page_bytes

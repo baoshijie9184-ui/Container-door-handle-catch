@@ -2290,3 +2290,141 @@ def test_real_tool_report_shape_does_not_weaken_its_source_or_other_reports_host
     case.refresh()
     with pytest.raises((ValueError, case.verifier.VerificationError)):
         retirement.task_reports(case.row, case.verifier, metadata_only=True, fixture_container_id=case.fixture_container_id)
+
+
+@pytest.fixture
+def watch_start_failure_reports(tmp_path, monkeypatch):
+    # Safe original #389 shapes, including failure.json without identity and the
+    # parent-confirmed STOPPED_BEFORE_READY cancellation. Temporary container,
+    # process, boot and manifest values are synthetic; no password/SQL/env.
+    original = json.loads((Path(__file__).with_name('fixtures') / 'ci-389-watch-start-failure.json').read_text())
+    row = {key: original['owner'][key] for key in ('release', 'commit', 'sourceSha256')}
+    row['retirement'] = {'policy': retirement.FINISHED_BATCH}
+    root = tmp_path / 'ci'; inbox = root / 'inbox' / row['release']
+    attempt = root / 'verification' / row['release']; work = attempt / 'checkout/work/compact-fixtures'
+    inbox.mkdir(parents=True); work.mkdir(parents=True)
+    monkeypatch.setattr(retirement, 'ROOT', root)
+    names = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
+    bodies = {name: ('synthetic reviewed ' + name).encode() for name in names}
+    bodies.update({name: ('synthetic reviewed ' + name).encode() for name in retirement.WATCH_START_FAILURE_PRODUCER})
+    reviewed = {name: retirement.digest(bodies[name]) for name in retirement.WATCH_START_FAILURE_PRODUCER}
+    monkeypatch.setattr(retirement, 'WATCH_START_FAILURE_PRODUCER', reviewed)
+    row['retirement']['publicationRecipe'] = [retirement.digest(bodies[name]) for name in names]
+    state = SimpleNamespace(root=root, inbox=inbox, attempt=attempt, work=work, row=row, documents=original,
+        bodies=bodies, arguments={'owner': original['owner'], 'cleanup': original['cleanup'],
+                                 'jenkinsResult': 'FAILURE'})
+    def refresh():
+        # Exercise the real bounded source reader and recipe extraction. Only
+        # producer bytes are synthetic; each original document keeps its shape.
+        source = io.BytesIO()
+        with tarfile.open(fileobj=source, mode='w:gz', format=tarfile.PAX_FORMAT,
+                          pax_headers={'comment': row['commit']}) as archive:
+            for name, body in bodies.items():
+                member = tarfile.TarInfo(name); member.size = len(body)
+                archive.addfile(member, io.BytesIO(body))
+        raw = source.getvalue(); row['sourceSha256'] = retirement.digest(raw)
+        for document in original.values(): document['sourceSha256'] = row['sourceSha256']
+        files = {inbox / 'source.tar.gz': raw,
+                 inbox / 'verify-remote.py': bodies['script/jenkins/verify-remote.py'],
+                 work / 'failure.json': retirement.encoded(original['failure']),
+                 work / 'fixture-watch-owner.json': retirement.encoded(original['watchOwner'])}
+        for path, body in files.items(): path.write_bytes(body); path.chmod(0o600)
+        state.arguments['recipe'] = retirement.task_source_recipe(SimpleNamespace(), row)
+    state.refresh = refresh; refresh()
+    return state
+
+
+@pytest.mark.parametrize('metadata_only', [False, True])
+def test_finished_watch_start_failure_uses_actual_original_shape_without_fabricating_verifier_exit(watch_start_failure_reports, metadata_only):
+    case = watch_start_failure_reports
+    assert 'identity' not in case.documents['failure']
+    original = retirement.encoded(case.documents)
+    result = retirement.task_reports(case.row, SimpleNamespace(), metadata_only=metadata_only,
+                                     preparation_failure=case.arguments)
+    assert result == {'status': 'NOT_STARTED', 'originalJenkinsControlsRetained': True,
+        'failureStage': 'FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED',
+        'failureReceiptSha256': retirement.digest((case.work / 'failure.json').read_bytes()),
+        'watchOwnerSha256': retirement.digest((case.work / 'fixture-watch-owner.json').read_bytes()),
+        'retainedVerifierSha256': retirement.digest((case.inbox / 'verify-remote.py').read_bytes()),
+        'watchStartFailure': case.documents['owner']['fixtureWatchStartFailure']}
+    assert retirement.encoded(case.documents) == original
+    assert 'verificationExitCode' not in result
+
+
+@pytest.mark.parametrize('damage', ['old-policy', 'terminal', 'owner-context', 'owner-host', 'cleanup-errors',
+    'owner-phase', 'failure-phase', 'watch-container', 'watch-stopped', 'group-cancel', 'exit-unknown',
+    'process-not-created', 'boot', 'process-session'])
+def test_finished_watch_start_failure_requires_same_owned_cancelled_process(watch_start_failure_reports, damage):
+    case = watch_start_failure_reports
+    owner, cleanup, failure, watch = (case.documents[name] for name in ('owner', 'cleanup', 'failure', 'watchOwner'))
+    if damage == 'old-policy': pass  # Change policy after reading the reviewed Finished source.
+    elif damage == 'terminal': case.arguments['jenkinsResult'] = 'ABORTED'
+    elif damage == 'owner-context': owner['commit'] = '0' * 40
+    elif damage == 'owner-host': owner['identity']['instanceId'] = 'another-instance'
+    elif damage == 'cleanup-errors': cleanup['errors'] = ['unresolved']
+    elif damage == 'owner-phase': owner['phase'] = 'OWNED_SERVER_READY'
+    elif damage == 'failure-phase': failure['phase'] = 'FIXTURE_WATCH_START_FAILED_STOP_UNCONFIRMED'
+    elif damage == 'watch-container': watch['containerId'] = '0' * 64
+    elif damage == 'boot': watch['bootId'] = '00000000-0000-0000-0000-000000000000'
+    elif damage == 'process-session': watch['process']['session'] += 1
+    else:
+        field, value = {'watch-stopped': ('watchStopped', False), 'group-cancel': ('groupCancellationConfirmed', False),
+                        'exit-unknown': ('exitCode', None), 'process-not-created': ('processCreated', False)}[damage]
+        # Keep the two parent receipts internally consistent so the cancellation
+        # semantic gate, rather than an accidental inequality, rejects the row.
+        owner['fixtureWatchStartFailure'][field] = cleanup['fixtureWatch'][field] = value
+    case.refresh()
+    if damage == 'old-policy': case.row['retirement']['policy'] = retirement.TASK_BATCH
+    with pytest.raises(ValueError, match='UNKNOWN_OR_PARTIAL_VERIFICATION_REPORT_STATE|PREPARATION_FAILURE_ORIGINAL_CONTEXT_DIFFERS|PREPARATION_WATCH_STOP_UNCONFIRMED'):
+        retirement.task_reports(case.row, SimpleNamespace(), preparation_failure=case.arguments)
+
+
+@pytest.mark.parametrize('marker', ['.fixtures-ready.json', '.verification-claimed',
+    'verification-receipt.failed.json', 'checkout/driver.log', 'checkout/work/ci-evidence/receipt.json',
+    'inbox/.verification-upload', 'inbox/verification-evidence.tar.gz', 'dangling-ready-link'])
+def test_finished_watch_start_failure_refuses_any_later_start_or_partial_upload(watch_start_failure_reports, marker):
+    case = watch_start_failure_reports
+    if marker == 'dangling-ready-link':
+        (case.attempt / '.fixtures-ready.json').symlink_to(case.root / 'missing')
+    else:
+        path = case.inbox / marker.removeprefix('inbox/') if marker.startswith('inbox/') else case.attempt / marker
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'original start marker')
+    with pytest.raises(ValueError, match='UNKNOWN_OR_PARTIAL_VERIFICATION_REPORT_STATE|PREPARATION_FAILURE_HAS_VERIFICATION_START_MARKER'):
+        retirement.task_reports(case.row, SimpleNamespace(), metadata_only=True, preparation_failure=case.arguments)
+
+
+@pytest.mark.parametrize('damage', ['preparer-source', 'verifier-source', 'retained-verifier'])
+def test_finished_watch_start_failure_binds_original_producer_and_retained_helper_bytes(watch_start_failure_reports, damage):
+    case = watch_start_failure_reports
+    if damage == 'retained-verifier': (case.inbox / 'verify-remote.py').write_bytes(b'changed uploaded verifier')
+    else:
+        name = 'prepare-compact-fixtures.py' if damage == 'preparer-source' else 'verify-remote.py'
+        case.bodies['script/jenkins/' + name] = b'different producer'
+        case.refresh()  # Archive and original contexts are consistent, producer is not reviewed.
+    with pytest.raises(ValueError, match='UNKNOWN_OR_PARTIAL_VERIFICATION_REPORT_STATE|PREPARATION_FAILURE_VERIFIER_COPY_CHANGED'):
+        retirement.task_reports(case.row, SimpleNamespace(), preparation_failure=case.arguments)
+
+
+def test_finished_admission_passes_authenticated_owner_cleanup_recipe_and_terminal_to_report_guard(task_keeper_documents, monkeypatch):
+    state = task_keeper_documents
+    state.binding['batch'] = retirement.FINISHED_BATCH; state.row['retirement'] = _finished_selection()
+    state.xml = state.xml.replace(b'<value>verify</value>', b'<value>verify-runtime</value>')
+    state.refresh()
+    transport = retirement.encoded(state.documents['ecs-tool-preparation-transport.json'])
+    state.row['controls']['transport'] = {'bytes': len(transport), 'sha256': retirement.digest(transport)}
+    read = retirement.read
+    monkeypatch.setattr(retirement, 'read', lambda path, maximum=0:
+        transport if path.name == 'candidate-build-tools-transport.json' else read(path, maximum))
+    monkeypatch.setattr(retirement, 'finished_runtime_absence', lambda *_: {'candidateRuntimeEntered': False})
+    calls = []
+    def reports(row, verifier, **options):
+        calls.append(options)
+        assert row is state.row and verifier is state.helpers['verify-remote.py']
+        assert options['fixture_container_id'] == state.owner['containerId']
+        assert options['preparation_failure'] == {'owner': state.owner,
+            'cleanup': state.documents['cleanup-receipt.json'], 'recipe': state.recipe, 'jenkinsResult': 'FAILURE'}
+        return {'status': 'NOT_STARTED'}
+    monkeypatch.setattr(retirement, 'task_reports', reports)
+    result = retirement.task_admitted(state.binding, state.value, state.helpers)
+    assert len(calls) == 1 and result[0]['reports'] == {'status': 'NOT_STARTED'}
+    assert result[0]['sourceSqlSha256'] == state.manifest['data']['sha256']

@@ -28,6 +28,7 @@ public class ReportEventInbox {
         String digest=codec.digest(event);
         return Boolean.TRUE.equals(tx.execute(status->{
             var delivery=reports.workflows().findByRequest(WorkflowKind.REPORT_DELIVERY,ReportWorkflowRepository.DELIVERY_SCOPE,event.eventId()).orElseThrow();
+            if(delivery.ownerUserId()<=0)throw new IllegalStateException("历史报告事件缺少原归属，不能自动重放");
             if(delivery.legacyClockUnresolved())throw new IllegalStateException("历史报告事件时间需核对，不能自动重放");
             var prior=reports.workflows().findByRequest(WorkflowKind.REPORT_CONSUMPTION,ReportWorkflowRepository.CONSUMPTION_SCOPE,event.eventId());
             if(prior.isPresent()&&prior.get().legacyClockUnresolved())throw new IllegalStateException("历史报告接收回执时间需核对，不能自动确认或重放");

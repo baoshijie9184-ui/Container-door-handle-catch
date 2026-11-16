@@ -1010,6 +1010,16 @@ def finished_runtime_absence(row, preparation, transport, recipe, identity):
     return {'toolsSha256': digest(raw), 'candidateRuntimeEntered': False}
 
 
+# The a351 watcher-start failure is before ready/claim/driver. Its post-build
+# Generated cleanup can retain a copy of the verifier without ever running it.
+# Exact producer bytes, not a build-number or arbitrary FAILED exception, admit
+# this original lifecycle. Other producers keep the previous absence contract.
+WATCH_START_FAILURE_PRODUCER = {
+    'script/jenkins/prepare-compact-fixtures.py': '27111b3ac172944cec30d8e6079920d3136b24d6da6a51e2c967083c36948a70',
+    'script/jenkins/verify-remote.py': 'eaa8049ea4d18c749f73e0d8076bcfeedf8812dd06ebf980e9dcaec72204aaaf',
+}
+
+
 def task_source_recipe(native, row):
     raw = read(ROOT / 'inbox' / row['release'] / 'source.tar.gz', 128 * MIB)
     need(digest(raw) == row['sourceSha256'], 'RETAINED_TASK_SOURCE_CHANGED')
@@ -1028,18 +1038,20 @@ def task_source_recipe(native, row):
         need(archive.pax_headers.get('comment') == row['commit'], 'RETAINED_TASK_COMMIT_DIFFERS')
         for index, member in enumerate(archive, 1):
             need(index <= 50000 and 0 <= member.size <= 32 * MIB, 'RETAINED_TASK_SOURCE_MEMBER_BOUND')
-            if member.name in names:
+            if member.name in names or member.name in WATCH_START_FAILURE_PRODUCER:
                 need(member.name not in bodies and member.isfile() and 0 < member.size <= MIB,
                      'ORIGINAL_TASK_RECIPE_INVALID')
                 bodies[member.name] = archive.extractfile(member).read(MIB + 1)
-    actual = [digest(bodies[name]) for name in names] if set(bodies) == set(names) else []
+    actual = [digest(bodies[name]) for name in names] if set(names) <= set(bodies) else []
     finished = row.get('retirement', {}).get('policy') == FINISHED_BATCH
-    need(set(bodies) == set(names) and
+    need(set(names) <= set(bodies) and
          (actual == row['retirement']['publicationRecipe'] if finished else native.database_verification_recipe(
              tuple(actual[:2]), actual[2])),
          'REVIEWED_VERIFY_ONLY_TASK_SOURCE_REQUIRED')
     return {'sourceSha256': digest(raw), 'publicationRecipe': [digest(bodies[name]) for name in names[:2]],
-            'toolPreparationHelperSha256': digest(bodies[names[2]])}
+            'toolPreparationHelperSha256': digest(bodies[names[2]]),
+            **({'watchStartFailureProducer': {name: digest(bodies[name]) for name in WATCH_START_FAILURE_PRODUCER}}
+               if set(WATCH_START_FAILURE_PRODUCER) <= set(bodies) else {})}
 
 
 def pre_driver_memory_failure(row, receipt, catalog, fixture_container_id):
@@ -1130,15 +1142,70 @@ def pre_driver_cleanup(receipt, reports):
          'PRE_DRIVER_OBSERVABILITY_CLEANUP_UNRESOLVED')
 
 
-def task_reports(row, verifier, *, metadata_only=False, fixture_container_id=None):
+def unstarted_fixture_watch_failure(row, preparation_failure):
+    """Use original cancellation/owner evidence; never invent a verifier exit."""
+    need(row.get('retirement', {}).get('policy') == FINISHED_BATCH
+         and isinstance(preparation_failure, dict) and preparation_failure.get('jenkinsResult') == 'FAILURE'
+         and preparation_failure.get('recipe', {}).get('watchStartFailureProducer') == WATCH_START_FAILURE_PRODUCER,
+         'UNKNOWN_OR_PARTIAL_VERIFICATION_REPORT_STATE')
+    base = ROOT / 'verification' / row['release']; inbox = ROOT / 'inbox' / row['release']
+    work = base / 'checkout/work/compact-fixtures'
+    forbidden = [base / name for name in ('.fixtures-ready.json', '.verification-claimed',
+        'verification-receipt.json', 'verification-receipt.failed.json', 'checkout/driver.log',
+        'checkout/work/ci-evidence/receipt.json')]
+    forbidden += [inbox / name for name in ('.verification-upload', 'verification-evidence.tar.gz')]
+    need(all(not path.exists() and not path.is_symlink() for path in forbidden),
+         'PREPARATION_FAILURE_HAS_VERIFICATION_START_MARKER')
+    helper = read(inbox / 'verify-remote.py', MIB)
+    need(digest(helper) == WATCH_START_FAILURE_PRODUCER['script/jenkins/verify-remote.py'],
+         'PREPARATION_FAILURE_VERIFIER_COPY_CHANGED')
+    owner, cleanup = preparation_failure['owner'], preparation_failure['cleanup']
+    failure_raw = read(work / 'failure.json'); failure = json.loads(failure_raw)
+    watch_raw = read(work / 'fixture-watch-owner.json'); watch = json.loads(watch_raw)
+    context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}
+    identity = {'executionLocation': 'ECS', 'instanceId': INSTANCE, 'machineId': MACHINE}
+    need(all(document.get(key) == expected for document in (owner, cleanup, failure, watch)
+             for key, expected in context.items())
+         and all(document.get('identity') == identity for document in (owner, cleanup, watch))
+         and owner.get('phase') == 'OWNED_SERVER_STOPPED' and cleanup.get('status') == 'STOPPED'
+         and cleanup.get('errors') == [] and SHA.fullmatch(owner.get('containerId', ''))
+         and owner['containerId'] == cleanup.get('containerId') == watch.get('containerId')
+         and owner['containerId'] != owner.get('sourceContainerId')
+         and failure.get('schemaVersion') == 1 and failure.get('kind') == 'doorhandle-compact-fixture-failure'
+         and failure.get('phase') == 'FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED'
+         and failure.get('resourcePhase') == 'fixture-clone' and failure.get('errorType') == 'ValueError'
+         and watch.get('version') == 1 and watch.get('kind') == 'doorhandle-fixture-watch-owner',
+         'PREPARATION_FAILURE_ORIGINAL_CONTEXT_DIFFERS')
+    stopped = owner.get('fixtureWatchStartFailure', {})
+    need(stopped == cleanup.get('fixtureWatch')
+         and stopped.get('kind') == 'doorhandle-fixture-watch-start-failure'
+         and stopped.get('status') == 'STOPPED_BEFORE_READY' and stopped.get('processCreated') is True
+         and stopped.get('watchStopped') is True and stopped.get('groupCancellationConfirmed') is True
+         and type(stopped.get('exitCode')) is int and type(stopped.get('pid')) is int and stopped['pid'] > 1
+         and type(stopped.get('startTicks')) is int and stopped['startTicks'] > 0
+         and isinstance(stopped.get('bootId'), str)
+         and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', stopped['bootId'])
+         and watch.get('bootId') == stopped['bootId']
+         and watch.get('process') == {'pid': stopped['pid'], 'startTicks': stopped['startTicks'],
+                                     'group': stopped['pid'], 'session': stopped['pid']},
+         'PREPARATION_WATCH_STOP_UNCONFIRMED')
+    return {'status': 'NOT_STARTED', 'originalJenkinsControlsRetained': True,
+            'failureStage': failure['phase'], 'failureReceiptSha256': digest(failure_raw),
+            'watchOwnerSha256': digest(watch_raw), 'retainedVerifierSha256': digest(helper),
+            'watchStartFailure': stopped}
+
+
+def task_reports(row, verifier, *, metadata_only=False, fixture_container_id=None, preparation_failure=None):
     receipt_path = ROOT / 'verification' / row['release'] / 'verification-receipt.json'
     if not receipt_path.exists() and not receipt_path.is_symlink():
         # A preparation failure can have a complete source backup without ever
         # starting verification. Unknown/partially uploaded attempts are retained.
         need(not (receipt_path.parent / '.verification-claimed').exists() and
-             not (ROOT / 'inbox' / row['release'] / 'verify-remote.py').exists() and
              not (ROOT / 'inbox' / row['release'] / 'verification-evidence.tar.gz').exists(),
              'UNKNOWN_OR_PARTIAL_VERIFICATION_REPORT_STATE')
+        helper = ROOT / 'inbox' / row['release'] / 'verify-remote.py'
+        if helper.exists() or helper.is_symlink():
+            return unstarted_fixture_watch_failure(row, preparation_failure)
         return {'status': 'NOT_STARTED', 'originalJenkinsControlsRetained': True}
     raw = read(receipt_path)
     need(len(raw) <= verifier.MAX_RECEIPT_BYTES, 'ORIGINAL_REPORT_RECEIPT_BOUND')
@@ -1265,7 +1332,9 @@ def task_admitted(binding, value, helpers, *, metadata_only=False):
             'cleanupSha256': digest(raw_docs['fixtureCleanup']), 'backupManifestSha256': digest(manifest_raw),
             'sourceSqlSha256': sql_sha, 'sourceSqlBytes': sql_bytes, 'sourceSnapshotSha256': owner['sourceSnapshotSha256'],
             'sourceRecipe': recipe, 'publicationReferences': publication,
-            'reports': task_reports(row, verifier, metadata_only=metadata_only, fixture_container_id=owner['containerId']),
+            'reports': task_reports(row, verifier, metadata_only=metadata_only, fixture_container_id=owner['containerId'],
+                preparation_failure={'owner': owner, 'cleanup': cleanup, 'recipe': recipe,
+                                     'jenkinsResult': evidence['jenkinsResult']} if finished else None),
             **({'preRuntimeAbsence': absence} if finished else {}),
             **({'completedBinaryRetirement': finished_completed_binaries(binding, row)}
                if finished and 'completedAttempt' in row['retirement'] else {})})
@@ -1316,11 +1385,14 @@ def task_fixture_candidates(value, keepers, helpers):
             'fixtureCleanup': {key: documents['fixtureCleanup'].get(key) for key in
                 ('schemaVersion', 'kind', 'release', 'commit', 'sourceSha256', 'identity', 'status', 'errors',
                  'containerId', 'sourceContainerUntouched', 'dataDirectoryRetained', 'sourceDumpAndEvidenceRetained')}}
-        fixture = native.capture_fixture(ROOT, value, historical, builder, source_proof=source, failed_native=True)
-        candidate = {'historical': historical, 'fixture': fixture}
         if 'retirement' in row:
             historical['finishedOutputsPolicy'] = FINISHED_BATCH
             historical['preparedToolsSha256'] = keeper['preRuntimeAbsence']['toolsSha256']
+        preparation_failure = keeper['reports'] if keeper.get('reports', {}).get('failureStage') == 'FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED' else None
+        fixture = native.capture_fixture(ROOT, value, historical, builder, source_proof=source, failed_native=True,
+            **({'preparation_failure': preparation_failure} if preparation_failure is not None else {}))
+        candidate = {'historical': historical, 'fixture': fixture}
+        if 'retirement' in row:
             candidate['preservedBuilder'] = finished_preserved_builder(historical, helpers)
         candidates.append(candidate)
     return candidates

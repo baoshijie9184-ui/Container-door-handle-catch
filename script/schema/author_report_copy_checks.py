@@ -1,6 +1,6 @@
 """Author full report-copy reconciliation from reviewed INSERT projections; never execute SQL.
 
-Source semantics remain in copy/34. This author checks every assigned field against
+Source semantics remain in copy-fixed-clock/34. This author checks every assigned field against
 its source expression and every unassigned ordinary field against its DDL default.
 It does not prove those projections are semantically correct: the ECS suite exercises
 historical source facts, public API replay and deliberate target corruption separately.
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('compact_parser', ROOT / 'script/schema/build_compact_schema.py')
 parser = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(parser)
-PATH = ROOT / 'sql/mysql/compact/copy/34-quality-report-workflow.sql'
+PATH = ROOT / 'sql/mysql/compact/copy-fixed-clock/34-quality-report-workflow.sql'
 BEGIN = '-- BEGIN complete report field reconciliation'
 END = '-- END complete report field reconciliation'
 META_BEGIN = '-- BEGIN exact report source metadata'
@@ -146,6 +146,10 @@ for statement in parser.split_top_level(parser.without_comments(sql), ';'):
     sources.add(source_name)
     fields = []
     for field, definition in tables[name]['columns'].items():
+        # The clock compiler adds and reconciles the complete source sidecar.
+        # Treating it as a fixed-template NULL would reject every UNRESOLVED row.
+        if field == 'legacy_clock_json':
+            continue
         declaration = definition['declaration']
         if re.search(r'\b(AUTO_INCREMENT|GENERATED)\b', declaration, re.I):
             continue
@@ -177,5 +181,7 @@ if sql.count('COMMIT;') != 1:
 sql = sql.replace('COMMIT;', block + 'COMMIT;')
 metadata, column_count = source_metadata()
 sql = sql.replace('START TRANSACTION;\n', 'START TRANSACTION;\n' + metadata, 1)
-PATH.write_text(sql, encoding='utf-8')
+# Keep the reviewed fixed-clock source and the executable UNRESOLVED copy in sync.
+from author_legacy_clock_copy import write_copy
+write_copy(PATH.name, sql)
 print(json.dumps({'status': 'SOURCE_AUTHORED_NOT_EXECUTED', 'sourceTables': len(sources), 'sourceColumnsIncludingMainReport': column_count, 'targetTables': 3}))

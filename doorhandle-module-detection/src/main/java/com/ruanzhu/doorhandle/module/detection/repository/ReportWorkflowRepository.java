@@ -71,8 +71,8 @@ public final class ReportWorkflowRepository {
                 SELECT e.*,r.finished_at AS consumed_at,r.legacy_clock_json AS consumed_clock_json,
                   r.legacy_source AS consumed_source,r.legacy_key AS consumed_source_key FROM workflow_instance e LEFT JOIN workflow_instance r
                   ON r.kind='REPORT_CONSUMPTION' AND r.idempotency_scope='REPORT_CONSUMPTION' AND r.report_request_id=e.report_request_id
-                  AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id
-                WHERE e.kind='REPORT_DELIVERY' AND e.resource_type='QUALITY_REPORT' AND e.resource_id=? ORDER BY e.created_at,e.request_id LIMIT 100
+                  AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id AND r.owner_user_id=e.owner_user_id
+                WHERE e.kind='REPORT_DELIVERY' AND e.owner_user_id>0 AND e.resource_type='QUALITY_REPORT' AND e.resource_id=? ORDER BY e.created_at,e.request_id LIMIT 100
                 """,(r,n)->{
             var body=decode(r.getString("payload_json"),DeliveryV1.class);
             var clock=LegacyWorkflowClocks.read(r.getString("legacy_clock_json"),WorkflowKind.REPORT_DELIVERY,r.getString("legacy_source"),r.getString("legacy_key"));
@@ -83,7 +83,7 @@ public final class ReportWorkflowRepository {
     }
     public boolean retry(String report,String event,int attempts) {
         JdbcTransactions.requireActive(jdbc);
-        return jdbc.update("UPDATE workflow_instance e LEFT JOIN workflow_instance r ON r.kind='REPORT_CONSUMPTION' AND r.idempotency_scope='REPORT_CONSUMPTION' AND r.report_request_id=e.report_request_id AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id AND r.legacy_clock_json IS NOT NULL SET e.status='RETRY',e.revision=e.revision+1,e.next_attempt_at=UTC_TIMESTAMP(6),e.updated_at=UTC_TIMESTAMP(6),e.error_code=NULL WHERE e.kind='REPORT_DELIVERY' AND e.legacy_clock_json IS NULL AND r.id IS NULL AND e.resource_type='QUALITY_REPORT' AND e.resource_id=? AND e.report_request_id=? AND e.status IN ('FAILED','RETRY') AND e.attempts=? AND e.claim_token IS NULL",report,event,attempts)==1;
+        return jdbc.update("UPDATE workflow_instance e LEFT JOIN workflow_instance r ON r.kind='REPORT_CONSUMPTION' AND r.idempotency_scope='REPORT_CONSUMPTION' AND r.report_request_id=e.report_request_id AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id AND r.owner_user_id=e.owner_user_id AND r.legacy_clock_json IS NOT NULL SET e.status='RETRY',e.revision=e.revision+1,e.next_attempt_at=UTC_TIMESTAMP(6),e.updated_at=UTC_TIMESTAMP(6),e.error_code=NULL WHERE e.kind='REPORT_DELIVERY' AND e.owner_user_id>0 AND e.legacy_clock_json IS NULL AND r.id IS NULL AND e.resource_type='QUALITY_REPORT' AND e.resource_id=? AND e.report_request_id=? AND e.status IN ('FAILED','RETRY') AND e.attempts=? AND e.claim_token IS NULL",report,event,attempts)==1;
     }
     public void audit(QualityReportRepository.Row report,long actor,String username,String action,String before,String reason) {
         audits.append(new AuditEvent(RESOURCE,report.ownerUserId(),actor,RESOURCE,report.reportId(),null,null,null,null,action,(long)report.version(),report.snapshotSha256(),null,1,new AuditV1(username,before,report.status(),reason)));

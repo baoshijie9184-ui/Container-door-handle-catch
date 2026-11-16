@@ -662,3 +662,50 @@ def test_clock_join_qualifies_the_original_source_filter_before_adding_a_target(
     compiled = clocks.compile_copy(original, '33-sdk-checkpoint.sql')
     guard = next(line for line in compiled.splitlines() if 'NOT(clock_target.legacy_clock_json<=>' in line)
     assert 'WHERE (agent_workbench_sdk_state.updated_at IS NOT NULL) AND ' in guard
+
+
+def test_report_author_updates_fixed_and_unresolved_copies_without_nulling_clock_evidence(tmp_path):
+    source_catalog = ROOT / 'docs/database/legacy-clock-source-catalog.json'
+    catalog = json.loads(source_catalog.read_text('utf8'))
+    paths = {Path(name) for table in catalog['tables'].values() for name in table['sourceFiles']}
+    paths |= {Path('script/schema') / name for name in (
+        'build_compact_schema.py', 'author_report_copy_checks.py', 'author_legacy_clock_copy.py')}
+    paths.add(source_catalog.relative_to(ROOT))
+    paths |= {path.relative_to(ROOT) for path in (ROOT / 'sql/mysql/compact/baseline').glob('*.sql')}
+    filename = '34-quality-report-workflow.sql'
+    for mode in ('copy-fixed-clock', 'copy'):
+        paths.add(Path('sql/mysql/compact') / mode / filename)
+    for relative in paths:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    result = subprocess.run([sys.executable, '-B', str(tmp_path / 'script/schema/author_report_copy_checks.py')],
+                            capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout)['status'] == 'SOURCE_AUTHORED_NOT_EXECUTED'
+    for mode in ('copy-fixed-clock', 'copy'):
+        relative = Path('sql/mysql/compact') / mode / filename
+        assert (tmp_path / relative).read_text('utf8') == (ROOT / relative).read_text('utf8')
+    compiled = (tmp_path / 'sql/mysql/compact/copy' / filename).read_text('utf8')
+    assert 'NOT(BINARY t.legacy_clock_json<=>BINARY (NULL))' not in compiled
+    assert compiled.count('NOT(clock_target.legacy_clock_json<=>') == 7
+
+
+@pytest.mark.parametrize('kind,source', [
+    ('REPORT_DELIVERY', 'detection_report_outbox'),
+    ('REPORT_CONSUMPTION', 'detection_report_event_receipt'),
+])
+def test_terminal_report_orphan_projection_keeps_the_same_owner_and_complete_reconciliation(kind, source):
+    for mode in ('copy-fixed-clock', 'copy'):
+        sql = (ROOT / 'sql/mysql/compact' / mode / '34-quality-report-workflow.sql').read_text('utf8')
+        statements = list(builder.split_top_level(builder.without_comments(sql), ';'))
+        projection = next(item for item in statements if item.startswith('INSERT INTO workflow_instance(')
+                          and "'" + kind + "'" in item)
+        assert 'COALESCE(q.owner_user_id,0)' in projection
+        assert 'LEFT JOIN quality_report q ON' in projection
+        assert 'NOT(t.owner_user_id<=>(COALESCE(q.owner_user_id,0)))' in sql
+        check = next(item for item in statements if 'LEFT JOIN workflow_instance t ON' in item
+                     and 'FROM `__SOURCE_SCHEMA__`.' + source + ' ' in item)
+        assert 'LEFT JOIN quality_report q ON' in check
+        assert 'NOT(BINARY t.legacy_key' in check and 'NOT(BINARY t.payload_json' in check
+        assert "source_report.id IS NULL AND (q.id IS NOT NULL OR NOT(BINARY e.delivery_status<=>BINARY 'DELIVERED'))" in sql
+        assert 'q.id IS NULL OR NOT(q.id<=>source_report.id)' in sql

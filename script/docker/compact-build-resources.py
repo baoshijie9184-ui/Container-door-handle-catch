@@ -1649,6 +1649,20 @@ def historical_fixture_watch_proof(root, context, identity, owner, proof):
     files = proof.get('files'); expected = {
         'owner': work + '/fixture-watch-owner.json', 'status': work + '/fixture-watch-status.json',
         'runtime': str(Path(work).parent / 'ci-evidence/fixture-runtime.json')}
+    if 'terminationAuthority' in proof:
+        stopped = proof.get('parentCancellation')
+        require(proof['terminationAuthority'] == 'PARENT_CANCELLED_BEFORE_READY'
+                and proof.get('status') == 'FAILED' and proof.get('reportedWatchStopped') is False
+                and type(stopped) is dict and stopped.get('kind') == 'doorhandle-fixture-watch-start-failure'
+                and stopped.get('status') == 'STOPPED_BEFORE_READY' and stopped.get('processCreated') is True
+                and stopped.get('watchStopped') is True and stopped.get('groupCancellationConfirmed') is True
+                and type(stopped.get('exitCode')) is int and stopped.get('bootId') == proof['bootId']
+                and type(stopped.get('pid')) is int and stopped['pid'] == process['pid']
+                and type(stopped.get('startTicks')) is int and stopped['startTicks'] == process['startTicks'],
+                'Parent-confirmed pre-ready watcher cancellation differs')
+        expected.pop('runtime')
+        expected.update(parentOwner=str(Path(work).parent / 'compact-fixtures-owner.json'),
+                        parentCleanup=work + '/cleanup-receipt.json', failure=work + '/failure.json')
     require(type(files) is dict and set(files) == set(expected), 'Complete fixture watcher originals required')
     for role, path in expected.items():
         reference = files[role]

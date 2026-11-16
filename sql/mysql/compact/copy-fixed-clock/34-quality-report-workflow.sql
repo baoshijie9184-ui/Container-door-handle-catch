@@ -193,9 +193,14 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT COALESCE(REGEXP_LIKE(o.call_id,'^[A-Za-z0-9_:.-]{1,160}$','c'),FALSE)
  OR COALESCE(BINARY o.tool_name,BINARY '') NOT IN (BINARY 'create_report_draft',BINARY 'edit_report_draft')
  OR CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL;
+-- A completed historical delivery can outlive its report in the source.
+-- Never confuse that source fact with a parent omitted/changed by this copy.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e
+ LEFT JOIN `__SOURCE_SCHEMA__`.detection_quality_report source_report ON BINARY source_report.report_id=BINARY e.report_id
  LEFT JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id
- WHERE q.id IS NULL OR COALESCE(JSON_VALID(e.payload_json),0)<>1 OR COALESCE(CHAR_LENGTH(e.payload_json),0) NOT BETWEEN 1 AND 4096
+ WHERE (source_report.id IS NOT NULL AND (q.id IS NULL OR NOT(q.id<=>source_report.id) OR NOT(q.owner_user_id<=>source_report.owner_user_id) OR NOT(q.version<=>source_report.version)))
+ OR (source_report.id IS NULL AND (q.id IS NOT NULL OR NOT(BINARY e.delivery_status<=>BINARY 'DELIVERED')))
+ OR COALESCE(JSON_VALID(e.payload_json),0)<>1 OR COALESCE(CHAR_LENGTH(e.payload_json),0) NOT BETWEEN 1 AND 4096
  OR COALESCE(e.attempts,-1)<0 OR NOT COALESCE(REGEXP_LIKE(e.event_id,'^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$','c'),FALSE)
  OR COALESCE(BINARY e.delivery_status,BINARY '') NOT IN (BINARY 'PENDING',BINARY 'RETRY',BINARY 'PROCESSING',BINARY 'DELIVERED',BINARY 'FAILED')
  OR (e.delivery_status='PROCESSING' AND (e.lease_token IS NULL OR e.lease_expires_at IS NULL))
@@ -217,10 +222,10 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(e.payload_json,'$.schemaVersion')),'NULL')<>'INTEGER'
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(e.payload_json,'$.status')),'NULL')<>'STRING';
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e
- JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id
+ LEFT JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id
  WHERE CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS DECIMAL(20,0)) NOT BETWEEN 1 AND 9223372036854775807
  OR CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.version')) AS DECIMAL(20,0)) NOT BETWEEN 2 AND 2147483647
- OR CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.version')) AS DECIMAL(20,0))>q.version
+ OR (q.id IS NOT NULL AND CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.version')) AS DECIMAL(20,0))>q.version)
  OR NOT(JSON_EXTRACT(e.payload_json,'$.schemaVersion')<=>CAST('1' AS JSON))
  OR BINARY JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.status')) NOT IN (BINARY 'SUBMITTED',BINARY 'WITHDRAWN',BINARY 'APPROVED',BINARY 'REJECTED')
  OR NOT(BINARY e.event_type<=>BINARY CONCAT('detection.report.',LOWER(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.status'))),'.v1'));
@@ -269,15 +274,15 @@ INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,requ
  CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
  'detection_report_agent_origin',CAST(JSON_ARRAY(o.actor_user_id,o.request_id) AS CHAR) FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin o JOIN quality_report q ON BINARY q.report_id=BINARY o.report_id;
 INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,fence,claim_token,lease_expires_at,attempts,next_attempt_at,error_code,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key)
- SELECT SHA2(CONCAT('REPORT_DELIVERY:',e.event_id),256),'REPORT_DELIVERY','REPORT_DELIVERY',e.event_id,SHA2(CONVERT(e.payload_json USING utf8mb4),256),q.owner_user_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),
+ SELECT SHA2(CONCAT('REPORT_DELIVERY:',e.event_id),256),'REPORT_DELIVERY','REPORT_DELIVERY',e.event_id,SHA2(CONVERT(e.payload_json USING utf8mb4),256),COALESCE(q.owner_user_id,0),CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),
  'QUALITY_REPORT',e.report_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.version')) AS UNSIGNED),e.delivery_status,IF(e.delivery_status='PROCESSING',1,0),e.lease_token,CONVERT_TZ(e.lease_expires_at,'__SOURCE_REPORT_OFFSET__','+00:00'),e.attempts,CONVERT_TZ(e.next_attempt_at,'__SOURCE_REPORT_OFFSET__','+00:00'),e.last_error_code,1,JSON_OBJECT('eventType',e.event_type,'eventJson',e.payload_json),
  CONVERT_TZ(e.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),COALESCE(CONVERT_TZ(e.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(e.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')),CONVERT_TZ(e.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
- 'detection_report_outbox',e.event_id FROM `__SOURCE_SCHEMA__`.detection_report_outbox e JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id;
+ 'detection_report_outbox',e.event_id FROM `__SOURCE_SCHEMA__`.detection_report_outbox e LEFT JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id;
 INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key)
- SELECT SHA2(CONCAT('REPORT_CONSUMPTION:',r.event_id),256),'REPORT_CONSUMPTION','REPORT_CONSUMPTION',r.event_id,r.payload_sha256,q.owner_user_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),
+ SELECT SHA2(CONCAT('REPORT_CONSUMPTION:',r.event_id),256),'REPORT_CONSUMPTION','REPORT_CONSUMPTION',r.event_id,r.payload_sha256,COALESCE(q.owner_user_id,0),CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),
  'QUALITY_REPORT',r.report_id,r.report_version,'COMPLETED',1,JSON_OBJECT('eventType',r.event_type,'payloadSha256',r.payload_sha256),
  CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
- 'detection_report_event_receipt',r.event_id FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id;
+ 'detection_report_event_receipt',r.event_id FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r LEFT JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id;
 INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,action,revision,content_sha256,occurred_at,payload_version,payload_json,legacy_source,legacy_key)
  SELECT CONCAT('legacy-report-audit-',a.id),'QUALITY_REPORT',q.owner_user_id,a.actor_user_id,'QUALITY_REPORT',a.report_id,a.action,a.report_version,a.snapshot_sha256,CONVERT_TZ(a.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),1,
  JSON_OBJECT('actorUsername',a.actor_username,'beforeStatus',a.before_status,'afterStatus',a.after_status,'reason',a.reason),'detection_report_audit',CAST(a.id AS CHAR)
@@ -542,7 +547,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(BINARY t.mcp_source_utc_offset<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_row_json<=>BINARY (NULL));
 -- detection_report_outbox: all ordinary target fields, including NULL/default state.
-INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e LEFT JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id
  LEFT JOIN workflow_instance t ON BINARY t.workflow_id=BINARY (SHA2(CONCAT('REPORT_DELIVERY:',e.event_id),256))
  WHERE t.workflow_id IS NULL
  OR NOT(BINARY t.workflow_id<=>BINARY (SHA2(CONCAT('REPORT_DELIVERY:',e.event_id),256)))
@@ -550,7 +555,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(BINARY t.idempotency_scope<=>BINARY ('REPORT_DELIVERY'))
  OR NOT(BINARY t.request_id<=>BINARY (e.event_id))
  OR NOT(BINARY t.request_sha256<=>BINARY (SHA2(CONVERT(e.payload_json USING utf8mb4),256)))
- OR NOT(t.owner_user_id<=>(q.owner_user_id))
+ OR NOT(t.owner_user_id<=>(COALESCE(q.owner_user_id,0)))
  OR NOT(t.actor_user_id<=>(CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED)))
  OR NOT(t.parent_workflow_id<=>(NULL))
  OR NOT(BINARY t.resource_type<=>BINARY ('QUALITY_REPORT'))
@@ -624,7 +629,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(BINARY t.mcp_source_utc_offset<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_row_json<=>BINARY (NULL));
 -- detection_report_event_receipt: all ordinary target fields, including NULL/default state.
-INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r LEFT JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id
  LEFT JOIN workflow_instance t ON BINARY t.workflow_id=BINARY (SHA2(CONCAT('REPORT_CONSUMPTION:',r.event_id),256))
  WHERE t.workflow_id IS NULL
  OR NOT(BINARY t.workflow_id<=>BINARY (SHA2(CONCAT('REPORT_CONSUMPTION:',r.event_id),256)))
@@ -632,7 +637,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(BINARY t.idempotency_scope<=>BINARY ('REPORT_CONSUMPTION'))
  OR NOT(BINARY t.request_id<=>BINARY (r.event_id))
  OR NOT(BINARY t.request_sha256<=>BINARY (r.payload_sha256))
- OR NOT(t.owner_user_id<=>(q.owner_user_id))
+ OR NOT(t.owner_user_id<=>(COALESCE(q.owner_user_id,0)))
  OR NOT(t.actor_user_id<=>(CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED)))
  OR NOT(t.parent_workflow_id<=>(NULL))
  OR NOT(BINARY t.resource_type<=>BINARY ('QUALITY_REPORT'))

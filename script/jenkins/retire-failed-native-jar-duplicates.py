@@ -2483,13 +2483,20 @@ def stopped_fixture_watch_process(process, boot_id):
     return current_boot
 
 
-def fixture_watch_controls(root, historical, builder):
+PRE_READY_WATCH_SOURCE = {
+    'preparer': '27111b3ac172944cec30d8e6079920d3136b24d6da6a51e2c967083c36948a70',
+    'verifier': 'eaa8049ea4d18c749f73e0d8076bcfeedf8812dd06ebf980e9dcaec72204aaaf',
+}
+
+
+def fixture_watch_controls(root, historical, builder, *, preparation_failure=None):
     """Bind stopped watch originals to one authenticated new producer/fixture."""
     source = historical['sourceArchive']
     if 'mysqlFixtureMemoryLimitBytes' not in source:
         return None
     context, owner = historical['context'], historical['fixtureOwner']
     identity = historical['evidence']['identity']; work = Path(owner['work'])
+    preparation_failure = preparation_failure if preparation_failure is not None else historical.get('preparationFailureProof')
     original_ref = historical['controls']['fixtureOwner']
     with held_file(root, Path(root) / original_ref['path'], MAX_CONTROL) as (stream, signature):
         raw = stream.read(MAX_CONTROL + 1)
@@ -2501,15 +2508,19 @@ def fixture_watch_controls(root, historical, builder):
          and watch['file'] == str(work / 'fixture-watch-owner.json')
          and all(type(watch[key]) is str and re.fullmatch(r'[a-f0-9]{32}', watch[key])
                  for key in ('ownerToken', 'groupToken')), 'ORIGINAL_FIXTURE_WATCH_REFERENCE_REQUIRED')
-    paths = {'owner': work / 'fixture-watch-owner.json', 'status': work / 'fixture-watch-status.json',
-             'runtime': work.parent / 'ci-evidence/fixture-runtime.json'}
+    paths = {'owner': work / 'fixture-watch-owner.json', 'status': work / 'fixture-watch-status.json'}
+    if preparation_failure is None:
+        paths['runtime'] = work.parent / 'ci-evidence/fixture-runtime.json'
+    else:
+        paths.update(parentOwner=Path(root) / original_ref['path'],
+                     parentCleanup=work / 'cleanup-receipt.json', failure=work / 'failure.json')
     documents, bindings = {}, {}
     for role, path in paths.items():
         with held_file(root, path, MAX_CONTROL) as (stream, signature):
             raw = stream.read(MAX_CONTROL + 1); documents[role] = decode(raw)
             bindings[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(raw),
                               'sha256': digest_bytes(raw), 'metadata': signature}
-    descriptor, status, runtime = (documents[role] for role in ('owner', 'status', 'runtime'))
+    descriptor, status = (documents[role] for role in ('owner', 'status'))
     configuration = {'tableOpenCacheInstances': 1, 'bufferPoolBytes': 268435456, 'maxConnections': 120}
     expected = {**context, 'identity': identity, 'containerId': owner['containerId'],
                 'memoryLimitBytes': 3 * 1024 ** 3, 'swapLimitBytes': 0, 'mysqlConfiguration': configuration}
@@ -2527,7 +2538,8 @@ def fixture_watch_controls(root, historical, builder):
          and all(status.get(key) == value for key, value in expected.items())
          and status.get('ownerToken') == watch['ownerToken'] and status.get('process') == process
          and status.get('bootId') == boot_id and status.get('status') in ('STOPPED', 'FAILED')
-         and status.get('watchStopped') is True and type(status.get('probeCount')) is int and status['probeCount'] > 0,
+         and status.get('watchStopped') is (True if preparation_failure is None else False)
+         and type(status.get('probeCount')) is int and status['probeCount'] > 0,
          'ORIGINAL_FIXTURE_WATCH_TERMINAL_DIFFERS')
     kernel = descriptor.get('kernelIdentity')
     need(type(kernel) is dict and set(kernel) == {'pid', 'startTicks', 'relative', 'directory'},
@@ -2538,18 +2550,61 @@ def fixture_watch_controls(root, historical, builder):
             'pid': kernel['pid'], 'startTicks': kernel['startTicks'], 'cgroup': kernel['relative'],
             'memoryLimitBytes': 3 * 1024 ** 3, 'swapLimitBytes': 0}.items()),
             'ORIGINAL_FIXTURE_WATCH_PROBE_IDENTITY_DIFFERS')
-    public = {key: value for key, value in status.items() if key not in ('ownerToken', 'capturedMonotonic')}
-    need(runtime == public and runtime.get('watchStopped') is True, 'ORIGINAL_FIXTURE_WATCH_PUBLIC_REPORT_DIFFERS')
+    parent_proof = {}
+    if preparation_failure is None:
+        public = {key: value for key, value in status.items() if key not in ('ownerToken', 'capturedMonotonic')}
+        runtime = documents['runtime']
+        need(runtime == public and runtime.get('watchStopped') is True, 'ORIGINAL_FIXTURE_WATCH_PUBLIC_REPORT_DIFFERS')
+    else:
+        # a351 can fail before ready, then the parent cancels the exact watcher
+        # group. Its earlier FAILED/false status is retained, not rewritten.
+        parent, cleanup, failure = (documents[role] for role in ('parentOwner', 'parentCleanup', 'failure'))
+        stopped = parent.get('fixtureWatchStartFailure')
+        cleanup_ref = historical['controls']['fixtureCleanup']
+        need(historical.get('finishedOutputsPolicy') == 'manifest-pre-runtime-outputs-v1'
+             and source.get('transportRecipeSha256') == PRE_READY_WATCH_SOURCE['preparer']
+             and type(preparation_failure) is dict and preparation_failure.get('status') == 'NOT_STARTED'
+             and preparation_failure.get('retainedVerifierSha256') == PRE_READY_WATCH_SOURCE['verifier']
+             and preparation_failure.get('failureStage') == 'FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED'
+             and bindings['parentOwner'] == original_ref and bindings['parentCleanup'] == cleanup_ref
+             and bindings['owner']['sha256'] == preparation_failure.get('watchOwnerSha256')
+             and bindings['failure']['sha256'] == preparation_failure.get('failureReceiptSha256')
+             and all(document.get(key) == value for document in (parent, cleanup, failure)
+                     for key, value in context.items())
+             and parent == original and parent.get('phase') == 'OWNED_SERVER_STOPPED'
+             and parent.get('identity') == cleanup.get('identity') == identity
+             and cleanup.get('status') == 'STOPPED' and cleanup.get('errors') == []
+             and parent.get('containerId') == cleanup.get('containerId') == owner['containerId']
+             and failure.get('kind') == 'doorhandle-compact-fixture-failure' and failure.get('schemaVersion') == 1
+             and failure.get('phase') == preparation_failure['failureStage']
+             and failure.get('resourcePhase') == 'fixture-clone' and failure.get('errorType') == 'ValueError'
+             and status['status'] == 'FAILED' and type(stopped) is dict
+             and stopped == cleanup.get('fixtureWatch') == preparation_failure.get('watchStartFailure')
+             and stopped.get('kind') == 'doorhandle-fixture-watch-start-failure'
+             and stopped.get('status') == 'STOPPED_BEFORE_READY' and stopped.get('processCreated') is True
+             and stopped.get('watchStopped') is True and stopped.get('groupCancellationConfirmed') is True
+             and type(stopped.get('exitCode')) is int and stopped.get('bootId') == boot_id
+             and type(stopped.get('pid')) is int and stopped['pid'] == process['pid']
+             and type(stopped.get('startTicks')) is int and stopped['startTicks'] == process['startTicks']
+             and not (work.parent / 'ci-evidence/fixture-runtime.json').exists(),
+             'ORIGINAL_PRE_READY_PARENT_CANCELLATION_REQUIRED')
+        runtime_path = work.parent / 'ci-evidence/fixture-runtime.json'
+        need(not runtime_path.is_symlink(), 'ORIGINAL_PRE_READY_PARENT_CANCELLATION_REQUIRED')
+        parent_proof = {'terminationAuthority': 'PARENT_CANCELLED_BEFORE_READY',
+                        'reportedWatchStopped': False, 'parentCancellation': stopped}
     observed_boot = stopped_fixture_watch_process(process, boot_id)
     proof = {**expected, 'process': process, 'bootId': boot_id, 'observedBootId': observed_boot, 'kernelIdentity': kernel,
-             'status': status['status'], 'watchStopped': True, 'processAbsent': True, 'files': bindings}
+             'status': status['status'], 'watchStopped': True, 'processAbsent': True, 'files': bindings, **parent_proof}
     return builder.historical_fixture_watch_proof(root, context, identity, owner, proof)
 
 
-def capture_fixture(root, request, historical, builder, *, source_proof=None, failed_native=False):
+def capture_fixture(root, request, historical, builder, *, source_proof=None, failed_native=False, preparation_failure=None):
     owner, cleanup = historical['fixtureOwner'], historical['fixtureCleanup']; cid = owner.get('containerId')
     if cid is None: return None
     need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_MYSQL_FIXTURE_ID_REQUIRED')
+    if preparation_failure is not None:
+        need(failed_native, 'PRE_READY_CANCELLATION_REQUIRES_FINISHED_NATIVE_PROOF')
+        historical['preparationFailureProof'] = preparation_failure
     watch = fixture_watch_controls(root, historical, builder) if failed_native else None
     if watch is not None:
         historical['fixtureWatchProof'] = watch

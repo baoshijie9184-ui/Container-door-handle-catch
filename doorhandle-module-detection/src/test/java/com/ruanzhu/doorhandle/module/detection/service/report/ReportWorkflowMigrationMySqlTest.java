@@ -281,4 +281,153 @@ class ReportWorkflowMigrationMySqlTest {
         legacy.update("UPDATE detection_report_command SET response_json=CONCAT(response_json,' ') WHERE report_id=?",report);
         assertThat(fixture.sourceSnapshotSha256()).isNotEqualTo(original);
     }
+
+    ReportLifecycleEvent addTerminalSourceOrphan(boolean consumed)throws Exception {
+        // Actor 3 can be a supervisor; it is not evidence of the missing report's owner.
+        var orphan=new ReportLifecycleEvent(UUID.randomUUID().toString(),"qr-"+UUID.randomUUID(),3,"APPROVED",7,1);
+        String body=json.writerWithDefaultPrettyPrinter().writeValueAsString(orphan)+" ";
+        legacy.update("INSERT INTO detection_report_outbox(event_id,report_id,event_type,payload_json,delivery_status,created_at,attempts,next_attempt_at,delivered_at,last_error_code) VALUES(?,?,?,?,'DELIVERED',?,4,?,?,'RETAINED')",
+                orphan.eventId(),orphan.reportId(),orphan.eventType(),body,beijing,beijing.plusSeconds(2),beijing.plusSeconds(9));
+        if(consumed) {
+            legacy.update("INSERT INTO detection_report_event_receipt(event_id,report_id,event_type,report_version,payload_sha256,consumed_at) VALUES(?,?,?,?,?,?)",
+                    orphan.eventId(),orphan.reportId(),orphan.eventType(),orphan.version(),new ReportEventCodec(json).digest(orphan),beijing.plusSeconds(8));
+            legacy.update("INSERT INTO detection_report_event_state(report_id,last_version,status,last_event_id,updated_at) VALUES(?,?,?,?,?)",
+                    orphan.reportId(),orphan.version(),orphan.status(),orphan.eventId(),beijing.plusSeconds(8));
+        }
+        return orphan;
+    }
+
+    @ParameterizedTest @CsvSource({"+08:00,true","+08:00,false","UNRESOLVED,true","UNRESOLVED,false"})
+    void terminalSourceOrphansRetainExactHistoryWithoutInventingAnOwnerOrReplaying(String clock,boolean consumed)throws Exception {
+        var orphan=addTerminalSourceOrphan(consumed);String sourceHash=fixture.sourceSnapshotSha256();
+        String original=legacy.queryForObject("SELECT payload_json FROM detection_report_outbox WHERE event_id=?",String.class,orphan.eventId());
+        if(clock.equals("UNRESOLVED"))fixture.copyUnresolved();else fixture.copy(clock);
+        var row=jdbc.queryForMap("SELECT * FROM workflow_instance WHERE kind='REPORT_DELIVERY' AND request_id=?",orphan.eventId());
+        assertThat(((Number)row.get("owner_user_id")).longValue()).isZero();
+        assertThat(((Number)row.get("actor_user_id")).longValue()).isEqualTo(3);
+        assertThat(row).containsEntry("request_id",orphan.eventId()).containsEntry("legacy_key",orphan.eventId())
+                .containsEntry("legacy_source","detection_report_outbox").containsEntry("resource_id",orphan.reportId())
+                .containsEntry("status","DELIVERED").containsEntry("claim_token",null).containsEntry("lease_expires_at",null)
+                .containsEntry("error_code","RETAINED").containsEntry("request_sha256",ReportWorkflowRepository.sha(original));
+        assertThat(((Number)row.get("attempts")).intValue()).isEqualTo(4);
+        assertThat(((Number)row.get("resource_revision")).longValue()).isEqualTo(7);
+        var body=json.readTree((String)row.get("payload_json"));
+        assertThat(body.path("eventJson").asText()).isEqualTo(original);
+        assertThat(body.path("eventType").asText()).isEqualTo(orphan.eventType());
+        if(clock.equals("UNRESOLVED")) {
+            assertThat(row).containsEntry("created_at",null).containsEntry("updated_at",null).containsEntry("finished_at",null).containsEntry("next_attempt_at",null);
+            var sidecar=json.readTree((String)row.get("legacy_clock_json"));
+            assertThat(sidecar.path("sourceSnapshotSha256").asText()).isEqualTo(sourceHash);
+            assertThat(sidecar.path("sourceWallTimes").path("delivered_at").asText()).isEqualTo("2026-10-14 16:30:09");
+        } else {
+            assertThat(row.get("legacy_clock_json")).isNull();
+            assertThat(jdbc.queryForObject("SELECT finished_at FROM workflow_instance WHERE id=?",LocalDateTime.class,row.get("id"))).isEqualTo(utc.plusSeconds(9));
+            assertThat(jdbc.queryForObject("SELECT next_attempt_at FROM workflow_instance WHERE id=?",LocalDateTime.class,row.get("id"))).isEqualTo(utc.plusSeconds(2));
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_CONSUMPTION' AND owner_user_id=0 AND request_id=?",Long.class,orphan.eventId())).isEqualTo(consumed?1L:0L);
+        if(consumed) {
+            var receipt=jdbc.queryForMap("SELECT * FROM workflow_instance WHERE kind='REPORT_CONSUMPTION' AND request_id=?",orphan.eventId());
+            assertThat(receipt).containsEntry("status","COMPLETED").containsEntry("legacy_source","detection_report_event_receipt")
+                    .containsEntry("legacy_key",orphan.eventId()).containsEntry("resource_id",orphan.reportId())
+                    .containsEntry("request_sha256",new ReportEventCodec(json).digest(orphan));
+            assertThat(jdbc.queryForObject("SELECT current_ref FROM runtime_state WHERE namespace='REPORT_EVENT_STATE' AND scope_key=?",String.class,orphan.reportId())).isEqualTo(orphan.eventId());
+        }
+        var retained=jdbc.queryForList("SELECT * FROM workflow_instance ORDER BY id");
+        var states=jdbc.queryForList("SELECT * FROM runtime_state ORDER BY namespace,owner_id,scope_key");
+        var repository=new ReportEventRepository(jdbc);var reports=new ReportWorkflowRepository(jdbc,json);
+        var stale=new ReportEventRepository.Entry(orphan.eventId(),orphan.reportId(),orphan.eventType(),original,"DELIVERED",4,null);
+        var future=LocalDateTime.of(2030,1,1,0,0);
+        assertThat(repository.get(orphan.eventId())).isNull();assertThat(repository.siblings(orphan.reportId())).isEmpty();
+        assertThat(repository.due(future,100)).isEmpty();assertThat(repository.claim(stale,future,future.plusMinutes(1))).isNull();
+        repository.defer(stale,future);assertThat(repository.delivered(orphan.eventId(),"stale",future)).isFalse();
+        assertThat(repository.failed(orphan.eventId(),"stale","RETRY",false,future)).isFalse();
+        var transaction=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(fixture.targetDataSource()));
+        transaction.executeWithoutResult(status->assertThat(reports.retry(orphan.reportId(),orphan.eventId(),4)).isFalse());
+        var newDraft=ReportWorkflowRepository.draft(WorkflowKind.REPORT_DELIVERY,"REPORT_DELIVERY",UUID.randomUUID().toString(),
+                ReportWorkflowRepository.sha(original),0,3,orphan.reportId(),7,null,"PENDING",null,
+                new com.ruanzhu.doorhandle.module.detection.repository.ReportWorkflowProtocols.DeliveryV1(orphan.eventType(),original));
+        assertThatThrownBy(()->transaction.executeWithoutResult(status->reports.workflows().create(newDraft)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("owner/request digest");
+        var inbox=new ReportEventInbox(jdbc,repository,new ReportEventCodec(json),new DataSourceTransactionManager(fixture.targetDataSource()));
+        assertThatThrownBy(()->inbox.receive(orphan.reportId(),original)).isInstanceOf(IllegalArgumentException.class);
+        // The transactional consumer also rejects unknown ownership if an old caller supplies the row directly.
+        var staleReader=new ReportEventRepository(jdbc){@Override public Entry get(String id){return stale;}};
+        var guardedInbox=new ReportEventInbox(jdbc,staleReader,new ReportEventCodec(json),new DataSourceTransactionManager(fixture.targetDataSource()));
+        assertThatThrownBy(()->guardedInbox.receive(orphan.reportId(),original)).isInstanceOf(IllegalStateException.class).hasMessageContaining("缺少原归属");
+        jdbc.update("""
+                INSERT INTO quality_report(report_id,owner_user_id,owner_username,task_id,title,narrative,status,version,source_json,source_sha256,created_at,updated_at)
+                VALUES(?,99,'later-owner','later-task','later','later','DRAFT',1,'{}',?,?,?)
+                """,orphan.reportId(),hash,beijing,beijing);
+        assertThat(reports.events(orphan.reportId())).isEmpty();assertThat(repository.siblings(orphan.reportId())).isEmpty();
+        assertThat(repository.get(orphan.eventId())).isNull();
+        assertThat(jdbc.queryForList("SELECT * FROM workflow_instance ORDER BY id")).isEqualTo(retained);
+        assertThat(jdbc.queryForList("SELECT * FROM runtime_state ORDER BY namespace,owner_id,scope_key")).isEqualTo(states);
+        assertThat(fixture.sourceSnapshotSha256()).isEqualTo(sourceHash);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"missing","id","owner","version"})
+    void aParentLostOrChangedByThisCopyIsNotAHistoricalSourceOrphan(String damage) {
+        switch(damage) {
+            case "missing"->jdbc.update("DELETE FROM quality_report");
+            case "id"->jdbc.update("UPDATE quality_report SET id=id+100");
+            case "owner"->jdbc.update("UPDATE quality_report SET owner_user_id=99");
+            case "version"->jdbc.update("UPDATE quality_report SET version=version+1");
+            default->throw new IllegalArgumentException(damage);
+        }
+        assertThatThrownBy(this::migrate).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM runtime_state",Long.class)).isZero();
+        assertThat(legacy.queryForObject("SELECT COUNT(*) FROM detection_quality_report",Long.class)).isEqualTo(1);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"PENDING","RETRY","PROCESSING","FAILED"})
+    void nonterminalOrRetryableSourceOrphansStillReject(String state)throws Exception {
+        var orphan=addTerminalSourceOrphan(false);
+        legacy.update("UPDATE detection_report_outbox SET delivery_status=?,delivered_at=NULL,lease_token=?,lease_expires_at=? WHERE event_id=?",
+                state,state.equals("PROCESSING")?"original-worker":null,state.equals("PROCESSING")?beijing.plusMinutes(1):null,orphan.eventId());
+        assertThatThrownBy(this::migrate).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
+        assertEmptyTargetOperations();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"actor-zero","actor-overflow","version-overflow","schema-version","event-type"})
+    void anAbsentParentDoesNotSkipTheOriginalEventProtocol(String corruption)throws Exception {
+        var orphan=addTerminalSourceOrphan(false);var body=(ObjectNode)json.readTree(json.writeValueAsString(orphan));
+        switch(corruption) {
+            case "actor-zero"->body.put("actorUserId",0);
+            case "actor-overflow"->body.put("actorUserId",new java.math.BigInteger("9223372036854775808"));
+            case "version-overflow"->body.put("version",2147483648L);
+            case "schema-version"->body.put("schemaVersion",2);
+            case "event-type"->legacy.update("UPDATE detection_report_outbox SET event_type='detection.report.submitted.v1' WHERE event_id=?",orphan.eventId());
+            default->throw new IllegalArgumentException(corruption);
+        }
+        legacy.update("UPDATE detection_report_outbox SET payload_json=? WHERE event_id=?",json.writeValueAsString(body),orphan.eventId());
+        assertThatThrownBy(this::migrate).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
+        assertEmptyTargetOperations();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"source","key","status","kind","claim","actor","fence"})
+    void targetUnknownOwnerExceptionCannotBecomeAnOrdinaryOrExecutableWorkflow(String corruption)throws Exception {
+        var orphan=addTerminalSourceOrphan(true);migrate();
+        String assignment=switch(corruption) {
+            case "source"->"legacy_source=NULL,legacy_key=NULL";
+            case "key"->"legacy_key='another-original'";
+            case "status"->"status='FAILED',finished_at=NULL";
+            case "kind"->"kind='REPORT_COMMAND'";
+            case "claim"->"claim_token='new-worker',lease_expires_at=UTC_TIMESTAMP(6),fence=1";
+            case "actor"->"actor_user_id=0";
+            case "fence"->"fence=1";
+            default->throw new IllegalArgumentException(corruption);
+        };
+        var before=jdbc.queryForMap("SELECT * FROM workflow_instance WHERE kind='REPORT_DELIVERY' AND request_id=?",orphan.eventId());
+        assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET "+assignment+" WHERE id=?",before.get("id")));
+        assertThat(jdbc.queryForMap("SELECT * FROM workflow_instance WHERE id=?",before.get("id"))).isEqualTo(before);
+    }
+
+    @Test void orphanOwnerRewriteCannotEvadeCompleteReconciliation()throws Exception {
+        addTerminalSourceOrphan(true);
+        jdbc.execute("CREATE TRIGGER corrupt_orphan_owner BEFORE INSERT ON workflow_instance FOR EACH ROW SET NEW.owner_user_id=IF(NEW.kind='REPORT_DELIVERY' AND NEW.owner_user_id=0,99,NEW.owner_user_id)");
+        assertThatThrownBy(this::migrate).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
+        assertEmptyTargetOperations();
+    }
 }

@@ -34,6 +34,12 @@ fixture 将 `DOORHANDLE_CACHE_REDIS_TEST_HOST/PORT/DATABASE` 及 `DOORHANDLE_REQ
 
 私有清单位于 `work/table-switch-20261115/historical-derived-mysql-15-manifest.json`。本地先核对全部原件 custody，再上传原 build.xml、release.json 和既有用户授权；远端重新核对完整源 SQL、固定源码、原 owner/STOPPED、目录身份和全部活动引用，经原 plan/apply 执行。原始 SQL、源码、报告、业务库和保护恢复点保留。本批受控计量与删除回执均为 4,004,081,664 B，15 项全部移除。
 
+## 准备失败的精确输出维护
+
+`manifest-pre-runtime-outputs-v1` 继续只按独立私有清单处理已结束轮次的两份未发布 JAR 和派生 MySQL，源 SQL、源码和报告保留。#389 的原失败发生在 watcher 就绪前；`post` 的 Generated 收尾随后复制了 `verify-remote.py`，该文件存在不代表验证 driver 已启动。
+
+这一形状仅在原源码中的 preparer/verifier 匹配审核过的 a351 字节、原 Jenkins 为 FAILURE、原 failure 记录 `FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED`、owner 和 cleanup 一致确认同一进程组已停止，并且 ready、claim、driver、验证回执和上传标记全部不存在时准入。实际容器退役同样读取原 watcher 的 `FAILED/watchStopped=false` 和父取消原件，确认原进程已不存在后才接受父确认停止，不要求伪造 driver 报告。保留原失败回执，不补造退出码；任一未知生产者、启动标记或未闭合收尾仍拒绝。原无 helper 的 NOT_STARTED 路径以及 SQL 完整、主机/目录身份、全 UID 引用和原件绑定门保持不变。源码支持不等于本批已回收，实际清理仍须统一控制验证后经 Jenkins 执行一次精确清单。
+
 ## 同一 29 表候选的人工验收
 
 `ACTION=verify-runtime`、`DOORHANDLE_CI_SCOPE=mysql` 且生产发布关闭时，可设 `MANUAL_ACCEPTANCE_ENABLED=true`、`MANUAL_ACCEPTANCE_MINUTES=30`（可选 15/30/60）。默认关闭，仍按原自动验收后立即收尾。此入口不使用 `rehearse` 或 `REHEARSAL_KEEP`，不开放生产和旧库演练门。

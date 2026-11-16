@@ -1,0 +1,121 @@
+{
+  "owner": {
+    "release": "ci-389-a3519753be01",
+    "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
+    "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23",
+    "identity": {
+      "executionLocation": "ECS",
+      "instanceId": "i-2zeieuov2aum486jm1ek",
+      "machineId": "1ebe8f77e3104ab6a49a9386e38abd20"
+    },
+    "phase": "OWNED_SERVER_STOPPED",
+    "containerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "sourceContainerId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "fixtureWatchStartFailure": {
+      "bootId": "11111111-2222-3333-4444-555555555555",
+      "exitCode": 2,
+      "groupCancellationConfirmed": true,
+      "kind": "doorhandle-fixture-watch-start-failure",
+      "pid": 43210,
+      "processCreated": true,
+      "startTicks": 123456,
+      "status": "STOPPED_BEFORE_READY",
+      "watchStopped": true
+    },
+    "manifest": "/home/ecs-user/doorhandle-ci/verification/ci-389-a3519753be01/checkout/work/compact-fixtures/manifest.json",
+    "manifestSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "cleanup": {
+    "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
+    "containerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "dataDirectoryRetained": "/home/ecs-user/doorhandle-ci/verification/ci-389-a3519753be01/checkout/work/compact-fixtures/mysql-data",
+    "errors": [],
+    "fixtureWatch": {
+      "bootId": "11111111-2222-3333-4444-555555555555",
+      "exitCode": 2,
+      "groupCancellationConfirmed": true,
+      "kind": "doorhandle-fixture-watch-start-failure",
+      "pid": 43210,
+      "processCreated": true,
+      "startTicks": 123456,
+      "status": "STOPPED_BEFORE_READY",
+      "watchStopped": true
+    },
+    "identity": {
+      "executionLocation": "ECS",
+      "instanceId": "i-2zeieuov2aum486jm1ek",
+      "machineId": "1ebe8f77e3104ab6a49a9386e38abd20"
+    },
+    "kind": "doorhandle-compact-fixture-cleanup",
+    "release": "ci-389-a3519753be01",
+    "schemaVersion": 1,
+    "sourceContainerUntouched": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "sourceDumpAndEvidenceRetained": true,
+    "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23",
+    "status": "STOPPED"
+  },
+  "failure": {
+    "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
+    "errorType": "ValueError",
+    "kind": "doorhandle-compact-fixture-failure",
+    "locations": [
+      {
+        "function": "start_fixture_watch",
+        "line": 1674
+      },
+      {
+        "function": "admit",
+        "line": 1914
+      },
+      {
+        "function": "container_memory",
+        "line": 1870
+      },
+      {
+        "function": "inspect_owned",
+        "line": 1606
+      },
+      {
+        "function": "docker_call",
+        "line": 1102
+      },
+      {
+        "function": "run",
+        "line": 279
+      },
+      {
+        "function": "Popen",
+        "line": 271
+      },
+      {
+        "function": "popen",
+        "line": 352
+      }
+    ],
+    "phase": "FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED",
+    "release": "ci-389-a3519753be01",
+    "resourcePhase": "fixture-clone",
+    "schemaVersion": 1,
+    "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23"
+  },
+  "watchOwner": {
+    "version": 1,
+    "kind": "doorhandle-fixture-watch-owner",
+    "release": "ci-389-a3519753be01",
+    "commit": "a3519753be01d1dcc0589535863bb77c8044d6b7",
+    "sourceSha256": "bd5cd449ce5e48b853667a6c65e06ce5690dedd09463b6f26b0285acad626a23",
+    "identity": {
+      "executionLocation": "ECS",
+      "instanceId": "i-2zeieuov2aum486jm1ek",
+      "machineId": "1ebe8f77e3104ab6a49a9386e38abd20"
+    },
+    "containerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "process": {
+      "group": 43210,
+      "pid": 43210,
+      "session": 43210,
+      "startTicks": 123456
+    },
+    "bootId": "11111111-2222-3333-4444-555555555555"
+  }
+}

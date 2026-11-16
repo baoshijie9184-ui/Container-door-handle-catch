@@ -765,7 +765,7 @@
         "report.copy.target-config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/report/ReportWorkflowMigrationMySqlTest.java",
-      "minimumTests": 17,
+      "minimumTests": 86,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]
@@ -1327,7 +1327,7 @@
       },
       {
         "module": "tests_python.test_compact_schema_source",
-        "minimumTests": 49,
+        "minimumTests": 52,
         "source": "tests_python/test_compact_schema_source.py",
         "allowedSkippedTests": []
       },
@@ -1459,13 +1459,13 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 398,
+        "minimumTests": 426,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 455,
+        "minimumTests": 470,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },

@@ -22,7 +22,7 @@ public class ReportEventRepository {
         public boolean legacyClockUnresolved(){return "UNRESOLVED".equals(clockStatus);}
         public Entry { sourceWallTimes=sourceWallTimes==null?Map.of():Collections.unmodifiableMap(new LinkedHashMap<>(sourceWallTimes)); }
     }
-    private static final String READ="SELECT e.*,r.legacy_clock_json AS consumption_clock_json,r.legacy_source AS consumption_source,r.legacy_key AS consumption_source_key FROM workflow_instance e LEFT JOIN workflow_instance r ON r.kind='REPORT_CONSUMPTION' AND r.idempotency_scope='REPORT_CONSUMPTION' AND r.report_request_id=e.report_request_id AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id ";
+    private static final String READ="SELECT e.*,r.legacy_clock_json AS consumption_clock_json,r.legacy_source AS consumption_source,r.legacy_key AS consumption_source_key FROM workflow_instance e LEFT JOIN workflow_instance r ON r.kind='REPORT_CONSUMPTION' AND r.idempotency_scope='REPORT_CONSUMPTION' AND r.report_request_id=e.report_request_id AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id AND r.owner_user_id=e.owner_user_id ";
     private final JdbcTemplate jdbc;
     private final ReportWorkflowRepository reports;
     private final JdbcWorkflowStore workflows;
@@ -44,13 +44,14 @@ public class ReportEventRepository {
     }
     public List<Entry> due(LocalDateTime now,int limit) {
         if(limit<1||limit>1000)throw new IllegalArgumentException("Invalid report delivery page size");
-        return jdbc.query(READ+"WHERE e.kind='REPORT_DELIVERY' AND e.legacy_clock_json IS NULL AND r.legacy_clock_json IS NULL AND ((e.status IN ('PENDING','RETRY') AND COALESCE(e.next_attempt_at,e.created_at)<=?) OR (e.status='PROCESSING' AND e.lease_expires_at<=?)) ORDER BY COALESCE(e.next_attempt_at,e.created_at),e.request_id LIMIT ?",this::map,now,now,limit);
+        return jdbc.query(READ+"WHERE e.kind='REPORT_DELIVERY' AND e.owner_user_id>0 AND e.legacy_clock_json IS NULL AND r.legacy_clock_json IS NULL AND ((e.status IN ('PENDING','RETRY') AND COALESCE(e.next_attempt_at,e.created_at)<=?) OR (e.status='PROCESSING' AND e.lease_expires_at<=?)) ORDER BY COALESCE(e.next_attempt_at,e.created_at),e.request_id LIMIT ?",this::map,now,now,limit);
     }
+    // Owner 0 is preserved, terminal source history, never an online delivery.
     public Entry get(String id) {
-        var rows=jdbc.query(READ+"WHERE e.kind='REPORT_DELIVERY' AND e.idempotency_scope='REPORT_DELIVERY' AND e.report_request_id=?",this::map,id);
+        var rows=jdbc.query(READ+"WHERE e.kind='REPORT_DELIVERY' AND e.owner_user_id>0 AND e.idempotency_scope='REPORT_DELIVERY' AND e.report_request_id=?",this::map,id);
         return rows.isEmpty()?null:rows.get(0);
     }
-    public List<Entry> siblings(String reportId) {return jdbc.query(READ+"WHERE e.kind='REPORT_DELIVERY' AND e.resource_type='QUALITY_REPORT' AND e.resource_id=?",this::map,reportId);}
+    public List<Entry> siblings(String reportId) {return jdbc.query(READ+"WHERE e.kind='REPORT_DELIVERY' AND e.owner_user_id>0 AND e.resource_type='QUALITY_REPORT' AND e.resource_id=?",this::map,reportId);}
     public Entry claim(Entry entry,LocalDateTime now,LocalDateTime expires) {
         if(entry.legacyClockUnresolved())return null;
         try {
