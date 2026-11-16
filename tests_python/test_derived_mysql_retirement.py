@@ -25,6 +25,7 @@ RELEASE = 'ci-221-8c30776fcd95'
 RECENT_RELEASE = 'ci-250-6444cbc36a65'
 BATCHES = (retirement.BATCH, retirement.RECENT_BATCH, retirement.FOLLOWUP_BATCH)
 POLICIES = ('DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283')
+ALL_POLICIES = (*POLICIES, 'DerivedMysqlHistorical15')
 
 
 def _task_flow_xml(context):
@@ -326,7 +327,7 @@ def test_fixed_helper_admission_uses_the_actual_maintenance_transport(fixed_main
     assert helpers['verify-remote.py'].SENTINEL == 'verifier'
 
 
-@pytest.mark.parametrize('policy', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', *POLICIES])
+@pytest.mark.parametrize('policy', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', *ALL_POLICIES])
 def test_real_maintenance_package_selection_supplies_the_closed_batch_consumer(fixed_maintenance_source, policy):
     state = fixed_maintenance_source
     text = (FILE.parent / 'pipeline.ps1').read_text(encoding='utf-8-sig')
@@ -343,11 +344,12 @@ def test_real_maintenance_package_selection_supplies_the_closed_batch_consumer(f
     guarded = re.search(r"if \(\$nativeRetentionPolicy -cin @\(([^)]+)\)\) \{\s*\$maintenancePaths \+= '([^']+)'\s*\}", block)
     assert guarded and guarded[2] == 'script/jenkins/retire-derived-mysql-data.py'
     selected_policies = ast.literal_eval('(' + guarded[1] + ',)')
-    assert selected_policies == POLICIES
+    assert selected_policies == ALL_POLICIES
     assert ") + $maintenancePaths" in block and "Invoke-Checked 'git.exe' $archiveArguments" in block
     call = re.search(r"^if \(\$Action -ceq 'ReclaimBuildOutputs'.*?\n\}", text, re.MULTILINE | re.DOTALL)
     assert call is not None and "Get-PinnedSourceFile 'script/jenkins/retire-derived-mysql-data.py'" in call[0]
-    assert guarded[0].split(' {', 1)[0] in call[0] and '& ./script/jenkins/retire-derived-mysql-data.ps1' in call[0]
+    assert all(name in call[0] for name in ALL_POLICIES)
+    assert '& ./script/jenkins/retire-derived-mysql-data.ps1' in call[0]
     if policy in selected_policies: paths.append(guarded[2])
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode='w:gz', pax_headers={'comment': state.args.commit}) as archive:
@@ -450,14 +452,15 @@ def test_process_directories_arguments_and_namespace_inode_aliases_are_fenced(sy
     assert state.tree.path.exists() and state.tree.keeper.exists()
 
 
-@pytest.mark.parametrize('batch', BATCHES)
+@pytest.mark.parametrize('batch', (*BATCHES, retirement.HISTORICAL_BATCH))
 def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path, monkeypatch, batch):
     args = SimpleNamespace(phase='plan', batch=batch,
-        tag='ci-286-' + 'a' * 12, commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
+        tag='ci-400-' + 'a' * 12, commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
     root = tmp_path / 'ci'; (root / 'inbox' / args.tag).mkdir(parents=True)
     identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
     selected = retirement.batch_configuration(batch)[0]
-    all_releases = [*retirement.TARGETS, *retirement.RECENT_TARGETS, *retirement.FOLLOWUP_TARGETS, 'ci-266-f6e062edc7b6']
+    all_releases = [*retirement.TARGETS, *retirement.RECENT_TARGETS, *retirement.FOLLOWUP_TARGETS,
+                    *retirement.HISTORICAL_ORIGINALS, 'ci-266-f6e062edc7b6']
     states = {}
     for release in all_releases:
         parent = root / 'verification' / release / 'checkout/work/compact-fixtures'; parent.mkdir(parents=True)
@@ -480,6 +483,12 @@ def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path,
         assert selected_batch == batch and release in selected
         return states[release].item
     monkeypatch.setattr(retirement, 'keeper_binding', keeper)
+    history_checks = []
+    def historical(release, current, value):
+        assert batch == retirement.HISTORICAL_BATCH and current == args.tag and release in selected
+        history_checks.append(release)
+        return {'buildXmlSha256': 'd' * 64}
+    monkeypatch.setattr(retirement, 'historical_originals', historical)
     monkeypatch.setattr(retirement, 'tree', measured)
     monkeypatch.setattr(retirement, 'lock', lambda _: nullcontext())
     monkeypatch.setattr(retirement, 'attempt_lock', lambda _: nullcontext())
@@ -514,6 +523,10 @@ def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path,
     assert receipt['batch'] == batch and receipt['sourceSqlAndReportsRetained'] is True
     assert [row['release'] for row in receipt['removed']] == list(selected)
     assert [value for value in calls if value != 'quiescent'] == ['inventory', 'inventory', *['remove'] * len(selected)]
+    if batch == retirement.HISTORICAL_BATCH:
+        assert set(history_checks) == set(selected) and len(history_checks) > len(selected) * 2
+    else:
+        assert history_checks == []
 
 
 @pytest.mark.parametrize('text,expected', [('287', ['287']), ('287,289', ['287', '289'])])
@@ -1791,3 +1804,166 @@ def test_task_fixture_source_selects_builder_helpers_only_for_independent_finish
         if finished else {'database_verification': True})}
     if finished: assert result[0]['preservedBuilder'] == descriptor
     else: assert 'preservedBuilder' not in result[0] and 'finishedOutputsPolicy' not in result[0]['historical']
+
+
+def test_historical_batch_is_exactly_fifteen_and_never_changes_old_task_selection():
+    targets, manifests, metadata = retirement.batch_configuration(retirement.HISTORICAL_BATCH)
+    assert {int(tag.split('-')[1]) for tag in targets} == {
+        154, 160, 162, 166, 168, 173, 187, 188, 189, 195, 198, 201, 204, 223, 224}
+    assert set(targets) == set(manifests) == set(metadata) and set(metadata.values()) == {None}
+    for tag, row in retirement.HISTORICAL_ORIGINALS.items():
+        assert targets[tag] == (row['inode'], row['commit']) and row['inode'] > 0
+        assert manifests[tag] == row['backupManifestSha256']
+        assert all(retirement.SHA.fullmatch(row[key]) for key in row if key.endswith('Sha256'))
+    for number in (132, 134, 137, 139, 141, 143, 145, 156, 182, 117, 266):
+        with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
+            retirement.data_path(f'ci-{number}-' + 'a' * 12, retirement.HISTORICAL_BATCH)
+    with pytest.raises(ValueError, match='ONLY_EARLIER_TASK_FAILED_BUILDS_ALLOWED'):
+        retirement.task_numbers('224', 400)
+
+
+@pytest.fixture
+def historical_documents(tmp_path, monkeypatch):
+    release = next(iter(retirement.HISTORICAL_ORIGINALS)); original = dict(retirement.HISTORICAL_ORIGINALS[release])
+    original['action'] = 'verify'
+    monkeypatch.setitem(retirement.HISTORICAL_ORIGINALS, release, original)
+    current = 'ci-400-' + 'f' * 12
+    controls = tmp_path / 'inbox' / current / 'historical-derived-controls'
+    (controls / release).mkdir(parents=True)
+    authorization = b'fixed synthetic user authorization'
+    (controls / 'authorization.json').write_bytes(authorization)
+    monkeypatch.setattr(retirement, 'HISTORICAL_AUTHORIZATION_SHA256', retirement.digest(authorization))
+    build = controls / release / 'build.xml'; build.write_bytes(_task_flow_xml(original))
+    context = {'release': release, 'commit': original['commit']}
+    names = ('script/jenkins/prepare-compact-fixtures.py', 'script/schema/compact_migration_runtime.py',
+             'docs/database/compact-schema-contract.json')
+    source = tmp_path / 'inbox' / release / 'source.tar.gz'; source.parent.mkdir()
+    members = [(names[0], b'# synthetic producer'), (names[1], b'# synthetic schema runtime'),
+               (names[2], retirement.encoded({'sourceTables': [f'table_{index}' for index in range(131)]}))]
+    def archive(*, commit=None, entries=None, linked=False):
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode='w:gz', pax_headers={'comment': commit or original['commit']}) as output:
+            for index, (name, body) in enumerate(members if entries is None else entries):
+                item = tarfile.TarInfo(name); item.size = len(body)
+                if linked and index == 0: item.type = tarfile.SYMTYPE; item.linkname = '/not-a-producer'; item.size = 0
+                output.addfile(item, io.BytesIO(body))
+        source.write_bytes(data.getvalue()); original['sourceSha256'] = retirement.digest(data.getvalue())
+    def refresh():
+        original['buildXmlSha256'] = retirement.digest(build.read_bytes())
+        context['sourceSha256'] = original['sourceSha256']
+        raw = retirement.encoded(context); (controls / release / 'release.json').write_bytes(raw)
+        original['releaseSha256'] = retirement.digest(raw)
+    archive(); refresh()
+    monkeypatch.setattr(retirement, 'ROOT', tmp_path)
+    monkeypatch.setattr(retirement, 'read', lambda path, maximum=0: Path(path).read_bytes())
+    def check():
+        return retirement.historical_originals(release, current, original)
+    return SimpleNamespace(release=release, original=original, current=current, controls=controls, build=build,
+                           source=source, members=members, context=context, archive=archive, refresh=refresh, check=check)
+
+
+@pytest.mark.parametrize('action', ['verify', 'verify-runtime'])
+@pytest.mark.parametrize('terminal', ['FAILURE', 'ABORTED'])
+def test_historical_originals_bind_the_actual_stopped_producer_without_requiring_invented_public_cleanup(historical_documents, action, terminal):
+    case = historical_documents
+    case.original['action'] = action
+    case.build.write_bytes(case.build.read_bytes().replace(b'<value>verify</value>', f'<value>{action}</value>'.encode()))
+    case.build.write_bytes(case.build.read_bytes().replace(b'<result>FAILURE</result>', f'<result>{terminal}</result>'.encode()))
+    case.refresh()
+    proof = case.check()
+    assert proof == {key: case.original[key] for key in ('buildXmlSha256', 'releaseSha256')} | {
+        'authorizationSha256': retirement.HISTORICAL_AUTHORIZATION_SHA256}
+    assert not (case.controls / case.release / 'fixture-cleanup.json').exists()
+
+
+@pytest.mark.parametrize('damage', ['authorization', 'build-bytes', 'release-bytes', 'source-bytes',
+    'source-commit', 'missing-producer', 'duplicate-producer', 'linked-producer', 'table-contract',
+    'release-context', 'owner', 'cleanup', 'backup'])
+def test_historical_originals_reject_drift_and_incomplete_producer(historical_documents, damage):
+    case = historical_documents
+    if damage == 'authorization': (case.controls / 'authorization.json').write_bytes(b'other approval')
+    elif damage == 'build-bytes': case.build.write_bytes(case.build.read_bytes() + b' ')
+    elif damage == 'release-bytes': (case.controls / case.release / 'release.json').write_bytes(b'{}')
+    elif damage == 'source-bytes': case.source.write_bytes(b'other source')
+    elif damage in ('owner', 'cleanup', 'backup'):
+        keeper = dict(case.original)
+        keeper[{'owner': 'ownerSha256', 'cleanup': 'cleanupSha256', 'backup': 'backupManifestSha256'}[damage]] = '0' * 64
+        with pytest.raises(ValueError, match='HISTORICAL_KEEPER_IDENTITY_CHANGED'):
+            retirement.historical_originals(case.release, case.current, keeper)
+        return
+    elif damage == 'release-context': case.context['commit'] = '0' * 40; case.refresh()
+    else:
+        if damage == 'source-commit': case.archive(commit='0' * 40)
+        elif damage == 'missing-producer': case.archive(entries=case.members[1:])
+        elif damage == 'duplicate-producer': case.archive(entries=[*case.members, case.members[0]])
+        elif damage == 'linked-producer': case.archive(linked=True)
+        else: case.archive(entries=[*case.members[:2], (case.members[2][0], b'{"sourceTables":[]}')])
+        case.refresh()
+    with pytest.raises(ValueError): case.check()
+
+
+@pytest.mark.parametrize('damage', ['running', 'success', 'unfinished', 'execution', 'action', 'scope', 'commit',
+    'production', 'duplicate-parameter', 'doctype', 'duplicate-result'])
+def test_historical_terminal_refuses_nonterminal_or_changed_original_contract(historical_documents, damage):
+    case = historical_documents
+    root = ET.fromstring(case.build.read_bytes())
+    if damage in ('running', 'success'): root.find('result').text = 'RUNNING' if damage == 'running' else 'SUCCESS'
+    elif damage == 'unfinished': root.find('completed').text = 'false'
+    elif damage == 'execution': root.find('execution/done').text = 'false'
+    elif damage == 'duplicate-result': ET.SubElement(root, 'result').text = 'FAILURE'
+    elif damage == 'duplicate-parameter':
+        params = root.find('./actions/hudson.model.ParametersAction/parameters')
+        params.append(ET.fromstring(ET.tostring(params[0])))
+    elif damage != 'doctype':
+        field = {'action': 'ACTION', 'scope': 'DOORHANDLE_CI_SCOPE', 'commit': 'TRUSTED_COMMIT',
+                 'production': 'PRODUCTION_RELEASE_ENABLED'}[damage]
+        next(item for item in root.findall('./actions/hudson.model.ParametersAction/parameters/*')
+             if item.findtext('name') == field).find('value').text = 'other'
+    raw = ET.tostring(root)
+    case.build.write_bytes((b'<!DOCTYPE flow-build []>' if damage == 'doctype' else b'') + raw)
+    case.refresh()
+    with pytest.raises(ValueError): case.check()
+
+
+def test_historical_policy_stages_only_its_closed_batch_before_generic_cleanup():
+    pipeline = (FILE.parent / 'pipeline.ps1').read_text(encoding='utf-8-sig')
+    branch = pipeline.split("if ($nativeRetentionPolicy -ceq 'DerivedMysqlHistorical15') {", 1)[1].split('\n    }', 1)[0]
+    assert '-Mode Maintenance -PrepareOnly ' in branch and 'return' in branch
+    assert '-FailedBuildNumbers' not in branch and '$failedNativeBuildNumber -cne' in branch
+    wrapper = (FILE.parent / 'retire-derived-mysql-data.ps1').read_text(encoding='utf-8-sig')
+    assert "DerivedMysqlHistorical15=@{batch='derived-mysql-historical-15-v1';count=15}" in wrapper
+    assert wrapper.index("'stage-historical-derived-custody.ps1'") < wrapper.index("plan $binding")
+    for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/configure-local.groovy'):
+        assert "'DerivedMysqlHistorical15'" in (FILE.parents[2] / name).read_text(encoding='utf-8-sig')
+
+
+@pytest.mark.parametrize('gate', ['complete-local-first', 'closed-paths', 'retained-binaries',
+    'original-digests', 'private-remote', 'no-delete'])
+def test_historical_custody_staging_preserves_existing_original_formats_and_private_boundary(gate):
+    source = (FILE.parent / 'stage-historical-derived-custody.ps1').read_text(encoding='utf-8-sig')
+    if gate == 'complete-local-first':
+        assert source.index('foreach($target in $manifest.targets)') < source.index('$remote=') < source.index('& ssh.exe')
+        assert 'foreach($entry in $custody.files)' in source and 'Assert-HistoricalDigest "$folder/$name"' in source
+    elif gate == 'closed-paths':
+        declaration = re.search(r'\$releases=@\((.*?)\n\)', source, re.DOTALL)
+        assert declaration and set(ast.literal_eval('(' + declaration[1] + ')')) == set(retirement.HISTORICAL_ORIGINALS)
+        assert "$project='D:/AI/lunwen1/DoorHandleCatch'" in source
+        assert 'historical-derived-mysql-15-manifest.json' in source and 'ReparsePoint' in source
+        assert "@('.','..')" in source and 'Assert-HistoricalExactPath $target.custodyManifest' in source
+    elif gate == 'retained-binaries':
+        assert "if($name -cin @('application.jar','source.tar.gz')){continue}" in source
+        assert "'ci-204-collaboration-raw'" in source and "'sha256-manifest.json'" in source
+        assert "-ceq 'build.xml,release.json'" in source
+    elif gate == 'original-digests':
+        assert "$custody.buildXmlSha256" in source and 'The original terminal XML bindings disagree.' in source
+        assert retirement.HISTORICAL_AUTHORIZATION_SHA256 in source
+        assert 'Get-FileHash -LiteralPath $Path -Algorithm SHA256' in source and '$entry.bytes -eq $file.bytes' in source
+    elif gate == 'private-remote':
+        assert 'StrictHostKeyChecking=yes' in source and 'HostKeyAlias=doorhandle-bj' in source
+        assert retirement.MACHINE in source and 'test "$(id -u)" = 1000' in source
+        assert 'mkdir -m 700' in source and 'chmod 600' in source and "test ! -L '$destinationPath'" in source
+        assert "$env:NATIVE_RETENTION_POLICY -ceq 'DerivedMysqlHistorical15'" in source
+    else:
+        assert 'Remove-Item' not in source and 'rm -' not in source and 'sudo' not in source
+        assert 'fixture-cleanup.json' not in source and 'Set-Content' not in source
+        assert 'authorization.json' in source and 'sourceDump' not in source

@@ -235,6 +235,11 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd',
      '13f49d1beab427afd024fb748cff22b4383f254fd3ec1d7ac36aba4186e39834',
      '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e'),
+    # Closed historical derived-data maintenance selection and PrepareOnly dispatch;
+    # application/tool publication and existing retention contracts are unchanged.
+    ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9',
+     '737075bebaadbdcbd82841f759deb0a435891fcf8e92596e3584a84522d0d355',
+     '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e'),
 })
 
 

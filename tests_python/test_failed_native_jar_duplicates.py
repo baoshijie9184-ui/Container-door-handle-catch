@@ -2398,7 +2398,17 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
     integrated = ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd', '17e79e1393e2b897c7ad659b26e5d6c442feaedaa324df5aa59789cb2bc47129', '5e56a818942de31e0a0d04f569e22f852371b5b623404df9a65a838f3c4c20d8')
     repaired = (integrated[0], 'b825b85d9364214c597447697fbc6cedc92a0281650e468db12897fc1bfd0336', integrated[2])
     host_admission = (integrated[0], '13f49d1beab427afd024fb748cff22b4383f254fd3ec1d7ac36aba4186e39834', '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e')
-    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup, integrated, repaired, host_admission})
+    historical_derived = ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9', '737075bebaadbdcbd82841f759deb0a435891fcf8e92596e3584a84522d0d355', host_admission[2])
+    assert retirer.DATABASE_VERIFY_REVIEWED_RECIPES == frozenset({reviewed, diagnostic, terminal_cleanup, integrated, repaired, host_admission, historical_derived})
+    assert retirer.database_verification_recipe(historical_derived[:2], historical_derived[2]) is True
+    assert historical_derived[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert historical_derived[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    for index in range(3):
+        changed = list(historical_derived); changed[index] = '0' * 64
+        assert retirer.database_verification_recipe(changed[:2], changed[2]) is False
+    assert retirer.database_verification_recipe(historical_derived[:2], repaired[2]) is False
+    assert retirer.database_verification_recipe((historical_derived[0], host_admission[1]), historical_derived[2]) is False
+    assert retirer.database_verification_recipe((host_admission[0], historical_derived[1]), historical_derived[2]) is False
     assert retirer.database_verification_recipe(host_admission[:2], host_admission[2]) is True
     assert host_admission[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
     assert host_admission[:2] not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
@@ -2439,7 +2449,7 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
 def test_diagnostic_archive_recipe_remains_bound_to_the_three_current_source_members():
     paths = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
     recipe = tuple(sha((MODULE.parents[2] / path).read_bytes().replace(b'\r\n', b'\n')) for path in paths)
-    assert recipe == ('6e022a64d03c1cde1cf8ad3654161a48216b4ccd78c479409ce4eb870bdd6bbd', '13f49d1beab427afd024fb748cff22b4383f254fd3ec1d7ac36aba4186e39834', '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e')
+    assert recipe == ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9', '737075bebaadbdcbd82841f759deb0a435891fcf8e92596e3584a84522d0d355', '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e')
     assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is True
     assert recipe[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
 
@@ -3842,7 +3852,7 @@ def test_native_retention_jenkins_and_seed_choices_have_the_same_safe_default_an
     workflow_choices = re.search(r"choice\(name: 'NATIVE_RETENTION_POLICY', choices: (\[[^\]]+\])", workflow)
     seed_choices = re.search(r"ChoiceParameterDefinition\('NATIVE_RETENTION_POLICY', (\[[^\]]+\]) as String\[\]", seed)
     assert workflow_choices and seed_choices
-    assert ast.literal_eval(workflow_choices[1]) == ast.literal_eval(seed_choices[1]) == ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'SourcePytest16', 'SourcePytest307308']
+    assert ast.literal_eval(workflow_choices[1]) == ast.literal_eval(seed_choices[1]) == ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'DerivedMysqlHistorical15', 'SourcePytest16', 'SourcePytest307308']
     assert "env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'" in workflow
     assert "env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs'" in workflow
     assert "$nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs'" in pipeline

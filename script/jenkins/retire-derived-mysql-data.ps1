@@ -19,8 +19,9 @@ $batches=@{
     DerivedMysql221222235238247=@{batch='derived-mysql-221-222-235-238-247-v1';count=5}
     DerivedMysql250253256259264268=@{batch='derived-mysql-250-253-256-259-264-268-v1';count=6}
     DerivedMysql281283=@{batch='derived-mysql-281-283-v1';count=2}
+    DerivedMysqlHistorical15=@{batch='derived-mysql-historical-15-v1';count=15}
 }
-if ($env:ACTION -cne 'reclaim-build-outputs' -or $env:NATIVE_RETENTION_POLICY -cnotin @('DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283') -or
+if ($env:ACTION -cne 'reclaim-build-outputs' -or $env:NATIVE_RETENTION_POLICY -cnotin @('DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283','DerivedMysqlHistorical15') -or
     $env:DOORHANDLE_CI_SCOPE -cne 'source' -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -or
     $RemoteRoot -cne '/home/ecs-user/doorhandle-ci' -or $env:DOORHANDLE_ECS_INSTANCE_ID -cne 'i-2zeieuov2aum486jm1ek' -or
     $env:DOORHANDLE_ECS_MACHINE_ID -cne '1ebe8f77e3104ab6a49a9386e38abd20' -or
@@ -53,6 +54,9 @@ function Copy-DerivedEvidence([string]$Name,[string]$Local){
     return $value
 }
 try {
+    if ($env:NATIVE_RETENTION_POLICY -ceq 'DerivedMysqlHistorical15') {
+        & (Join-Path $PSScriptRoot 'stage-historical-derived-custody.ps1') -SshOptions $SshOptions -Destination $Destination -PortText $PortText -RemoteRoot $RemoteRoot -Tag $Tag
+    }
     & ssh.exe @SshOptions -p $PortText $Destination "test ! -e '$helper' && test ! -L '$helper'"
     if($LASTEXITCODE -ne 0){throw 'The fixed derived retirement helper path is occupied.'}
     & scp.exe @SshOptions -P $PortText $PinnedHelper "${Destination}:$helper"

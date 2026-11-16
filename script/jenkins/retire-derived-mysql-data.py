@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 LOADED_SOURCE = None if __name__ == '_approved_worker' else Path(__file__).read_bytes()
@@ -89,6 +90,145 @@ FOLLOWUP_APPROVED_METADATA = {
     'ci-281-81244ba1761d': (369, 308858880),
     'ci-283-30f03c1b1535': (374, 311005184),
 }
+# One historical batch; every original owner, source and terminal control is fixed.
+# Fresh privileged inventory is required: UID 1000 cannot census UID 999 data.
+HISTORICAL_BATCH = 'derived-mysql-historical-15-v1'
+HISTORICAL_AUTHORIZATION_SHA256 = '07d2830e34d5e685e7a1ee08627d93f7383f2843829c66e844d720ffcbeeb60d'
+HISTORICAL_ORIGINALS = {'ci-154-38293aa306b3': {'inode': 2560172,
+                         'commit': '38293aa306b368964bbc2a7f66bb6a6b5c414016',
+                         'sourceSha256': '22cf2788669de28efe464fe5562e6c428f49c1460e5594c47b337db80267a4e7',
+                         'ownerSha256': '58893a1445fbf457b7b6f3ccca2cf1fdb4873427cf8aaeaa5f143a98d92ba368',
+                         'cleanupSha256': '706fc44e78c372a4f24883269115fb53d71a9bcb08e916aac0ae6ac52ed5769f',
+                         'backupManifestSha256': '3896fbb49c77433ce58dc7d4617948ce90ee3e501e6b0040963a65b46ba779d3',
+                         'buildXmlSha256': 'cad53340bb8686809237f28f4e907c3afb4da776540df95735f14513b04006e1',
+                         'releaseSha256': '3043c6c401de57827d0f26404579f828dde791baaed3890329707808d764cc3a',
+                         'action': 'verify-runtime'},
+ 'ci-160-9d011d9d5ed8': {'inode': 2560952,
+                         'commit': '9d011d9d5ed8ef1b6e5526c0964ee5f405ed421b',
+                         'sourceSha256': '2b4e24873373723231f7dc570ed1d1e4f1f3e3b8d82a997eb9502bddbe0ce807',
+                         'ownerSha256': '1cc55da69847446def136629c1197f42166fc490df89aa25b846b55e4b6820f7',
+                         'cleanupSha256': 'fcafbc894d6ebc279a07a891e82960b0a85fa0e3e010d76770e049f55f498136',
+                         'backupManifestSha256': '5492c1ff0c4ea2d5feb27797425adbe8270ce79a1edc965977c074abf0e43142',
+                         'buildXmlSha256': 'a03140efd1101637eda372b5e08967b9b53f06d33b1aa829f3c5fb826179c4d7',
+                         'releaseSha256': 'd5ddbfee5266fad06a6353f2743f004cf53dc2729d236ff9e0d7175159118454',
+                         'action': 'verify-runtime'},
+ 'ci-162-97844cecb2f4': {'inode': 2945377,
+                         'commit': '97844cecb2f45a0e469cda24ceaafdc6df1fee1a',
+                         'sourceSha256': 'f86cd22c553bd836589d7a907dbb551de7642053664de637dd763191147569d5',
+                         'ownerSha256': '5dac049c56f3fb9c058262d572acb578066501b8ca9c82929d1163c48963d51f',
+                         'cleanupSha256': '19bf5ab8158e5f48531e68ef4b51eeec1f6828698a81524ab87c3a0ac80739ff',
+                         'backupManifestSha256': '5c91199a236d4246e7bc1bceb11a9161adb324f5476533f657eb6fec283064aa',
+                         'buildXmlSha256': '1f7ffb93b99d8ec230f5cad65d6011ccd4d6d11b73bdf877f8fe40eb141da58f',
+                         'releaseSha256': '813a191b447827018f260db7e5a8301b599dd6b9a20cc5d67024e110ef512164',
+                         'action': 'verify-runtime'},
+ 'ci-166-a3c084e1cf56': {'inode': 2234796,
+                         'commit': 'a3c084e1cf568206baca89908542537ad825fef8',
+                         'sourceSha256': 'dd088e18cc079a798accc0ca83773e8b986e6c8ed75e97397427de4e52dd9daf',
+                         'ownerSha256': '17ef53267f1bc3d3697303915172f539d26aa16c865fe0058343392cedecc273',
+                         'cleanupSha256': '00780e09cd66e3998e4ab8d6e3605adfa76a3373d6ce6e202e2ed9844ae38dd5',
+                         'backupManifestSha256': '5f5fb91642e9f041abc12d064d6bef1bb1e942e7b89e15b93d6a6166bdf56a09',
+                         'buildXmlSha256': '40821d85a99c310ddb5727ca1c3e63e0af0090f0b84f237ba2ec065ac88c6ea7',
+                         'releaseSha256': 'f43bdd8e71e0285b957950c15cece8e2bbcf8d49d3921c46080f4dfd450c8c67',
+                         'action': 'verify-runtime'},
+ 'ci-168-a40c779d03a4': {'inode': 2289269,
+                         'commit': 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e',
+                         'sourceSha256': 'cb14c65c3001bd83641581dacd9b6dff525b5a777b20686279f5b50dcaec778b',
+                         'ownerSha256': 'ccc1b1a998dd32c3d239fd088799a341300d1905fea98b6e7c9cf78b87753312',
+                         'cleanupSha256': '0715d15b0c4298c8fbbd87fe2af44403b810374bfd87ff69e7fe1960761c4a98',
+                         'backupManifestSha256': '8c8a6000ed85cc17f1670e1a564ccc49b36096cb63280321bfda87c3e069b9db',
+                         'buildXmlSha256': 'b018267812a47cc8fffa4f001101a6e8b9d589078d23383da8804f59b1f1d139',
+                         'releaseSha256': 'd5681ac691b233bbc2dc5247944de5753df2d1c4f26d4a70ae083d454eafd7c8',
+                         'action': 'verify-runtime'},
+ 'ci-173-45465e873d92': {'inode': 2297030,
+                         'commit': '45465e873d92822abe446fd7be3f9f00b7816f70',
+                         'sourceSha256': '9453764fb6f2657579eac52e338f7aac599f569552185bde732a557b30244bc9',
+                         'ownerSha256': '8957612f1505bf074944cc55b32949d774e2b59e658d09ca4e5503da66a9c753',
+                         'cleanupSha256': '0674bcdf94c8d6dea2e95868ac1c91077228726a10e0bf816d81302d7776b968',
+                         'backupManifestSha256': '568b50cd980a474f4c35e927270f4375c4746e647245c8479bcb212b9ce6848d',
+                         'buildXmlSha256': '4705a0c8386b2f9100872be3369ccde84205a8d2e0474a76f1f34744e9ed8c33',
+                         'releaseSha256': '15ebe744170ad5b60753c731c69da4dada0b92d8c2a0632593d072ae56c16f78',
+                         'action': 'verify-runtime'},
+ 'ci-187-8e90ba50c691': {'inode': 2562210,
+                         'commit': '8e90ba50c691d561bd26b23f037fec1600e5e9de',
+                         'sourceSha256': '00665174617881e678fba2243094fb4f9023d05aea8e55897df05b7b816125b3',
+                         'ownerSha256': '6f739e2f431d5e7c5781ca28a8362f907da584dc772fa8f4d631882c6e6d5a6b',
+                         'cleanupSha256': '39765f47360f24e0ab95636578874f9875f655885ac36270246a48d575d1c955',
+                         'backupManifestSha256': '2d863e80834a3f74a1a201cd47936822eff13240e2237ec22ea2bb68df7106f8',
+                         'buildXmlSha256': '58fbf39f782028bb24b5a5b6349153f58d6dee02fc5e077a1025015ee41eb790',
+                         'releaseSha256': '8918b549bd5b3d002b25c482721c1784da53626f8b53f31c6bdc74024f38524a',
+                         'action': 'verify'},
+ 'ci-188-df1e1a54d48e': {'inode': 2402459,
+                         'commit': 'df1e1a54d48e5005185f53459068fbe9efffe333',
+                         'sourceSha256': 'f6fdd55e153ed86dacfc0558fde4c43a897e90383f24831acba25c2f8b0b44a1',
+                         'ownerSha256': '9e92c97499c3419792568be7b1358b9d51c7ea5ba57eed3027b08738a2195b2e',
+                         'cleanupSha256': '4ed3d6df11e3e31447396a4116c266c3cc7a8d6d5d7bf7d1bf1085a3e03da7e6',
+                         'backupManifestSha256': 'fc670779606a32eab496f324cff66572769df8f5ba51309d6a38b2912f1ab5ab',
+                         'buildXmlSha256': 'c371f2ee5dae73761241d67607c3bac4f3c4ea5736a0cc178723073ebb9ac03e',
+                         'releaseSha256': '269eb1688168ad711121350c1d01ac40efabafa3ba9c961491ee21b14b59763b',
+                         'action': 'verify'},
+ 'ci-189-410506ad7c82': {'inode': 2956711,
+                         'commit': '410506ad7c82e302e623a2ac27b63dc345fcd131',
+                         'sourceSha256': '2dccb79e757df0d9300fe4395c342945c48c19bcf272a7be2c702f4c6b67a50a',
+                         'ownerSha256': '0e9f48ae03af88135d051ce946b83e3a9489a2274b37658ce3e0b04c047a6a70',
+                         'cleanupSha256': '69d28e6be3d010e694fd9519126045fb3634226218b4f2eec61afec7c6518dec',
+                         'backupManifestSha256': 'e9807254955b8a106b59d7c52e74f15e392c5c0a80f55f9220b193b68375b24b',
+                         'buildXmlSha256': '400fbac2f9789b5197d6576aeb19ad74b05051efaf847775be2f06db722d5592',
+                         'releaseSha256': '172deefc955730d92929dd48076eef0ad1202837c9116741d6e53497c2a70a86',
+                         'action': 'verify'},
+ 'ci-195-2c2e65a0daa9': {'inode': 3554249,
+                         'commit': '2c2e65a0daa94d96b327c59d720871ab70bff0a1',
+                         'sourceSha256': 'd9a482a4e3c02d5219199b14f2e65671ebcf3aaf44cfc6d17a61421a1dfb5ec9',
+                         'ownerSha256': '499b6a5d99f01be8ffd0d2089a1eaf9c2686c03f1fefa1e298dcf6b62bfd3634',
+                         'cleanupSha256': 'ae37240028fe0708e5a7e9500597c126a991f563be6d032a1ec795839b8a221d',
+                         'backupManifestSha256': 'c48d4b06b51dca456bfc972686cdfac51c0df5a9f61972253cfdf0ed08ef0b89',
+                         'buildXmlSha256': 'eef4e3254af7ad0efe26e24c7147cdc0074aff57a8224a6d4416c09689a3757e',
+                         'releaseSha256': '739f9ed1cae2fa36670858313195657d4ddf143139f6acb4806dc58a73df993d',
+                         'action': 'verify'},
+ 'ci-198-7af0903ee840': {'inode': 2641237,
+                         'commit': '7af0903ee84011dc51f4abac4f4a4d9679db7322',
+                         'sourceSha256': '32715e99750c2651370750cc6a8c9a1d380167b73e2fcacbcf5977c7da1e6453',
+                         'ownerSha256': 'cb388e8d56a7c9b689ed493720400ef4423b01ccebf8cd7d8d8237d2f4687d57',
+                         'cleanupSha256': 'f670dac478d4ff209524376a0e1f0a8dd91ec7700660b52973ce20e022c3f493',
+                         'backupManifestSha256': '345b34fbc3d4ddeb1af0cd5bd96f3ec3ddc9fc850fd0add9c6f5a613ea9e123d',
+                         'buildXmlSha256': '2040a791ff1cbbea5ef4754e7643ba7dec202757baef6ffd3cec035c5d8d4dde',
+                         'releaseSha256': '79ce2a434d7229ffa090fb5dbd66c70f34cda78c3cf9caae5b6e2b75c6fe80a0',
+                         'action': 'verify'},
+ 'ci-201-803baf401b5f': {'inode': 3569055,
+                         'commit': '803baf401b5f9566283a59cb6a885a794b9d7d85',
+                         'sourceSha256': '5049079bdb37231b8ca2d59f7865269735ce0ce01cae56d0084a81924fa6767a',
+                         'ownerSha256': 'be37826e9778ee357c0929a64f1387aee099e7e4854704b2ec01789fe67ed1f1',
+                         'cleanupSha256': '65c627c07013130fd00697c1c9bc3aef0265ac20cf1e2a31bae42fab8c063288',
+                         'backupManifestSha256': 'bcf2c5f6ed0779915127991f666c3244db8f26b897b2a20f039d6f9da3fb2daa',
+                         'buildXmlSha256': '89208ab76c47359bf029bf51c13b75df649ceb807af603d298eac2be5c48d132',
+                         'releaseSha256': '2a380442a9f14158bee647955476430502d21c6e2a23a88ff30cce3079866356',
+                         'action': 'verify-runtime'},
+ 'ci-204-24f8eb4b02bf': {'inode': 3577575,
+                         'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
+                         'sourceSha256': '4b1fed5b2e0f0a80cd0006d7a536eff326f547448c5019ec3ceafa457532bd77',
+                         'ownerSha256': '25b99240a0b96723d57a3a181961e4915b283dc91a715eb07e88053fd2001a21',
+                         'cleanupSha256': 'dadc3b4f6e72fe67c46d466b62dfea7551601851022c1fc917153dc9c5bf9433',
+                         'backupManifestSha256': 'fa72828cbfc54ff96554bb29cf3066bafcecf19e7395b908817f190a2e52a29b',
+                         'buildXmlSha256': '36e27ddb0d87daa0d94c3d72cc64e8f70fd4a28ecf7cadecd51054cfafaa5b09',
+                         'releaseSha256': '5b0bdad3f157a07a7024f31302525f98ff07e477b1fa86aac5afa5fcbd80546d',
+                         'action': 'verify-runtime'},
+ 'ci-223-fc724a42d8f9': {'inode': 3975407,
+                         'commit': 'fc724a42d8f9e625d547cf23fe176463d10531b9',
+                         'sourceSha256': '6a3b4908121d6370234baf3ad45f73cad95b071c275bf827574541b037c087f4',
+                         'ownerSha256': 'c60afcc644854ce99720fef7b9fa2194336db1e1c8e8cf677dd574e47cbd5712',
+                         'cleanupSha256': '53397c46aafb8b075de63413dcb843a1ca661128376468634c7305fb1547440f',
+                         'backupManifestSha256': 'f29c0c83470f55191b85cc7e3145a346a7e6dc23e7fa429fedd99042eac14158',
+                         'buildXmlSha256': '64d61f2f9866711aedd18c5cce2da17a3634d9c0b1c428d0079ba6d48108f993',
+                         'releaseSha256': 'dc6074e33dd6897c102cb04d250ee2d85e05994c91dbf2d011edfd9ab0fe8c1c',
+                         'action': 'verify-runtime'},
+ 'ci-224-e2b445effb49': {'inode': 3992505,
+                         'commit': 'e2b445effb49edaf2acd624b60da48a3d1e7f4f3',
+                         'sourceSha256': '0cb990150e230ac743c5261fba320de650d94398a8899cef280078a3a6892db4',
+                         'ownerSha256': '4a18cef0dbd48d62b4f43c7ae5d0beeec55ec4d2e43b054e02c7e063d2426bf7',
+                         'cleanupSha256': 'f7e8b9d878059f921680bf580ea442110b2589cd5e82c7afe1b9e6a76c6a976f',
+                         'backupManifestSha256': 'e0273b723d7b266117d54c63096e761859c5a9f3e5ce7b23bf63d807a04012fc',
+                         'buildXmlSha256': 'db90074bec0b6deddbfb7065d62a5208d3331dad140a8f2e364bf10de88c2217',
+                         'releaseSha256': '335a33bece9bd5d9f9696ed63d7e41744972ce603174daa106483b8d7ff4f99d',
+                         'action': 'verify-runtime'}}
 SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2
 TASK_BATCH = 'current-task-failed-verify-mysql-v1'
@@ -157,6 +297,11 @@ def batch_configuration(batch=BATCH):
         need(set(RECENT_TARGETS) == set(RECENT_BACKUP_MANIFESTS) == set(RECENT_APPROVED_METADATA),
              'COMPLETE_APPROVED_BATCH_REQUIRED')
         return RECENT_TARGETS, RECENT_BACKUP_MANIFESTS, RECENT_APPROVED_METADATA
+    if batch == HISTORICAL_BATCH:
+        need(len(HISTORICAL_ORIGINALS) == 15, 'COMPLETE_APPROVED_BATCH_REQUIRED')
+        return ({release: (row['inode'], row['commit']) for release, row in HISTORICAL_ORIGINALS.items()},
+                {release: row['backupManifestSha256'] for release, row in HISTORICAL_ORIGINALS.items()},
+                {release: None for release in HISTORICAL_ORIGINALS})
     need(batch == FOLLOWUP_BATCH, 'CLOSED_BATCH_REQUIRED')
     need(len(FOLLOWUP_TARGETS) == 2
          and set(FOLLOWUP_TARGETS) == set(FOLLOWUP_BACKUP_MANIFESTS) == set(FOLLOWUP_APPROVED_METADATA),
@@ -358,7 +503,7 @@ def process_references(inventories, proc=Path('/proc')):
 def root_worker(request):
     if request.get('phase') in ('task-inventory', 'task-remove'):
         return task_root_worker(request)
-    need(os.getuid() == 0 and request.get('batch') in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH)
+    need(os.getuid() == 0 and request.get('batch') in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH, HISTORICAL_BATCH)
          and Path('/etc/machine-id').read_text().strip() == MACHINE, 'APPROVED_ROOT_BATCH_REQUIRED')
     batch = request['batch']; selected, _, _ = batch_configuration(batch)
     phase = request.get('phase'); need(phase in ('inventory', 'remove'), 'ROOT_OPERATION_REFUSED')
@@ -447,6 +592,64 @@ def keeper_binding(release, batch=BATCH):
             'token': owner['token']}
 
 
+def historical_terminal(raw, release, original):
+    need(b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper(), 'HISTORICAL_XML_DECLARATION_REFUSED')
+    root = ET.fromstring(raw)
+    need(root.tag == 'flow-build' and len(root.findall('result')) == 1
+         and root.findtext('result') in ('FAILURE', 'ABORTED')
+         and root.findtext('completed') == 'true' and root.findtext('execution/done') == 'true',
+         'HISTORICAL_FINISHED_BUILD_REQUIRED')
+    parameters = {}
+    for item in root.findall('./actions/hudson.model.ParametersAction/parameters/*'):
+        name = item.findtext('name')
+        need(name and name not in parameters, 'HISTORICAL_DUPLICATE_PARAMETER')
+        parameters[name] = item.findtext('value')
+    need(parameters.get('ACTION') == original['action']
+         and parameters.get('DOORHANDLE_CI_SCOPE') == 'mysql'
+         and parameters.get('TRUSTED_COMMIT') == original['commit']
+         and parameters.get('PRODUCTION_RELEASE_ENABLED') == 'false'
+         and release.endswith(original['commit'][:12]), 'HISTORICAL_BUILD_CONTEXT_DIFFERS')
+
+
+def historical_originals(release, current, keeper):
+    """Add custody and fixed producer proof only for the explicitly reviewed 15."""
+    need(release in HISTORICAL_ORIGINALS, 'CLOSED_BATCH_TARGET_REQUIRED')
+    original = HISTORICAL_ORIGINALS[release]
+    need(all(keeper.get(key) == original[key] for key in
+             ('commit', 'sourceSha256', 'ownerSha256', 'cleanupSha256', 'backupManifestSha256')),
+         'HISTORICAL_KEEPER_IDENTITY_CHANGED')
+    controls = ROOT / 'inbox' / current / 'historical-derived-controls'
+    need(digest(read(controls / 'authorization.json')) == HISTORICAL_AUTHORIZATION_SHA256,
+         'HISTORICAL_USER_AUTHORIZATION_REQUIRED')
+    build_raw = read(controls / release / 'build.xml', 4 * MIB)
+    release_raw = read(controls / release / 'release.json')
+    need(digest(build_raw) == original['buildXmlSha256'] and digest(release_raw) == original['releaseSha256'],
+         'HISTORICAL_ORIGINAL_CONTROL_CHANGED')
+    historical_terminal(build_raw, release, original)
+    context = json.loads(release_raw)
+    need(context.get('release') == release and all(context.get(key) == original[key]
+         for key in ('commit', 'sourceSha256')), 'HISTORICAL_RELEASE_CONTEXT_DIFFERS')
+    source = read(ROOT / 'inbox' / release / 'source.tar.gz', 128 * MIB)
+    need(digest(source) == original['sourceSha256'], 'HISTORICAL_SOURCE_INTEGRITY_FAILED')
+    names = ('script/jenkins/prepare-compact-fixtures.py', 'script/schema/compact_migration_runtime.py',
+             'docs/database/compact-schema-contract.json')
+    bodies = {}
+    with tarfile.open(fileobj=io.BytesIO(source), mode='r:gz') as archive:
+        need(archive.pax_headers.get('comment') == original['commit'], 'HISTORICAL_SOURCE_COMMIT_DIFFERS')
+        for member in archive:
+            if member.name not in names:
+                continue
+            need(member.name not in bodies and member.isfile() and 0 < member.size <= MIB,
+                 'HISTORICAL_PRODUCER_CLOSURE_DIFFERS')
+            bodies[member.name] = archive.extractfile(member).read(MIB + 1)
+    need(set(bodies) == set(names), 'HISTORICAL_PRODUCER_CLOSURE_MISSING')
+    contract = json.loads(bodies[names[2]])
+    need(type(contract.get('sourceTables')) is list and len(contract['sourceTables']) == 131,
+         'HISTORICAL_SOURCE_TABLE_CONTRACT_DIFFERS')
+    return {'buildXmlSha256': original['buildXmlSha256'], 'releaseSha256': original['releaseSha256'],
+            'authorizationSha256': HISTORICAL_AUTHORIZATION_SHA256}
+
+
 def fixed_helpers(args):
     import tarfile
     # Maintenance deliberately uses a separate source transport from runtime CI.
@@ -479,9 +682,9 @@ def fixed_helpers(args):
 def run(args):
     if getattr(args, 'failed_builds', None) is not None:
         return task_run(args)
-    need(os.getuid() == 1000 and args.batch in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH) and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}', args.tag)
+    need(os.getuid() == 1000 and args.batch in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH, HISTORICAL_BATCH) and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}', args.tag)
          and re.fullmatch(r'[a-f0-9]{40}', args.commit) and args.tag.endswith(args.commit[:12])
-         and int(args.tag.split('-')[1]) > (271 if args.batch == BATCH else 278 if args.batch == RECENT_BATCH else 283)
+         and int(args.tag.split('-')[1]) > (271 if args.batch == BATCH else 278 if args.batch == RECENT_BATCH else 283 if args.batch == FOLLOWUP_BATCH else 377)
          and SHA.fullmatch(args.source_sha256), 'EXPLICIT_FIXED_MAINTENANCE_REQUIRED')
     batch = args.batch; targets, _, _ = batch_configuration(batch)
     modules = fixed_helpers(args); verifier = modules['verify-remote.py']; cleanup = modules['cleanup-ecs-builds.py']
@@ -515,6 +718,8 @@ def run(args):
         for release in targets:
             need(not (ROOT / 'releases' / release).exists(), 'RETAINED_PUBLISHED_RELEASE_REFUSED')
             value = keeper_binding(release, batch)
+            if batch == HISTORICAL_BATCH:
+                value.update(historical_originals(release, args.tag, value))
             cleanup.quiescent({'checkout': data_path(release, batch).parents[2], 'token': value['token']},
                               release, containers, include_inbox=True)
             result.append(value)

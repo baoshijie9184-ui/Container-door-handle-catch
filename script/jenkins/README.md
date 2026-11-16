@@ -10,6 +10,12 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 新建工具准备前只读检查 apt 服务和内核包管理锁，活动升级未结束时拒绝开始；原件回读及清理不受此门影响，不停止或禁用系统更新。长轮验证前还须核对实际更新计时器，选择不重叠的窗口。MySQL 内核限额检查失败时分别保存两个控制文件的读数及采样阶段；`lastKernelObservation` 仅代表上次成功探针，不能当作失败现场。限额和失败即停止规则保持不变。
 
+## 已结束的 15 个历史 MySQL 副本
+
+既有 `ACTION=reclaim-build-outputs`、`DOORHANDLE_CI_SCOPE=source` 可选择精确策略 `NATIVE_RETENTION_POLICY=DerivedMysqlHistorical15`，仅处理 #154/#160/#162/#166/#168/#173/#187/#188/#189/#195/#198/#201/#204/#223/#224 的派生 MySQL 目录。所有其他选择器及 `finishedOutputsManifest` 保持空值，生产发布关闭，不先执行通用历史清理。
+
+私有清单位于 `work/table-switch-20261115/historical-derived-mysql-15-manifest.json`。本地先核对全部原件 custody，再上传原 build.xml、release.json 和既有用户授权；远端重新核对完整源 SQL、固定源码、原 owner/STOPPED、目录身份和全部活动引用，经原 plan/apply 执行。原始 SQL、源码、报告、业务库和保护恢复点保留。原统计约 3.73 GiB 仅用于选择批次，实际回收量由当轮受控计量及回执确定；源码与清单准备不等于已经删除。
+
 ## 同一 29 表候选的人工验收
 
 `ACTION=verify-runtime`、`DOORHANDLE_CI_SCOPE=mysql` 且生产发布关闭时，可设 `MANUAL_ACCEPTANCE_ENABLED=true`、`MANUAL_ACCEPTANCE_MINUTES=30`（可选 15/30/60）。默认关闭，仍按原自动验收后立即收尾。此入口不使用 `rehearse` 或 `REHEARSAL_KEEP`，不开放生产和旧库演练门。

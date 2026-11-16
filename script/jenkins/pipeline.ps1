@@ -286,7 +286,7 @@ function Send-CandidateBuildToolsArchive {
 
 $nativeRetentionPolicy=$env:NATIVE_RETENTION_POLICY
 if ([string]::IsNullOrWhiteSpace($nativeRetentionPolicy)) {$nativeRetentionPolicy='FailedNative'}
-if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredCopies203','PublicCaches221224235','DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283','SourcePytest16','SourcePytest307308')) { throw 'Unsupported native retention policy.' }
+if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredCopies203','PublicCaches221224235','DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283','DerivedMysqlHistorical15','SourcePytest16','SourcePytest307308')) { throw 'Unsupported native retention policy.' }
 if ($nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs') { throw 'An explicit retired-copy policy requires source-only build maintenance.' }
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
 $manualEnabled=$env:MANUAL_ACCEPTANCE_ENABLED -ceq 'true'
@@ -422,7 +422,7 @@ if ($Action -ceq 'PackageSourceOnly') {
     }
     Invoke-Checked 'git.exe' @('diff', '--quiet', 'HEAD', '--')
     $maintenancePaths = @('script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py', 'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/docker/compact-build-resources.py')
-    if ($nativeRetentionPolicy -cin @('DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283')) {
+    if ($nativeRetentionPolicy -cin @('DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283','DerivedMysqlHistorical15')) {
         $maintenancePaths += 'script/jenkins/retire-derived-mysql-data.py'
     } elseif ($failedMysqlDataBuilds -cne '') {
         $maintenancePaths += 'script/jenkins/retire-derived-mysql-data.py'
@@ -548,6 +548,13 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
         & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -PrepareOnly -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
         $derivedHelper = Get-PinnedSourceFile 'script/jenkins/retire-derived-mysql-data.py'
         & ./script/jenkins/retire-derived-mysql-data.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -PinnedHelper $derivedHelper -FailedBuildNumbers $failedMysqlDataBuilds
+        return
+    }
+    if ($nativeRetentionPolicy -ceq 'DerivedMysqlHistorical15') {
+        if ($failedMysqlDataBuilds -cne '' -or $failedNativeBuildNumber -cne '') { throw 'The historical derived batch cannot mix selectors.' }
+        & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -PrepareOnly -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+        $derivedHelper = Get-PinnedSourceFile 'script/jenkins/retire-derived-mysql-data.py'
+        & ./script/jenkins/retire-derived-mysql-data.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -PinnedHelper $derivedHelper
         return
     }
     & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
