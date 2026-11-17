@@ -1,5 +1,7 @@
 package com.ruanzhu.doorhandle.server;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.ruanzhu.doorhandle.framework.config.RedisCacheConfig;
 import com.ruanzhu.doorhandle.framework.config.properties.AppRedisProperties;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
@@ -12,7 +14,9 @@ import com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper;
 import com.ruanzhu.doorhandle.module.device.service.impl.DeviceServiceImpl;
 import com.ruanzhu.doorhandle.module.device.service.impl.DeviceUsageRecordServiceImpl;
 import com.ruanzhu.doorhandle.module.device.service.impl.EmployeeServiceImpl;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -60,6 +64,18 @@ class DeviceUsageRedisCacheTest {
     private final EmployeeMapper employeeRows = mock(EmployeeMapper.class);
     private final DeviceUsageRecordMapper usageRows = mock(DeviceUsageRecordMapper.class);
     private final AtomicReference<Device> databaseDevice = new AtomicReference<>();
+
+    @BeforeAll static void initializeUsageMetadata() {
+        // ServiceImpl.removeById reads MP metadata before calling the mocked mapper.
+        // This fork must not depend on another module's native MySQL fixture.
+        var table = TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), "usage-redis-cache-test"),
+                DeviceUsageRecord.class);
+        assertThat(TableInfoHelper.getTableInfo(DeviceUsageRecord.class)).isSameAs(table);
+        assertThat(table.getTableName()).isEqualTo("device_usage");
+        assertThat(table.getKeyProperty()).isEqualTo("id");
+        assertThat(table.isWithLogicDelete()).isFalse();
+    }
 
     @BeforeEach void setup() {
         var standalone = new RedisStandaloneConfiguration("127.0.0.1",

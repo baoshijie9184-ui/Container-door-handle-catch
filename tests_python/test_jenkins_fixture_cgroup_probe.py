@@ -27,87 +27,158 @@ class PrivateJsonPublicationTests(unittest.TestCase):
         self.file = self.temp / 'private.json'
         preparer.write_json(self.file, {'generation': 1})
 
-    def replace_during_fstat(self, *, before_validation, repeat=False, value=None):
-        original = os.fstat; calls = []
-        def inspect(descriptor):
-            metadata = original(descriptor); calls.append(metadata)
-            if repeat or len(calls) == 1:
-                preparer.write_json(self.file, value or {'generation': 2}, replace=True)
-                if before_validation:
-                    metadata = original(descriptor)
-            return metadata
-        return inspect, calls
-
     def test_ordinary_private_inputs_keep_owner_only_modes_and_json_shape(self):
         for mode in (0o400, 0o600, 0o700):
             with self.subTest(mode=mode):
                 self.file.chmod(mode)
                 self.assertEqual({'generation': 1}, preparer.private_json(self.file))
 
-    def test_check_and_read_use_one_inode_not_a_second_path_open(self):
-        inspect, calls = self.replace_during_fstat(before_validation=False)
-        with patch.object(preparer.os, 'fstat', side_effect=inspect), \
-             patch.object(Path, 'read_bytes', side_effect=AssertionError('path must not reopen')):
-            self.assertEqual({'generation': 1}, preparer.private_json(self.file, atomic_replace=True))
-        self.assertEqual(2, len(calls))
-        self.assertEqual(1, calls[0].st_nlink); self.assertEqual(0, calls[1].st_nlink)
-        self.assertEqual({'generation': 2}, preparer.private_json(self.file))
+    def test_static_inputs_do_not_acquire_a_publication_lock(self):
+        import fcntl
+        self.temp.chmod(0o755)  # Existing static inputs never required a private parent.
+        with patch.object(fcntl, 'flock', side_effect=AssertionError('static input must not lock')):
+            preparer.write_json(self.file, {'generation': 2}, replace=True)
+            self.assertEqual({'generation': 2}, preparer.private_json(self.file))
 
-    def test_detached_before_validation_reopens_one_real_atomic_publication(self):
-        inspect, calls = self.replace_during_fstat(before_validation=True)
-        with patch.object(preparer.os, 'fstat', side_effect=inspect), \
-             patch.object(preparer.time, 'sleep', side_effect=AssertionError('no grace period')):
-            self.assertEqual({'generation': 2}, preparer.private_json(self.file, atomic_replace=True))
-        self.assertEqual(3, len(calls))
-        self.assertNotEqual(calls[0].st_ino, calls[1].st_ino)
+    def test_private_read_never_reopens_the_path_for_content(self):
+        with patch.object(Path, 'read_bytes', side_effect=AssertionError('path must not reopen')):
+            self.assertEqual({'generation': 1}, preparer.private_json(self.file, publication_lock=True))
 
-    def test_other_private_inputs_do_not_opt_into_detached_inode_retry(self):
-        inspect, calls = self.replace_during_fstat(before_validation=True)
-        with patch.object(preparer.os, 'fstat', side_effect=inspect):
-            with self.assertRaises(preparer.PrivateJsonError) as failed:
-                preparer.private_json(self.file)
-        self.assertEqual(1, len(calls))
-        self.assertEqual(['links'], failed.exception.observation['fields'])
-
-    def test_a_second_detached_inode_is_rejected_without_a_third_open(self):
-        inspect, calls = self.replace_during_fstat(before_validation=True, repeat=True)
-        with patch.object(preparer.os, 'fstat', side_effect=inspect):
-            with self.assertRaises(preparer.PrivateJsonError) as failed:
-                preparer.private_json(self.file, atomic_replace=True)
-        self.assertEqual(2, len(calls))
-        self.assertEqual(['links'], failed.exception.observation['fields'])
-
-    def test_unlink_without_a_replacement_does_not_accept_the_open_snapshot(self):
-        original = os.fstat
-        def unlink(descriptor):
-            self.file.unlink()
-            return original(descriptor)
-        with patch.object(preparer.os, 'fstat', side_effect=unlink):
-            with self.assertRaises(FileNotFoundError):
-                preparer.private_json(self.file, atomic_replace=True)
-
-    def test_bad_opened_permissions_cannot_be_hidden_by_a_safe_replacement(self):
-        self.file.chmod(0o640)
-        inspect, calls = self.replace_during_fstat(before_validation=True)
-        with patch.object(preparer.os, 'fstat', side_effect=inspect):
-            with self.assertRaises(preparer.PrivateJsonError) as failed:
-                preparer.private_json(self.file, atomic_replace=True)
-        self.assertEqual(1, len(calls))
-        self.assertEqual(['mode'], failed.exception.observation['fields'])
-
-    def test_unsafe_replacement_is_rejected_instead_of_returning_old_data(self):
+    def test_zero_link_inode_is_strictly_rejected_without_replacement_lookup_or_retry(self):
         original = os.fstat; calls = []
+        def detached(descriptor):
+            metadata = original(descriptor)
+            if preparer.stat.S_ISREG(metadata.st_mode):
+                calls.append(metadata); self.file.unlink()
+                return original(descriptor)
+            return metadata
+        with patch.object(preparer.os, 'fstat', side_effect=detached):
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(self.file, publication_lock=True)
+        self.assertEqual(1, len(calls)); self.assertEqual(['links'], failed.exception.observation['fields'])
+        self.assertEqual(['OPEN'], [row['stage'] for row in failed.exception.observation['observations']])
+
+    def test_uncooperative_replace_during_read_is_not_an_accepted_zero_link_snapshot(self):
+        original = os.fstat; changed = []
         def replace(descriptor):
-            metadata = original(descriptor); calls.append(metadata)
-            if len(calls) == 1:
-                preparer.write_json(self.file, {'generation': 2}, replace=True)
-                self.file.chmod(0o640)
+            metadata = original(descriptor)
+            if preparer.stat.S_ISREG(metadata.st_mode) and not changed:
+                changed.append(True)
+                preparer.write_json(self.file, {'generation': 2}, replace=True)  # Deliberately ignores the protocol.
             return metadata
         with patch.object(preparer.os, 'fstat', side_effect=replace):
             with self.assertRaises(preparer.PrivateJsonError) as failed:
-                preparer.private_json(self.file, atomic_replace=True)
-        self.assertEqual('REPLACEMENT', failed.exception.observation['observations'][-1]['stage'])
-        self.assertEqual(['mode'], failed.exception.observation['fields'])
+                preparer.private_json(self.file, publication_lock=True)
+        self.assertEqual(['links'], failed.exception.observation['fields'])
+        self.assertEqual('READ', failed.exception.observation['observations'][-1]['stage'])
+
+    def test_reader_waits_until_replace_and_directory_fsync_have_completed(self):
+        import fcntl
+        for boundary in ('replace', 'directory-fsync'):
+            preparer.write_json(self.file, {'generation': 1}, replace=True)
+            entered, release, contended = threading.Event(), threading.Event(), threading.Event()
+            result, errors = [], []
+            original_replace, original_sync, original_flock = os.replace, os.fsync, fcntl.flock
+            def pause():
+                entered.set()
+                if not release.wait(2): raise AssertionError('publication gate was not released')
+            def replace(*args, **kwargs):
+                if boundary == 'replace': pause()
+                return original_replace(*args, **kwargs)
+            def sync(descriptor):
+                if boundary == 'directory-fsync' and preparer.stat.S_ISDIR(os.fstat(descriptor).st_mode): pause()
+                return original_sync(descriptor)
+            def flock(descriptor, operation):
+                try: return original_flock(descriptor, operation)
+                except BlockingIOError:
+                    if operation & fcntl.LOCK_SH: contended.set()
+                    raise
+            def run(function):
+                try: function()
+                except BaseException as error: errors.append(error)
+            writer = threading.Thread(target=run, args=(lambda: preparer.write_json(
+                self.file, {'generation': 2}, replace=True, publication_lock=True),))
+            reader = threading.Thread(target=run, args=(lambda: result.append(
+                preparer.private_json(self.file, publication_lock=True)),))
+            with self.subTest(boundary=boundary), patch.object(preparer.os, 'replace', side_effect=replace), \
+                 patch.object(preparer.os, 'fsync', side_effect=sync), patch.object(fcntl, 'flock', side_effect=flock):
+                try:
+                    writer.start(); self.assertTrue(entered.wait(2))
+                    reader.start(); self.assertTrue(contended.wait(2)); self.assertEqual([], result)
+                finally:
+                    release.set(); writer.join(2)
+                    if reader.ident is not None: reader.join(2)
+            self.assertFalse(writer.is_alive()); self.assertFalse(reader.is_alive()); self.assertEqual([], errors)
+            self.assertEqual([{'generation': 2}], result)
+
+    def test_writer_waits_for_complete_reader_snapshot_on_the_same_directory_inode(self):
+        import fcntl
+        entered, release, contended = threading.Event(), threading.Event(), threading.Event()
+        result, errors = [], []
+        original_read, original_flock = preparer.read_private_json, fcntl.flock
+        def read(path):
+            entered.set()
+            if not release.wait(2): raise AssertionError('reader gate was not released')
+            return original_read(path)
+        def flock(descriptor, operation):
+            try: return original_flock(descriptor, operation)
+            except BlockingIOError:
+                if operation & fcntl.LOCK_EX: contended.set()
+                raise
+        def run(function):
+            try: function()
+            except BaseException as error: errors.append(error)
+        reader = threading.Thread(target=run, args=(lambda: result.append(preparer.private_json(
+            self.file, publication_lock=True)),))
+        writer = threading.Thread(target=run, args=(lambda: preparer.write_json(
+            self.file, {'generation': 2}, replace=True, publication_lock=True),))
+        with patch.object(preparer, 'read_private_json', side_effect=read), patch.object(fcntl, 'flock', side_effect=flock):
+            try:
+                reader.start(); self.assertTrue(entered.wait(2))
+                writer.start(); self.assertTrue(contended.wait(2))
+            finally:
+                release.set(); reader.join(2)
+                if writer.ident is not None: writer.join(2)
+        self.assertFalse(reader.is_alive()); self.assertFalse(writer.is_alive()); self.assertEqual([], errors)
+        self.assertEqual([{'generation': 1}], result)
+        self.assertEqual({'generation': 2}, preparer.private_json(self.file))
+
+    def test_reader_lock_timeout_is_bounded_and_never_reads_json(self):
+        import fcntl
+        with patch.object(fcntl, 'flock', side_effect=BlockingIOError), \
+             patch.object(preparer.time, 'monotonic', side_effect=[10.0, 10.0, 11.0]), \
+             patch.object(preparer.time, 'sleep'), \
+             patch.object(preparer, 'read_private_json') as read:
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.private_json(self.file, publication_lock=True)
+        read.assert_not_called()
+        self.assertEqual('PUBLICATION_LOCK_TIMEOUT', failed.exception.observation['reason'])
+        self.assertEqual('SHARED', failed.exception.observation['lockMode'])
+        self.assertEqual(1, failed.exception.observation['waitLimitSeconds'])
+
+    def test_writer_lock_timeout_never_replaces_the_existing_publication(self):
+        import fcntl
+        with patch.object(fcntl, 'flock', side_effect=BlockingIOError), \
+             patch.object(preparer.time, 'monotonic', side_effect=[10.0, 10.0, 11.0]), \
+             patch.object(preparer.time, 'sleep'), patch.object(preparer.os, 'replace') as replace:
+            with self.assertRaises(preparer.PrivateJsonError) as failed:
+                preparer.write_json(self.file, {'generation': 2}, replace=True, publication_lock=True)
+        replace.assert_not_called(); self.assertEqual('EXCLUSIVE', failed.exception.observation['lockMode'])
+        self.assertEqual({'generation': 1}, preparer.private_json(self.file))
+
+    def test_lock_release_after_failure_allows_the_next_owned_writer(self):
+        with self.assertRaisesRegex(RuntimeError, 'synthetic failure'):
+            with preparer.json_publication_lock(self.file, enabled=True): raise RuntimeError('synthetic failure')
+        preparer.write_json(self.file, {'generation': 2}, replace=True, publication_lock=True)
+        self.assertEqual({'generation': 2}, preparer.private_json(self.file, publication_lock=True))
+
+    def test_publication_parent_must_be_owned_private_and_not_a_symlink(self):
+        self.temp.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, 'publication directory'):
+            preparer.private_json(self.file, publication_lock=True)
+        self.temp.chmod(0o700)
+        parent = self.temp / 'parent'; parent.symlink_to(self.temp, target_is_directory=True)
+        with self.assertRaises(ValueError): preparer.private_json(parent / self.file.name, publication_lock=True)
 
     def test_nonregular_hardlinked_or_oversized_objects_still_fail_metadata(self):
         directory = self.temp / 'directory'; directory.mkdir()
@@ -117,14 +188,20 @@ class PrivateJsonPublicationTests(unittest.TestCase):
         oversized.chmod(0o600)
         for path, field in ((directory, 'regularFile'), (link, 'links'), (oversized, 'size')):
             with self.subTest(field=field), self.assertRaises(preparer.PrivateJsonError) as failed:
-                preparer.private_json(path, atomic_replace=True)
+                preparer.private_json(path, publication_lock=True)
             self.assertIn(field, failed.exception.observation['fields'])
 
     def test_wrong_uid_still_fails_before_read(self):
         with patch.object(preparer.os, 'getuid', return_value=os.getuid() + 1):
-            with self.assertRaises(preparer.PrivateJsonError) as failed:
-                preparer.private_json(self.file, atomic_replace=True)
+            with self.assertRaises(preparer.PrivateJsonError) as failed: preparer.private_json(self.file)
         self.assertEqual(['uid'], failed.exception.observation['fields'])
+
+    def test_unsafe_file_permissions_are_not_retried(self):
+        self.file.chmod(0o640)
+        with self.assertRaises(preparer.PrivateJsonError) as failed:
+            preparer.private_json(self.file, publication_lock=True)
+        self.assertEqual(['mode'], failed.exception.observation['fields'])
+        self.assertEqual(1, len(failed.exception.observation['observations']))
 
     def test_symlink_leaf_parent_and_relative_paths_remain_rejected(self):
         leaf = self.temp / 'leaf'; leaf.symlink_to(self.file)
@@ -138,22 +215,21 @@ class PrivateJsonPublicationTests(unittest.TestCase):
             preparer.write_json(self.file, {'generation': 1}, replace=True)
             seen = []
             def mutate(descriptor):
-                metadata = original(descriptor); seen.append(metadata)
-                if len(seen) == 1:
-                    if damage == 'size': self.file.write_bytes(b'{"generation":12345}')
-                    else: self.file.chmod(0o640)
+                metadata = original(descriptor)
+                if preparer.stat.S_ISREG(metadata.st_mode):
+                    seen.append(metadata)
+                    if len(seen) == 1:
+                        if damage == 'size': self.file.write_bytes(b'{"generation":12345}')
+                        else: self.file.chmod(0o640)
                 return metadata
             with self.subTest(damage=damage), patch.object(preparer.os, 'fstat', side_effect=mutate):
-                with self.assertRaises(preparer.PrivateJsonError):
-                    preparer.private_json(self.file, atomic_replace=True)
+                with self.assertRaises(preparer.PrivateJsonError): preparer.private_json(self.file, publication_lock=True)
 
-    def test_json_errors_are_not_replaced_with_a_new_valid_publication(self):
+    def test_json_errors_are_not_retried_or_exported_as_json_content(self):
         for body in (b'{"password":"synthetic-private",', b'{"same":1,"same":2}'):
             self.file.write_bytes(body)
-            inspect, calls = self.replace_during_fstat(before_validation=False)
-            with self.subTest(body=body), patch.object(preparer.os, 'fstat', side_effect=inspect):
-                with self.assertRaises(ValueError): preparer.private_json(self.file, atomic_replace=True)
-            self.assertEqual(2, len(calls))
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                preparer.private_json(self.file, publication_lock=True)
 
     def test_reader_uses_the_existing_sixteen_mib_bound_not_unbounded_read(self):
         original = os.fdopen; sizes = []
@@ -165,6 +241,25 @@ class PrivateJsonPublicationTests(unittest.TestCase):
         with patch.object(preparer.os, 'fdopen', side_effect=Reader):
             self.assertEqual({'generation': 1}, preparer.private_json(self.file))
         self.assertEqual([16 * 1024 * 1024 + 1], sizes)
+
+    def test_every_watch_status_and_owner_publisher_uses_the_same_lock_protocol(self):
+        import ast
+        tree = ast.parse(MODULE.read_text('utf8'))
+        functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        calls = []
+        for name, target in (('start_fixture_watch', 'file'), ('run', 'self.status_file'), ('stop', 'self.status_file')):
+            selected = [node for node in ast.walk(functions[name]) if isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name) and node.func.id == 'write_json'
+                        and ast.unparse(node.args[0]) == target]
+            self.assertEqual(2 if name != 'stop' else 1, len(selected))
+            calls.extend(selected)
+        for call in calls:
+            self.assertTrue(next(keyword.value.value for keyword in call.keywords if keyword.arg == 'publication_lock'))
+        for name, fragment in (('read_status', 'self.status_file'), ('main', 'fixture-watch-owner.json')):
+            call = next(node for node in ast.walk(functions[name]) if isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name) and node.func.id == 'private_json'
+                        and fragment in ast.unparse(node.args[0]))
+            self.assertTrue(next(keyword.value.value for keyword in call.keywords if keyword.arg == 'publication_lock'))
 
 
 class FixtureCgroupProbeTests(unittest.TestCase):
@@ -592,7 +687,7 @@ class FixtureWatchTests(unittest.TestCase):
         value.update(kind='doorhandle-fixture-runtime', status=status, capturedMonotonic=time.monotonic(),
             watchStopped=False, probeCount=1)
         value.update(changes)
-        preparer.write_json(self.watch.status_file, value, replace=self.watch.status_file.exists())
+        preparer.write_json(self.watch.status_file, value, replace=self.watch.status_file.exists(), publication_lock=True)
         return value
 
     def probe(self):
@@ -626,42 +721,44 @@ class FixtureWatchTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.watch.read_status()
 
-    def test_replaced_but_already_read_terminal_or_wrong_owner_is_not_hidden(self):
-        original = os.fstat
+    def test_locked_terminal_or_wrong_owner_status_cannot_admit_a_command(self):
         for damage in ('FAILED', 'STOPPED', 'owner'):
             self.status(damage if damage != 'owner' else 'RUNNING',
                         **({'ownerToken': '0' * 32} if damage == 'owner' else {}))
-            inode = self.watch.status_file.stat().st_ino; changed = []
-            def replace(descriptor):
-                metadata = original(descriptor)
-                if metadata.st_ino == inode and not changed:
-                    changed.append(True); self.status('RUNNING')
-                return metadata
-            with self.subTest(damage=damage), patch.object(preparer.os, 'fstat', side_effect=replace), \
-                 patch.object(self.watch, 'process_alive', return_value=True), \
+            with self.subTest(damage=damage), patch.object(self.watch, 'process_alive', return_value=True), \
                  patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as reads:
                 with self.assertRaises(ValueError): self.watch.check()
             self.assertEqual(1, reads.call_count)
             self.assertEqual('STATUS_IDENTITY' if damage == 'owner' else 'RUNNING', self.watch.check_failure['phase'])
 
-    def test_detached_status_retry_still_checks_the_new_identity_and_terminal_state(self):
-        original = os.fstat
-        for damage in ('FAILED', 'STOPPED', 'owner'):
-            self.status(); inode = self.watch.status_file.stat().st_ino; changed = []
-            def replace(descriptor):
-                metadata = original(descriptor)
-                if metadata.st_ino == inode and not changed:
-                    changed.append(True)
-                    self.status(damage if damage != 'owner' else 'RUNNING',
-                                **({'ownerToken': '0' * 32} if damage == 'owner' else {}))
-                    return original(descriptor)
-                return metadata
-            with self.subTest(damage=damage), patch.object(preparer.os, 'fstat', side_effect=replace), \
-                 patch.object(self.watch, 'process_alive', return_value=True), \
-                 patch.object(self.watch, 'read_status', wraps=self.watch.read_status) as reads:
-                with self.assertRaises(ValueError): self.watch.check()
-            self.assertEqual(1, reads.call_count)
-            self.assertEqual([], self.watch.check_failure['samples'])
+    def test_publication_lock_wait_counts_toward_original_sample_age(self):
+        import fcntl
+        self.status(capturedMonotonic=98.5)
+        clock = [100.0]; waited = []
+        original = fcntl.flock
+        def flock(descriptor, operation):
+            if not waited:
+                waited.append(True); raise BlockingIOError()
+            return original(descriptor, operation)
+        with patch.object(self.watch, 'process_alive', return_value=True), patch.object(fcntl, 'flock', side_effect=flock), \
+             patch.object(preparer.time, 'monotonic', side_effect=lambda: clock[0]), \
+             patch.object(preparer.time, 'sleep', side_effect=lambda _: clock.__setitem__(0, 100.6)):
+            with self.assertRaisesRegex(ValueError, 'measurement is stale'): self.watch.check()
+        self.assertEqual('FRESHNESS', self.watch.check_failure['phase'])
+        self.assertEqual(2, len(self.watch.check_failure['samples']))
+        for row in self.watch.check_failure['samples']: self.assertAlmostEqual(2.1, row['ageSeconds'])
+
+    def test_status_lock_timeout_remains_a_diagnosed_failure_not_a_cached_sample(self):
+        import fcntl
+        self.status()
+        with patch.object(self.watch, 'process_alive', return_value=True), \
+             patch.object(fcntl, 'flock', side_effect=BlockingIOError), \
+             patch.object(preparer.time, 'monotonic', side_effect=[10.0, 10.0, 11.0]), \
+             patch.object(preparer.time, 'sleep'):
+            with self.assertRaises(preparer.PrivateJsonError): self.watch.check()
+        self.assertEqual('STATUS_IDENTITY', self.watch.check_failure['phase'])
+        self.assertEqual([], self.watch.check_failure['samples'])
+        self.assertEqual('PUBLICATION_LOCK_TIMEOUT', self.watch.check_failure['privateJsonFailure']['reason'])
 
     def test_status_metadata_failure_reaches_original_receipt_without_json_or_password(self):
         self.status(password='synthetic-private-password')

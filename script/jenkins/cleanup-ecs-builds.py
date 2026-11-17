@@ -78,10 +78,13 @@ SYNTHETIC_PYTEST_SOURCES = {
     # Same reviewed producers; later additions create only synthetic fixture
     # bytes. The failed whole-migration case and every nonordinary tree stay.
     'ci-375-b15e66d4e7e3': ('b15e66d4e7e39b9022c8fcfde8928d1d30231358', '84d4696ec2cfcc8acee67389441c5126af2482d37a2bc9101d19d618fad7fd62'),
+    'ci-381-4a2dd6159b77': ('4a2dd6159b770ad9f9d3423d22cbf0dafdb3559b', '7acbfec491ff5016bb35347f1902b6fdfa882d425f3fbe47192df1337e29a364'),
     'ci-383-5400127dd813': ('5400127dd8134c871130f0ea0295384572c103da', '8dc22715f23782fabc357707757509db60dffbc607b8f1344260708b7aa4fc04'),
     'ci-396-55028c090f80': ('55028c090f80d872d59bd02b3321860c8fdca7d9', '412680344bed649bc7d21708b0c834bb7c49edf00420a4724d868e12d11db649'),
     'ci-401-d516ee078dbb': ('d516ee078dbbaa7c3f8cb9015f0734541307b370', '979427716b670355bb0200af40270b0ce0302d2e216f40cf53016f34d9919971'),
     'ci-404-f6d14c20c474': ('f6d14c20c474b96f0c930729fb4e937cf9c8e247', '7222acd6587a5fb95e389673cb4f964e5d87ca6766d4c1ec18c5393c3265bb9c'),
+    'ci-411-07cdfca58a85': ('07cdfca58a851c513cff697db337ce48e4c5a2ec', '8a144ff04266c43359c63b13dd64523f4e672fff521643c90b6138824aef8c11'),
+    'ci-413-6bc217a3d954': ('6bc217a3d954476ddb30ab95c7078dd8a9088201', 'e4794fc8b72de7db9d93e741b045009679c382cd27e30f45a88452dc7c7ab475'),
 }
 SYNTHETIC_PYTEST_MODULES = frozenset('tests_python/' + name + '.py' for name in (
     'test_cold_store_custody', 'test_collaboration_browser_evidence', 'test_compact_cutover',
@@ -106,6 +109,10 @@ SYNTHETIC_PYTEST_SOURCE_SUPPORT = {
     'ci-401-d516ee078dbb': frozenset({'tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt',
                                     'tests_python/fixtures/ci-389-watch-start-failure.json'}),
     'ci-404-f6d14c20c474': frozenset({'tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt',
+                                    'tests_python/fixtures/ci-389-watch-start-failure.json'}),
+    'ci-411-07cdfca58a85': frozenset({'tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt',
+                                    'tests_python/fixtures/ci-389-watch-start-failure.json'}),
+    'ci-413-6bc217a3d954': frozenset({'tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt',
                                     'tests_python/fixtures/ci-389-watch-start-failure.json'}),
 }
 # Reviewed source runners: 392ae841c2ab, 7a024fc1f02f and the source-only
