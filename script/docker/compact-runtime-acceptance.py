@@ -2220,17 +2220,77 @@ def observe_runtime_execution(instance):
         time.sleep(5)
 
 
+def cancel_runtime_execution(instance):
+    """Signal only this original supervisor; observe still owns terminal proof."""
+    original = runtime_execution(instance)
+    binding = {**instance.context(), 'operation': 'runtime-acceptance-cancellation',
+        'executionId': original['executionId'], 'supervisor': original['supervisor'],
+        'runtime': original['runtime'], 'settingsSha256': original['settingsSha256'],
+        'requestedSignal': 'SIGTERM'}
+
+    def current():
+        value = runtime_execution(instance)
+        require({key: item for key, item in value.items() if key not in ('status', 'result', 'finishedAtUnix')}
+                == {key: original[key] for key in original if key not in ('status', 'result', 'finishedAtUnix')},
+                'Original runtime execution changed during cancellation')
+        return value
+
+    def terminal(value):
+        if value['status'] not in ('PASS', 'FAILED'):
+            return None
+        result = observe_runtime_execution(instance)
+        require(result['executionId'] == original['executionId'] and current()['status'] == value['status'],
+                'Runtime terminal identity changed during cancellation')
+        return {**binding, 'status': 'ALREADY_TERMINAL', 'terminal': True,
+            'runtimeStatus': result['status'], 'signalSent': False}
+
+    result = terminal(original)
+    if result is not None:
+        return result
+    require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'),
+            'Bound runtime cancellation requires Linux pidfd support')
+    descriptor = None
+    try:
+        # Pin before reading /proc so PID reuse can never redirect SIGTERM.
+        supervisor = original['supervisor']
+        descriptor = os.pidfd_open(supervisor['pid'], 0)
+        require(instance.transport.supervisor_start(supervisor['pid']) == supervisor['startTicks'],
+                'Original runtime supervisor identity changed during cancellation')
+        result = terminal(current())
+        if result is not None:
+            return result
+        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        # Repeated requests are safe: run ignores further TERM during its first
+        # cancellation/failure cleanup. No acknowledgement is a cleanup verdict.
+        return {**binding, 'status': 'SIGNAL_SENT', 'terminal': False,
+            'runtimeStatus': None, 'signalSent': True}
+    except (FileNotFoundError, ProcessLookupError):
+        result = terminal(current())
+        require(result is not None, 'Original runtime stopped without terminal evidence; retain owned resources')
+        return result
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('run', 'cleanup', 'status', 'observe', 'manual-status', 'manual-decision'))
+    parser.add_argument('phase', choices=('run', 'cleanup', 'status', 'observe', 'cancel', 'manual-status', 'manual-decision'))
     parser.add_argument('--manual-acceptance-seconds', type=int, choices=(0, 900, 1800, 3600), default=0)
     for name in ('root', 'runtime', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'settings'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(); instance = None; execution = None; heartbeat = None; done = threading.Event()
+    finalizing = False
+    def interrupted(*_):
+        nonlocal finalizing
+        if finalizing:
+            return  # A repeated cancellation must not interrupt owned cleanup.
+        finalizing = True
+        raise KeyboardInterrupt('Runtime acceptance cancelled by its controller')
     for event in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+        signal.signal(event, interrupted)
     signal.signal(signal.SIGHUP, signal.SIG_IGN if args.phase == 'run'
-                  else lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+                  else interrupted)
     try:
         instance = Runtime(args)
         if args.phase == 'run':
@@ -2246,6 +2306,8 @@ def main():
             result = observe_runtime_execution(instance)
             instance.transport.progress(result)
             return 0 if result['status'] == 'PASS' else 1
+        elif args.phase == 'cancel':
+            result = cancel_runtime_execution(instance)
         elif args.phase == 'cleanup':
             require(instance.owner, 'No runtime attempt was prepared'); result = instance.cleanup()
         elif args.phase == 'manual-status':
@@ -2259,8 +2321,9 @@ def main():
             result = {'status': instance.owner['phase'] if instance.owner else 'NOT_PREPARED', 'release': args.tag}
         instance.transport.progress(result); return 0
     except BaseException as error:
-        if args.phase in ('observe', 'manual-status', 'manual-decision'):
-            # Observation failure is not authority to cancel the still-live original.
+        finalizing = True
+        if args.phase in ('observe', 'cancel', 'manual-status', 'manual-decision'):
+            # Control errors never perform the original supervisor's cleanup.
             print(json.dumps({'status': 'UNKNOWN', 'release': args.tag, 'terminal': False,
                               'errorType': type(error).__name__}))
             return 2

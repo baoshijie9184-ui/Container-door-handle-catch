@@ -31,12 +31,28 @@ import static org.mockito.Mockito.*;
 
 @Timeout(60)
 @EnabledIfSystemProperty(named="workbench.mysql.config",matches=".+")
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@org.junit.jupiter.api.parallel.Execution(org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD)
 class AgentWorkbenchServiceTest {
+    private static CompactActionMySqlFixture sharedDataFixture;
+    private static Throwable resetFailure;
+    private static boolean sharedQuiescent=true;
     final AgentActor alice=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
     WorkbenchStore store;WorkbenchProperties properties;AgentWorkbenchService service;WorkbenchSessionApi app;BusinessUserDirectory users;RoleAgentFactory factory;com.zaxxer.hikari.HikariDataSource pool;
     CompactActionMySqlFixture fixture;
-    @BeforeEach void setup()throws Exception{
-        fixture=new CompactActionMySqlFixture("workbench.mysql.config","doorhandle_wb_verify_","wb_verify_",false);
+    @BeforeEach void setup(TestInfo test)throws Exception{
+        if(test.getTestMethod().orElseThrow().isAnnotationPresent(Order.class))
+            fixture=test.getTags().contains("fixture-reuse")?CompactActionMySqlFixture.forReusableWorkbenchData()
+                    :new CompactActionMySqlFixture("workbench.mysql.config","doorhandle_wb_verify_","wb_verify_",false);
+        else {
+            if(resetFailure!=null)throw new IllegalStateException("Previous workbench fixture reset failed",resetFailure);
+            if(sharedDataFixture==null)try{sharedDataFixture=CompactActionMySqlFixture.forReusableWorkbenchData();}
+                catch(Exception failure){resetFailure=failure;throw failure;}
+            fixture=sharedDataFixture;sharedQuiescent=false;
+        }
+        startService();
+    }
+    private void startService(){
         var source=fixture.dataSource();var jdbc=fixture.jdbc();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)).isEqualTo(29);
         store=new WorkbenchStore(jdbc,new DataSourceTransactionManager(source),new ObjectMapper());properties=new WorkbenchProperties();properties.setEnabled(true);
@@ -45,7 +61,74 @@ class AgentWorkbenchServiceTest {
         factory=mock(RoleAgentFactory.class);when(factory.definitions(alice)).thenReturn(RoleAgentCatalog.specialists(alice));var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);
         service=new AgentWorkbenchService(store,properties,users,provider,factory,journal);service.validate();
     }
-    @AfterEach void close()throws Exception{if(service!=null)service.close();if(pool!=null)pool.close();if(fixture!=null)fixture.close();}
+    @AfterEach void close()throws Exception{
+        try {
+            if(service!=null)closeService(service);
+            if(pool!=null){pool.close();assertThat(pool.isClosed()).isTrue();}
+            if(fixture==sharedDataFixture)sharedQuiescent=true;
+        }catch(RuntimeException|Error failure){if(fixture==sharedDataFixture)resetFailure=failure;throw failure;}
+        if(fixture==null)return;
+        if(fixture!=sharedDataFixture){fixture.close();return;}
+        try{fixture.resetWorkbenchData();}catch(Exception failure){resetFailure=failure;throw failure;}
+    }
+    @AfterAll static void closeSharedFixture()throws Exception {
+        if(sharedDataFixture==null)return;
+        if(!sharedQuiescent)throw new IllegalStateException("Workbench workers are not proven stopped; retaining fixture",resetFailure);
+        try{sharedDataFixture.close();}finally{sharedDataFixture=null;}
+    }
+    private static void closeService(AgentWorkbenchService value){
+        value.close();
+        var executor=(ExecutorService)org.springframework.test.util.ReflectionTestUtils.getField(value,"children");
+        assertThat(executor).isNotNull();
+        assertThat(executor.isTerminated()).as("workbench workers must exit before fixture data reset").isTrue();
+    }
+    @Test @Order(0) @Tag("fixture-reuse")
+    void reusableFixtureClearsCommittedWorkAndSdkStateWithoutSharingServices()throws Exception {
+        var first=scope("查看任务");
+        first.stateStore().saveIfVersion("1",first.sdkSession(),"agent_state",AgentState.builder().userId("1").sessionId(first.sdkSession()).build(),0);
+        first.finish("COMPLETED","first result");first.release();
+        assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM audit_event",Integer.class)).isPositive();
+        closeService(service);fixture.resetWorkbenchData();
+        for(String table:List.of("workflow_instance","audit_event","runtime_state"))
+            assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM "+table,Integer.class)).isZero();
+        startService();var second=scope("查看任务");
+        assertThat(store.jdbc().queryForObject("SELECT MIN(id) FROM workflow_instance",Long.class)).isEqualTo(1L);
+        assertThat(second.stateStore().saveIfVersion("1",second.sdkSession(),"agent_state",
+                AgentState.builder().userId("1").sessionId(second.sdkSession()).build(),0)).isEqualTo(1L);
+        second.finish("COMPLETED","second result");second.release();
+    }
+    @org.junit.jupiter.params.ParameterizedTest @Order(0) @Tag("fixture-reuse")
+    @org.junit.jupiter.params.provider.ValueSource(strings={"column","index","check","trigger","unknown-table","unexpected-rows"})
+    void reusableFixtureRejectsChangedSchemaOrUndeclaredRowsBeforeClearingWork(String damage)throws Exception {
+        var first=scope("查看任务");first.finish("COMPLETED","retained");first.release();closeService(service);
+        var jdbc=fixture.jdbc();int before=jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance",Integer.class);
+        switch(damage) {
+            case "column"->jdbc.execute("ALTER TABLE audit_event ADD COLUMN reset_drift INT NULL");
+            case "index"->jdbc.execute("CREATE INDEX reset_index ON audit_event(action)");
+            case "check"->jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT reset_check CHECK(payload_version>=1)");
+            case "trigger"->jdbc.execute("CREATE TRIGGER reset_trigger BEFORE INSERT ON runtime_state FOR EACH ROW SET NEW.payload_version=NEW.payload_version");
+            case "unknown-table"->jdbc.execute("CREATE TABLE reset_unowned(id BIGINT PRIMARY KEY)");
+            case "unexpected-rows"->jdbc.update("INSERT INTO organization_department(name) VALUES('unexpected reset row')");
+            default->throw new IllegalArgumentException(damage);
+        }
+        try {
+            assertThatThrownBy(fixture::resetWorkbenchData).isInstanceOf(SecurityException.class);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance",Integer.class)).isEqualTo(before);
+            assertThatThrownBy(fixture::resetWorkbenchData).isInstanceOf(IllegalStateException.class).hasMessageContaining("previous reset failed");
+        } finally {if(damage.equals("unknown-table"))jdbc.execute("DROP TABLE reset_unowned");}
+    }
+    @Test @Order(1)
+    void originalPerCaseFixtureDoesNotImplicitlyEnableWorkbenchReset() {
+        assertThatThrownBy(fixture::resetWorkbenchData).isInstanceOf(IllegalStateException.class).hasMessageContaining("not enabled");
+    }
+    @Test @Order(0) @Tag("fixture-reuse")
+    void aStillRunningWorkerCannotBeMistakenForCompletedFixtureCleanup() {
+        var actual=(ExecutorService)org.springframework.test.util.ReflectionTestUtils.getField(service,"children");
+        var unclosed=mock(ExecutorService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"children",unclosed);
+        try {assertThatThrownBy(()->closeService(service)).isInstanceOf(AssertionError.class).hasMessageContaining("workers must exit");}
+        finally {org.springframework.test.util.ReflectionTestUtils.setField(service,"children",actual);}
+    }
     AgentWorkbenchService.Scope scope(String question){return service.prepare(alice,"s1",question,"run-1");}
     private void commitBoundary(AgentWorkbenchService.Scope scope){
         var current=scope.stateStore().getVersioned("1",scope.sdkSession(),"agent_state",AgentState.class);
@@ -164,7 +247,7 @@ class AgentWorkbenchServiceTest {
             context.refresh();store=context.getBean(WorkbenchStore.class);
             assertThat(org.springframework.aop.support.AopUtils.isCglibProxy(store)).isTrue();
             var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(app);var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);
-            service.close();service=new AgentWorkbenchService(store,properties,users,provider,factory,journal);service.validate();
+            closeService(service);service=new AgentWorkbenchService(store,properties,users,provider,factory,journal);service.validate();
             var scope=scope("分析任务并生成文件");call(scope,"submit_plan","proxy-plan",Map.of("title","代理环境计划","text","先审阅再执行"));
             assertThat(item("PLAN").status()).isEqualTo("PENDING");
             var sdk=new JdbcWorkbenchStateStore(store);var state=AgentState.builder().userId("1").sessionId("proxy-sdk").context(List.of(new UserMessage("persistent"))).build();
@@ -272,6 +355,7 @@ class AgentWorkbenchServiceTest {
         var stopped=store.require(1,"s1",job.id());assertThat(stopped.status()).isEqualTo("NEEDS_REVIEW");assertThat(stopped.claimToken()).isNull();assertThat(stopped.lease()).isNull();
         assertThat(store.rows(1,"s1","TOOL","UNKNOWN")).hasSize(1);verify(underlying,times(1)).callAsync(any());
     }
+    @Order(1)
     @Test void auditFailureRollsBackInteractionStateAndRequestReceipt(){
         var scope=scope("查看任务");call(scope,"ask_user_question","q",Map.of("text","批次","questionType","TEXT"));var question=item("QUESTION");store.jdbc().execute("ALTER TABLE audit_event ADD CONSTRAINT deny_answer CHECK(kind<>'WORKBENCH' OR action<>'ANSWER')");
         assertThatThrownBy(()->service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","PRIVATE"))).isInstanceOf(org.springframework.dao.DataAccessException.class);assertThat(item("QUESTION").status()).isEqualTo("PENDING");assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='WORKBENCH_COMMAND'",Integer.class)).isZero();
@@ -285,6 +369,8 @@ class AgentWorkbenchServiceTest {
         var nextTools=new Toolkit();resumed.install(nextTools);var next=ReActAgent.builder().name("employee-main").model(model).toolkit(nextTools).middlewares(List.of(resumed)).stateStore(resumed.stateStore()).defaultSessionId(resumed.sdkSession()).enableMetaTool(false).enableTaskList(false).build();
         try{assertThat(next.call(resumed.messages(List.of(new UserMessage("用户回答 batch-A"))),RuntimeContext.builder().userId("1").sessionId(resumed.sdkSession()).build()).block(Duration.ofSeconds(30)).getTextContent()).isEqualTo("最终回答");}finally{next.close();resumed.release();}
     }
+    // The facade owns another asynchronous lifecycle, outside the workbench executor.
+    @Order(1)
     @Test void actualHarnessFacadeYieldsForPlanAndContinuesTheSameLogicalTask(@TempDir Path workspace)throws Exception{
         var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted");var calls=new AtomicInteger();when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->calls.getAndIncrement()==0?Flux.just(ChatResponse.builder().content(List.of(new ToolUseBlock("plan-tool","submit_plan",Map.of("title","检测分析计划","text","查询任务再整理报告")))).finishReason("tool_calls").build()):Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("已按计划完成分析").build())).finishReason("stop").build()));
         var runtimeProperties=new AgentScopeProperties();runtimeProperties.setWorkspace(workspace.toString());var toolkits=mock(BusinessToolkitFactory.class);var roles=new RoleAgentFactory(runtimeProperties,toolkits,id->model);
@@ -313,8 +399,10 @@ class AgentWorkbenchServiceTest {
         var scope=scope("查看任务");var toolkit=new Toolkit();scope.install(toolkit);toolkit.getTool("ask_user_question").callAsync(ToolCallParam.builder().toolUseBlock(new ToolUseBlock("q","ask_user_question",Map.of("text","批次","questionType","TEXT"))).input(Map.of("text","批次","questionType","TEXT")).build()).block();var question=item("QUESTION");
         assertThatThrownBy(()->service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","A"))).hasMessageContaining("等待状态");commitBoundary(scope);scope.release();assertThat(service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","A")).status()).isEqualTo("ANSWERED");
     }
+    // Its real journal also owns agent_run rows; do not broaden the three-table reset.
+    @Order(1)
     @Test @Timeout(120) void specialistKeepsHistoryForFollowUpAndWakesOnlyItsOwnParent()throws Exception{
-        service.close();var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-child");var observed=new CopyOnWriteArrayList<List<Msg>>();
+        closeService(service);var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-child");var observed=new CopyOnWriteArrayList<List<Msg>>();
         when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{observed.add(List.copyOf(inv.getArgument(0)));return Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("专业分析已完成").build())).build());});
         var toolkits=mock(BusinessToolkitFactory.class);when(toolkits.create(any(),any(),anyString())).thenAnswer(inv->new Toolkit());var roles=new RoleAgentFactory(new AgentScopeProperties(),toolkits,id->model);
         var journalSettings=new com.ruanzhu.doorhandle.module.ai.config.AgentJournalProperties();journalSettings.setEnabled(true);
@@ -366,11 +454,14 @@ class AgentWorkbenchServiceTest {
         var cancelled=store.require(1,"s1",question.id());assertThat(cancelled.status()).isEqualTo("CANCELLED");assertThat(cancelled.data()).doesNotContainKey("answer");
     }
     @Test @Timeout(180) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
+    @Order(1)
     void processDeathAfterCompletedToolRestoresSdkWithoutRepeatingTheEffect()throws Exception{crashAndRecover("completed",24);}
     @Test @Timeout(180) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
+    @Order(1)
     void processDeathInsideWriteLeavesUnknownReceiptAndCannotBeReplayed()throws Exception{crashAndRecover("unknown",23);}
     @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"before-model","before-effect","waiting","child"})
     @Timeout(75) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
+    @Order(1)
     void processDeathAtOtherBoundariesRequiresExplicitContinuationAndDoesNotInventEffects(String scenario)throws Exception{
         haltProcess(scenario,Map.of("before-model",25,"before-effect",26,"waiting",27,"child",28).get(scenario));
         assertThat(store.jdbc().update("UPDATE workflow_instance SET lease_expires_at=? WHERE kind IN ('WORKBENCH_EXECUTION','WORKBENCH_CHILD') AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5))).isEqualTo(1);service.recoverStale();
@@ -415,6 +506,6 @@ class AgentWorkbenchServiceTest {
             assertThat(calls.get()).isEqualTo(1);assertThat(bodies.get()).isZero();assertThat(item("EXECUTION").status()).isEqualTo("COMPLETED");
             assertThat(store.jdbc().queryForObject("SELECT payload_json FROM workflow_instance WHERE kind='WORKBENCH_TOOL'",String.class)).isEqualTo(originalReceipt);
             assertThat(store.require(1,"s1",interrupted.id()).data().get("runId")).isNotEqualTo("crashed-attempt");verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());
-        }finally{racers.shutdownNow();other.close();}
+        }finally{racers.shutdownNow();closeService(other);}
     }
 }

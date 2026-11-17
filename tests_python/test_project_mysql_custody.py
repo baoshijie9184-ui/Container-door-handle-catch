@@ -395,7 +395,7 @@ def test_complete_top_level_stage_order_restores_sql_before_expanding_legacy_byt
         ('Recover approved local MySQL export on ECS', 'CI_LOCAL_MYSQL_ATTEMPTED', 'PreserveLocalMySql',
          "!(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT)"),
         ('Recover approved three-schema MySQL packet on ECS', 'CI_PROJECT_MYSQL_ATTEMPTED', 'PreserveProjectMySql',
-         "params.ACTION in ['verify', 'verify-runtime'] && env.PROJECT_MYSQL_SNAPSHOT"),
+         "params.ACTION in ['verify', 'verify-runtime', 'compact-cutover'] && env.PROJECT_MYSQL_SNAPSHOT"),
     ]
     for name, attempted, operation, condition in recoveries:
         stage = stages[name]

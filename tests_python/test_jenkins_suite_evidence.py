@@ -1023,6 +1023,167 @@ def test_dead_supervisor_without_terminal_evidence_is_unknown_and_retains_its_cl
     assert (state.claim / 'claim.json').exists() and not (state.parent / 'verification-receipt.json').exists()
 
 
+@pytest.fixture
+def existing_cancellation(existing_observation, monkeypatch):
+    state = existing_observation; state.signals = []; state.descriptors = []
+    def pin(pid, flags):
+        assert (pid, flags) == (1234, 0)
+        descriptor = os.open(os.devnull, os.O_RDONLY)
+        state.descriptors.append(descriptor)
+        return descriptor
+    def signal_owned(descriptor, number):
+        assert descriptor in state.descriptors and number == remote.signal.SIGTERM
+        # Durable complete intent must precede the one signal, not follow it.
+        value = remote.observation_json(state.claim / 'cancel-request.json')
+        assert value['supervisor']['pid'] == 1234 and value['attempt'] == state.args.attempt
+        state.signals.append((descriptor, number))
+    monkeypatch.setattr(remote.os, 'pidfd_open', pin)
+    monkeypatch.setattr(remote.signal, 'pidfd_send_signal', signal_owned)
+    return state
+
+
+def test_cancel_pins_original_pid_persists_once_and_never_repeats_term(existing_cancellation, capsys):
+    state = existing_cancellation
+    assert remote.cancel_verification(state.args) == 0
+    original = (state.claim / 'cancel-request.json').read_bytes()
+    assert remote.cancel_verification(state.args) == 0
+    results = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [item['status'] for item in results] == ['SIGNAL_SENT', 'ALREADY_REQUESTED']
+    assert all(item['terminal'] is False and item['verificationStatus'] is None for item in results)
+    assert len(state.signals) == 1 and (state.claim / 'cancel-request.json').read_bytes() == original
+    for descriptor in state.descriptors:
+        with pytest.raises(OSError): os.fstat(descriptor)
+    assert not list(state.claim.glob('.cancel-*.json'))
+
+
+@pytest.mark.parametrize('verdict,archive', [('PASS', True), ('FAILED', True), ('PASS', False), ('FAILED', False)])
+def test_cancel_terminal_is_idempotent_and_never_changes_the_original_verdict(existing_cancellation, capsys, verdict, archive):
+    state = existing_cancellation; state.terminal(verdict, archive)
+    assert remote.cancel_verification(state.args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'ALREADY_TERMINAL' and result['terminal'] is True
+    assert result['verificationStatus'] == verdict and result['evidenceReady'] is archive
+    assert not state.signals and not state.descriptors and not (state.claim / 'cancel-request.json').exists()
+
+
+@pytest.mark.parametrize('field', ['release', 'attempt', 'commit', 'sourceSha256', 'identity', 'scope'])
+def test_cancel_refuses_another_claim_before_pinning_or_signalling(existing_cancellation, field):
+    state = existing_cancellation; path = state.claim / 'claim.json'
+    value = json.loads(path.read_text()); value[field] = 'different'; path.write_text(json.dumps(value))
+    with pytest.raises(remote.VerificationError, match='another request'): remote.cancel_verification(state.args)
+    assert not state.signals and not state.descriptors
+
+
+@pytest.mark.parametrize('mutation', ['reused-pid', 'old-boot', 'unknown-pid', 'wrong-owner'])
+def test_cancel_never_signals_an_unknown_or_reused_process(existing_cancellation, monkeypatch, mutation):
+    state = existing_cancellation
+    if mutation == 'old-boot':
+        path = state.claim / 'supervisor.json'; value = json.loads(path.read_text())
+        value['bootId'] = 'old-boot'; path.write_text(json.dumps(value))
+    elif mutation == 'reused-pid': monkeypatch.setattr(remote, 'supervisor_start', lambda _: '9876')
+    elif mutation == 'unknown-pid':
+        def missing(*_): raise ProcessLookupError()
+        monkeypatch.setattr(remote.os, 'pidfd_open', missing)
+    else:
+        def wrong_owner(_): raise remote.VerificationError('Verification supervisor owner differs')
+        monkeypatch.setattr(remote, 'supervisor_start', wrong_owner)
+    with pytest.raises(remote.VerificationError): remote.cancel_verification(state.args)
+    assert not state.signals and not (state.claim / 'cancel-request.json').exists()
+
+
+@pytest.mark.parametrize('field', ['status', 'attempt', 'kind'])
+def test_cancel_never_accepts_a_foreign_terminal_receipt(existing_cancellation, field):
+    state = existing_cancellation; state.terminal()
+    path = state.parent / 'verification-receipt.json'; value = json.loads(path.read_text())
+    value[field] = 'different'; path.write_text(json.dumps(value))
+    with pytest.raises(remote.VerificationError, match='terminal receipt differs'): remote.cancel_verification(state.args)
+    assert not state.signals
+
+
+@pytest.mark.parametrize('mutation', ['binding', 'mode', 'link'])
+def test_cancel_replay_does_not_trust_a_changed_request(existing_cancellation, mutation):
+    state = existing_cancellation; remote.cancel_verification(state.args)
+    path = state.claim / 'cancel-request.json'
+    if mutation == 'binding':
+        value = json.loads(path.read_text()); value['supervisor']['startTicks'] = '9999'
+        path.write_text(json.dumps(value))
+    elif mutation == 'mode': path.chmod(0o644)
+    else: path.rename(path.with_suffix('.original')); path.symlink_to(path.with_suffix('.original'))
+    with pytest.raises(remote.VerificationError): remote.cancel_verification(state.args)
+    assert len(state.signals) == 1
+
+
+def test_cancel_sender_interruption_after_publication_is_consumed_by_original_wait(existing_cancellation, monkeypatch):
+    state = existing_cancellation
+    def interrupted(*_): raise KeyboardInterrupt('synthetic controller disconnect before signal')
+    monkeypatch.setattr(remote.signal, 'pidfd_send_signal', interrupted)
+    with pytest.raises(KeyboardInterrupt): remote.cancel_verification(state.args)
+    assert (state.claim / 'cancel-request.json').is_file() and not state.signals
+    supervisor = remote.observation_json(state.claim / 'supervisor.json')
+    identity = remote.observation_json(state.claim / 'claim.json')['identity']
+    state.args._cancellation_context = (state.claim, remote.cancellation_binding(state.args, identity, supervisor))
+    class Existing:
+        def wait(self, **_): pytest.fail('cancelled attempt must not wait or start another command')
+    with pytest.raises(KeyboardInterrupt, match='cancelled by its controller'):
+        remote.wait_for_verifier(Existing(), state.args)
+    assert state.args._cancellation_started is True
+    assert remote.cancel_verification(state.args) == 0 and not state.signals
+
+
+def test_cancel_publication_failure_never_signals_the_process(existing_cancellation, monkeypatch):
+    state = existing_cancellation
+    def no_space(*_): raise OSError('synthetic disk full')
+    monkeypatch.setattr(remote.os, 'replace', no_space)
+    with pytest.raises(OSError): remote.cancel_verification(state.args)
+    assert not state.signals and not (state.claim / 'cancel-request.json').exists()
+    assert not list(state.claim.glob('.cancel-*.json'))
+
+
+@pytest.mark.parametrize('published', [False, True])
+def test_cancel_process_exit_race_requires_its_own_terminal_receipt(existing_cancellation, monkeypatch, published, capsys):
+    state = existing_cancellation
+    def exited(*_):
+        if published: state.terminal('FAILED')
+        raise ProcessLookupError()
+    monkeypatch.setattr(remote.os, 'pidfd_open', exited)
+    if published:
+        assert remote.cancel_verification(state.args) == 0
+        assert json.loads(capsys.readouterr().out)['status'] == 'ALREADY_TERMINAL'
+    else:
+        with pytest.raises(remote.VerificationError, match='retain owned resources'): remote.cancel_verification(state.args)
+    assert not state.signals
+
+
+def test_cancel_publication_lock_is_bounded_without_signal(existing_cancellation, monkeypatch):
+    import fcntl
+    state = existing_cancellation
+    def busy(*_): raise BlockingIOError()
+    monkeypatch.setattr(fcntl, 'flock', busy)
+    ticks = iter([0, 2]); monkeypatch.setattr(remote.time, 'monotonic', lambda: next(ticks))
+    with pytest.raises(remote.VerificationError, match='publication lock timed out'): remote.cancel_verification(state.args)
+    assert not state.signals
+
+
+def test_run_signal_handler_does_not_interrupt_its_own_cancellation_cleanup(monkeypatch):
+    handlers = {}
+    monkeypatch.setattr(remote.signal, 'signal', lambda number, handler: handlers.__setitem__(number, handler))
+    monkeypatch.setattr(sys, 'argv', ['verify-remote.py', 'run', '--root', '/unused', '--instance-id', 'i-test', '--machine-id', 'c' * 32])
+    def original_run(args):
+        with pytest.raises(KeyboardInterrupt): handlers[remote.signal.SIGTERM](remote.signal.SIGTERM, None)
+        handlers[remote.signal.SIGTERM](remote.signal.SIGTERM, None)
+        assert args._cancellation_started is True
+        return 1
+    monkeypatch.setattr(remote, 'run_verification', original_run)
+    assert remote.main() == 1
+
+
+def test_cancel_cli_dispatches_only_the_bound_cancel_entry(monkeypatch):
+    monkeypatch.setattr(sys, 'argv', ['verify-remote.py', 'cancel', '--root', '/unused', '--instance-id', 'i-test', '--machine-id', 'c' * 32])
+    calls = []; monkeypatch.setattr(remote, 'cancel_verification', lambda args: calls.append(args.mode) or 0)
+    monkeypatch.setattr(remote, 'run_verification', lambda _: pytest.fail('cancel cannot start verification'))
+    assert remote.main() == 0 and calls == ['cancel']
+
+
 def test_existing_supervisor_observation_has_a_bounded_wait_without_restarting_it(existing_observation, monkeypatch):
     ticks = iter([0, remote.VERIFY_TIMEOUT_SECONDS + 121])
     monkeypatch.setattr(remote.time, 'monotonic', lambda: next(ticks))
@@ -1274,16 +1435,17 @@ def test_ssh_hangup_is_not_cancellation_but_explicit_term_and_int_still_are():
 
 def test_controller_recovers_same_attempt_and_gates_post_fixture_and_tool_cleanup_on_its_terminal_state():
     source = (ROOT / 'script/jenkins/pipeline.ps1').read_text()
-    function = source.split('function Wait-ExistingVerification {', 1)[1].split('function Assert-ControlPreflight', 1)[0]
+    function = source.split('function Wait-ExistingVerification {', 1)[1].split('function Wait-ExistingRuntime', 1)[0]
     assert 'verify-remote.py\' observe $binding' in function and "'run'" not in function
+    assert 'param([switch]$Cancel)' in function and "verify-remote.py' cancel $binding" in function
     assert '$request.attempt' in function and '$request.helperSha256' in function and '$state.terminal' in function
     verify = source.split("if ($Action -eq 'VerifyEcs')", 1)[1]
     assert '$verifyExit -eq 255' in verify and '$observed=Wait-ExistingVerification' in verify
     assert verify.index('$observed=Wait-ExistingVerification') < verify.index('$collected = $false')
     cleanup = source.split("if ($Action -in @('PrepareTools', 'CleanupTools'))", 1)[1].split("if ($Action -in @('PrepareFixtures'", 1)[0]
-    assert cleanup.index('$null=Wait-ExistingVerification') < cleanup.index("'$executor' cleanup")
+    assert cleanup.index('$null=Wait-ExistingVerification -Cancel') < cleanup.index("'$executor' cleanup")
     fixtures = source.split("if ($Action -in @('PrepareFixtures', 'CleanupFixtures'))", 1)[1].split("if ($Action -eq 'VerifyEcs')", 1)[0]
-    assert fixtures.index('$null=Wait-ExistingVerification') < fixtures.index("'$helper' cleanup")
+    assert fixtures.index('$null=Wait-ExistingVerification -Cancel') < fixtures.index("'$helper' cleanup")
 
 
 @pytest.mark.parametrize('published', ['receipt', 'archive'])
@@ -1433,7 +1595,7 @@ def language_order_main(tmp_path, monkeypatch):
     identity = {'instanceId': 'i-2zeieuov2aum486jm1ek', 'machineId': 'a' * 32, 'executionLocation': 'ECS'}
     monkeypatch.setattr(inner, 'require_ecs_execution', lambda: identity)
     state = SimpleNamespace(mode='whole', failure=None, calls=[], command=None, environment=None,
-                            output=output, checkout=checkout, xml=None)
+                            output=output, checkout=checkout, xml=None, controls=[])
     def admission(args, actual):
         assert actual == identity
         whole = state.mode in ('whole', 'whole-java-only')
@@ -1488,6 +1650,9 @@ def language_order_main(tmp_path, monkeypatch):
             state.command = list(command); state.environment = dict(options['env'])
             document = ET.Element('testsuite')
             ET.SubElement(document, 'testcase', classname='tests_python.test_plain', name='unchanged')
+            for module, name, outcome in state.controls:
+                case = ET.SubElement(document, 'testcase', classname=module, name=name)
+                if outcome != 'passed': ET.SubElement(case, outcome)
             if state.mode == 'whole':
                 if state.failure != 'worker-missing':
                     ET.SubElement(document, 'testcase', classname='tests_python.test_detection_worker_receipts', name='real-worker-contract')
@@ -1567,3 +1732,146 @@ def test_language_order_cannot_skip_python_for_a_whole_migration(language_order_
     with pytest.raises(ValueError, match='requires Python'): inner.main()
     assert state.calls == []
     assert json.loads((state.output / 'receipt.json').read_text())['status'] == 'FAILED'
+
+
+@pytest.fixture
+def same_python_controls(language_order_main, monkeypatch):
+    state = language_order_main
+    state.minimum = {'tests_python.test_control_one': 2, 'tests_python.test_control_two': 1}
+    state.controls = [('tests_python.test_control_one', 'one', 'passed'),
+                      ('tests_python.test_control_one.Nested', 'two', 'passed'),
+                      ('tests_python.test_control_two', 'three', 'passed')]
+    monkeypatch.setattr(inner, 'control_gate_minimum', lambda _profile=None: state.minimum)
+    monkeypatch.setattr(inner.sys, 'argv', [*inner.sys.argv, '--control-gate'])
+    return state
+
+
+@pytest.mark.parametrize('mode', ['whole', 'source'])
+def test_opt_in_controls_use_one_complete_python_xml_before_native(same_python_controls, mode):
+    state = same_python_controls; state.mode = mode
+    inner.main()
+    receipt = json.loads((state.output / 'receipt.json').read_text())
+    assert state.calls.index('python') < state.calls.index('native') and state.calls.count('python') == 1
+    assert state.command.count('--doorhandle-control-gate') == 1
+    assert (state.output / 'python.xml').read_bytes() == state.xml
+    assert receipt['controlGate'] == inner.control_gate_report(state.output / 'python.xml', {})
+    assert receipt['controlGate']['status'] == 'PASS'
+    assert receipt['controlGate']['minimumTests'] == state.minimum
+    assert receipt['pythonTests']['passed'] > sum(row['passed'] for row in receipt['controlGate']['modules'].values())
+
+
+@pytest.mark.parametrize('mutation', ['missing-module', 'under-count', 'failure', 'error', 'skipped'])
+def test_same_xml_control_gate_cannot_be_bypassed_by_zero_command_exit(same_python_controls, mutation):
+    state = same_python_controls
+    if mutation == 'missing-module': state.controls.pop()
+    elif mutation == 'under-count': state.controls.pop(1)
+    else:
+        module, name, _ = state.controls[1]; state.controls[1] = (module, name, mutation)
+    with pytest.raises(RuntimeError, match='control modules'): inner.main()
+    receipt = json.loads((state.output / 'receipt.json').read_text())
+    assert receipt['status'] == 'FAILED' and receipt['controlGate']['status'] == 'FAILED'
+    assert receipt['javaSuites'] == [] and 'native' not in state.calls
+    assert (state.output / 'python.xml').read_bytes() == state.xml
+
+
+def test_control_failure_preserves_partial_original_xml_and_counts_without_claiming_full_python(same_python_controls):
+    state = same_python_controls; state.failure = 'python-exit'
+    state.controls[0] = ('tests_python.test_control_one', 'one', 'failure')
+    with pytest.raises(inner.VerificationCommandFailure): inner.main()
+    receipt = json.loads((state.output / 'receipt.json').read_text())
+    assert receipt['status'] == 'FAILED' and receipt['controlGate']['status'] == 'FAILED'
+    assert receipt['pythonTests']['failed'] == 1 and receipt['javaSuites'] == []
+    assert 'wholeMigrationTests' not in receipt and 'native' not in state.calls
+
+
+def test_control_gate_cannot_be_enabled_for_java_only(same_python_controls):
+    state = same_python_controls; state.mode = 'java-only'
+    with pytest.raises(ValueError, match='full Python'): inner.main()
+    assert state.calls == [] and not state.output.exists()
+
+
+def test_full_control_definition_reuses_independent_entry_and_all_profile_minima():
+    helper = module('control_definition_source_contract', 'control-preflight.py')
+    profile, _ = inner.acceptance_profile()
+    assert inner.control_gate_minimum(profile) == {
+        'tests_python.' + name: count for name, count in helper.required_minimum(profile).items()}
+    assert len(inner.control_gate_minimum(profile)) == len(helper.MODULES) == 33
+
+
+def test_outer_and_controller_require_the_same_original_control_xml_not_a_cached_flag():
+    source = inspect.getsource(remote.run_verification)
+    assert "command.append('--control-gate')" in source
+    assert "helper.control_gate_report(evidence / 'python.xml'" in source
+    assert "result.get('controlGate') == gate" in source
+    pipeline = (ROOT / 'script/jenkins/pipeline.ps1').read_text()
+    verify = pipeline.split("if ($Action -eq 'VerifyEcs')", 1)[1].split("if ($Action -in @('AwaitManualRuntime'", 1)[0]
+    assert "--control-gate" in verify and 'SAME_PYTEST_INVOCATION' in verify
+    assert 'Assert-ControlPreflight' not in pipeline
+
+
+@pytest.fixture
+def collection_control_gate(monkeypatch):
+    spec = importlib.util.spec_from_file_location('synthetic_collection_control_gate', ROOT / 'tests_python/conftest.py')
+    hooks = importlib.util.module_from_spec(spec); spec.loader.exec_module(hooks)
+    minimum = {'tests_python.test_control_one': 2, 'tests_python.test_control_two': 1}
+    monkeypatch.setattr(hooks, 'fixed_control_minimum', lambda: minimum)
+    config = SimpleNamespace(getoption=lambda _: True)
+    def item(module, case):
+        return SimpleNamespace(path=ROOT / ('tests_python/' + module + '.py'),
+                               nodeid=module + '::' + case, config=config)
+    controls = [item('test_control_one', 'first'), item('test_control_two', 'one'), item('test_control_one', 'last')]
+    other = item('test_compact_migration_orchestration_ecs', 'whole_copy')
+    return SimpleNamespace(hooks=hooks, config=config, controls=controls, other=other, minimum=minimum)
+
+
+def publish_control_report(state, item, phase='call', outcome='passed'):
+    hook = state.hooks.pytest_runtest_makereport(item, None)
+    next(hook)
+    result = SimpleNamespace(get_result=lambda: SimpleNamespace(when=phase, outcome=outcome))
+    with pytest.raises(StopIteration): hook.send(result)
+
+
+def test_collection_gate_orders_all_controls_once_and_waits_for_actual_teardown(collection_control_gate):
+    state = collection_control_gate; items = [state.other, *state.controls]
+    state.hooks.pytest_collection_modifyitems(state.config, items)
+    assert items == [*state.controls, state.other]
+    for item in state.controls:
+        state.hooks.pytest_runtest_setup(item)
+        for phase in ('setup', 'call', 'teardown'): publish_control_report(state, item, phase)
+    state.hooks.pytest_runtest_setup(state.other)
+    assert state.config._doorhandle_control_gate['admitted'] is True
+
+
+@pytest.mark.parametrize('mutation', ['missing-module', 'under-count', 'duplicate', 'empty-definition'])
+def test_collection_gate_refuses_an_incomplete_control_group_before_any_case(collection_control_gate, mutation):
+    state = collection_control_gate; items = [state.other, *state.controls]
+    if mutation == 'missing-module': items.remove(state.controls[1])
+    elif mutation == 'under-count': items.remove(state.controls[0])
+    elif mutation == 'duplicate': items.append(state.controls[0])
+    else: state.minimum.clear()
+    with pytest.raises(pytest.UsageError): state.hooks.pytest_collection_modifyitems(state.config, items)
+    assert not hasattr(state.config, '_doorhandle_control_gate')
+
+
+@pytest.mark.parametrize('phase,outcome', [('setup', 'failed'), ('call', 'failed'), ('teardown', 'failed'),
+                                         ('setup', 'skipped'), ('call', 'skipped'), ('teardown', None)])
+def test_collection_gate_finishes_control_group_but_blocks_whole_copy_on_any_nonpass(collection_control_gate, phase, outcome):
+    state = collection_control_gate; items = [state.other, *state.controls]
+    state.hooks.pytest_collection_modifyitems(state.config, items)
+    for item in state.controls:
+        state.hooks.pytest_runtest_setup(item)  # Other controls still run after a failure.
+        for part in ('setup', 'call', 'teardown'):
+            actual = outcome if item is state.controls[0] and part == phase else 'passed'
+            if actual is not None: publish_control_report(state, item, part, actual)
+    with pytest.raises(pytest.exit.Exception, match='remaining Python was not executed'):
+        state.hooks.pytest_runtest_setup(state.other)
+    assert state.config._doorhandle_control_gate['admitted'] is False
+
+
+def test_collection_hooks_leave_default_and_independent_control_invocations_unchanged(collection_control_gate):
+    state = collection_control_gate; state.config.getoption = lambda _: False
+    items = [state.other, *state.controls]
+    state.hooks.pytest_collection_modifyitems(state.config, items)
+    assert items == [state.other, *state.controls] and not hasattr(state.config, '_doorhandle_control_gate')
+    state.hooks.pytest_runtest_setup(state.other)
+    publish_control_report(state, state.other)

@@ -1,13 +1,15 @@
 """Reclaim only proven old source-build outputs after original evidence retention.
 
 Plan discovers terminal source attempts. Apply binds its exact SHA and repeats every
-admission. Business data, source archives, reports, releases and the shared Maven
-dependency cache have no deletion API. ECS lifecycle is outside this helper.
+admission. Business data, original source archives, reports, releases and shared
+Maven dependencies are preserved. Only separately authorized duplicate source
+transport files have an explicit file-only API. ECS lifecycle is outside it.
 """
 from __future__ import annotations
 
 import argparse
 import ast
+import base64
 from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -52,6 +54,12 @@ GENERATED_TREE_HELPER = None
 GENERATED_PRIVATE_MAVEN = frozenset({'ci-57-075ae4801851', 'ci-59-68ee188164e8'})
 GENERATED_SOURCE_PACKAGE_HISTORY = frozenset({'ci-219-f285497829e9', 'ci-147-ebe1a357df7f', 'ci-183-9caed5c71ec3'})
 GENERATED_SOURCE_PACKAGE_KINDS = frozenset({'GENERATED_SOURCE_DEPENDENCIES', 'GENERATED_SOURCE_JAR'})
+SCM_TRANSPORT_KIND = 'GENERATED_SCM_TRANSPORT_COPY'
+SCM_TRANSPORT_AUTHORIZATION_SHA256 = 'd592584541931b82e5a41f21ecb8acb791a4f4a6b1a4f9995bdc3478b36b3e03'
+SCM_TRANSPORT_ROOT = '/home/ecs-user/doorhandle-ci'
+SCM_TRANSPORT_IDENTITY = {'instanceId': 'i-2zeieuov2aum486jm1ek',
+    'machineId': '1ebe8f77e3104ab6a49a9386e38abd20', 'executionLocation': 'ECS'}
+SCM_TRANSPORT_PROTECTED = frozenset({'ci-419-67188368c905', GENERATED_TOOL_KEEPER}) | GENERATED_PROTECTED_RELEASES
 # These reviewed functions route checkout commands to this one disposable cache.
 # Compare syntax only; never execute an old source or infer ownership by name.
 NPM_ROUTING_AST = {
@@ -122,9 +130,13 @@ PYTEST_MIDDLEWARE_RUNNER_MAIN_AST = 'd19221763b3a72097db8a78a317667d793c56d18b98
 PYTEST_NATIVE_COLLECTION_RUNNER_MAIN_AST = 'e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
 # Redis uses a separate synthetic fixture; whole-migration Python runs first.
 # The source-only command, basetemp and native evidence exclusions are unchanged.
-PYTEST_CURRENT_RUNNER_MAIN_AST = 'a362c12eddc18948a12006c464a50b872bdcab1a9d4038d60d9295b6c968d07f'
+# Existing Redis/whole-copy-first producer remains valid for historical runs.
+PYTEST_PRE_CONTROL_GATE_RUNNER_MAIN_AST = 'a362c12eddc18948a12006c464a50b872bdcab1a9d4038d60d9295b6c968d07f'
+# Same full pytest command and basetemp; optional control ordering uses its one original XML.
+PYTEST_CURRENT_RUNNER_MAIN_AST = '8b976e0a1b9a9f3f60d9b336a927ed443270fd87cbaed94ac394b2b4d2a9522f'
 PYTEST_RUNNER_MAIN_AST = {
     PYTEST_CURRENT_RUNNER_MAIN_AST,
+    PYTEST_PRE_CONTROL_GATE_RUNNER_MAIN_AST,
     # bb38f0fc adds opt-in synthetic middleware protocols, not a new basetemp.
     # Its semantic MySQL opt-in is excluded below; legacy receipts lack that flag.
     PYTEST_MIDDLEWARE_RUNNER_MAIN_AST,
@@ -483,7 +495,7 @@ def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools
                  and node.name == 'main']
         main_sha = routing_ast_sha(mains[0]) if len(mains) == 1 and isinstance(mains[0], ast.FunctionDef) else None
         if main_sha not in PYTEST_RUNNER_MAIN_AST: return skipped('PYTEST_RUNNER_NOT_REVIEWED')
-        if (main_sha in (PYTEST_MIDDLEWARE_RUNNER_MAIN_AST, PYTEST_CURRENT_RUNNER_MAIN_AST)
+        if (main_sha in (PYTEST_MIDDLEWARE_RUNNER_MAIN_AST, PYTEST_PRE_CONTROL_GATE_RUNNER_MAIN_AST, PYTEST_CURRENT_RUNNER_MAIN_AST)
                 and inner.get('semanticMysqlComponentRequested') is not False):
             return skipped('PYTEST_SOURCE_SCOPE_REQUIRED')
         routing = {}
@@ -1105,7 +1117,7 @@ def generated_inventory(root, target):
         require(not any(stat.S_ISSOCK(item['metadata'][0]) for item in data['entries']), 'GENERATED_SOCKET_REFERENCE_UNRESOLVED')
         return {key: data[key] for key in ('files','allocatedBytes','rootMetadata','inventorySha256','entries')} | {
             'bytes': sum(item['metadata'][3] for item in data['entries'] if stat.S_ISREG(item['metadata'][0]))}
-    return generated_file_inventory(path) if target['kind'] in ('GENERATED_IMAGE_ARCHIVE', 'GENERATED_SOURCE_JAR') else tree_inventory(path)
+    return generated_file_inventory(path) if target['kind'] in ('GENERATED_IMAGE_ARCHIVE', 'GENERATED_SOURCE_JAR', SCM_TRANSPORT_KIND) else tree_inventory(path)
 
 
 def generated_paths(tag):
@@ -1176,8 +1188,83 @@ def generated_terminal(row, current, *, current_post=False):
     return terminal
 
 
-def generated_binding(root, row, identity, verifier):
+def scm_transport_authorization(request, root):
+    """The one user-approved file set, never automatic generated discovery."""
+    encoded = request.get('scmTransportAuthorization')
+    if encoded is None: return None
+    require(type(encoded) is str and len(encoded) <= 256 * 1024,
+            'SCM_TRANSPORT_AUTHORIZATION_INVALID')
+    try: raw = base64.b64decode(encoded, validate=True)
+    except ValueError: raise ValueError('SCM_TRANSPORT_AUTHORIZATION_INVALID') from None
+    require(sha(raw) == SCM_TRANSPORT_AUTHORIZATION_SHA256, 'SCM_TRANSPORT_AUTHORIZATION_NOT_APPROVED')
+    approval = json.loads(raw)
+    require(str(root) == SCM_TRANSPORT_ROOT and request['identity'] == SCM_TRANSPORT_IDENTITY
+            and request.get('currentPost') is False and 'historicalOutputsAuthorization' not in request
+            and approval.get('approved') is True and approval.get('candidateCount') == 125,
+            'SCM_TRANSPORT_FIXED_SCOPE_REQUIRED')
+    selected = {row['release']: row for row in approval['selected']}
+    require(len(selected) == 125 and 0 < len(request['candidates']) <= 125,
+            'SCM_TRANSPORT_EXACT_SELECTION_REQUIRED')
+    for row in request['candidates']:
+        tag = row.get('release'); original = selected.get(tag)
+        require(original is not None and tag not in SCM_TRANSPORT_PROTECTED and tag != request['currentRelease']
+                and set(row) == {'release', 'commit', 'sourceSha256', 'terminal', 'targets',
+                                 'scmTransportKeeper', 'scmTransportMetadata'}
+                and row['targets'] == [{'kind': SCM_TRANSPORT_KIND, 'path': f'inbox/{tag}/source.tar.gz'}]
+                and original['remotePath'] == f'{root}/inbox/{tag}/source.tar.gz'
+                and row['sourceSha256'] == original['expectedSourceSha256'],
+                'SCM_TRANSPORT_TARGET_NOT_AUTHORIZED')
+    return selected
+
+
+def scm_transport_binding(root, row, identity, verifier, authorized):
+    """Keep the original on D; authenticate this exact disposable byte copy.
+
+    The fixed controller pins original keeper handles for the whole operation.
+    Each candidate has ONE file; apply rechecks it before unlink, then journals
+    the result without trying to read that intentionally removed input again.
+    """
+    tag = row['release']; approved = authorized[tag]; keeper = row.get('scmTransportKeeper', {})
+    terminal = row['terminal']; expected = row.get('scmTransportMetadata')
+    attempt = root / 'verification' / tag
+    pending = [root / 'releases' / tag, attempt / 'runtime-execution.json', attempt / 'runtime-acceptance.json',
+               attempt / 'checkout/work/runtime-acceptance', attempt / 'checkout/work/candidate-build-resources']
+    require(all(not path.exists() and not path.is_symlink() for path in pending),
+            'SCM_TRANSPORT_CANDIDATE_OR_RUNTIME_RETAINED')
+    enrollment = root / 'inbox' / tag / 'generated-terminal.json'
+    if enrollment.exists() or enrollment.is_symlink():
+        owned_chain(enrollment, root)
+        # Future terminal cleanup still uses this source to prove remaining
+        # outputs. Keep that input; never erase enrollment or weaken AUTO.
+        require(not has_generated_outputs(root, tag), 'SCM_TRANSPORT_REQUIRED_BY_ENROLLED_OUTPUTS')
+    require(set(keeper) == {'path', 'bytes', 'sha256', 'buildXmlSha256', 'releaseSha256', 'catalogSha256'}
+            and keeper['path'] == approved['localKeeper'] and keeper['bytes'] == approved['expectedBytes']
+            and keeper['sha256'] == approved['expectedSourceSha256']
+            and all(type(keeper[key]) is str and SHA.fullmatch(keeper[key])
+                    for key in ('sha256', 'buildXmlSha256', 'releaseSha256', 'catalogSha256'))
+            and terminal.get('kind') == 'JENKINS_HISTORY'
+            and terminal.get('buildXmlSha256') == keeper['buildXmlSha256']
+            and terminal.get('originalReleaseSha256') == keeper['releaseSha256']
+            and terminal.get('action') in ('verify', 'verify-runtime', 'verify-controls', 'reclaim-build-outputs', 'collect-evidence')
+            and terminal.get('productionReleaseEnabled') is False,
+            'SCM_TRANSPORT_ORIGINAL_KEEPER_NOT_BOUND')
+    path = root / row['targets'][0]['path']
+    require(type(expected) is list and len(expected) == 9 and all(type(value) is int and value >= 0 for value in expected)
+            and metadata(path.lstat()) == expected and expected[3] == keeper['bytes'],
+            'SCM_TRANSPORT_ORIGINAL_METADATA_CHANGED')
+    source = generated_source(root, row, verifier)
+    require(metadata(source.lstat()) == expected, 'SCM_TRANSPORT_ORIGINAL_METADATA_CHANGED')
+    checkout = root / 'verification' / tag / 'checkout'
+    if checkout.exists() or checkout.is_symlink(): owned_chain(checkout, root, directory=True)
+    return {'checkout': checkout if checkout.exists() else None, 'inbox': source.parent, 'token': None,
+            'sourceArchive': str(source), 'scmTransportKeeper': keeper,
+            'evidenceArchive': None, 'claimSha256': None, 'toolManifestSha256': None}
+
+
+def generated_binding(root, row, identity, verifier, *, transport_authorization=None):
     """Authenticate retained originals, without demanding a business-test PASS."""
+    if transport_authorization is not None:
+        return scm_transport_binding(root, row, identity, verifier, transport_authorization)
     tag = row['release']; source = generated_source(root, row, verifier)
     attempt = root / 'verification' / tag
     checkout = attempt / 'checkout'
@@ -1555,6 +1642,7 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
     root = owned(root, directory=True)
     require(set(request) == {'schema', 'kind', 'currentRelease', 'identity', 'protectedReleases', 'candidates', 'currentPost'}
             | ({'historicalOutputsAuthorization'} if 'historicalOutputsAuthorization' in request else set())
+            | ({'scmTransportAuthorization'} if 'scmTransportAuthorization' in request else set())
             and request['schema'] == 1 and request['kind'] == GENERATED_REQUEST_KIND and type(request['currentPost']) is bool,
             'GENERATED_REQUEST_SCHEMA_INVALID')
     current = request['currentRelease']; require(TAG.fullmatch(current or ''), 'CURRENT_RELEASE_INVALID')
@@ -1567,6 +1655,7 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
             'GENERATED_CANDIDATE_BOUND_INVALID')
     protected = set(request['protectedReleases']) | GENERATED_PROTECTED_RELEASES
     historical = historical_outputs_authorized(request)
+    transport = scm_transport_authorization(request, root)
     if historical: protected.add(GENERATED_TOOL_KEEPER)
     accepted, skipped, absent, unresolved, preserved, seen = [], [], [], [], [], set()
     budget = {'remaining': MAX_TARGET_CANONICAL}
@@ -1593,7 +1682,8 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
             with ExitStack() as locks:
                 if tag not in held_releases: locks.enter_context(attempt_lock(root, tag, generated=True))
                 enriched = {**row, 'identity': request['identity']}
-                binding = generated_binding(root, enriched, request['identity'], verifier)
+                binding = (generated_binding(root, enriched, request['identity'], verifier, transport_authorization=transport)
+                           if transport is not None else generated_binding(root, enriched, request['identity'], verifier))
                 declared = row.get('targets')
                 generated_target_selection(declared, historical)
                 targets, bases, retained_evidence = [], {}, []
@@ -1627,7 +1717,9 @@ def build_generated_plan(root, request, verifier, containers, *, held_releases=(
                                 if kind in ('GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE') or kind in GENERATED_SOURCE_PACKAGE_KINDS]
                 for item in declared:
                     explicit_leaf = historical and type(item) is dict and item.get('kind') in ('COMPILED_DIRECTORY', 'GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT', 'GENERATED_SYNTHETIC_PYTEST_CASE')
-                    if explicit_leaf:
+                    if transport is not None:
+                        bases['scmTransportKeeper'] = binding['scmTransportKeeper']
+                    elif explicit_leaf:
                         bases[item['path']] = historical_generated_target(root, binding, enriched, item, verifier)
                     else:
                         require(type(item) is dict and set(item) == {'kind', 'path'}
@@ -1852,7 +1944,7 @@ def build_plan(root, request, verifier, containers, *, held_releases=()):
         'candidateAllocatedBytes': sum(t['allocatedBytes'] for c in accepted for t in c['targets'])}
 
 
-def remove_target(root_fd, target):
+def remove_target(root_fd, target, *, transport_authorization=None):
     """Use descriptor-relative no-follow traversal; never a shell or broad prune."""
     base = r'verification/ci-[0-9]+-[a-f0-9]{12}/checkout/work/'
     build = base + r'ci-evidence/(?:java-suites/suite-[0-9]{3}|source-regression/build)/doorhandle-[a-z0-9-]+/'
@@ -1866,13 +1958,23 @@ def remove_target(root_fd, target):
         'GENERATED_IMAGE_ARCHIVE': r'inbox/ci-[0-9]+-[a-f0-9]{12}/candidate-build-tools/official-image\.tar',
         'GENERATED_SOURCE_DEPENDENCIES': base + r'ci-evidence/java-suites/suite-001/doorhandle-module-app/dependency',
         'GENERATED_SOURCE_JAR': base + r'ci-evidence/java-suites/suite-001/doorhandle-server/doorhandle-server-0\.0\.1-SNAPSHOT\.jar',
+        SCM_TRANSPORT_KIND: r'inbox/ci-[0-9]+-[a-f0-9]{12}/source\.tar\.gz',
         'RETIRED_PRIVATE_MAVEN': r'verification/(?:' + '|'.join(sorted(GENERATED_PRIVATE_MAVEN)) + r')/checkout/work/ecs-maven-repository'}
     require(target.get('kind') in patterns and re.fullmatch(patterns[target['kind']], target.get('path', '')),
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
+    if target['kind'] == SCM_TRANSPORT_KIND:
+        tag = target['path'].split('/')[1]
+        approved = (transport_authorization or {}).get(tag, {})
+        require(approved.get('remotePath') == SCM_TRANSPORT_ROOT + '/' + target['path']
+                and target['bytes'] == approved.get('expectedBytes') and len(target['entries']) == 1
+                and target['entries'][0]['sha256'] == approved.get('expectedSourceSha256'),
+                'SCM_TRANSPORT_DELETE_REQUIRES_EXACT_AUTHORIZATION')
     require(target.get('kind') != 'PYTEST_CASE_DIRECTORY' or target['path'].rsplit('/', 1)[-1] not in ('.', '..'),
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
     require(not any('/' + tag + '/' in '/' + target['path'] + '/' for tag in GENERATED_PROTECTED_RELEASES),
             'PROTECTED_RECOVERY_POINT_MAY_NOT_BE_REMOVED')
+    require(target['kind'] != SCM_TRANSPORT_KIND or not any('/' + tag + '/' in '/' + target['path'] + '/'
+            for tag in SCM_TRANSPORT_PROTECTED), 'SCM_TRANSPORT_PROTECTED_ORIGINAL')
     require(not (target['kind'] in ({'GENERATED_OCI_CACHE', 'GENERATED_IMAGE_ARCHIVE'} | GENERATED_SOURCE_PACKAGE_KINDS)
                  and '/' + GENERATED_TOOL_KEEPER + '/' in target['path']), 'EXISTING_PUBLIC_LAYER_KEEPER_PROTECTED')
     parts = target['path'].split('/'); stack = [os.dup(root_fd)]
@@ -1888,7 +1990,7 @@ def remove_target(root_fd, target):
         entries = {row['path']: row for row in target['entries']}
         require(len(entries) == len(target['entries']) and sha(canonical(target['entries'])) == target['inventorySha256'],
                 'DELETION_INVENTORY_NOT_BOUND')
-        if target['kind'] in ('GENERATED_IMAGE_ARCHIVE', 'GENERATED_SOURCE_JAR'):
+        if target['kind'] in ('GENERATED_IMAGE_ARCHIVE', 'GENERATED_SOURCE_JAR', SCM_TRANSPORT_KIND):
             require(set(entries) == {'.'}, 'GENERATED_FILE_INVENTORY_INVALID')
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
             try:
@@ -1987,6 +2089,11 @@ def cleanup_receipt(plan, deleted, before_bytes, after_bytes, journal_sha, failu
                        'unmeasuredCandidates': len(plan['skipped']), 'unresolvedTargets': unresolved, 'alreadyAbsent': plan['absent'],
                        'status': 'BLOCKED' if failure or remaining or plan['skipped'] or unresolved else 'SATISFIED',
                        'budgetVerdict': 'UNKNOWN' if plan['skipped'] or unresolved else 'EXCEEDED' if known_bytes > GENERATED_RETAINED_BUDGET else 'WITHIN_BUDGET'})
+        if 'scmTransportAuthorization' in plan['request']:
+            result['scmTransportCopies'] = {'authorizationSha256': SCM_TRANSPORT_AUTHORIZATION_SHA256,
+                'deletedCount': sum(item['kind'] == SCM_TRANSPORT_KIND for item in deleted),
+                'originalKeepers': [candidate['bases']['scmTransportKeeper'] for candidate in plan['candidates']],
+                'scope': 'EXACT_INBOX_DUPLICATES_ONLY', 'localOriginalArchivesPreserved': True}
     return result
 
 
@@ -2086,8 +2193,11 @@ def apply_plan(root, request, plan, verifier):
             for candidate in plan['candidates'] if has_targets else ():
                 active_release = candidate['release']; stage = 'EVIDENCE_BINDING'
                 custody = next(item for item in request['candidates'] if item['release'] == candidate['release'])
-                binding = (generated_binding(root, custody, request['identity'], verifier) if plan.get('generatedLifecycle')
-                           else evidence_binding(root, custody, request['identity'], verifier))
+                if plan.get('generatedLifecycle'):
+                    transport = scm_transport_authorization(request, root)
+                    binding = (generated_binding(root, custody, request['identity'], verifier, transport_authorization=transport)
+                               if transport is not None else generated_binding(root, custody, request['identity'], verifier))
+                else: binding = evidence_binding(root, custody, request['identity'], verifier)
                 stage = 'QUIESCENCE'
                 if plan.get('generatedLifecycle'):
                     generated_quiescent(root, binding, candidate['release'], docker_snapshot(), candidate['targets'])
@@ -2102,6 +2212,8 @@ def apply_plan(root, request, plan, verifier):
                     stage = 'DELETE_TARGET'
                     if plan.get('generatedLifecycle') and target['kind'] in ('GENERATED_NODE_MODULES', 'GENERATED_PYTEST_ROOT'):
                         generated_tree_helper().remove_owned_tree(root, target['path'], target, lambda event: None, generated=True)
+                    elif target['kind'] == SCM_TRANSPORT_KIND:
+                        remove_target(root_fd, target, transport_authorization=transport)
                     else:
                         remove_target(root_fd, target)
                     deleted.append(deleted_projection(target))

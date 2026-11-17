@@ -20,6 +20,9 @@ public final class CompactActionMySqlFixture implements AutoCloseable {
     private final DriverManagerDataSource targetData,sourceData;
     private final Set<String> targetTables=new HashSet<>(),sourceTables=new HashSet<>();
     private boolean owned;
+    private java.util.Map<String,Object> resetShape;
+    private boolean resetHealthy;
+    private static final Set<String> WORKBENCH_DATA=Set.of("workflow_instance","audit_event","runtime_state");
     public CompactActionMySqlFixture(String property,String prefix,String accountPrefix,boolean migration) throws Exception {
         targetData=EcsIsolatedMysql.open(System.getProperty(property),prefix,accountPrefix);
         sourceData=migration?EcsIsolatedMysql.open(System.getProperty("doorhandle.action.source.config"),"doorhandle_agent_verify_"):null;
@@ -39,6 +42,61 @@ public final class CompactActionMySqlFixture implements AutoCloseable {
                 install(targetData,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),CompactBaselineParts.separator(part),targetTables);
             if(sourceData!=null)install(sourceData,new ClassPathResource("compact/action-source-evidence.sql").getContentAsString(StandardCharsets.UTF_8),";",sourceTables);
         }catch(Exception error){try{close();}catch(Exception cleanup){error.addSuppressed(cleanup);}throw error;}
+    }
+    /** Explicit opt-in for the data-only workbench class, never migration/crash/DDL cases. */
+    public static CompactActionMySqlFixture forReusableWorkbenchData() throws Exception {
+        var fixture=new CompactActionMySqlFixture("workbench.mysql.config","doorhandle_wb_verify_","wb_verify_",false);
+        try {
+            if(fixture.targetTables.size()!=29)throw new IllegalStateException("Complete compact workbench fixture required");
+            fixture.resetShape=resetShape(fixture.targetData,fixture.targetTables,Set.of());
+            requireEmptyExcept(fixture.targetData,fixture.targetTables,Set.of());
+            fixture.resetHealthy=true;return fixture;
+        }catch(Exception failure){try{fixture.close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}throw failure;}
+    }
+    public void resetWorkbenchData() throws Exception {
+        if(!owned||sourceData!=null||resetShape==null||!resetHealthy)
+            throw new IllegalStateException("Workbench data reset was not enabled or a previous reset failed");
+        resetHealthy=false;
+        if(!resetShape.equals(resetShape(targetData,targetTables,WORKBENCH_DATA)))
+            throw new SecurityException("Workbench fixture structure or identity changed before data reset");
+        requireEmptyExcept(targetData,targetTables,WORKBENCH_DATA);
+        truncate(targetData,WORKBENCH_DATA);
+        requireEmptyExcept(targetData,targetTables,Set.of());
+        if(!resetShape.equals(resetShape(targetData,targetTables,Set.of())))
+            throw new SecurityException("Workbench fixture reset did not restore its original structure and counters");
+        resetHealthy=true;
+    }
+    private static java.util.Map<String,Object> resetShape(DriverManagerDataSource data,Set<String> expected,Set<String> mutableCounters)throws Exception {
+        try(Connection connection=data.getConnection()) {
+            var jdbc=new JdbcTemplate(new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection,true));
+            var actual=new HashSet<>(jdbc.queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'",String.class));
+            if(!actual.equals(expected)||jdbc.queryForObject("SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type<>'BASE TABLE')+(SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema=DATABASE())+(SELECT COUNT(*) FROM information_schema.events WHERE event_schema=DATABASE())",Long.class)!=0)
+                throw new SecurityException("Unowned or missing fixture object before data reset");
+            var result=new java.util.LinkedHashMap<String,Object>();
+            result.put("identity",jdbc.queryForMap("SELECT DATABASE() db,CURRENT_USER() account,@@server_uuid uuid,@@port port"));
+            for(String table:expected.stream().sorted().toList()) {
+                String ddl=(String)jdbc.queryForMap("SHOW CREATE TABLE `"+table+"`").get("Create Table");
+                if(mutableCounters.contains(table))ddl=ddl.replaceFirst("(?m)^(\\) ENGINE=\\S+) AUTO_INCREMENT=[0-9]+", "$1");
+                result.put(table,ddl);
+            }
+            result.put("triggers",jdbc.queryForList("SELECT trigger_name,event_manipulation,event_object_table,action_order,action_statement,action_orientation,action_timing,sql_mode,definer,character_set_client,collation_connection,database_collation FROM information_schema.triggers WHERE trigger_schema=DATABASE() ORDER BY trigger_name"));
+            return result;
+        }
+    }
+    private static void requireEmptyExcept(DriverManagerDataSource data,Set<String> all,Set<String> allowed)throws Exception {
+        try(Connection connection=data.getConnection()) {
+            var jdbc=new JdbcTemplate(new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection,true));
+            for(String table:all.stream().filter(name->!allowed.contains(name)).sorted().toList())
+                if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM `"+table+"` LIMIT 1)",Boolean.class)))
+                    throw new SecurityException("Unexpected fixture rows in "+table);
+        }
+    }
+    private static void truncate(DriverManagerDataSource data,Set<String> tables)throws Exception {
+        try(Connection connection=data.getConnection();var statement=connection.createStatement()) {
+            statement.execute("SET FOREIGN_KEY_CHECKS=0");
+            try {for(String table:tables.stream().sorted().toList())statement.execute("TRUNCATE TABLE `"+table+"`");}
+            finally {statement.execute("SET FOREIGN_KEY_CHECKS=1");}
+        }
     }
     public JdbcTemplate jdbc(){return new JdbcTemplate(targetData);}
     public DriverManagerDataSource dataSource(){return targetData;}
@@ -73,6 +131,8 @@ public final class CompactActionMySqlFixture implements AutoCloseable {
     private static Set<String> tables(DriverManagerDataSource data){return new HashSet<>(new JdbcTemplate(data).queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE()",String.class));}
     @Override public void close()throws Exception{
         if(!owned)return;
+        if(resetShape!=null&&!resetShape.get("identity").equals(jdbc().queryForMap("SELECT DATABASE() db,CURRENT_USER() account,@@server_uuid uuid,@@port port")))
+            throw new SecurityException("Reusable workbench fixture identity changed; refusing cleanup");
         Set<String> target=tables(targetData),source=sourceData==null?Set.of():tables(sourceData);
         if(!targetTables.containsAll(target)||!sourceTables.containsAll(source))throw new SecurityException("Unowned tables; refusing cleanup");
         clean(targetData,target);if(sourceData!=null)clean(sourceData,source);owned=false;

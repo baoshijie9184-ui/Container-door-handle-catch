@@ -541,9 +541,6 @@ def run_verification(args):
     require(digest(archive) == args.source_sha256, "Source archive checksum differs")
     require(not (inbox / "verification-evidence.tar.gz").exists(), "Release already has verification evidence")
     attempt_dir, checkout = prepare_checkout(root, args, identity)
-    write_json(attempt_dir / '.verification-claimed' / 'supervisor.json', {
-        'pid': os.getpid(), 'startTicks': supervisor_start(os.getpid()),
-        'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
     evidence = checkout / "work" / "ci-evidence"
     driver = checkout / "driver.log"
     record = {"schema": 1, "kind": "doorhandle-ecs-ci", "release": args.tag,
@@ -561,6 +558,12 @@ def run_verification(args):
     redis_fixture = None
     exit_code = 1
     try:
+        supervisor = {'pid': os.getpid(), 'startTicks': supervisor_start(os.getpid()),
+                      'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+        claim = attempt_dir / '.verification-claimed'
+        write_json(claim / 'supervisor.json', supervisor)
+        args._cancellation_context = (claim, cancellation_binding(args, identity, supervisor))
+        check_cancellation(args)
         unpack_source(archive, checkout, args.commit)
         if getattr(args, 'fixture_watch', None) is not None:
             helper_file = checkout / 'script/jenkins/prepare-compact-fixtures.py'
@@ -579,6 +582,8 @@ def run_verification(args):
         script = checkout / "script" / "jenkins" / "verify-ecs.py"
         regular_file(script, MAX_FILE_BYTES)
         command = [sys.executable, "-B", str(script), "--output", str(evidence)]
+        if getattr(args, 'control_gate', False):
+            command.append('--control-gate')
         tool_manifest = inbox / 'tool-runtime/manifest.json'
         if tool_manifest.exists() or tool_manifest.is_symlink():
             module = checkout / 'script/jenkins/ecs-tool-runtime.py'
@@ -660,6 +665,7 @@ def run_verification(args):
                 if isinstance(admission, dict) and admission.get('capacityVerdict') == 'REJECTED':
                     record['driverStart'] = {'requested': False, 'blockedBy': 'FIXTURE_MEMORY_ADMISSION'}
                 raise
+        check_cancellation(args)
         with driver.open("xb") as output:
             os.chmod(driver, 0o600)
             record['driverStart'] = {'requested': True}
@@ -714,6 +720,13 @@ def run_verification(args):
         record['javaSuiteCount'] = len(result['javaSuites'])
         record['acceptanceProfileSha256'] = result['acceptanceProfileSha256']
         record['sourceRegressionPassed'] = result.get('sourceRegression', {}).get('status') == 'PASS'
+        if getattr(args, 'control_gate', False):
+            spec = importlib.util.spec_from_file_location('same_attempt_control_receipt', script)
+            helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+            gate = helper.control_gate_report(evidence / 'python.xml', json.loads(profile.read_text(encoding='utf8')))
+            require(gate['status'] == 'PASS' and result.get('controlGate') == gate,
+                    'Same-attempt control receipt differs from the original Python XML')
+            record['controlGate'] = gate
         if args.scope == "mysql":
             require(result.get("fixtureProperties") and result.get("javaSelection") and counts.get("skipped") == 0,
                     "MySQL verification did not record explicit fixture scope")
@@ -731,6 +744,7 @@ def run_verification(args):
     except BaseException as error:
         record_verification_failure(record, error, checkout, fixture_watch)
     finally:
+        args._cancellation_started = True  # An explicit TERM cannot interrupt owned finalization.
         def cancel_fixture_tools():
             if fixture_watch is not None and tool_value is not None and record['status'] != 'PASS':
                 record['fixtureRuntimeToolCancellation'] = tool_runtime.stop_execution(tool_value)
@@ -868,6 +882,7 @@ def wait_for_verifier(process, args, fixture_watch=None, middleware_fixture=None
                       observability_fixture=None, semantic_mysql_fixture=None, redis_fixture=None):
     deadline = time.monotonic() + VERIFY_TIMEOUT_SECONDS
     while True:
+        check_cancellation(args)
         if fixture_watch is not None:
             fixture_watch.check()
         if middleware_fixture is not None:
@@ -882,6 +897,7 @@ def wait_for_verifier(process, args, fixture_watch=None, middleware_fixture=None
             observed = any(item is not None for item in
                            (fixture_watch, middleware_fixture, observability_fixture, semantic_mysql_fixture, redis_fixture))
             result = process.wait(timeout=min(0.5 if observed else 30, remaining))
+            check_cancellation(args)
             if fixture_watch is not None:
                 fixture_watch.check()  # Close the successful-exit/OOM race before accepting PASS.
             if middleware_fixture is not None:
@@ -901,6 +917,141 @@ def observation_json(path, *, permissions=(0o600,)):
     require(info.st_uid == os.getuid() and info.st_nlink == 1
             and stat.S_IMODE(info.st_mode) in permissions, 'Private owned verification observation required')
     return json.loads(path.read_text(encoding='utf-8-sig'))
+
+
+@contextmanager
+def cancellation_lock(claim):
+    """Serialize durable intent and TERM against its original supervisor's poll."""
+    import fcntl
+    owned_directory(claim)
+    descriptor = os.open(claim, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info, named = os.fstat(descriptor), claim.lstat()
+        require((info.st_dev, info.st_ino) == (named.st_dev, named.st_ino)
+                and info.st_uid == os.getuid() and stat.S_ISDIR(info.st_mode)
+                and info.st_mode & 0o022 == 0, 'Cancellation claim directory identity differs')
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                require(time.monotonic() < deadline, 'Cancellation publication lock timed out')
+                time.sleep(0.01)
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def cancellation_binding(args, identity, supervisor):
+    return {'schema': 1, 'kind': 'doorhandle-verification-cancellation',
+            'release': args.tag, 'attempt': args.attempt, 'commit': args.commit,
+            'sourceSha256': args.source_sha256, 'scope': args.scope, 'identity': identity,
+            'supervisor': supervisor, 'requestedSignal': 'SIGTERM'}
+
+
+def read_cancellation(path, binding):
+    value = observation_json(path)
+    require(set(value) == set(binding) | {'requestedAt'}
+            and all(value.get(key) == expected for key, expected in binding.items())
+            and isinstance(value['requestedAt'], str)
+            and re.fullmatch(r'\d{4}-\d{2}-\d{2}T[0-9:.]+\+00:00', value['requestedAt']),
+            'Cancellation request belongs to another execution')
+    return value
+
+
+def check_cancellation(args):
+    context = getattr(args, '_cancellation_context', None)
+    if context is None:
+        return  # Existing direct wait callers without a managed attempt remain usable.
+    claim, binding = context
+    path = claim / 'cancel-request.json'
+    if not path.exists() and not path.is_symlink():
+        return
+    with cancellation_lock(claim):
+        read_cancellation(path, binding)
+    args._cancellation_started = True
+    raise KeyboardInterrupt('CI verification cancelled by its controller')
+
+
+def cancel_verification(args):
+    """Request cancellation once, then let observe/collect prove actual cleanup."""
+    validate_request(args)
+    identity = ecs_identity(args.instance_id, args.machine_id)
+    root = admitted_root(args)
+    attempt = root / 'verification' / args.tag
+    owned_directory(attempt)
+    claim = attempt / '.verification-claimed'
+    owned_directory(claim)
+    expected = {'schema': 1, 'kind': 'doorhandle-ci-claim', 'release': args.tag,
+                'attempt': args.attempt, 'commit': args.commit, 'sourceSha256': args.source_sha256,
+                'identity': identity, 'scope': args.scope}
+    require(observation_json(claim / 'claim.json') == expected,
+            'Existing verification claim belongs to another request')
+    supervisor = observation_json(claim / 'supervisor.json')
+    require(set(supervisor) == {'pid', 'startTicks', 'bootId'}
+            and type(supervisor['pid']) is int and supervisor['pid'] > 1
+            and type(supervisor['startTicks']) is str and supervisor['startTicks'].isdigit()
+            and supervisor['bootId'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'Existing verification supervisor identity differs')
+    binding = cancellation_binding(args, identity, supervisor)
+    receipt = attempt / 'verification-receipt.json'
+    archive = root / 'inbox' / args.tag / 'verification-evidence.tar.gz'
+
+    def terminal():
+        if not receipt.exists() and not receipt.is_symlink():
+            return None
+        value = observation_json(receipt)
+        require(all(value.get(key) == expected[key] for key in
+                    ('release', 'attempt', 'commit', 'sourceSha256', 'identity', 'scope'))
+                and value.get('kind') == 'doorhandle-ecs-ci' and value.get('schema') == 1
+                and value.get('status') in ('PASS', 'FAILED'),
+                'Existing verification terminal receipt differs')
+        ready = archive.exists() or archive.is_symlink()
+        if ready:
+            regular_file(archive, MAX_EVIDENCE_ARCHIVE)
+        return {**binding, 'status': 'ALREADY_TERMINAL', 'terminal': True,
+                'evidenceReady': ready, 'verificationStatus': value['status']}
+
+    with cancellation_lock(claim) as directory_fd:
+        result = terminal()
+        if result is None:
+            require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'),
+                    'Bound supervisor cancellation requires Linux pidfd support')
+            descriptor = None
+            try:
+                # Pin before reading /proc: a reused numeric PID can never receive this signal.
+                descriptor = os.pidfd_open(supervisor['pid'], 0)
+                require(supervisor_start(supervisor['pid']) == supervisor['startTicks'],
+                        'Existing verification supervisor identity differs')
+                path = claim / 'cancel-request.json'
+                if path.exists() or path.is_symlink():
+                    read_cancellation(path, binding)
+                    status = 'ALREADY_REQUESTED'
+                else:
+                    temporary = claim / ('.cancel-' + uuid.uuid4().hex + '.json')
+                    try:
+                        write_json(temporary, {**binding, 'requestedAt': now()})
+                        with temporary.open('rb') as stream:
+                            os.fsync(stream.fileno())
+                        os.replace(temporary, path)
+                        os.fsync(directory_fd)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                    signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                    status = 'SIGNAL_SENT'
+                result = {**binding, 'status': status, 'terminal': False,
+                          'evidenceReady': False, 'verificationStatus': None}
+            except (FileNotFoundError, ProcessLookupError):
+                result = terminal()
+                require(result is not None,
+                        'Original verification stopped without terminal evidence; retain owned resources')
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+    # A cancellation acknowledgement is never the verification verdict or permission to delete.
+    progress(result)
+    return 0
 
 
 def observe_verification(args):
@@ -1220,7 +1371,7 @@ def recollect(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", nargs="?", choices=("run", "collect", "observe", "recollect"), default="run")
+    parser.add_argument("mode", nargs="?", choices=("run", "collect", "observe", "cancel", "recollect"), default="run")
     parser.add_argument("--root")
     parser.add_argument("--tag")
     parser.add_argument("--source-sha256")
@@ -1229,6 +1380,7 @@ def main():
     parser.add_argument("--machine-id", required=True)
     parser.add_argument("--scope", choices=("source", "mysql"), default="source")
     parser.add_argument("--fixture-manifest", default="")
+    parser.add_argument('--control-gate', action='store_true')
     parser.add_argument("--attempt", default=uuid.uuid4().hex)
     parser.add_argument("--archive")
     parser.add_argument("--output")
@@ -1238,6 +1390,9 @@ def main():
     args = parser.parse_args()
 
     def interrupted(_number, _frame):
+        if getattr(args, '_cancellation_started', False):
+            return  # A second TERM must not interrupt the first cancellation's finally.
+        args._cancellation_started = True
         raise KeyboardInterrupt("CI verification interrupted")
 
     if args.mode == "run":
@@ -1258,6 +1413,8 @@ def main():
         require(args.root, "Run requires an existing release root")
         if args.mode == 'observe':
             return observe_verification(args)
+        if args.mode == 'cancel':
+            return cancel_verification(args)
         return run_verification(args)
     except BaseException as error:
         # Never print arbitrary exception content, subprocess output, secrets or private manifests.

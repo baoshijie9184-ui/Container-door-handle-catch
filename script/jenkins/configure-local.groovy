@@ -35,6 +35,29 @@ assert settings.version == 1
 assert settings.instanceId == 'i-2zeieuov2aum486jm1ek'
 assert settings.machineId ==~ /[a-f0-9]{32}/
 assert settings.activate instanceof Boolean
+// This node input is deliberately absent from editable Jenkins job parameters.
+// It authorizes one fixed source/input set, not a reusable production-ready flag.
+assert settings.compactReleaseAuthorization == null || settings.compactReleaseAuthorization instanceof String
+def releaseAuthorizationPath = settings.compactReleaseAuthorization ?: ''
+def releaseCommit = ''
+if (releaseAuthorizationPath) {
+    def authorization = new File(releaseAuthorizationPath).canonicalFile
+    def allowedDirectory = new File(project, 'work/jenkins').canonicalFile
+    assert authorization.parentFile == allowedDirectory && authorization.name ==~ /compact-release-authorization-[a-f0-9]{40}[.]json/
+    assert authorization.isFile() && authorization.length() > 0 && authorization.length() <= 1048576
+    def value = new JsonSlurper().parse(authorization)
+    assert value.schemaVersion == 1 && value.kind == 'doorhandle-compact-release-authorization'
+    assert value.scope == 'first-production-131-to-29' && value.job == 'doorhandle-java' && value.branch == 'java-cloud'
+    assert value.approved == true && value.revoked == false && value.allowPreActivationSourceRestore == true
+    assert value.afterActivationFailure == 'FAIL_CLOSED_COMPACT_ONLY'
+    assert value.commit ==~ /[a-f0-9]{40}/ && value.sourceSha256 ==~ /[a-f0-9]{64}/
+    assert authorization.name == 'compact-release-authorization-' + value.commit + '.json'
+    assert value.identity.instanceId == settings.instanceId && value.identity.machineId == settings.machineId
+    assert value.identity.executionLocation == 'ECS' && value.inputs instanceof Map
+    assert value.settingsSha256 ==~ /[a-f0-9]{64}/ && value.approvalReference instanceof String && value.approvalReference
+    releaseAuthorizationPath = authorization.path
+    releaseCommit = value.commit
+}
 def dataAuthorizationFile = new File(project, 'work/jenkins/data-residency-20261107/failed-test-fixture-retention-authorization-20261113.json')
 def dataTaskId = ''
 if (dataAuthorizationFile.isFile()) {
@@ -82,6 +105,8 @@ def variables = [
     'DOORHANDLE_ECS_INSTANCE_ID': settings.instanceId,
     'DOORHANDLE_ECS_MACHINE_ID': settings.machineId,
     'DOORHANDLE_COMPACT_RELEASE_READY': 'false',
+    'DOORHANDLE_COMPACT_RELEASE_AUTHORIZATION': releaseAuthorizationPath,
+    'DOORHANDLE_COMPACT_RELEASE_COMMIT': releaseCommit,
     'DOORHANDLE_COMPACT_REHEARSAL_READY': 'false',
     'DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID': dataTaskId,
     'DOORHANDLE_SOURCE_PYTEST16_AUTHORIZATION_FILE': new File(project, 'work/jenkins/data-residency-20261107/source-pytest16-retention-authorization-20261114.json').path,
@@ -141,7 +166,7 @@ def parameters = [
     new StringParameterDefinition('PYTHON_EXE', settings.python.toString(), 'Existing local Python for evidence validation; never runs project tests locally.'),
     new ChoiceParameterDefinition('BUILD_NPM_REGISTRY', ['https://registry.npmjs.org', 'https://registry.npmmirror.com'] as String[], 'Remote image build registry only.'),
     new BooleanParameterDefinition('REHEARSAL_KEEP', false, 'Only retain an accepted isolated rehearsal.'),
-    new BooleanParameterDefinition('MANUAL_ACCEPTANCE_ENABLED', false, 'Only verify-runtime: hand off the automatically checked 29-table candidate before owned cleanup.'),
+    new BooleanParameterDefinition('MANUAL_ACCEPTANCE_ENABLED', false, 'Optional for verify-runtime; required for same-build compact-cutover. Human confirmation precedes owned cleanup and any production write freeze.'),
     new ChoiceParameterDefinition('MANUAL_ACCEPTANCE_MINUTES', ['30','15','60'] as String[], 'Fixed human acceptance window; reconnecting does not renew it.'),
     new StringParameterDefinition('COMPATIBLE_BACKEND_IMAGE', '', 'Independently accepted compatible backend image, if needed.'),
     new StringParameterDefinition('COMPATIBLE_RUNNER_IMAGE', '', 'Independently accepted compatible runner image, if needed.'),

@@ -24,15 +24,30 @@ import static com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.assertChe
 
 /** Actual historical DDL, actual public baseline and unchanged copy script; ECS execution remains opt-in. */
 @EnabledIfSystemProperty(named="report.copy.source-config",matches=".+")
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@org.junit.jupiter.api.parallel.Execution(org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD)
 class ReportWorkflowMigrationMySqlTest {
+    private static ReportMigrationFixture sharedDataFixture;
+    private static Exception resetFailure;
     ReportMigrationFixture fixture;JdbcTemplate jdbc,legacy;
     final ObjectMapper json=new ObjectMapper().findAndRegisterModules();
     final LocalDateTime beijing=LocalDateTime.of(2026,10,14,16,30),utc=beijing.minusHours(8);
     final String report="qr-"+UUID.randomUUID(),request="Legacy_Report_Create",token="b".repeat(64),hash="a".repeat(64);
     ReportLifecycleEvent event;String response,eventJson;
 
-    @BeforeEach void setup() throws Exception {
-        fixture=new ReportMigrationFixture();jdbc=fixture.target();legacy=fixture.source();
+    @BeforeEach void setup(TestInfo test) throws Exception {
+        // Ordered structural cases finish first; ordinary cases then reuse only the schema.
+        if(test.getTestMethod().orElseThrow().isAnnotationPresent(Order.class))
+            fixture=test.getTags().contains("fixture-reuse")?ReportMigrationFixture.forReusableDataCases():new ReportMigrationFixture();
+        else {
+            if(resetFailure!=null)throw new IllegalStateException("Previous report fixture reset failed",resetFailure);
+            if(sharedDataFixture==null)try{sharedDataFixture=ReportMigrationFixture.forReusableDataCases();}
+                catch(Exception failure){resetFailure=failure;throw failure;}
+            fixture=sharedDataFixture;
+        }
+        jdbc=fixture.target();legacy=fixture.source();seed();
+    }
+    private void seed() throws Exception {
         legacy.update("""
                 INSERT INTO detection_quality_report(report_id,owner_user_id,owner_username,task_id,title,narrative,status,version,
                   source_json,source_sha256,snapshot_sha256,submitted_at,decided_at,decider_user_id,decider_username,decision_reason,created_at,updated_at)
@@ -57,7 +72,14 @@ class ReportWorkflowMigrationMySqlTest {
         legacy.update("INSERT INTO detection_report_event_state(report_id,last_version,status,last_event_id,updated_at) VALUES(?,2,'SUBMITTED',?,?)",report,event.eventId(),beijing.plusSeconds(4));
         legacy.update("INSERT INTO detection_report_audit(report_id,actor_user_id,actor_username,action,before_status,after_status,report_version,reason,snapshot_sha256,created_at) VALUES(?,1,'alice','CREATE',NULL,'DRAFT',1,NULL,NULL,?)",report,beijing);
     }
-    @AfterEach void close() throws Exception {if(fixture!=null)fixture.close();}
+    @AfterEach void close() throws Exception {
+        if(fixture==null)return;
+        if(fixture!=sharedDataFixture){fixture.close();return;}
+        try{fixture.resetData();}catch(Exception failure){resetFailure=failure;throw failure;}
+    }
+    @AfterAll static void closeSharedFixture()throws Exception {
+        if(sharedDataFixture!=null)try{sharedDataFixture.close();}finally{sharedDataFixture=null;}
+    }
 
     void migrate() throws Exception {
         fixture.copy("+08:00");
@@ -150,6 +172,7 @@ class ReportWorkflowMigrationMySqlTest {
                 .isEqualTo(beijing.plusSeconds(4).minusSeconds(seconds));
     }
     @ParameterizedTest @ValueSource(strings={"extra-column","timestamp-precision","missing-index","source-trigger","source-collation"})
+    @Order(1)
     void unreviewedSourceStructureCannotBePartiallyCopied(String drift) {
         switch(drift) {
             case "extra-column"->legacy.execute("ALTER TABLE detection_report_audit ADD COLUMN unreviewed_value VARCHAR(30) NULL");
@@ -164,6 +187,7 @@ class ReportWorkflowMigrationMySqlTest {
         assertThat(legacy.queryForObject("SELECT COUNT(*) FROM detection_report_confirmation",Long.class)).isEqualTo(1);
     }
     @ParameterizedTest @ValueSource(strings={"REPORT_COMMAND","REPORT_CONFIRMATION","REPORT_AGENT_ORIGIN","REPORT_DELIVERY","REPORT_CONSUMPTION","QUALITY_REPORT","REPORT_EVENT_STATE","confirmation-time","confirmation-owner"})
+    @Order(1)
     void fullReconciliationRejectsAdditionalOrRewrittenState(String corruption) {
         if(corruption.equals("QUALITY_REPORT"))
             jdbc.execute("CREATE TRIGGER corrupt_report_field BEFORE INSERT ON audit_event FOR EACH ROW SET NEW.quantity=17,NEW.unit='BYTES'");
@@ -219,12 +243,14 @@ class ReportWorkflowMigrationMySqlTest {
         assertThat(repository.delivered(event.eventId(),"old-worker",now)).isFalse();
         assertThat(repository.delivered(event.eventId(),reclaimed.leaseToken(),now)).isTrue();
     }
+    @Order(1)
     @Test void targetConstraintFailureRollsBackRowsAlreadyCopied(){
         jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_copied_report_audit CHECK(kind<>'QUALITY_REPORT')");
         assertThatThrownBy(this::migrate).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
         assertEmptyTargetOperations();
     }
     @ParameterizedTest @ValueSource(strings={"missing-response","wrong-identity"})
+    @Order(1)
     void finalCopyChecksRejectMissingPayloadAndMismatchedRowsDespiteEqualCounts(String corruption){
         if("missing-response".equals(corruption))
             jdbc.execute("CREATE TRIGGER corrupt_report_copy BEFORE INSERT ON workflow_instance FOR EACH ROW SET NEW.payload_json=IF(NEW.kind='REPORT_COMMAND',JSON_OBJECT(),NEW.payload_json)");
@@ -428,10 +454,59 @@ class ReportWorkflowMigrationMySqlTest {
         assertThat(jdbc.queryForMap("SELECT * FROM workflow_instance WHERE id=?",before.get("id"))).isEqualTo(before);
     }
 
+    @Order(1)
     @Test void orphanOwnerRewriteCannotEvadeCompleteReconciliation()throws Exception {
         addTerminalSourceOrphan(true);
         jdbc.execute("CREATE TRIGGER corrupt_orphan_owner BEFORE INSERT ON workflow_instance FOR EACH ROW SET NEW.owner_user_id=IF(NEW.kind='REPORT_DELIVERY' AND NEW.owner_user_id=0,99,NEW.owner_user_id)");
         assertThatThrownBy(this::migrate).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
         assertEmptyTargetOperations();
+    }
+
+    @Test @Order(0) @Tag("fixture-reuse")
+    void reusableFixtureClearsCommittedHistoryRestoresCountersAndKeepsRealGuards()throws Exception {
+        fixture.copyUnresolved();
+        assertThatThrownBy(()->jdbc.update("DELETE FROM workflow_instance"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        fixture.resetData();
+        assertThat(legacy.queryForObject("SELECT COUNT(*) FROM detection_quality_report",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance",Integer.class)).isZero();
+        try(var connection=fixture.targetDataSource().getConnection();var statement=connection.createStatement()) {
+            statement.execute("SET SESSION time_zone='+05:30'");
+        }
+        assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),NOW())",Integer.class)).isZero();
+        seed();
+        assertThat(legacy.queryForObject("SELECT id FROM detection_quality_report",Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT id FROM quality_report",Long.class)).isEqualTo(1L);
+        fixture.copyUnresolved();
+        assertThat(jdbc.queryForObject("SELECT MIN(id) FROM workflow_instance",Long.class)).isEqualTo(1L);
+        assertThatThrownBy(()->jdbc.update("DELETE FROM workflow_instance"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+    }
+
+    @ParameterizedTest @Order(0) @Tag("fixture-reuse")
+    @ValueSource(strings={"source-column","source-index","target-column","target-check","target-trigger","unknown-table","missing-table","unexpected-rows"})
+    void reusableFixtureRejectsDriftBeforeClearingAnyOwnedRows(String damage)throws Exception {
+        switch(damage) {
+            case "source-column"->legacy.execute("ALTER TABLE detection_report_audit ADD COLUMN reset_drift INT NULL");
+            case "source-index"->legacy.execute("DROP INDEX idx_report_confirmation_expiry ON detection_report_confirmation");
+            case "target-column"->jdbc.execute("ALTER TABLE audit_event ADD COLUMN reset_drift INT NULL");
+            case "target-check"->jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT reset_check CHECK(payload_version>=1)");
+            case "target-trigger"->jdbc.execute("CREATE TRIGGER reset_trigger BEFORE INSERT ON runtime_state FOR EACH ROW SET NEW.payload_version=NEW.payload_version");
+            case "unknown-table"->jdbc.execute("CREATE TABLE reset_unowned(id BIGINT PRIMARY KEY)");
+            case "missing-table"->legacy.execute("DROP TABLE detection_report_confirmation");
+            case "unexpected-rows"->jdbc.update("INSERT INTO organization_department(name) VALUES('unexpected reset row')");
+            default->throw new IllegalArgumentException(damage);
+        }
+        try {
+            assertThatThrownBy(fixture::resetData).isInstanceOf(SecurityException.class);
+            assertThat(legacy.queryForObject("SELECT COUNT(*) FROM detection_quality_report",Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM quality_report",Integer.class)).isEqualTo(1);
+            assertThatThrownBy(fixture::resetData).isInstanceOf(IllegalStateException.class).hasMessageContaining("previous reset failed");
+        } finally {if(damage.equals("unknown-table"))jdbc.execute("DROP TABLE reset_unowned");}
+    }
+    @Test @Order(1)
+    void originalPerCaseFixtureDoesNotImplicitlyEnableDataReset() {
+        assertThatThrownBy(fixture::resetData).isInstanceOf(IllegalStateException.class).hasMessageContaining("not enabled");
+        assertThat(legacy.queryForObject("SELECT COUNT(*) FROM detection_quality_report",Integer.class)).isEqualTo(1);
     }
 }

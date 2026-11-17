@@ -15,6 +15,8 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -25,6 +27,17 @@ PROJECT = 'doorhandlecatch-monolith'
 DIGEST = re.compile(r'sha256:[a-f0-9]{64}')
 TAG = re.compile(r'ci-([1-9][0-9]*)-([a-f0-9]{12})')
 SHA = re.compile(r'[a-f0-9]{64}')
+# Reviewed running pre-receipt worker: Kafka/OSS only, with no SQL client or
+# receipt module. This is an immutable historical image, not an absent-env bypass.
+LEGACY_KAFKA_ONLY_IMAGE = 'sha256:4bbc067a144707e7764de7a4e1e7e5450ea2618c7ed74ee8d5c84d0f3defa8c3'
+RELEASE_INPUTS = ('REMOTE_ROOT', 'REMOTE_RUNTIME', 'COMPACT_CUTOVER_SETTINGS', 'LOCAL_MYSQL_FIXTURE_SETTINGS',
+    'LEGACY_SOURCE_SNAPSHOT', 'LEGACY_SOURCE_ECS_SNAPSHOT', 'LOCAL_ARTIFACTS_SNAPSHOT',
+    'LOCAL_ARTIFACTS_ECS_SNAPSHOT', 'LOCAL_ARTIFACTS_PROFILE', 'LOCAL_MYSQL_SNAPSHOT',
+    'LOCAL_MYSQL_ECS_SNAPSHOT', 'COLD_STORES_SNAPSHOT', 'COLD_STORES_ECS_SNAPSHOT',
+    'COLD_STORES_PROFILE', 'COLD_HISTORY_SNAPSHOT', 'COLD_HISTORY_ECS_SNAPSHOT',
+    'PROJECT_MYSQL_SNAPSHOT', 'PROJECT_MYSQL_MANIFEST_SHA256', 'PROJECT_MYSQL_ARCHIVE_SHA256',
+    'REMAINING_SYSTEM_DATA_SNAPSHOT', 'REMAINING_SYSTEM_DATA_ECS_SNAPSHOT',
+    'CANDIDATE_BUILD_TOOLS_ARCHIVE')
 
 
 def require(value, message):
@@ -85,6 +98,77 @@ def may_restore_source(journal):
     # Starting even a health-only backend can run schedulers. No "no user traffic"
     # flag establishes absence of new target writes; recovery remains conservative.
     return journal.get('activationStarted') is False and journal.get('phase') not in ('ACTIVE', 'SOURCE_RESTORED')
+
+
+def approve_release(authorization, request, gate, proof, decision):
+    """Controller-only permission check; actual ECS evidence is checked again before freeze."""
+    context = {key: request.get(key) for key in ('release', 'commit', 'sourceSha256', 'identity')}
+    match = TAG.fullmatch(context['release'] or '')
+    require(match and re.fullmatch(r'[a-f0-9]{40}', context['commit'] or '')
+            and context['commit'].startswith(match[2]) and SHA.fullmatch(context['sourceSha256'] or ''),
+            'Release authorization requires one fixed build')
+    require(authorization.get('schemaVersion') == 1
+            and authorization.get('kind') == 'doorhandle-compact-release-authorization'
+            and authorization.get('scope') == 'first-production-131-to-29'
+            and authorization.get('job') == 'doorhandle-java' and authorization.get('branch') == 'java-cloud'
+            and authorization.get('approved') is True and authorization.get('revoked') is False
+            and authorization.get('allowPreActivationSourceRestore') is True
+            and authorization.get('afterActivationFailure') == 'FAIL_CLOSED_COMPACT_ONLY'
+            and isinstance(authorization.get('approvalReference'), str)
+            and 1 <= len(authorization['approvalReference']) <= 256,
+            'Explicit current-task release and recovery authorization is required')
+    require(all(authorization.get(key) == context[key] for key in ('commit', 'sourceSha256', 'identity'))
+            and set(request.get('inputs', {})) == set(RELEASE_INPUTS)
+            and all(isinstance(value, str) for value in request['inputs'].values())
+            and authorization.get('inputs') == request['inputs']
+            and SHA.fullmatch(request.get('settingsSha256', ''))
+            and authorization.get('settingsSha256') == request['settingsSha256'],
+            'Approved fixed source or inputs differ')
+    require(gate.get('kind') == 'doorhandle-runtime-gate-passed' and gate.get('status') == 'VERIFIED'
+            and all(gate.get(key) == context[key] for key in ('release', 'commit', 'sourceSha256'))
+            and proof.get('status') == 'PASS' and all(proof.get(key) == value for key, value in context.items())
+            and gate.get('candidateBuildSha256') == proof.get('candidateBuildSha256')
+            and SHA.fullmatch(gate.get('candidateBuildSha256', '')),
+            'This same build has not completed runtime and owned cleanup')
+    manual = proof.get('manualAcceptance', {})
+    require(manual.get('enabled') is True and manual.get('status') == 'ACCEPTED'
+            and decision.get('decision') == 'ACCEPTED'
+            and all(decision.get(key) == proof.get(key) for key in ('release', 'commit', 'sourceSha256', 'candidateBuildSha256'))
+            and decision.get('executionId') == manual.get('executionId')
+            and decision.get('submittedBy') == manual.get('submittedBy')
+            and isinstance(manual.get('submittedBy'), str) and manual['submittedBy']
+            and all(type(manual.get(key)) in (int, float) for key in ('readyAtUnix', 'submittedAtUnix', 'expiresAtUnix'))
+            and manual['readyAtUnix'] <= manual['submittedAtUnix'] < manual['expiresAtUnix']
+            and decision.get('submittedAtUnix') == manual['submittedAtUnix'],
+            'The original human acceptance decision is missing, rejected or foreign')
+    return {'schemaVersion': 1, 'kind': 'doorhandle-compact-release-approval', **context,
+            'candidateBuildSha256': gate['candidateBuildSha256'],
+            'root': request['inputs']['REMOTE_ROOT'], 'runtime': request['inputs']['REMOTE_RUNTIME'],
+            'settings': request['inputs']['COMPACT_CUTOVER_SETTINGS'],
+            'settingsSha256': request['settingsSha256'],
+            'approvalReference': authorization['approvalReference'],
+            'allowPreActivationSourceRestore': True, 'afterActivationFailure': 'FAIL_CLOSED_COMPACT_ONLY'}
+
+
+def authorize_files(args):
+    # No environment, credentials or original authorization text is archived.
+    def read(path):
+        path = canonical(Path(path).absolute()); metadata = path.stat()
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1 and 0 < metadata.st_size <= 1024 * 1024,
+                'Bounded unlinked controller receipt required')
+        raw = path.read_bytes()
+        return json.loads(raw.decode('utf-8-sig')), hashlib.sha256(raw).hexdigest()
+    authorization, authorization_sha = read(args.authorization)
+    request, _ = read(args.request)
+    gate, gate_sha = read(args.runtime_gate)
+    proof, proof_sha = read(args.runtime_proof)
+    decision, decision_sha = read(args.manual_decision)
+    require(gate.get('runtimeReceiptSha256') == proof_sha, 'Original runtime receipt bytes differ')
+    result = approve_release(authorization, request, gate, proof, decision)
+    result.update(authorizationSha256=authorization_sha, runtimeGateSha256=gate_sha,
+                  runtimeReceiptSha256=proof_sha, manualDecisionSha256=decision_sha)
+    print(json.dumps(result))
+    return 0
 
 
 def admitted_verification(root, tag, commit, source_sha, identity, guard):
@@ -408,6 +492,216 @@ class Cutover:
         else:
             self.work = self.source / 'work' / ('compact-cutover-' + uuid.uuid4().hex[:10])
 
+    def admit_release(self):
+        path = canonical(self.args.approval)
+        require(path == self.source / 'work/production-release-approval.json', 'Release approval escaped its fixed candidate')
+        approval, digest = self.guard.read_private(path)
+        require(approval.get('schemaVersion') == 1 and approval.get('kind') == 'doorhandle-compact-release-approval'
+                and all(approval.get(key) == value for key, value in {
+                    'release': self.args.tag, 'commit': self.input['gitCommit'],
+                    'sourceSha256': self.args.source_sha256, 'identity': self.identity,
+                    'root': str(self.root), 'runtime': str(self.runtime),
+                    'candidateBuildSha256': self.build_sha}.items())
+                and all(SHA.fullmatch(approval.get(key, '')) for key in
+                        ('authorizationSha256', 'runtimeGateSha256', 'runtimeReceiptSha256', 'manualDecisionSha256'))
+                and approval.get('allowPreActivationSourceRestore') is True
+                and approval.get('afterActivationFailure') == 'FAIL_CLOSED_COMPACT_ONLY',
+                'Controller approval belongs to another candidate or policy')
+        require(approval['settingsSha256'] == self.build.get('settingsSha256')
+                and sha_file(canonical(approval['settings'])) == approval['settingsSha256'],
+                'Approved source settings changed from the accepted candidate')
+        directory = self.root / 'verification' / self.args.tag
+        proof, proof_sha = self.guard.read_private(directory / 'runtime-acceptance.json')
+        decision, decision_sha = self.guard.read_private(directory / 'checkout/work/runtime-acceptance/manual-decision.json')
+        require(proof_sha == approval['runtimeReceiptSha256'] and decision_sha == approval['manualDecisionSha256']
+                and proof.get('manualAcceptance', {}).get('status') == 'ACCEPTED'
+                and proof['manualAcceptance'].get('enabled') is True and decision.get('decision') == 'ACCEPTED'
+                and all(decision.get(key) == proof.get(key) for key in ('release', 'commit', 'sourceSha256', 'candidateBuildSha256'))
+                and decision.get('executionId') == proof['manualAcceptance'].get('executionId')
+                and decision.get('submittedAtUnix') == proof['manualAcceptance'].get('submittedAtUnix'),
+                'Original manual and runtime acceptance changed before production freeze')
+        require(admitted_runtime(self.root, self.args.tag, self.input['gitCommit'], self.args.source_sha256,
+                                 self.identity, self.guard, self.build, self.build_sha) == proof_sha,
+                'The exact accepted runtime is required before production freeze')
+        if self.journal:
+            require(self.journal.get('releaseApprovalSha256') == digest, 'Original cutover approval changed')
+        self.release_approval_sha = digest
+
+    def restored_health(self):
+        require(self.journal['phase'] == 'SOURCE_RESTORED' and self.journal['activationStarted'] is False,
+                'Source restoration was not completed')
+        for original in self.journal['originals']:
+            current = json.loads(self.ops.docker('inspect', original['id']))[0]
+            require(current['Image'] == original['image'] and current['State']['Running'] == original['running']
+                    and not current['State']['Restarting']
+                    and (not original['running'] or self.ops.healthy(original['id'])),
+                    'Restored source runtime failed its actual health readback')
+        require(not (self.state / 'compact-connection.override.yml').exists(), 'Target connection remains active after source restoration')
+
+    def settle(self):
+        """Idempotent same-build failure disposition; never replay migration or target writes."""
+        if not self.journal:
+            return {'status': 'NOT_STARTED', 'sourceRestored': False, 'targetWritesPreserved': True}
+        if self.journal['phase'] == 'ACTIVE':
+            return {'status': 'ACTIVE', 'sourceRestored': False, 'targetWritesPreserved': True}
+        if self.journal['phase'] == 'SOURCE_RESTORED':
+            self.restored_health()
+            outcome = {'status': 'SOURCE_RESTORED', 'sourceRestored': True, 'healthVerified': True}
+        else:
+            self.fail_closed('settle')
+            require(self.journal.get('failureFreeze', {}).get('confirmed') is True,
+                    'Writer freeze is unresolved; retain all evidence and require exact component repair')
+            if may_restore_source(self.journal):
+                try:
+                    self.recover()
+                    self.restored_health()
+                except BaseException:
+                    self.fail_closed('recover')
+                    raise
+                outcome = {'status': 'SOURCE_RESTORED', 'sourceRestored': True, 'healthVerified': True}
+            else:
+                require(self.journal.get('activationStarted') is True, 'Unknown activation state cannot authorize recovery')
+                outcome = {'status': 'COMPACT_FORWARD_REQUIRED', 'sourceRestored': False,
+                           'freezeConfirmed': True, 'targetWritesPreserved': True,
+                           'targetSchema': self.journal['targetSchema'], 'migrationReplayed': False,
+                           'nextAction': 'REPAIR_FAILED_COMPONENT_PRESERVING_COMPACT_DATA'}
+        self.common.write_json(self.work / 'recovery-receipt.json', {
+            'kind': 'doorhandle-compact-cutover-recovery', 'release': self.args.tag,
+            'commit': self.input['gitCommit'], 'sourceSha256': self.args.source_sha256,
+            'identity': self.identity, 'activationStarted': self.journal['activationStarted'], **outcome})
+        self.journal['recovery'] = {'file': str(self.work / 'recovery-receipt.json'),
+                                    'sha256': sha_file(self.work / 'recovery-receipt.json'), **outcome}
+        self.persist()
+        return outcome
+
+    def run_release(self):
+        self.admit_release()
+        require(self.journal is None, 'First cutover is single-use; use its controlled settlement, never replay it')
+        self.begin_execution()
+        try:
+            for phase in ('prepare', 'migrate', 'activate'):
+                self.check_cancellation()
+                getattr(self, phase)()
+            self.check_cancellation()
+        except BaseException:
+            # A second Jenkins interruption must not interrupt owned fail-closed
+            # work. The outer controller keeps the original failure result.
+            for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(signum, signal.SIG_IGN)
+            # Even the final ACTIVE readback can fail after publication. Do not
+            # mistake that durable intent for a successful outer execution.
+            self.fail_closed(phase)
+            self.settle()
+            raise
+        finally:
+            self.execution['terminal'] = True
+            self.execution['phase'] = (self.journal or {}).get('phase', 'NOT_STARTED')
+            self.common.write_json(self.execution_path(), self.execution)
+
+    def execution_path(self):
+        return self.source / 'work/cutover-execution.json'
+
+    def execution_context(self):
+        return {'schemaVersion': 1, 'kind': 'doorhandle-compact-cutover-execution',
+                'release': self.args.tag, 'commit': self.input['gitCommit'],
+                'sourceSha256': self.args.source_sha256, 'inputSha256': self.input_sha,
+                'runtime': str(self.runtime), 'identity': self.identity}
+
+    def execution_transport(self):
+        return module('cutover_execution_transport', self.source / 'script/jenkins/verify-remote.py')
+
+    def begin_execution(self):
+        import fcntl
+        with (self.source / 'work/cutover-cancel.lock').open('a') as stream:
+            os.chmod(stream.name, 0o600); fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            require(not self.execution_path().exists(), 'Do not restart an already requested cutover')
+            require(not (self.source / 'work/cutover-cancel-request.json').exists(), 'Cutover was cancelled before start')
+            self.execution = {**self.execution_context(), 'terminal': False,
+                'supervisor': {'pid': os.getpid(), 'startTicks': self.execution_transport().supervisor_start(os.getpid()),
+                               'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}}
+            self.common.write_json(self.execution_path(), self.execution)
+
+    def read_execution(self):
+        value, _ = self.guard.read_private(self.execution_path())
+        require(all(value.get(key) == expected for key, expected in self.execution_context().items())
+                and type(value.get('terminal')) is bool, 'Original cutover execution identity differs')
+        supervisor = value.get('supervisor', {})
+        require(set(supervisor) == {'pid', 'startTicks', 'bootId'}
+                and type(supervisor['pid']) is int and supervisor['pid'] > 1
+                and isinstance(supervisor['startTicks'], str) and supervisor['startTicks'].isdigit()
+                and supervisor['bootId'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                'Original cutover supervisor identity differs')
+        return value
+
+    def check_cancellation(self):
+        if getattr(self, '_cancelled_during_spawn', False):
+            raise KeyboardInterrupt('Owned cutover cancellation received during migration spawn')
+        path = self.source / 'work/cutover-cancel-request.json'
+        if hasattr(self, 'execution') and path.exists():
+            value, _ = self.guard.read_private(path)
+            require(value == {**self.execution_context(), 'supervisor': self.execution['supervisor'], 'requestedSignal': 'SIGTERM'},
+                    'Cutover cancellation belongs to another execution')
+            raise KeyboardInterrupt('Owned cutover cancellation requested')
+
+    def cancel(self):
+        """One normal signal to the exact owner; never a signal to MySQL or business containers."""
+        import fcntl
+        ack = {**self.execution_context(), 'operation': 'cutover-cancellation', 'terminal': False,
+               'requestedSignal': 'SIGTERM'}
+        lock = self.source / 'work/cutover-cancel.lock'
+        with lock.open('a') as stream:
+            os.chmod(lock, 0o600); fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not self.execution_path().exists():
+                require(self.journal is None, 'Missing execution ownership for an existing cutover')
+                request = {**self.execution_context(), 'supervisor': None, 'requestedSignal': 'SIGTERM'}
+                path = self.source / 'work/cutover-cancel-request.json'
+                if path.exists():
+                    require(self.guard.read_private(path)[0] == request, 'Conflicting pre-start cancellation')
+                else:
+                    self.common.write_json(path, request)
+                return {**ack, 'status': 'CANCELLED_BEFORE_START', 'terminal': True}
+            value = self.read_execution()
+            if value['terminal']:
+                return {**ack, 'terminal': True, 'status': 'ALREADY_TERMINAL'}
+            supervisor = value['supervisor']; path = self.source / 'work/cutover-cancel-request.json'
+            request = {**self.execution_context(), 'supervisor': supervisor, 'requestedSignal': 'SIGTERM'}
+            if path.exists():
+                prior, _ = self.guard.read_private(path)
+                require(prior == request, 'Conflicting cutover cancellation request')
+                return {**ack, 'status': 'ALREADY_REQUESTED'}
+            descriptor = os.pidfd_open(supervisor['pid'], 0)
+            try:
+                require(self.execution_transport().supervisor_start(supervisor['pid']) == supervisor['startTicks'],
+                        'Cutover supervisor PID was reused')
+                self.common.write_json(path, request)
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            finally:
+                os.close(descriptor)
+        return {**ack, 'status': 'SIGNAL_SENT'}
+
+    def observe_execution(self):
+        """Wait for the original finally, never resume an unknown migration."""
+        if not self.execution_path().exists():
+            expected = {**self.execution_context(), 'supervisor': None, 'requestedSignal': 'SIGTERM'}
+            require(self.journal is None and self.guard.read_private(self.source / 'work/cutover-cancel-request.json')[0] == expected,
+                    'Missing original cutover execution and cancellation')
+            return {**self.execution_context(), 'terminal': True, 'phase': 'NOT_STARTED'}
+        deadline = time.monotonic() + 180
+        while True:
+            value = self.read_execution()
+            if value['terminal']:
+                try:
+                    with self.ops.maintenance_lock(self.root):
+                        return value
+                except self.ops.MaintenanceBusy:
+                    require(time.monotonic() < deadline, 'Terminal cutover has not released maintenance ownership')
+                    time.sleep(0.5)
+                    continue
+            require(self.execution_transport().supervisor_start(value['supervisor']['pid']) == value['supervisor']['startTicks'],
+                    'Cutover owner disappeared without terminal evidence')
+            require(time.monotonic() < deadline, 'Cutover still owns maintenance; retain resources and do not settle concurrently')
+            time.sleep(0.5)
+
     def persist(self, phase=None):
         if phase:
             self.journal['phase'] = phase
@@ -586,9 +880,102 @@ class Cutover:
         log = self.work / (folder + '.log')
         with log.open('xb') as stream:
             os.chmod(log, 0o600)
-            result = subprocess.run(command, cwd=self.source, env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=14400)
-        require(result.returncode == 0, 'Migration/readback failed or has an unknown result; keep every source writer stopped')
+            # Persist unknown-before-spawn, so an interrupt between child
+            # creation and registration cannot authorize restoration.
+            self.journal['migrationChild'] = {'operation': mode, 'drained': False}
+            self.persist()
+            process = descriptor = None
+            owner = self.journal['migrationChild']
+            try:
+                self._migration_spawn_in_progress = True
+                try:
+                    process = subprocess.Popen(command, cwd=self.source, env=env, stdout=stream,
+                                               stderr=subprocess.STDOUT, start_new_session=True)
+                    descriptor = os.pidfd_open(process.pid, 0)
+                    owner.update(pid=process.pid, startTicks=self.execution_transport().supervisor_start(process.pid))
+                    self.persist()
+                finally:
+                    self._migration_spawn_in_progress = False
+                self.check_cancellation()
+                deadline = time.monotonic() + 14400
+                while process.poll() is None:
+                    self.check_cancellation()
+                    require(time.monotonic() < deadline, 'Owned migration command timed out')
+                    time.sleep(0.25)
+                self.check_cancellation()
+            except BaseException:
+                # SIGINT lets the Python migration contexts close transactions,
+                # source-lock helpers and the Java bridge. Never signal MySQL.
+                for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                    signal.signal(signum, signal.SIG_IGN)
+                if process is None:
+                    raise
+                if process.poll() is None:
+                    require(descriptor is not None and self.execution_transport().supervisor_start(process.pid) == owner.get('startTicks')
+                            and os.getpgid(process.pid) == process.pid, 'Migration command ownership changed')
+                    os.killpg(process.pid, signal.SIGINT)
+                try:
+                    process.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    raise ValueError('Migration child has not drained; preserve maintenance and inspect its original log')
+                raise
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                # A dead wrapper is insufficient: a Java/client process in the
+                # original session, or a SQL session, still blocks recovery.
+                owner['drained'] = (process is not None and process.poll() is not None
+                                    and not self.migration_group_members(process.pid))
+                self.persist()
+        require(owner['drained'] and self.migration_sessions_drained(), 'Migration children or SQL sessions remain; preserve maintenance')
+        require(process.returncode == 0, 'Migration/readback failed or has an unknown result; keep every source writer stopped')
         return output
+
+    @staticmethod
+    def migration_group_members(group):
+        members = []
+        for path in Path('/proc').iterdir():
+            if not path.name.isdigit():
+                continue
+            try:
+                fields = (path / 'stat').read_text().rsplit(')', 1)[1].split()
+            except FileNotFoundError:
+                continue
+            if fields[0] != 'Z' and int(fields[2]) == group:
+                members.append(int(path.name))
+        return members
+
+    def migration_sessions_drained(self):
+        user = self.journal.get('migrationUser')
+        if not user:
+            return not self.journal.get('migrationStarted')
+        require(re.fullmatch(r'mig_[a-f0-9]{10}', user), 'Migration SQL identity differs')
+        return self.sql("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE USER='" + user
+                        + "' AND ID<>CONNECTION_ID();") == '0'
+
+    def legacy_kafka_only_worker(self, row):
+        if row['Image'] != LEGACY_KAFKA_ONLY_IMAGE:
+            return False
+        images = json.loads(self.ops.docker('image', 'inspect', row['Image']))
+        require(len(images) == 1 and images[0]['Id'] == row['Image'], 'Historical worker image identity differs')
+        config, original = row['Config'], images[0]['Config']
+        command = original.get('Cmd') or []
+        require(not original.get('Entrypoint') and not config.get('Entrypoint')
+                and config.get('Cmd') == command and config.get('WorkingDir') == original.get('WorkingDir') == '/app'
+                and command in (['python', '/app/kafka_detection_worker.py'], ['python3', '/app/kafka_detection_worker.py'],
+                                ['/usr/local/bin/python', '/app/kafka_detection_worker.py'])
+                and [row.get('Path'), *row.get('Args', [])] == command,
+                'Historical worker no longer runs its reviewed Kafka-only entry point')
+        code = {'/app/' + name for name in ('kafka_detection_worker.py', 'kafka_settings.py', 'kafka_event_models.py',
+                'oss_result_uploader.py', 'pth_detection_engine.py', 'detection_image.py', 'worker_health.py')}
+        require(not any(mount.get('Destination') in ('/', '/app') or mount.get('Destination') in code
+                        for mount in row.get('Mounts', [])),
+                'Historical worker code can be overridden by a mount')
+        changes = self.ops.docker('diff', row['Id']).decode().splitlines()
+        require(all(len(line) >= 3 and line[1] == ' ' and line[2:] not in ('/', '/app')
+                    and line[2:] not in code for line in changes),
+                'Historical worker image code has changed in its writable layer')
+        return True
 
     def prepare(self):
         require(os.environ.get('DOORHANDLE_COMPACT_RELEASE_READY') == 'true', 'ECS acceptance release gate is closed')
@@ -606,6 +993,7 @@ class Cutover:
             'buildNumber': self.input['buildNumber'], 'sourceRoot': str(self.source), 'runtime': str(self.runtime),
             'work': str(self.work), 'originalEnvSha256': self.env_sha, 'sourceSchema': source_schema,
             'runtimeAcceptanceSha256': runtime_sha,
+            'releaseApprovalSha256': getattr(self, 'release_approval_sha', None),
             'activationStarted': False, 'migrationStarted': False, 'originals': []}
         self.persist()
         identity = json.loads(self.sql("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version);"))
@@ -618,9 +1006,13 @@ class Cutover:
             if service in ('backend', 'detection-worker'):
                 environment = self.common.environment(row)
                 username = environment.get('DB_USERNAME') if service == 'backend' else environment.get('DETECTION_RECEIPT_DB_USER')
-                require(isinstance(username, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,31}', username)
-                        and username.lower() != 'root', 'Source runtime must use explicitly fenceable non-root accounts')
-                users.add(username)
+                if service == 'detection-worker' and not username and self.legacy_kafka_only_worker(row):
+                    self.journal['legacyKafkaOnlyWorker'] = {'containerId': row['Id'], 'imageId': row['Image'],
+                                                           'sqlWriter': False, 'mustStop': True}
+                else:
+                    require(isinstance(username, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,31}', username)
+                            and username.lower() != 'root', 'Source runtime must use explicitly fenceable non-root accounts')
+                    users.add(username)
             if service in ('mysql', 'redis', 'kafka', 'kafka-init', 'kafka-storage-init'):
                 continue
             require((row['Config'].get('Labels') or {}).get('com.docker.compose.oneoff', '').lower() != 'true',
@@ -831,13 +1223,22 @@ class Cutover:
         require(self.journal and may_restore_source(self.journal),
                 'A compact runtime may have written data; preserve maintenance and recover the compact target or apply a forward repair')
         self.assert_maintenance()
+        require(self.journal.get('migrationChild', {}).get('drained', True)
+                and self.migration_sessions_drained(), 'Migration execution is not drained; source recovery is not approved')
         observed = self.work / 'observation/source-observation.json'
+        settings_path = self.work / 'migration.json'
+        settings = self.guard.read_private(settings_path)[0] if settings_path.exists() else {}
+        registered = settings.get('reviewedSourceSnapshot')
+        if self.journal.get('migrationStarted') or registered:
+            require(registered == str(observed) and observed.is_file()
+                    and sha_file(observed) == settings.get('reviewedSourceSnapshotSha256'),
+                    'Registered source observation is missing or changed; source recovery is not approved')
         if observed.exists():
             # Recovering the original source requires an actual fresh full row /
             # metadata/HWM comparison, not the absence of external HTTP traffic.
             sys.path.insert(0, str(self.source / 'script/schema'))
             runtime = module('cutover_recovery_runtime', self.source / 'script/schema/compact_migration_runtime.py')
-            settings, _ = self.guard.read_private(self.work / 'migration.json')
+            require(settings, 'Source recovery requires its original private migration configuration')
             folder = self.work / ('recovery-readback-' + uuid.uuid4().hex[:10])
             folder.mkdir(mode=0o700); (folder / 'private').mkdir(mode=0o700)
             mysql = runtime.Mysql(settings, folder)
@@ -867,6 +1268,24 @@ class Cutover:
                     require(time.monotonic() < deadline, 'Original source runtime recovery health timed out')
                     time.sleep(1)
         self.persist('SOURCE_RESTORED')
+
+    def fence_target_accounts(self):
+        """Close only this migration's new DML identities after target activation."""
+        accounts, _ = self.guard.read_private(self.work / 'runtime-accounts.json')
+        suffix = self.work.name.rsplit('-', 1)[1]
+        require(re.fullmatch(r'[a-f0-9]{10}', suffix) and set(accounts) == {'app', 'worker'},
+                'Target writer identities differ from the original migration')
+        users = []
+        for role in ('app', 'worker'):
+            expected = role + '_' + suffix
+            require(accounts[role].get('user') == expected, 'Target writer is not owned by this migration')
+            users.append(expected)
+        for user in users:
+            self.sql("ALTER USER '" + user + "'@'%' ACCOUNT LOCK;")
+        names = ','.join("'" + user + "'" for user in users)
+        return (self.sql("SELECT COUNT(*) FROM mysql.user WHERE User IN (" + names + ") AND Host='%' AND account_locked='Y';") == '2'
+                and self.sql("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE (DB='"
+                    + self.journal['targetSchema'] + "' OR USER IN (" + names + ")) AND ID<>CONNECTION_ID();") == '0')
 
     def fail_closed(self, action):
         if not self.journal:
@@ -934,49 +1353,95 @@ class Cutover:
                     "(DB='" + self.journal['sourceSchema'] + "' OR USER IN (" + names + ")) AND ID<>CONNECTION_ID();") == '0'
             except BaseException:
                 account_fence_ok = False
-        confirmed = inventory_ok and not unresolved and account_fence_ok
+        target_fence_ok = self.journal.get('activationStarted') is False
+        if self.journal.get('activationStarted') is True:
+            try:
+                target_fence_ok = self.fence_target_accounts()
+            except BaseException:
+                target_fence_ok = False
+        try:
+            migration_drained = (self.journal.get('migrationChild', {}).get('drained', True)
+                                 and self.migration_sessions_drained())
+        except BaseException:
+            migration_drained = False
+        confirmed = inventory_ok and not unresolved and account_fence_ok and target_fence_ok and migration_drained
         self.journal['failureFreeze'] = {'action': action, 'confirmed': confirmed,
                                          'sourceAccountsFenced': account_fence_ok,
+                                         'targetAccountsFenced': target_fence_ok,
+                                         'migrationExecutionDrained': migration_drained,
                                          'unverifiedContainers': sorted(unresolved)}
         phase = 'FAILED_' + action.upper() + ('_FROZEN' if confirmed else '_NEEDS_REVIEW')
         self.persist(phase)
         if (self.state / 'compact-connection.override.yml').exists():
             self.connection(phase)
 
+    def summary(self):
+        journal = self.journal or {}
+        native_ref = journal.get('nativeProductionReadback')
+        if native_ref:
+            require(sha_file(canonical(native_ref['file'])) == native_ref['sha256'], 'Native production readback changed')
+        return {'kind': 'doorhandle-first-compact-cutover', 'phase': journal.get('phase', 'NOT_STARTED'),
+                'status': 'ACTIVE' if journal.get('phase') == 'ACTIVE' else 'STOPPED_OR_PRIVATE',
+                'sourceTableCount': 131, 'targetTableCount': 29,
+                'release': self.args.tag, 'commit': self.input['gitCommit'],
+                'sourceSha256': self.args.source_sha256, 'ecs': self.identity,
+                'migrationReceiptSha256': journal.get('migrationReceiptSha256'),
+                'candidateSemanticVerified': bool(journal.get('nativeProductionInstall')),
+                'productionDataMaterialized': bool(native_ref), 'nativeProductionReadback': native_ref,
+                'sourceRestorationAllowed': may_restore_source(journal),
+                'activationStarted': journal.get('activationStarted'),
+                'failureFreeze': journal.get('failureFreeze'), 'recovery': journal.get('recovery')}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('prepare', 'migrate', 'activate', 'recover', 'status'))
+    if len(sys.argv) > 1 and sys.argv[1] == 'authorize':
+        parser.add_argument('phase', choices=('authorize',))
+        for name in ('authorization', 'request', 'runtime-gate', 'runtime-proof', 'manual-decision'):
+            parser.add_argument('--' + name, required=True)
+        return authorize_files(parser.parse_args())
+    parser.add_argument('phase', choices=('prepare', 'migrate', 'activate', 'recover', 'status', 'run', 'settle', 'cancel', 'observe'))
     for name in ('root', 'runtime', 'tag', 'source-sha256', 'config'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--lock-fd', type=int)
+    parser.add_argument('--approval')
     args = parser.parse_args()
     instance = None
     try:
         instance = Cutover(args)
+        if args.phase in ('cancel', 'observe'):
+            # Cancellation must not wait for the lock held by the process it
+            # needs to interrupt. Only original execution metadata is mutated.
+            require(args.approval, 'Controlled cancellation requires its original approval')
+            instance.admit_release()
+            value = instance.cancel() if args.phase == 'cancel' else instance.observe_execution()
+            print(json.dumps(value)); return 0
         with instance.ops.maintenance_lock(instance.root, args.lock_fd):
             instance.refresh_journal()
             try:
-                if args.phase != 'status':
+                if args.phase in ('run', 'settle'):
+                    require(args.approval, 'Controlled release requires its original approval')
+                    def interrupted(_signal, _frame):
+                        if getattr(instance, '_migration_spawn_in_progress', False):
+                            instance._cancelled_during_spawn = True
+                            return
+                        raise KeyboardInterrupt('Controlled cutover interrupted')
+                    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                        signal.signal(signum, interrupted)
+                    if args.phase == 'run':
+                        instance.run_release()
+                    else:
+                        instance.admit_release()
+                        outcome = instance.settle()
+                        print(json.dumps(instance.summary()))
+                        return 2 if outcome['status'] == 'COMPACT_FORWARD_REQUIRED' else 0
+                elif args.phase != 'status':
                     getattr(instance, args.phase)()
             except BaseException:
-                if args.phase != 'status':
+                if args.phase not in ('status', 'run', 'settle'):
                     instance.fail_closed(args.phase)
                 raise
-            require(instance.journal is not None, 'No cutover has been prepared')
-            native_ref = instance.journal.get('nativeProductionReadback')
-            if native_ref:
-                require(sha_file(canonical(native_ref['file'])) == native_ref['sha256'], 'Native production readback changed')
-            print(json.dumps({'kind': 'doorhandle-first-compact-cutover', 'phase': instance.journal['phase'],
-                              'status': 'ACTIVE' if instance.journal['phase'] == 'ACTIVE' else 'STOPPED_OR_PRIVATE',
-                              'sourceTableCount': 131, 'targetTableCount': 29,
-                              'release': instance.args.tag, 'commit': instance.input['gitCommit'],
-                              'sourceSha256': instance.args.source_sha256, 'ecs': instance.identity,
-                              'migrationReceiptSha256': instance.journal.get('migrationReceiptSha256'),
-                              'candidateSemanticVerified': bool(instance.journal.get('nativeProductionInstall')),
-                              'productionDataMaterialized': bool(native_ref),
-                              'nativeProductionReadback': native_ref,
-                              'sourceRestorationAllowed': may_restore_source(instance.journal)}))
+            print(json.dumps(instance.summary()))
         return 0
     except BaseException:
         print('Compact cutover did not complete. Preserve private evidence and inspect the freeze/NEEDS_REVIEW phase before recovery.', file=sys.stderr)

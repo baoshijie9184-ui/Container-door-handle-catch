@@ -18,6 +18,12 @@ public final class DualSchemaCopyMySqlFixture implements AutoCloseable {
     private final Set<String> sourceTables,targetTables;
     private final Map<String,Object> sourceIdentity,targetIdentity;
     private boolean ownsSchemas;
+    private Map<String,Object> sourceResetShape,targetResetShape;
+    private boolean resetHealthy;
+    private static final Set<String> REPORT_SOURCE_TABLES=Set.of("detection_quality_report","detection_report_audit",
+            "detection_report_command","detection_report_confirmation","detection_report_agent_origin",
+            "detection_report_outbox","detection_report_event_receipt","detection_report_event_state");
+    private static final Set<String> REPORT_TARGET_TABLES=Set.of("quality_report","workflow_instance","audit_event","runtime_state");
 
     public DualSchemaCopyMySqlFixture(String sourceConfig,String targetConfig,String prefix,Set<String> sourceTables,Set<String> targetTables) throws Exception {
         source=EcsIsolatedMysql.open(sourceConfig,prefix);target=EcsIsolatedMysql.open(targetConfig,prefix);
@@ -61,6 +67,64 @@ public final class DualSchemaCopyMySqlFixture implements AutoCloseable {
     }
     private static Set<String> tables(DriverManagerDataSource data) {
         return new HashSet<>(new JdbcTemplate(data).queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE()",String.class));
+    }
+
+    /** Only the report data-only class opts in; other copy fixtures keep per-case DDL. */
+    void enableReportDataReset() throws Exception {
+        if(!ownsSchemas||sourceResetShape!=null||!sourceTables.equals(REPORT_SOURCE_TABLES)||targetTables.size()!=29)
+            throw new IllegalStateException("Report data reset requires its newly installed complete fixture");
+        sourceResetShape=resetShape(source,sourceTables,Set.of());
+        targetResetShape=resetShape(target,targetTables,Set.of());
+        requireEmptyExcept(source,sourceTables,Set.of());requireEmptyExcept(target,targetTables,Set.of());
+        resetHealthy=true;
+    }
+
+    void resetReportData() throws Exception {
+        if(!ownsSchemas||sourceResetShape==null||!resetHealthy)throw new IllegalStateException("Report data reset was not enabled or a previous reset failed");
+        resetHealthy=false; // A partial reset must never be reused or silently rebuilt.
+        if(!sourceResetShape.equals(resetShape(source,sourceTables,REPORT_SOURCE_TABLES))
+                ||!targetResetShape.equals(resetShape(target,targetTables,REPORT_TARGET_TABLES)))
+            throw new SecurityException("Report fixture structure or identity changed before data reset");
+        requireEmptyExcept(target,targetTables,REPORT_TARGET_TABLES);
+        truncate(target,REPORT_TARGET_TABLES);truncate(source,REPORT_SOURCE_TABLES);
+        requireEmptyExcept(source,sourceTables,Set.of());requireEmptyExcept(target,targetTables,Set.of());
+        if(!sourceResetShape.equals(resetShape(source,sourceTables,Set.of()))
+                ||!targetResetShape.equals(resetShape(target,targetTables,Set.of())))
+            throw new SecurityException("Report fixture reset did not restore its original structure and counters");
+        resetHealthy=true;
+    }
+
+    private static Map<String,Object> resetShape(DriverManagerDataSource data,Set<String> expected,Set<String> mutableCounters)throws Exception {
+        try(Connection connection=data.getConnection()) {
+            var jdbc=new JdbcTemplate(new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection,true));
+            var actual=new HashSet<>(jdbc.queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'",String.class));
+            if(!actual.equals(expected)||jdbc.queryForObject("SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type<>'BASE TABLE')+(SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema=DATABASE())+(SELECT COUNT(*) FROM information_schema.events WHERE event_schema=DATABASE())",Long.class)!=0)
+                throw new SecurityException("Unowned or missing fixture object before data reset");
+            var result=new java.util.LinkedHashMap<String,Object>();
+            result.put("identity",jdbc.queryForMap("SELECT DATABASE() db,CURRENT_USER() account,@@server_uuid uuid,@@port port"));
+            for(String table:expected.stream().sorted().toList()) {
+                String ddl=(String)jdbc.queryForMap("SHOW CREATE TABLE `"+table+"`").get("Create Table");
+                if(mutableCounters.contains(table))ddl=ddl.replaceFirst("(?m)^(\\) ENGINE=\\S+) AUTO_INCREMENT=[0-9]+", "$1");
+                result.put(table,ddl);
+            }
+            result.put("triggers",jdbc.queryForList("SELECT trigger_name,event_manipulation,event_object_table,action_order,action_statement,action_orientation,action_timing,sql_mode,definer,character_set_client,collation_connection,database_collation FROM information_schema.triggers WHERE trigger_schema=DATABASE() ORDER BY trigger_name"));
+            return result;
+        }
+    }
+    private static void requireEmptyExcept(DriverManagerDataSource data,Set<String> all,Set<String> allowed)throws Exception {
+        try(Connection connection=data.getConnection()) {
+            var jdbc=new JdbcTemplate(new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection,true));
+            for(String table:all.stream().filter(name->!allowed.contains(name)).sorted().toList())
+                if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM `"+table+"` LIMIT 1)",Boolean.class)))
+                    throw new SecurityException("Unexpected fixture rows in "+table);
+        }
+    }
+    private static void truncate(DriverManagerDataSource data,Set<String> tables)throws Exception {
+        try(Connection connection=data.getConnection();var statement=connection.createStatement()) {
+            statement.execute("SET FOREIGN_KEY_CHECKS=0");
+            try {for(String table:tables.stream().sorted().toList())statement.execute("TRUNCATE TABLE `"+table+"`");}
+            finally {statement.execute("SET FOREIGN_KEY_CHECKS=1");}
+        }
     }
     @Override public void close() throws Exception {
         if(!ownsSchemas)return;

@@ -549,3 +549,444 @@ def test_source_account_confined_to_its_database_remains_fenceable():
     for catalog in ('SCHEMA_PRIVILEGES', 'TABLE_PRIVILEGES', 'COLUMN_PRIVILEGES'):
         assert any('information_schema.' + catalog + ' WHERE' in sql
                    and "(TABLE_SCHEMA<>DATABASE() OR IS_GRANTABLE='YES')" in sql for sql in calls)
+
+
+@pytest.fixture
+def release_permission():
+    context = {'release': 'ci-420-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64,
+               'identity': {'instanceId': 'i-owned', 'machineId': 'c' * 32, 'executionLocation': 'ECS'}}
+    inputs = dict.fromkeys(cutover.RELEASE_INPUTS, '')
+    inputs.update(REMOTE_ROOT='/home/ecs-user/doorhandle-ci', REMOTE_RUNTIME='/home/ecs-user/runtime',
+                  COMPACT_CUTOVER_SETTINGS='/home/ecs-user/settings.json')
+    request = {**context, 'inputs': inputs, 'settingsSha256': 'd' * 64}
+    authorization = {**{key: context[key] for key in ('commit','sourceSha256','identity')},
+        'schemaVersion': 1, 'kind': 'doorhandle-compact-release-authorization', 'scope': 'first-production-131-to-29',
+        'job': 'doorhandle-java', 'branch': 'java-cloud', 'approved': True, 'revoked': False,
+        'approvalReference': 'current-user-explicit-release-approval', 'allowPreActivationSourceRestore': True,
+        'afterActivationFailure': 'FAIL_CLOSED_COMPACT_ONLY', 'inputs': dict(inputs), 'settingsSha256': 'd' * 64}
+    manual = {'enabled': True, 'status': 'ACCEPTED', 'executionId': 'e' * 32, 'submittedBy': 'actual-user',
+              'readyAtUnix': 1000, 'submittedAtUnix': 1100, 'expiresAtUnix': 1900}
+    proof = {**context, 'status': 'PASS', 'candidateBuildSha256': 'f' * 64, 'manualAcceptance': manual}
+    gate = {**context, 'kind': 'doorhandle-runtime-gate-passed', 'status': 'VERIFIED', 'candidateBuildSha256': 'f' * 64}
+    decision = {**{key: proof[key] for key in ('release','commit','sourceSha256','candidateBuildSha256')},
+                'executionId': 'e' * 32, 'submittedBy': 'actual-user', 'decision': 'ACCEPTED', 'submittedAtUnix': 1100}
+    return authorization, request, gate, proof, decision
+
+
+def test_release_requires_one_fixed_authorized_candidate_and_original_human_decision(release_permission):
+    approved = cutover.approve_release(*release_permission)
+    assert approved['kind'] == 'doorhandle-compact-release-approval'
+    assert approved['commit'] == 'a' * 40 and approved['sourceSha256'] == 'b' * 64
+    assert approved['root'] == '/home/ecs-user/doorhandle-ci'
+    assert approved['allowPreActivationSourceRestore'] is True
+    assert 'inputs' not in approved and 'submittedBy' not in approved
+
+
+@pytest.mark.parametrize('index,key,value', [
+    (0,'approved',False),(0,'revoked',True),(0,'scope','generic-production'),
+    (0,'commit','1'*40),(0,'sourceSha256','1'*64),(0,'settingsSha256','1'*64),
+    (0,'afterActivationFailure','RESTORE_LEGACY'),(0,'allowPreActivationSourceRestore',False),
+    (0,'inputs',{}),(0,'identity',{}),(2,'release','ci-419-'+'a'*12),
+    (2,'status','RUNNING'),(2,'candidateBuildSha256','1'*64),(3,'status','FAILED'),
+    (3,'identity',{}),(4,'decision','REJECTED'),(4,'commit','1'*40),
+    (4,'executionId','1'*32),(4,'submittedAtUnix',999),(4,'submittedBy','another-user'),
+])
+def test_release_permission_refuses_changed_scope_inputs_or_partial_evidence(release_permission,index,key,value):
+    release_permission[index][key] = value
+    with pytest.raises(ValueError): cutover.approve_release(*release_permission)
+
+
+@pytest.mark.parametrize('damage', ['not-requested','expired','wrong-source','unknown-classification'])
+def test_manual_acceptance_cannot_be_inferred_from_boolean_job_parameters(release_permission,damage):
+    manual=release_permission[3]['manualAcceptance']
+    if damage == 'not-requested': manual['enabled']=False
+    elif damage == 'expired': manual['submittedAtUnix']=manual['expiresAtUnix']
+    elif damage == 'wrong-source': release_permission[3]['sourceSha256']='1'*64
+    else: manual['status']='READY_FOR_MANUAL_ACCEPTANCE'
+    with pytest.raises(ValueError): cutover.approve_release(*release_permission)
+
+
+def test_controller_authorization_binds_original_runtime_bytes_without_archiving_private_authorization(tmp_path,release_permission,capsys):
+    authorization,request,gate,proof,decision=release_permission
+    authorization['privateAnnotation']='must-not-be-exported'
+    files={}
+    for name,value in [('authorization',authorization),('request',request),('runtime_proof',proof),('manual_decision',decision)]:
+        file=tmp_path/(name+'.json');file.write_text(json.dumps(value));files[name]=str(file)
+    gate['runtimeReceiptSha256']=cutover.sha_file(files['runtime_proof'])
+    file=tmp_path/'gate.json';file.write_text(json.dumps(gate));files['runtime_gate']=str(file)
+    assert cutover.authorize_files(SimpleNamespace(**files)) == 0
+    output=capsys.readouterr().out
+    approved=json.loads(output)
+    assert approved['runtimeReceiptSha256'] == gate['runtimeReceiptSha256']
+    assert approved['manualDecisionSha256'] == cutover.sha_file(files['manual_decision'])
+    assert 'must-not-be-exported' not in output
+    Path(files['runtime_proof']).write_text(json.dumps({**proof,'altered':True}))
+    with pytest.raises(ValueError,match='bytes differ'): cutover.authorize_files(SimpleNamespace(**files))
+
+
+@pytest.fixture
+def settlement(tmp_path):
+    instance=object.__new__(cutover.Cutover)
+    instance.work=tmp_path;instance.args=SimpleNamespace(tag='ci-420-'+'a'*12,source_sha256='b'*64)
+    instance.input={'gitCommit':'a'*40};instance.identity={'machineId':'c'*32}
+    instance.common=SimpleNamespace(write_json=lambda path,value:path.write_text(json.dumps(value)))
+    instance.journal={'phase':'FAILED_PREPARE_FROZEN','activationStarted':False,'targetSchema':'compact_exact'}
+    calls=[]
+    def freeze(action):
+        calls.append(('freeze',action));instance.journal['failureFreeze']={'confirmed':True}
+    def restore():
+        calls.append(('restore',));instance.journal['phase']='SOURCE_RESTORED'
+    instance.fail_closed=freeze;instance.recover=restore
+    instance.restored_health=lambda:calls.append(('health',))
+    instance.persist=lambda *args:None
+    return instance,calls
+
+
+def test_failure_settlement_restores_pre_activation_source_and_requires_health(settlement):
+    instance,calls=settlement
+    assert instance.settle()['status'] == 'SOURCE_RESTORED'
+    assert calls == [('freeze','settle'),('restore',),('health',)]
+    assert instance.journal['recovery']['healthVerified'] is True
+    calls.clear();assert instance.settle()['status'] == 'SOURCE_RESTORED'
+    assert calls == [('health',)]
+
+
+def test_failed_source_health_refreezes_and_never_reports_recovered(settlement):
+    instance,calls=settlement
+    def fail(): raise ValueError('actual health unavailable')
+    instance.restored_health=fail
+    with pytest.raises(ValueError,match='actual health'): instance.settle()
+    assert calls == [('freeze','settle'),('restore',),('freeze','recover')]
+    assert 'recovery' not in instance.journal
+
+
+def test_post_activation_settlement_preserves_new_writes_and_never_replays_migration(settlement):
+    instance,calls=settlement;instance.journal.update(activationStarted=True,phase='FAILED_ACTIVATE_FROZEN')
+    instance.migrate=lambda:pytest.fail('Do not replay copy or restore a target snapshot')
+    outcome=instance.settle()
+    assert calls == [('freeze','settle')]
+    assert outcome == {'status':'COMPACT_FORWARD_REQUIRED','sourceRestored':False,'freezeConfirmed':True,
+        'targetWritesPreserved':True,'targetSchema':'compact_exact','migrationReplayed':False,
+        'nextAction':'REPAIR_FAILED_COMPONENT_PRESERVING_COMPACT_DATA'}
+    assert json.loads((instance.work/'recovery-receipt.json').read_text())['activationStarted'] is True
+
+
+@pytest.mark.parametrize('state',[None,'ACTIVE'])
+def test_settlement_does_not_stop_unstarted_or_successfully_published_business(settlement,state):
+    instance,calls=settlement
+    instance.journal=None if state is None else {'phase':'ACTIVE','activationStarted':True}
+    assert instance.settle()['status'] == (state or 'NOT_STARTED')
+    assert calls == []
+
+
+def test_unconfirmed_writer_freeze_never_restarts_either_schema(settlement):
+    instance,calls=settlement
+    instance.fail_closed=lambda action:instance.journal.update(failureFreeze={'confirmed':False})
+    with pytest.raises(ValueError,match='freeze is unresolved'): instance.settle()
+    assert calls == []
+
+
+def test_same_build_release_does_not_rerun_runtime_and_retains_post_recovery_entry():
+    pipeline=(ROOT/'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
+    powershell=(ROOT/'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    stage=pipeline.split("stage('Accept candidate application on ECS')",1)[1].split("stage('Deploy or rollback')",1)[0]
+    assert "params.ACTION in ['verify-runtime','compact-cutover']" in stage
+    assert "input(id: 'manual-candidate-acceptance'" in stage and 'releaseNotice' in stage
+    release=powershell.split("if ($Action -in @('CompactCutover','RecoverCutover'))",1)[1].split("if ($Action -eq 'Rehearse')",1)[0]
+    assert "runtimeHelper' run" not in release and 'candidate-build.py' not in release
+    assert "{'settle'} else {'run'}" in release and 'compact-release-approval.json' in release
+    assert '-Action RecoverCutover' in pipeline and "CI_CUTOVER_VERIFIED != 'true'" in pipeline
+    assert "CI_RUNTIME_VERIFIED -ne 'true'" in powershell
+
+
+def test_machine_release_gate_remains_default_closed_and_authority_is_not_a_job_parameter():
+    controller=(ROOT/'script/jenkins/configure-local.groovy').read_text(encoding='utf8')
+    assert "'DOORHANDLE_COMPACT_RELEASE_READY': 'false'" in controller
+    assert "settings.compactReleaseAuthorization ?: ''" in controller
+    assert "'DOORHANDLE_COMPACT_RELEASE_AUTHORIZATION': releaseAuthorizationPath" in controller
+    assert "StringParameterDefinition('DOORHANDLE_COMPACT_RELEASE_AUTHORIZATION'" not in controller
+    assert 'first-production-131-to-29' in controller and 'FAIL_CLOSED_COMPACT_ONLY' in controller
+
+
+@pytest.mark.parametrize('failure_phase',['prepare','migrate','activate'])
+def test_release_failure_settles_even_after_active_intent_without_repeating_any_phase(monkeypatch,failure_phase):
+    instance=object.__new__(cutover.Cutover);calls=[];instance.journal=None
+    instance.admit_release=lambda:calls.append('admit')
+    stub_execution(instance)
+    def phase(name):
+        def call():
+            calls.append(name)
+            if name == 'prepare': instance.journal={'phase':'PREPARING','activationStarted':False}
+            if name == 'activate': instance.journal.update(phase='ACTIVE',activationStarted=True)
+            if name == failure_phase: raise ValueError('original phase failed')
+        return call
+    for name in ('prepare','migrate','activate'):setattr(instance,name,phase(name))
+    instance.fail_closed=lambda action:calls.append('freeze:'+action)
+    instance.settle=lambda:calls.append('settle')
+    monkeypatch.setattr(cutover.signal,'signal',lambda *args:None)
+    with pytest.raises(ValueError,match='original phase'):instance.run_release()
+    expected=['admit','prepare','migrate','activate'];expected=expected[:expected.index(failure_phase)+1]
+    assert calls == expected+['freeze:'+failure_phase,'settle']
+
+
+def test_successful_release_runs_each_durable_phase_once_without_restarting_acceptance():
+    instance=object.__new__(cutover.Cutover);instance.journal=None;calls=[]
+    instance.admit_release=lambda:calls.append('admit')
+    stub_execution(instance)
+    for name in ('prepare','migrate','activate'):setattr(instance,name,lambda name=name:calls.append(name))
+    instance.run_release()
+    assert calls == ['admit','prepare','migrate','activate']
+    instance.journal={'phase':'SOURCE_RESTORED'}
+    with pytest.raises(ValueError,match='single-use'):instance.run_release()
+
+
+def stub_execution(instance):
+    instance.begin_execution=lambda:setattr(instance,'execution',{})
+    instance.check_cancellation=lambda:None
+    instance.execution_path=lambda:Path('unused-execution.json')
+    instance.common=SimpleNamespace(write_json=lambda *args:None)
+
+
+@pytest.mark.parametrize('damage',['candidate-settings','settings-bytes'])
+def test_release_binds_settings_to_the_accepted_build_before_runtime_readback(tmp_path,release_permission,damage):
+    instance=object.__new__(cutover.Cutover)
+    instance.source=tmp_path; (tmp_path/'work').mkdir()
+    instance.root=tmp_path; instance.runtime=tmp_path/'runtime'
+    instance.args=SimpleNamespace(tag=release_permission[1]['release'],source_sha256='b'*64,
+                                 approval=str(tmp_path/'work/production-release-approval.json'))
+    instance.input={'gitCommit':'a'*40};instance.identity=release_permission[1]['identity'];instance.build_sha='f'*64
+    settings=tmp_path/'settings.json';settings.write_text('{}')
+    digest=cutover.sha_file(settings)
+    instance.build={'settingsSha256':digest if damage=='settings-bytes' else '1'*64}
+    approval={**cutover.approve_release(*release_permission),'root':str(tmp_path),'runtime':str(instance.runtime),
+              'settings':str(settings),'settingsSha256':digest,
+              **dict.fromkeys(['authorizationSha256','runtimeGateSha256','runtimeReceiptSha256','manualDecisionSha256'],'2'*64)}
+    Path(instance.args.approval).write_text(json.dumps(approval))
+    if damage=='settings-bytes':settings.write_text('{"changed":true}')
+    instance.guard=SimpleNamespace(read_private=lambda path:(json.loads(path.read_text()),cutover.sha_file(path)))
+    with pytest.raises(ValueError,match='accepted candidate'):instance.admit_release()
+
+
+@pytest.mark.parametrize('damage',['missing-observation','changed-observation','wrong-path','missing-settings'])
+def test_registered_source_observation_cannot_be_skipped_during_recovery(tmp_path,damage):
+    instance=object.__new__(cutover.Cutover);instance.work=tmp_path
+    instance.journal={'phase':'FAILED_MIGRATE_FROZEN','activationStarted':False,'migrationStarted':True}
+    instance.assert_maintenance=lambda:None;instance.migration_sessions_drained=lambda:True
+    instance.guard=SimpleNamespace(read_private=lambda path:(json.loads(path.read_text()),cutover.sha_file(path)))
+    instance.fence_accounts=lambda **kwargs:pytest.fail('Missing evidence must not unlock source credentials')
+    observed=tmp_path/'observation/source-observation.json';observed.parent.mkdir();observed.write_text('{}')
+    settings={'reviewedSourceSnapshot':str(observed),'reviewedSourceSnapshotSha256':cutover.sha_file(observed)}
+    if damage=='wrong-path':settings['reviewedSourceSnapshot']=str(tmp_path/'foreign.json')
+    if damage!='missing-settings':(tmp_path/'migration.json').write_text(json.dumps(settings))
+    if damage=='missing-observation':observed.unlink()
+    if damage=='changed-observation':observed.write_text('{"changed":true}')
+    with pytest.raises(ValueError,match='Registered source observation'):instance.recover()
+
+
+@pytest.fixture
+def cutover_execution(tmp_path,monkeypatch):
+    import contextlib
+    instance=object.__new__(cutover.Cutover);instance.source=tmp_path;(tmp_path/'work').mkdir()
+    instance.root=tmp_path;instance.runtime=tmp_path/'runtime';instance.journal=None
+    instance.args=SimpleNamespace(tag='ci-420-'+'a'*12,source_sha256='b'*64)
+    instance.input={'gitCommit':'a'*40};instance.input_sha='c'*64;instance.identity={'machineId':'d'*32}
+    instance.common=SimpleNamespace(write_json=lambda path,value:path.write_text(json.dumps(value)))
+    instance.guard=SimpleNamespace(read_private=lambda path:(json.loads(path.read_text()),cutover.sha_file(path)))
+    instance.execution_transport=lambda:SimpleNamespace(supervisor_start=lambda pid:'12345')
+    instance.ops=SimpleNamespace(maintenance_lock=lambda root:contextlib.nullcontext(),MaintenanceBusy=BlockingIOError)
+    monkeypatch.setattr(cutover.os,'pidfd_open',lambda *args:99)
+    monkeypatch.setattr(cutover.os,'close',lambda fd:None)
+    signals=[];monkeypatch.setattr(cutover.signal,'pidfd_send_signal',lambda *args:signals.append(args))
+    return instance,signals
+
+
+def test_prestart_cancel_is_persistent_and_prevents_late_start(cutover_execution):
+    instance,signals=cutover_execution
+    assert instance.cancel()['status']=='CANCELLED_BEFORE_START'
+    assert instance.observe_execution()['phase']=='NOT_STARTED'
+    with pytest.raises(ValueError,match='cancelled before start'):instance.begin_execution()
+    assert signals==[]
+
+
+def test_owned_cutover_cancel_signals_once_and_waits_for_original_terminal(cutover_execution):
+    instance,signals=cutover_execution;instance.begin_execution()
+    assert instance.cancel()['status']=='SIGNAL_SENT'
+    assert instance.cancel()['status']=='ALREADY_REQUESTED'
+    assert signals==[(99,cutover.signal.SIGTERM)]
+    with pytest.raises(KeyboardInterrupt):instance.check_cancellation()
+    instance.execution.update(terminal=True,phase='SOURCE_RESTORED')
+    instance.common.write_json(instance.execution_path(),instance.execution)
+    assert instance.cancel()['status']=='ALREADY_TERMINAL'
+    assert instance.observe_execution()['phase']=='SOURCE_RESTORED'
+
+
+@pytest.mark.parametrize('damage',['commit','pid-reuse','foreign-request','missing-execution'])
+def test_cutover_cancellation_refuses_unknown_owner_without_sending_signal(cutover_execution,damage):
+    instance,signals=cutover_execution;instance.begin_execution()
+    if damage=='commit':
+        instance.execution['commit']='1'*40;instance.common.write_json(instance.execution_path(),instance.execution)
+    elif damage=='pid-reuse':instance.execution_transport=lambda:SimpleNamespace(supervisor_start=lambda pid:'999')
+    elif damage=='foreign-request':
+        instance.common.write_json(instance.source/'work/cutover-cancel-request.json',{'foreign':True})
+    else:
+        instance.execution_path().unlink();instance.journal={'phase':'PREPARING'}
+    with pytest.raises(ValueError):instance.cancel()
+    assert signals==[]
+
+
+def test_terminal_observation_requires_the_original_maintenance_lock_to_be_released(cutover_execution,monkeypatch):
+    instance,_=cutover_execution;instance.begin_execution();instance.execution['terminal']=True
+    instance.common.write_json(instance.execution_path(),instance.execution)
+    def busy(root):raise BlockingIOError('still held')
+    instance.ops.maintenance_lock=busy
+    values=iter([0,181]);monkeypatch.setattr(cutover.time,'monotonic',lambda:next(values))
+    with pytest.raises(ValueError,match='not released maintenance'):instance.observe_execution()
+
+
+@pytest.mark.parametrize('child_drained,sql_drained',[(False,True),(True,False)])
+def test_source_restore_requires_both_migration_child_and_sql_drain(child_drained,sql_drained):
+    instance=object.__new__(cutover.Cutover)
+    instance.journal={'phase':'FAILED_MIGRATE_FROZEN','activationStarted':False,'migrationChild':{'drained':child_drained}}
+    instance.assert_maintenance=lambda:None;instance.migration_sessions_drained=lambda:sql_drained
+    instance.fence_accounts=lambda **kwargs:pytest.fail('Do not unlock a live migration')
+    with pytest.raises(ValueError,match='not drained'):instance.recover()
+
+
+@pytest.mark.parametrize('mode',['success','cancel','undrained','failure'])
+def test_migration_child_is_owned_and_drained_before_any_restore(tmp_path,monkeypatch,mode):
+    instance=object.__new__(cutover.Cutover);instance.source=tmp_path;instance.work=tmp_path
+    instance.identity={'instanceId':'i-owned','machineId':'d'*32};instance.journal={};instance.persist=lambda:None
+    instance.execution_transport=lambda:SimpleNamespace(supervisor_start=lambda pid:'77')
+    instance.migration_group_members=lambda pid:[pid] if mode=='undrained' else []
+    instance.migration_sessions_drained=lambda:True
+    calls=[]
+    class Child:
+        pid=123
+        returncode=None
+        def poll(self):return self.returncode
+        def wait(self,timeout):self.returncode=-2;return -2
+    child=Child()
+    def spawn(command,**kwargs):
+        calls.append((command,kwargs));return child
+    def check():
+        if mode=='cancel':raise KeyboardInterrupt('requested')
+        child.returncode=1 if mode=='failure' else 0
+    instance.check_cancellation=check
+    monkeypatch.setattr(cutover.subprocess,'Popen',spawn)
+    monkeypatch.setattr(cutover.os,'pidfd_open',lambda *args:99)
+    monkeypatch.setattr(cutover.os,'close',lambda fd:None)
+    monkeypatch.setattr(cutover.os,'getpgid',lambda pid:pid)
+    monkeypatch.setattr(cutover.os,'killpg',lambda *args:calls.append(args))
+    monkeypatch.setattr(cutover.signal,'signal',lambda *args:None)
+    monkeypatch.setattr(cutover.time,'sleep',lambda *args:None)
+    if mode=='success':assert instance.invoke_migration('copy','copy-result')==tmp_path/'copy-result'
+    else:
+        with pytest.raises(KeyboardInterrupt if mode=='cancel' else ValueError):instance.invoke_migration('copy','copy-result')
+    assert calls[0][1]['start_new_session'] is True
+    assert instance.journal['migrationChild']['drained'] is (mode!='undrained')
+    assert ((123,cutover.signal.SIGINT) in calls) is (mode=='cancel')
+
+
+@pytest.mark.parametrize('window',['spawn','after-exit'])
+def test_fast_migration_child_cannot_skip_cancellation_before_activation(tmp_path,monkeypatch,window):
+    instance=object.__new__(cutover.Cutover);instance.source=tmp_path;instance.work=tmp_path
+    instance.identity={'instanceId':'i-owned','machineId':'d'*32};instance.journal={};instance.persist=lambda:None
+    instance.execution_transport=lambda:SimpleNamespace(supervisor_start=lambda pid:'77')
+    instance.migration_group_members=lambda pid:[];instance.migration_sessions_drained=lambda:True
+    checks=[]
+    class Child:
+        pid=123;returncode=0
+        def poll(self):
+            if window=='after-exit':instance._cancelled_during_spawn=True
+            return 0
+        def wait(self,timeout):return 0
+    def spawn(*args,**kwargs):
+        if window=='spawn':instance._cancelled_during_spawn=True
+        return Child()
+    real_check=instance.check_cancellation
+    def check():checks.append(True);real_check()
+    instance.check_cancellation=check
+    monkeypatch.setattr(cutover.subprocess,'Popen',spawn)
+    monkeypatch.setattr(cutover.os,'pidfd_open',lambda *args:99)
+    monkeypatch.setattr(cutover.os,'close',lambda fd:None)
+    monkeypatch.setattr(cutover.signal,'signal',lambda *args:None)
+    monkeypatch.setattr(cutover.os,'killpg',lambda *args:pytest.fail('Completed child must not be signalled'))
+    with pytest.raises(KeyboardInterrupt):instance.invoke_migration('readback','activation-readback')
+    assert instance.journal['migrationChild']['drained'] is True
+    assert len(checks)==(1 if window=='spawn' else 2)
+
+
+def test_cutover_post_cancels_then_observes_then_settles_without_replaying_migration():
+    source=(ROOT/'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    section=source.split("if ($Action -in @('CompactCutover','RecoverCutover'))",1)[1].split("if ($Action -eq 'Rehearse')",1)[0]
+    assert section.index("'$helper' cancel") < section.index("'$helper' observe") < section.index("{'settle'} else {'run'}")
+    assert 'compact-cutover-recovery-receipt.json' in section
+    assert 'runtime-acceptance.py' not in section
+
+
+@pytest.mark.parametrize('damage',['none','other-image','command','process','entrypoint','mount','changed-code','changed-parent'])
+def test_only_reviewed_kafka_oss_worker_may_lack_an_independent_sql_identity(damage):
+    instance=object.__new__(cutover.Cutover)
+    command=['python','/app/kafka_detection_worker.py']
+    config={'Cmd':command,'Entrypoint':None,'WorkingDir':'/app'}
+    row={'Id':'1'*64,'Image':cutover.LEGACY_KAFKA_ONLY_IMAGE,'Config':dict(config),'Path':'python',
+         'Args':['/app/kafka_detection_worker.py'],'Mounts':[{'Destination':'/app/models'}]}
+    image={'Id':row['Image'],'Config':config};diff=b''
+    if damage=='other-image':row['Image']='sha256:'+'2'*64
+    elif damage=='command':row['Config']['Cmd']=['python','foreign.py']
+    elif damage=='process':row['Args']=['foreign.py']
+    elif damage=='entrypoint':row['Config']['Entrypoint']=['bash']
+    elif damage=='mount':row['Mounts'].append({'Destination':'/app/kafka_settings.py'})
+    elif damage=='changed-code':diff=b'C /app/kafka_detection_worker.py\n'
+    elif damage=='changed-parent':diff=b'C /app\n'
+    instance.ops=SimpleNamespace(docker=lambda *args:json.dumps([image]).encode() if args[0]=='image' else diff)
+    if damage=='other-image':assert instance.legacy_kafka_only_worker(row) is False
+    elif damage=='none':assert instance.legacy_kafka_only_worker(row) is True
+    else:
+        with pytest.raises(ValueError):instance.legacy_kafka_only_worker(row)
+
+
+def test_kafka_only_worker_still_enters_the_frozen_inventory_and_complete_source_grants_gate():
+    source=(ROOT/'script/docker/compact-cutover.py').read_text(encoding='utf8')
+    prepare=source.split('    def prepare(self):',1)[1].split('    def ',1)[0]
+    assert "'sqlWriter': False, 'mustStop': True" in prepare
+    assert "self.journal['originals'].append" in prepare
+    assert "self.ops.docker('update', '--restart=no', row['id'])" in prepare
+    assert 'self.check_fenceable_accounts()' in prepare and 'not self.unexpected_source_writers()' in prepare
+    assert 'self.fence_accounts()' in prepare and 'self.assert_maintenance()' in prepare
+
+
+@pytest.mark.parametrize('mutation',['none','foreign-user','active-session','missing-lock'])
+def test_post_activation_fence_only_locks_exact_new_target_accounts(tmp_path,mutation):
+    instance=object.__new__(cutover.Cutover);instance.work=tmp_path/('compact-cutover-'+'a'*10)
+    instance.journal={'targetSchema':'compact_exact'}
+    accounts={'app':{'user':'app_'+'a'*10},'worker':{'user':'worker_'+'a'*10}}
+    if mutation == 'foreign-user':accounts['app']['user']='root'
+    instance.guard=SimpleNamespace(read_private=lambda path:(accounts,'b'*64))
+    calls=[]
+    def sql(query):
+        calls.append(query)
+        if 'mysql.user' in query:return '1' if mutation == 'missing-lock' else '2'
+        if 'PROCESSLIST' in query:return '1' if mutation == 'active-session' else '0'
+        return ''
+    instance.sql=sql
+    if mutation == 'foreign-user':
+        with pytest.raises(ValueError,match='not owned'):instance.fence_target_accounts()
+        assert calls == []
+    else:
+        assert instance.fence_target_accounts() is (mutation == 'none')
+        assert calls[:2] == ["ALTER USER 'app_aaaaaaaaaa'@'%' ACCOUNT LOCK;","ALTER USER 'worker_aaaaaaaaaa'@'%' ACCOUNT LOCK;"]
+        assert all('DROP ' not in query and 'DELETE ' not in query and 'UNLOCK' not in query for query in calls)
+
+
+@pytest.mark.parametrize('mutation',['none','image','stopped','unhealthy'])
+def test_source_restored_health_reads_real_original_container_state(tmp_path,mutation):
+    instance=object.__new__(cutover.Cutover);instance.state=tmp_path
+    instance.journal={'phase':'SOURCE_RESTORED','activationStarted':False,
+        'originals':[{'id':'1'*64,'image':'sha256:'+'a'*64,'running':True}]}
+    actual={'Image':'sha256:'+('b' if mutation == 'image' else 'a')*64,
+            'State':{'Running':mutation != 'stopped','Restarting':False}}
+    instance.ops=SimpleNamespace(docker=lambda *args:json.dumps([actual]).encode(),healthy=lambda cid:mutation != 'unhealthy')
+    if mutation == 'none':instance.restored_health()
+    else:
+        with pytest.raises(ValueError,match='actual health'):instance.restored_health()

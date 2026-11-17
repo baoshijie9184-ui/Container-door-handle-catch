@@ -79,6 +79,152 @@ $request=[ordered]@{schemaVersion=1;kind='doorhandle-authorized-failed-mysql-dat
 $uploads=@();$originalCustody=@()
 $expectedNewJarCount=0
 $names=@{buildXml='build.xml';release='release.json';localBuild='local-build.json';fixtureCleanupPublic='fixture-cleanup.json'}
+$workspaceCustodyValidator=@'
+import hashlib,json,os,re,stat,sys,xml.etree.ElementTree as ET
+from pathlib import Path,PurePosixPath
+
+ORIGIN='PRESERVED_JENKINS_TERMINAL_WORKSPACE_ORIGINAL'
+CONTROL_NAMES={'release':'release.json','localBuild':'local-build.json',
+    'fixtureCleanupPublic':'fixture-cleanup.json','preparation':'ecs-tool-preparation.json',
+    'transport':'candidate-build-tools-transport.json'}
+
+def native_path(path):
+    # Full Java report names exceed Win32 MAX_PATH; preserve canonical recorded
+    # names while using the equivalent extended path for local file access.
+    return Path('\\\\?\\'+str(path)) if os.name=='nt' and not str(path).startswith('\\\\?\\') else path
+
+def need(value,message):
+    if not value: raise ValueError(message)
+
+def regular(path,limit):
+    path=native_path(path)
+    for parent in (path,*path.parents):
+        info=parent.lstat()
+        need(not stat.S_ISLNK(info.st_mode) and not getattr(info,'st_file_attributes',0)&0x400,
+             'Workspace custody cannot follow links or junctions')
+    before=path.stat()
+    need(stat.S_ISREG(before.st_mode) and before.st_nlink==1 and 0<=before.st_size<=limit,
+         'Bounded single-link custody original required')
+    digest=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(1024**2),b''): digest.update(block)
+    after=path.stat()
+    fields=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns,value.st_nlink)
+    need(fields(before)==fields(after),'Custody original changed while reading')
+    return before.st_size,digest.hexdigest()
+
+def document(path,limit=2*1024**2):
+    regular(path,limit)
+    return json.loads(native_path(path).read_text(encoding='utf-8-sig'))
+
+def validate_workspace_custody(candidate,custody_root,workspace_root):
+    match=re.fullmatch(r'ci-([1-9][0-9]*)-([a-f0-9]{12})',candidate['release'])
+    need(match and re.fullmatch(r'[a-f0-9]{40}',candidate['commit'])
+         and candidate['commit'].startswith(match[2]),'Canonical workspace build required')
+    number=int(match[1]); folder=custody_root/('ci-'+str(number)+'-raw-receipts')
+    supplement=folder/'workspace-originals'; catalog_path=supplement/'preservation.json'
+    binding=candidate['workspaceCustody']
+    need(set(binding)=={'origin','catalogBytes','catalogSha256'} and binding['origin']==ORIGIN,
+         'Explicit original workspace custody binding required')
+    need(regular(catalog_path,2*1024**2)==(binding['catalogBytes'],binding['catalogSha256']),
+         'Workspace preservation catalog changed')
+    original=document(folder/'preservation.json'); catalog=document(catalog_path)
+    context={key:candidate[key] for key in ('release','commit','sourceSha256')}
+    need(original.get('build')==number and original.get('commit')==candidate['commit']
+         and original.get('result')=='ABORTED' and original.get('completed') is True
+         and original.get('executionDone') is True and original.get('status')=='PRESERVED'
+         and catalog.get('build')==number and catalog.get('officialResult')=='ABORTED'
+         and catalog.get('status')=='PRESERVED'
+         and all(catalog.get(key)==value for key,value in context.items()),
+         'Only preserved terminal cancelled workspace originals are admitted')
+    xml_path=folder/'build.xml'; xml_bytes,xml_sha=regular(xml_path,2*1024**2)
+    need(original.get('buildXmlSha256')==xml_sha and original.get('buildXml',{}).get('bytes')==xml_bytes,
+         'Official terminal build XML changed')
+    xml=native_path(xml_path).read_bytes()
+    need(b'<!DOCTYPE' not in xml.upper() and b'<!ENTITY' not in xml.upper(),'Entity-free build XML required')
+    build=ET.fromstring(xml.replace(b'version="1.1"',b'version="1.0"',1))
+    params={item.findtext('name'):item.findtext('value') for item in
+            build.findall('./actions/hudson.model.ParametersAction/parameters/*')}
+    scm=[item.find('hudson.plugins.git.util.Build') for item in build.findall('.//buildsByBranchName/entry')
+         if item.findtext('string')=='refs/remotes/origin/java-cloud']
+    need(build.tag=='flow-build' and build.findtext('result')=='ABORTED'
+         and build.findtext('completed')=='true' and build.findtext('execution/done')=='true'
+         and params.get('ACTION') in ('verify','verify-runtime') and params.get('DOORHANDLE_CI_SCOPE')=='mysql'
+         and params.get('TRUSTED_COMMIT')==candidate['commit'] and params.get('PRODUCTION_RELEASE_ENABLED')=='false'
+         and len(scm)==1 and scm[0] is not None and scm[0].findtext('hudsonBuildNumber')==str(number)
+         and scm[0].findtext('marked/sha1')==candidate['commit']
+         and (scm[0].findtext('revision/sha1')==candidate['commit']
+              or (scm[0].find('revision') is not None and scm[0].find('revision').get('reference')=='../marked')),
+         'Official cancelled build/source identity differs')
+    entries=catalog.get('files')
+    need(type(entries) is list and 0<len(entries)<=4096,'Complete bounded workspace catalog required')
+    files={}; total=0
+    for entry in entries:
+        name=entry.get('path'); pure=PurePosixPath(name) if isinstance(name,str) else None
+        need(pure and pure.as_posix()==name and not pure.is_absolute() and
+             all(part not in ('','.','..') for part in pure.parts) and '\\' not in name and ':' not in name
+             and name!='preservation.json' and name not in files,'Unsafe or duplicate workspace member')
+        expected=supplement.joinpath(*pure.parts); source=workspace_root.joinpath(*pure.parts)
+        need(entry.get('preserved','').replace('\\','/')==expected.as_posix()
+             and entry.get('original','').replace('\\','/')==source.as_posix()
+             and entry.get('copyByteComparison')=='IDENTICAL'
+             and type(entry.get('bytes')) is int and re.fullmatch(r'[a-f0-9]{64}',entry.get('sha256','')),
+             'Workspace original provenance differs')
+        need(regular(expected,512*1024**2)==(entry['bytes'],entry['sha256']),
+             'Preserved workspace member changed or is partial')
+        files[name]=entry; total+=entry['bytes']
+        need(total<=1024**3,'Workspace catalog exceeds its complete-artifact bound')
+    actual=set()
+    actual_root=native_path(supplement)
+    for directory,dirs,names in os.walk(actual_root,followlinks=False):
+        for name in dirs:
+            info=(Path(directory)/name).lstat()
+            need(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                 and not getattr(info,'st_file_attributes',0)&0x400,'Unknown workspace directory link')
+        actual.update((Path(directory)/name).relative_to(actual_root).as_posix() for name in names)
+    need(actual==set(files)|{'preservation.json'} and catalog.get('copiedFiles')==len(files)
+         and catalog.get('copiedBytes')==total,'Workspace catalog is incomplete')
+    required=set(CONTROL_NAMES.values())|{'application.jar','source.tar.gz','ecs/evidence/verification-receipt.json'}
+    need(required<=set(files),'Complete workspace controls and full binary/source originals required')
+    release=document(supplement/'release.json'); local=document(supplement/'local-build.json')
+    need(all(release.get(key)==value for key,value in context.items())
+         and local.get('release')==context['release'] and local.get('commit')==context['commit']
+         and local.get('testsExecuted') is False and local.get('status')=='PASS' and local.get('exitCode')==0
+         and files['local-build.json']['sha256']==release.get('localBuildReceiptSha256')
+         and files['source.tar.gz']['sha256']==context['sourceSha256']
+         and files['application.jar']['bytes']==local.get('applicationJarBytes')==candidate['retirement']['jarBytes']
+         and files['application.jar']['sha256']==local.get('applicationJarSha256')
+             ==release.get('applicationJarSha256')==candidate['retirement']['jarSha256'],
+         'Complete original application/source integrity differs')
+    receipt=document(supplement/'ecs/evidence/verification-receipt.json')
+    need(all(receipt.get(key)==value for key,value in context.items())
+         and receipt.get('kind')=='doorhandle-ecs-ci' and receipt.get('schema')==1
+         and receipt.get('scope')=='mysql' and receipt.get('status')=='FAILED'
+         and type(receipt.get('verificationExitCode')) is int and receipt['verificationExitCode']!=0
+         and not receipt.get('evidenceOmissions') and bool(receipt.get('reportFiles')),
+         'Complete original remote failure is required; cancellation is not PASS')
+    reports=set()
+    for item in receipt['reportFiles']:
+        name=item.get('path'); key='ecs/evidence/'+str(name)
+        need(isinstance(name,str) and name not in reports and key in files
+             and item.get('bytes')==files[key]['bytes'] and item.get('sha256')==files[key]['sha256'],
+             'Preserved remote report catalog differs')
+        reports.add(name)
+    need(set(candidate['controls'])=={'buildXml',*CONTROL_NAMES},'Exact original control roles required')
+    for role,name in CONTROL_NAMES.items():
+        control=candidate['controls'][role]
+        need(control.get('origin')==ORIGIN and control.get('source')==(supplement/name).as_posix()
+             and control.get('bytes')==files[name]['bytes'] and control.get('sha256')==files[name]['sha256'],
+             'Workspace control binding differs')
+    return {'origin':ORIGIN,'catalog':catalog_path.as_posix(),'catalogSha256':binding['catalogSha256'],
+            'files':len(files),'bytes':total,'completeApplicationJarPreserved':True,**context}
+
+if __name__=='__main__':
+    project=Path('D:/AI/lunwen1/DoorHandleCatch')
+    candidate=json.load(sys.stdin)
+    print(json.dumps(validate_workspace_custody(candidate,
+        project/'work/jenkins/data-residency-20261107',project/'work/jenkins/ci-workspaces/monolith/artifacts')))
+'@
 if($finished){
     Require-TaskData ([IO.Path]::IsPathFullyQualified($finishedManifest) -and [string]::IsNullOrEmpty($env:FAILED_NATIVE_BUILD_NUMBER) -and $env:GENERATED_ARTIFACTS_ONLY -cne 'true') 'Finished outputs require a separate exact manifest and no mixed policy.'
     Assert-TaskControlPath $finishedManifest
@@ -97,13 +243,22 @@ if($finished){
         Assert-TaskControlPath "$folder/preservation.json"
         $preservation=Get-Content -LiteralPath "$folder/preservation.json" -Raw -Encoding utf8|ConvertFrom-Json -AsHashtable
         Require-TaskData ($preservation.build -eq [long]$number -and $preservation.commit -ceq $candidate.commit -and $preservation.result -cin @('FAILURE','ABORTED')) 'Preserved terminal build differs from the manifest.'
+        $workspaceProof=$null
+        if($candidate.ContainsKey('workspaceCustody')){
+            $python=if($env:LOCAL_PYTHON_EXE){$env:LOCAL_PYTHON_EXE}else{$env:PYTHON_EXE}
+            Require-TaskData ($python -and [IO.Path]::IsPathFullyQualified($python) -and (Test-Path -LiteralPath $python -PathType Leaf)) 'Use the existing configured local Python for custody verification.'
+            $proofLines=@($candidate|ConvertTo-Json -Depth 24 -Compress|& $python -I -B -c $workspaceCustodyValidator)
+            Require-TaskData ($LASTEXITCODE -eq 0 -and $proofLines.Count -eq 1) 'Complete original cancelled-workspace custody is required.'
+            $workspaceProof=$proofLines[0]|ConvertFrom-Json -AsHashtable
+        }
         $controls=@{};$custodyFiles=@()
         $roleNames=@{};foreach($key in $names.Keys){$roleNames[$key]=$names[$key]};$roleNames.preparation='ecs-tool-preparation.json';$roleNames.transport='candidate-build-tools-transport.json'
         Require-TaskData ((@($candidate.controls.Keys|Sort-Object)-join ',') -ceq (@($roleNames.Keys|Sort-Object)-join ',')) 'The finished manifest lacks exact original controls.'
         foreach($role in $roleNames.Keys){
             $file=$candidate.controls[$role];$name=$roleNames[$role]
             $expected="$folder/$name";$recovery="D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/ci-$number-fixture-cleanup.json"
-            Require-TaskData ($file.source -ceq $expected -or ($role -ceq 'fixtureCleanupPublic' -and $file.origin -ceq 'ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT' -and $file.source -ceq $recovery)) 'The original control is outside its fixed custody location.'
+            $workspaceControl=$null -ne $workspaceProof -and $role -cne 'buildXml' -and $file.source -ceq "$folder/workspace-originals/$name" -and $file.origin -ceq 'PRESERVED_JENKINS_TERMINAL_WORKSPACE_ORIGINAL'
+            Require-TaskData ($workspaceControl -or $file.source -ceq $expected -or ($role -ceq 'fixtureCleanupPublic' -and $file.origin -ceq 'ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT' -and $file.source -ceq $recovery)) 'The original control is outside its fixed custody location.'
             Assert-TaskControlPath $file.source
             $item=Get-Item -LiteralPath $file.source
             Require-TaskData (-not($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $item.Length -gt 0 -and $item.Length -le 2MB -and $item.Length -eq $file.bytes -and
@@ -135,7 +290,7 @@ if($finished){
             $custodyFiles+=@{role='completedMaintenanceBuild';source=$priorXml;origin='PRESERVED_JENKINS_ORIGINAL';bytes=(Get-Item -LiteralPath $priorXml).Length;sha256=$prior.buildXmlSha256}
         }else{$expectedNewJarCount+=2}
         $request.candidates+=@{release=$candidate.release;commit=$candidate.commit;sourceSha256=$candidate.sourceSha256;controls=$controls;retirement=$candidate.retirement}
-        $originalCustody+=@{release=$candidate.release;commit=$candidate.commit;sourceSha256=$candidate.sourceSha256;files=$custodyFiles;preservation="$folder/preservation.json"}
+        $originalCustody+=@{release=$candidate.release;commit=$candidate.commit;sourceSha256=$candidate.sourceSha256;files=$custodyFiles;preservation="$folder/preservation.json";workspaceOriginals=$workspaceProof}
     }
     foreach($copy in @(@($finishedManifest,'artifacts/derived-mysql-finished-manifest.json',$manifestSha),@($authorizationPath,'artifacts/derived-mysql-user-authorization.json',$authorizationSha))){
         Require-TaskData (-not(Test-Path -LiteralPath $copy[1])) 'Fresh original authorization evidence is required.'

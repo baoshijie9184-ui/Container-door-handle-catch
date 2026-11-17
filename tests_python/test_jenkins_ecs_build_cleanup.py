@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REVIEWED_SOURCE_FIXTURES = ROOT / 'tests_python/fixtures/ci-producer-3502d844'
 # Prior exact executor from 7f8b992d5b9aad9014a5ead226b0de1f9fa52a90, also parsed only.
 LEGACY_EXECUTOR = ROOT / 'tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt'
+# Exact pre-control-gate runner; parsed only to preserve already-finished sources.
+PRE_CONTROL_GATE_RUNNER = ROOT / 'tests_python/fixtures/ci-producer-67188368/verify-ecs.py.txt'
 
 
 def load(name, filename):
@@ -288,11 +290,13 @@ def test_reviewed_npm_routing_fingerprints_still_match_the_fixed_executor_source
 def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy', executor_recipe='current'):
     """Bind real archived routing code to synthetic, completed Python evidence."""
     runner = ((REVIEWED_SOURCE_FIXTURES / 'verify-ecs.py.txt') if recipe == 'legacy'
+              else PRE_CONTROL_GATE_RUNNER if recipe == 'pre-control-gate'
               else (ROOT / 'script/jenkins/verify-ecs.py')).read_bytes()
     executor = (LEGACY_EXECUTOR if executor_recipe == 'legacy' else ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
     main = next(node for node in ast.parse(runner).body if isinstance(node, ast.FunctionDef) and node.name == 'main')
     expected_main = ('e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
-                     if recipe == 'legacy' else cleanup.PYTEST_CURRENT_RUNNER_MAIN_AST)
+                     if recipe == 'legacy' else cleanup.PYTEST_PRE_CONTROL_GATE_RUNNER_MAIN_AST
+                     if recipe == 'pre-control-gate' else cleanup.PYTEST_CURRENT_RUNNER_MAIN_AST)
     assert cleanup.routing_ast_sha(main) == expected_main
     if damage == 'changed-runner':
         changed = runner.replace(b'def main():', b'def main():\n    unreviewed_fixture_routing = True', 1)
@@ -334,7 +338,7 @@ def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy', execut
     inner.update(status='PASS', javaOnly=False, fixtureProperties=[], fixtureManifest=None,
         wholeMigrationRequested=False, workerMysqlRequested=False, workerMysqlConfigSha256=None,
         pythonTests=counts.copy(), selectedPythonSuites={'tests_python.test_synthetic_pytest': counts.copy()})
-    if recipe == 'middleware': inner['semanticMysqlComponentRequested'] = False
+    if recipe in ('middleware', 'pre-control-gate'): inner['semanticMysqlComponentRequested'] = False
     inner['commands'][0]['exitCode'] = 0
     python_command = {'label': 'python', 'exitCode': 0, 'finishedAt': '2026-11-07T00:00:00+00:00'}
     inner['commands'].append(python_command)
@@ -383,7 +387,7 @@ def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy', execut
                            runner_sha=cleanup.sha(runner), executor_sha=cleanup.sha(executor))
 
 
-@pytest.mark.parametrize('recipe', ['legacy', 'middleware'])
+@pytest.mark.parametrize('recipe', ['legacy', 'pre-control-gate', 'middleware'])
 @pytest.mark.parametrize('executor_recipe', ['current', 'legacy'])
 def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temporary_roots_remain(state, monkeypatch, recipe, executor_recipe):
     cases = add_pytest_cases(state, monkeypatch, recipe=recipe, executor_recipe=executor_recipe); before = preserved_bytes(state)
@@ -403,8 +407,9 @@ def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temp
 
 
 @pytest.mark.parametrize('flag', [None, True, 0, 'false'], ids=['missing', 'enabled', 'integer', 'string'])
-def test_middleware_pytest_recipe_requires_explicit_nonsemantic_mysql_scope(state, monkeypatch, flag):
-    cases = add_pytest_cases(state, monkeypatch, recipe='middleware')
+@pytest.mark.parametrize('recipe', ['pre-control-gate', 'middleware'])
+def test_middleware_pytest_recipe_requires_explicit_nonsemantic_mysql_scope(state, monkeypatch, flag, recipe):
+    cases = add_pytest_cases(state, monkeypatch, recipe=recipe)
     inner = cleanup.read_json(state.evidence / 'receipt.json')
     if flag is None: inner.pop('semanticMysqlComponentRequested')
     else: inner['semanticMysqlComponentRequested'] = flag
@@ -1608,3 +1613,221 @@ def test_current_nested_python_routing_cannot_escape_the_reviewed_main(state, mo
     result = cleanup.apply_plan(state.root, state.request, value, remote)
     assert result['status'] == 'REMOVED' and cases.first.is_dir() and cases.second.is_dir()
     assert preserved_bytes(state) == before
+
+
+@pytest.fixture
+def scm_transport_custody(tmp_path):
+    """Run only the controller's literal byte-reader over synthetic originals."""
+    controller = (ROOT / 'script/jenkins/reclaim-build-outputs.ps1').read_text(encoding='utf-8')
+    source = controller.split("$scmTransportReader = @'\n", 1)[1].split("\n'@", 1)[0]
+    namespace = {'__name__': 'synthetic_scm_transport_custody'}
+    exec(compile(source, 'literal-scm-transport-custody', 'exec'), namespace)
+    root = tmp_path / 'custody'; folder = root / ('ci-70-raw-receipts'); folder.mkdir(parents=True)
+    namespace['CUSTODY_ROOT'] = root
+    commit = 'a' * 40; tag = 'ci-70-' + commit[:12]
+    source_file = folder / 'source.tar.gz'
+    def archive(commit_value):
+        with tarfile.open(source_file, 'w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': commit_value}) as tar:
+            raw = b'# synthetic retained source, not imported\n'
+            member = tarfile.TarInfo('synthetic.py'); member.size = len(raw); tar.addfile(member, io.BytesIO(raw))
+    archive(commit)
+    digest = cleanup.sha(source_file.read_bytes())
+    release = {'release':tag,'commit':commit,'sourceSha256':digest,'sourceBytes':source_file.stat().st_size,
+               'action':'verify-runtime'}
+    xml = ('<?xml version="1.1"?><flow-build><result>FAILURE</result><completed>true</completed>'
+           '<execution><done>true</done></execution><actions><hudson.model.ParametersAction><parameters>'
+           '<p><name>ACTION</name><value>verify-runtime</value></p>'
+           '<p><name>PRODUCTION_RELEASE_ENABLED</name><value>false</value></p>'
+           '</parameters></hudson.model.ParametersAction><hudson.plugins.git.util.BuildData><buildsByBranchName>'
+           '<entry><string>refs/remotes/origin/java</string><hudson.plugins.git.util.Build>'
+           '<hudsonBuildNumber>6</hudsonBuildNumber><marked><sha1>' + 'b' * 40 + '</sha1></marked>'
+           '</hudson.plugins.git.util.Build></entry><entry><string>refs/remotes/origin/java-cloud</string>'
+           '<hudson.plugins.git.util.Build><hudsonBuildNumber>70</hudsonBuildNumber><marked><sha1>' + commit +
+           '</sha1></marked></hudson.plugins.git.util.Build></entry></buildsByBranchName>'
+           '</hudson.plugins.git.util.BuildData></actions></flow-build>')
+    (folder / 'build.xml').write_text(xml, encoding='utf8')
+    (folder / 'release.json').write_bytes(cleanup.canonical(release))
+    catalog = {'build':70,'commit':commit,'result':'FAILURE','files':[],
+               'buildXmlSha256':cleanup.sha((folder / 'build.xml').read_bytes())}
+    for name in ('source.tar.gz','release.json'):
+        path = folder / name
+        catalog['files'].append({'path':name,'preserved':str(path),'bytes':path.stat().st_size,
+                                 'sha256':cleanup.sha(path.read_bytes())})
+    (folder / 'preservation.json').write_bytes(cleanup.canonical(catalog))
+    approved = {'build':70,'release':tag,'localKeeper':str(source_file),
+                'remotePath':'/home/ecs-user/doorhandle-ci/inbox/' + tag + '/source.tar.gz',
+                'expectedSourceSha256':digest,'expectedBytes':source_file.stat().st_size}
+    authorization = {'approved':True,'candidateCount':125,'selected':[approved] + [
+        {'release':'ci-' + str(number) + '-' + 'f' * 12} for number in range(500,624)]}
+    row = {'release':tag,'commit':commit,'sourceSha256':digest,
+           'targets':[{'kind':'SCM_TRANSPORT_COPY','path':'inbox/' + tag + '/source.tar.gz'}],
+           'scmTransportMetadata':[33152,1000,1000,source_file.stat().st_size,123,456,789,123,1]}
+    manifest = {'schemaVersion':1,'root':'/home/ecs-user/doorhandle-ci','identity':IDENTITY,
+                'transportAuthorizationFile':namespace['AUTH_PATH'],'rows':[row]}
+    current = 'ci-900-' + 'c' * 12
+    def run():
+        raw = cleanup.canonical(authorization); namespace['AUTH_SHA'] = cleanup.sha(raw)
+        return namespace['transport_request'](manifest, raw, current, manifest['root'], IDENTITY)
+    def save_catalog():
+        (folder / 'preservation.json').write_bytes(cleanup.canonical(catalog))
+    def rewrite_xml(old, new):
+        path = folder / 'build.xml'; path.write_text(path.read_text(encoding='utf8').replace(old,new), encoding='utf8')
+        catalog['buildXmlSha256'] = cleanup.sha(path.read_bytes()); save_catalog()
+    return SimpleNamespace(namespace=namespace, folder=folder, source=source_file, commit=commit, tag=tag, current=current,
+                           manifest=manifest, row=row, approved=approved, authorization=authorization,
+                           catalog=catalog, release=release, run=run, save_catalog=save_catalog,
+                           rewrite_xml=rewrite_xml, archive=archive, controller=controller)
+
+
+@pytest.mark.parametrize('catalog_shape', ['hashes','direct-byte-comparison'])
+def test_scm_transport_reads_current_originals_and_ignores_inherited_scm(scm_transport_custody, catalog_shape):
+    value = scm_transport_custody
+    assert set(value.manifest) == {'schemaVersion','root','identity','transportAuthorizationFile','rows'}
+    if catalog_shape == 'direct-byte-comparison':
+        for entry in value.catalog['files']:
+            entry.pop('sha256'); entry['copyByteComparison'] = 'IDENTICAL'
+        value.catalog.pop('buildXmlSha256')
+        value.catalog['buildXml'] = {'path':'build.xml','preserved':str(value.folder / 'build.xml'),
+                                    'bytes':(value.folder / 'build.xml').stat().st_size,'copyByteComparison':'IDENTICAL'}
+        value.save_catalog()
+    before = {path.name:path.read_bytes() for path in value.folder.iterdir()}
+    result = value.run(); candidate, = result['candidates']
+    assert result['currentPost'] is False and 'historicalOutputsAuthorization' not in result
+    assert value.namespace['base64'].b64decode(result['scmTransportAuthorization']) == cleanup.canonical(value.authorization)
+    assert candidate['targets'] == [{'kind':'GENERATED_SCM_TRANSPORT_COPY','path':'inbox/' + value.tag + '/source.tar.gz'}]
+    assert candidate['scmTransportMetadata'] == value.row['scmTransportMetadata']
+    assert candidate['scmTransportKeeper'] == {'path':str(value.source),'bytes':value.source.stat().st_size,
+        'sha256':cleanup.sha(value.source.read_bytes()),'buildXmlSha256':cleanup.sha((value.folder / 'build.xml').read_bytes()),
+        'releaseSha256':cleanup.sha((value.folder / 'release.json').read_bytes()),
+        'catalogSha256':cleanup.sha((value.folder / 'preservation.json').read_bytes())}
+    assert candidate['terminal'] == {'kind':'JENKINS_HISTORY','result':'FAILURE','completed':True,'evidenceArchived':True,
+        'buildXmlSha256':candidate['scmTransportKeeper']['buildXmlSha256'],
+        'originalReleaseSha256':candidate['scmTransportKeeper']['releaseSha256'],
+        'action':'verify-runtime','productionReleaseEnabled':False}
+    assert {path.name:path.read_bytes() for path in value.folder.iterdir()} == before
+
+
+@pytest.mark.parametrize('damage', ['auth-bytes','auth-selection','empty','duplicate','outside-approval',
+                                  'mixed-authorization','historical','permission-repair','other-target','extra-target',
+                                  'wrong-path','current','protected-117','protected-266','protected-419',
+                                  'future','metadata-length','metadata-bool','metadata-size','auth-path',
+                                  'description-kind','description-status','description-evidence'])
+def test_scm_transport_rejects_non_exact_scope_before_reading_keepers(scm_transport_custody, damage):
+    value = scm_transport_custody
+    if damage == 'auth-bytes':
+        raw = cleanup.canonical(value.authorization); value.namespace['AUTH_SHA'] = cleanup.sha(raw)
+        with pytest.raises(ValueError, match='SCM_AUTHORIZATION_NOT_APPROVED'):
+            value.namespace['transport_request'](value.manifest, raw + b' ', CURRENT, value.manifest['root'], IDENTITY)
+        return
+    if damage == 'auth-selection': value.authorization['selected'].pop()
+    elif damage == 'empty': value.manifest['rows'] = []
+    elif damage == 'duplicate': value.manifest['rows'].append(copy.deepcopy(value.row))
+    elif damage == 'outside-approval': value.authorization['selected'][0]['release'] = 'ci-99-' + 'a' * 12
+    elif damage == 'mixed-authorization': value.manifest['authorizationFile'] = 'old-cache-authorization.json'
+    elif damage == 'historical': value.manifest['historicalOutputsAuthorizationFile'] = 'historical.json'
+    elif damage == 'permission-repair': value.row['permissionRepairs'] = [{'path':'not-authorized'}]
+    elif damage == 'other-target': value.row['targets'][0]['kind'] = 'SOURCE_JAR'
+    elif damage == 'extra-target': value.row['targets'].append(copy.deepcopy(value.row['targets'][0]))
+    elif damage == 'wrong-path': value.row['targets'][0]['path'] = 'inbox/' + value.tag + '/application.jar'
+    elif damage in ('current','protected-117','protected-266','protected-419','future'):
+        number = {'current':900,'protected-117':117,'protected-266':266,'protected-419':419,'future':1000}[damage]
+        tag = value.current if damage == 'current' else 'ci-' + str(number) + '-' + 'a' * 12
+        value.approved.update(build=number,release=tag); value.row['release'] = tag
+    elif damage == 'metadata-length': value.row['scmTransportMetadata'].pop()
+    elif damage == 'metadata-bool': value.row['scmTransportMetadata'][1] = True
+    elif damage == 'metadata-size': value.row['scmTransportMetadata'][3] += 1
+    elif damage == 'auth-path': value.manifest['transportAuthorizationFile'] += '.other'
+    elif damage.startswith('description-'):
+        key = {'description-kind':'kind','description-status':'status','description-evidence':'preparationEvidence'}[damage]
+        value.manifest[key] = 'This belongs in the separate preparation receipt, not the exact execution manifest.'
+    # No malformed scope is allowed to use even the first local proof.
+    calls = []
+    original = value.namespace['keeper_proof']
+    def keeper(*args):
+        calls.append(args); return original(*args)
+    value.namespace['keeper_proof'] = keeper
+    with pytest.raises(ValueError, match='SCM_'): value.run()
+    assert len(calls) == (1 if damage == 'duplicate' else 0)
+
+
+@pytest.mark.parametrize('damage', ['source-bytes','source-same-size','pax','source-link','control-link',
+                                  'keeper-path','missing-source-entry','duplicate-source-entry','catalog-source-digest',
+                                  'catalog-source-path','catalog-source-size','release-digest','catalog-context',
+                                  'missing-build-proof','build-digest','build-direct-size','duplicate-json'])
+def test_scm_transport_revalidates_actual_custody_not_a_prior_audit(scm_transport_custody, damage):
+    value = scm_transport_custody
+    if damage == 'source-bytes': value.source.write_bytes(value.source.read_bytes() + b'x')
+    elif damage == 'source-same-size':
+        raw = value.source.read_bytes(); value.source.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+    elif damage == 'pax':
+        value.archive('b' * 40); raw = value.source.read_bytes(); digest = cleanup.sha(raw)
+        value.approved.update(expectedSourceSha256=digest, expectedBytes=len(raw))
+        value.row['sourceSha256'] = digest; value.row['scmTransportMetadata'][3] = len(raw)
+    elif damage in ('source-link','control-link'):
+        target = value.source if damage == 'source-link' else value.folder / 'build.xml'
+        saved = target.with_name(target.name + '.original'); target.rename(saved); target.symlink_to(saved)
+    elif damage == 'keeper-path': value.approved['localKeeper'] = str(value.folder / 'elsewhere.tar.gz')
+    elif damage == 'missing-source-entry': value.catalog['files'].pop(0)
+    elif damage == 'duplicate-source-entry': value.catalog['files'].append(copy.deepcopy(value.catalog['files'][0]))
+    elif damage == 'catalog-source-digest': value.catalog['files'][0]['sha256'] = 'f' * 64
+    elif damage == 'catalog-source-path': value.catalog['files'][0]['preserved'] += '.other'
+    elif damage == 'catalog-source-size': value.catalog['files'][0]['bytes'] += 1
+    elif damage == 'release-digest': value.catalog['files'][1]['sha256'] = 'f' * 64
+    elif damage == 'catalog-context': value.catalog['commit'] = 'f' * 40
+    elif damage == 'missing-build-proof': value.catalog.pop('buildXmlSha256')
+    elif damage == 'build-digest': value.catalog['buildXmlSha256'] = 'f' * 64
+    elif damage == 'build-direct-size':
+        value.catalog['buildXml'] = {'path':'build.xml','preserved':str(value.folder / 'build.xml'),
+                                    'bytes':1,'copyByteComparison':'IDENTICAL'}
+    value.save_catalog()
+    if damage == 'duplicate-json':
+        path = value.folder / 'preservation.json'; raw = path.read_bytes(); path.write_bytes(b'{"build":70,' + raw[1:])
+    with pytest.raises(ValueError, match='SCM_'): value.run()
+
+
+@pytest.mark.parametrize('damage', ['incomplete','execution-active','production','publish-action','missing-action',
+                                  'wrong-current-scm','historical-only','duplicate-parameter','result-mismatch',
+                                  'release-commit','release-source','release-action','dtd'])
+def test_scm_transport_requires_actual_terminal_nonpublication_same_build_scm(scm_transport_custody, damage):
+    value = scm_transport_custody
+    replacements = {'incomplete':('<completed>true','<completed>false'),
+                    'execution-active':('<done>true','<done>false'),
+                    'production':('<value>false</value>','<value>true</value>'),
+                    'publish-action':('<value>verify-runtime</value>','<value>compact-release</value>'),
+                    'missing-action':('<name>ACTION</name>','<name>NOT_ACTION</name>'),
+                    'wrong-current-scm':('<sha1>' + value.commit,'<sha1>' + 'f' * 40),
+                    'historical-only':('<hudsonBuildNumber>70','<hudsonBuildNumber>6'),
+                    'duplicate-parameter':('</parameters>','<p><name>ACTION</name><value>verify-runtime</value></p></parameters>'),
+                    'result-mismatch':('<result>FAILURE','<result>SUCCESS'),
+                    'dtd':('<flow-build>','<!DOCTYPE flow-build [<!ENTITY x "synthetic">]><flow-build>')}
+    if damage in replacements: value.rewrite_xml(*replacements[damage])
+    else:
+        key = {'release-commit':'commit','release-source':'sourceSha256','release-action':'action'}[damage]
+        value.release[key] = 'changed'
+        path = value.folder / 'release.json'; path.write_bytes(cleanup.canonical(value.release))
+        value.catalog['files'][1].update(bytes=path.stat().st_size,sha256=cleanup.sha(path.read_bytes())); value.save_catalog()
+    with pytest.raises(ValueError, match='SCM_'): value.run()
+
+
+def test_scm_transport_controller_holds_originals_until_after_remote_receipt_collection(scm_transport_custody):
+    text = scm_transport_custody.controller
+    local_reader = text.split("$scmTransportReader = @'\n",1)[1].split("\n'@",1)[0]
+    # The actual local packaging interpreter is 3.10; ECS's newer Python must
+    # not mask use of the 3.11-only file_digest convenience API here.
+    assert 'hashlib.file_digest' not in local_reader
+    assert "iter(lambda:stream.read(1048576), b'')" in local_reader
+    opened = text.index('$transportHolds.Add([IO.File]::Open')
+    validated = text.index("$requestValue = (Invoke-Reclaim $python @('-I','-B','-c',$scmTransportReader")
+    bootstrap = text.index('$bootstrap = (Invoke-Reclaim $ssh')
+    apply = text.index('"exec python3 -I -B \'$helper\' apply')
+    receipt = text.index('Copy-ReclaimEvidence "$evidencePrefix-receipt.json"')
+    disposal = text.index('foreach ($heldOriginal in $transportHolds) { $heldOriginal.Dispose() }')
+    assert opened < validated < bootstrap < apply < receipt < disposal
+    assert '[IO.FileAccess]::Read,[IO.FileShare]::Read' in text[opened:validated]
+    assert "@('source.tar.gz','preservation.json','build.xml','release.json')" in text[opened:validated]
+    assert '$transportHolds = [Collections.Generic.List[IO.FileStream]]::new()\n$scmTransportOperation = $false\ntry {' in text
+    assert "} finally {\n    foreach ($heldOriginal in $transportHolds)" in text
+    assert "$requestValue.historicalOutputsAuthorization=$historicalOutputsAuthorization" in text
+    assert "Require-Reclaim (-not $PrepareOnly -or ($Mode -ceq 'Maintenance' -and -not $GeneratedArtifacts))" in text
+    assert 'if ($scmTransportOperation) {' in text
+    assert 'Complete D-drive source originals are retained; only approved ECS transport copies are retired.' in text

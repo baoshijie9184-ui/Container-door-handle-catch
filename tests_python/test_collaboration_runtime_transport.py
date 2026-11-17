@@ -501,6 +501,162 @@ def test_explicit_runtime_interrupt_keeps_owned_cleanup_before_failed_terminal_p
     assert runtime.main() == 2 and events == ['run', 'save', 'cleanup', 'failure', 'FAILED']
 
 
+@pytest.fixture
+def runtime_cancel(original_runtime, monkeypatch):
+    ctx = original_runtime
+    initial = runtime.begin_runtime_execution(ctx.instance)
+    events = []
+    monkeypatch.setattr(runtime.os, 'pidfd_open', lambda pid, flags: events.append(('pin', pid, flags)) or 91, raising=False)
+    monkeypatch.setattr(runtime.os, 'close', lambda fd: events.append(('close', fd)))
+    monkeypatch.setattr(runtime.os, 'kill', lambda *_: pytest.fail('numeric PID signal is forbidden'))
+    monkeypatch.setattr(runtime.signal, 'pidfd_send_signal', lambda fd, sig: events.append(('signal', fd, sig)), raising=False)
+    ctx.instance.transport.supervisor_start = lambda pid: events.append(('identity', pid)) or initial['supervisor']['startTicks']
+    return SimpleNamespace(ctx=ctx, initial=initial, events=events)
+
+
+def test_runtime_cancel_pins_and_signals_only_the_bound_supervisor_without_touching_receipts(runtime_cancel):
+    ctx, initial, events = runtime_cancel.ctx, runtime_cancel.initial, runtime_cancel.events
+    before = {p.name: p.read_bytes() for p in ctx.instance.attempt.iterdir()}
+    result = runtime.cancel_runtime_execution(ctx.instance)
+    assert events == [('pin', ctx.supervisor_pid, 0), ('identity', ctx.supervisor_pid),
+                      ('signal', 91, runtime.signal.SIGTERM), ('close', 91)]
+    assert result == {**ctx.instance.context(), 'operation': 'runtime-acceptance-cancellation',
+        'executionId': initial['executionId'], 'supervisor': initial['supervisor'],
+        'runtime': initial['runtime'], 'settingsSha256': initial['settingsSha256'], 'requestedSignal': 'SIGTERM',
+        'status': 'SIGNAL_SENT', 'terminal': False, 'runtimeStatus': None, 'signalSent': True}
+    assert before == {p.name: p.read_bytes() for p in ctx.instance.attempt.iterdir()}
+
+
+def test_repeated_runtime_cancel_rebinds_each_signal_and_never_forges_terminal(runtime_cancel):
+    for _ in range(2):
+        assert runtime.cancel_runtime_execution(runtime_cancel.ctx.instance)['status'] == 'SIGNAL_SENT'
+    assert runtime_cancel.events.count(('pin', runtime_cancel.ctx.supervisor_pid, 0)) == 2
+    assert runtime_cancel.events.count(('signal', 91, runtime.signal.SIGTERM)) == 2
+    assert runtime.runtime_execution(runtime_cancel.ctx.instance) == runtime_cancel.initial
+
+
+@pytest.mark.parametrize('status', ['PASS', 'FAILED'])
+def test_runtime_cancel_accepts_only_original_verified_terminal_without_signalling(runtime_cancel, status):
+    ctx = runtime_cancel.ctx; ctx.complete(runtime_cancel.initial, status)
+    result = runtime.cancel_runtime_execution(ctx.instance)
+    assert result['status'] == 'ALREADY_TERMINAL' and result['terminal'] is True and result['signalSent'] is False
+    assert result['runtimeStatus'] == ('PASS' if status == 'PASS' else 'FAILED_OR_UNKNOWN')
+    assert runtime_cancel.events == []
+
+
+@pytest.mark.parametrize('field', ['release', 'commit', 'sourceSha256', 'identity', 'acceptanceProfileSha256',
+    'candidateBuildSha256', 'runtime', 'settingsSha256', 'operation', 'executionId', 'boot'])
+def test_runtime_cancel_refuses_foreign_execution_before_any_signal(runtime_cancel, field):
+    ctx = runtime_cancel.ctx; value = dict(runtime_cancel.initial)
+    if field == 'boot': value['supervisor'] = dict(value['supervisor'], bootId='foreign-boot')
+    else: value[field] = 'foreign-operation'
+    ctx.write(runtime.runtime_execution_file(ctx.instance), value)
+    with pytest.raises(ValueError): runtime.cancel_runtime_execution(ctx.instance)
+    assert runtime_cancel.events == []
+
+
+def test_runtime_cancel_refuses_reused_pid_and_closes_its_pinned_descriptor(runtime_cancel):
+    runtime_cancel.ctx.instance.transport.supervisor_start = lambda _: '5678'
+    with pytest.raises(ValueError, match='supervisor identity changed'):
+        runtime.cancel_runtime_execution(runtime_cancel.ctx.instance)
+    assert runtime_cancel.events == [('pin', runtime_cancel.ctx.supervisor_pid, 0), ('close', 91)]
+
+
+def test_runtime_cancel_requires_pidfd_instead_of_falling_back_to_numeric_kill(runtime_cancel, monkeypatch):
+    monkeypatch.delattr(runtime.os, 'pidfd_open')
+    with pytest.raises(ValueError, match='pidfd support'): runtime.cancel_runtime_execution(runtime_cancel.ctx.instance)
+    assert runtime_cancel.events == []
+
+
+@pytest.mark.parametrize('where', ['pin', 'identity', 'signal'])
+@pytest.mark.parametrize('terminal', [False, True])
+def test_runtime_cancel_handles_supervisor_exit_only_with_original_terminal_evidence(runtime_cancel, monkeypatch, where, terminal):
+    ctx = runtime_cancel.ctx
+    def exited(*_):
+        if terminal: ctx.complete(runtime_cancel.initial, 'FAILED')
+        raise ProcessLookupError('original exited')
+    if where == 'pin': monkeypatch.setattr(runtime.os, 'pidfd_open', exited)
+    elif where == 'identity': ctx.instance.transport.supervisor_start = exited
+    else: monkeypatch.setattr(runtime.signal, 'pidfd_send_signal', exited)
+    if terminal:
+        result = runtime.cancel_runtime_execution(ctx.instance)
+        assert result['status'] == 'ALREADY_TERMINAL' and result['runtimeStatus'] == 'FAILED_OR_UNKNOWN'
+    else:
+        with pytest.raises(ValueError, match='without terminal evidence'): runtime.cancel_runtime_execution(ctx.instance)
+        assert runtime.runtime_execution(ctx.instance)['status'] == 'RUNNING'
+    if where == 'pin': assert runtime_cancel.events == []
+    else: assert ('close', 91) in runtime_cancel.events
+
+
+def test_runtime_cancel_rechecks_execution_after_pin_before_sending(runtime_cancel, monkeypatch):
+    ctx = runtime_cancel.ctx
+    def changed(pid, flags):
+        ctx.write(runtime.runtime_execution_file(ctx.instance), dict(runtime_cancel.initial, executionId='9' * 32))
+        return 91
+    monkeypatch.setattr(runtime.os, 'pidfd_open', changed)
+    with pytest.raises(ValueError, match='execution changed'): runtime.cancel_runtime_execution(ctx.instance)
+    assert not any(event[0] == 'signal' for event in runtime_cancel.events)
+    assert runtime_cancel.events[-1] == ('close', 91)
+
+
+@pytest.mark.parametrize('damage', ['missing', 'changed', 'foreign-source'])
+def test_runtime_cancel_never_treats_unproven_pass_as_terminal(runtime_cancel, damage):
+    ctx = runtime_cancel.ctx; ctx.complete(runtime_cancel.initial)
+    if damage == 'missing': ctx.instance.public_file.unlink()
+    elif damage == 'changed': ctx.instance.public_file.write_bytes(b'changed')
+    else:
+        ctx.write(ctx.instance.public_file, {**ctx.instance.context(), 'status': 'PASS', 'commit': '9' * 40})
+        value = runtime.runtime_execution(ctx.instance)
+        value['result']['runtimeReceiptSha256'] = runtime.sha_file(ctx.instance.public_file)
+        ctx.write(runtime.runtime_execution_file(ctx.instance), value)
+    with pytest.raises((ValueError, FileNotFoundError)): runtime.cancel_runtime_execution(ctx.instance)
+    assert runtime_cancel.events == []
+
+
+def test_runtime_cancel_control_error_cannot_fall_through_owner_cleanup(monkeypatch, capsys):
+    def forbidden(*_): pytest.fail('cancel control attempted original-owner cleanup/write')
+    instance = SimpleNamespace(owner={'phase': 'RUNNING'}, cleanup=forbidden, save=forbidden, failure=forbidden)
+    monkeypatch.setattr(runtime, 'Runtime', lambda _: instance)
+    monkeypatch.setattr(runtime, 'cancel_runtime_execution', lambda _: (_ for _ in ()).throw(ValueError('foreign original')))
+    monkeypatch.setattr(runtime.sys, 'argv', runtime_arguments('cancel'))
+    monkeypatch.setattr(runtime.signal, 'signal', lambda *_: None)
+    assert runtime.main() == 2 and json.loads(capsys.readouterr().out)['status'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('status', ['SIGNAL_SENT', 'ALREADY_TERMINAL'])
+def test_runtime_cancel_cli_reports_ack_without_running_observing_or_cleaning(runtime_cancel, monkeypatch, status):
+    instance = runtime_cancel.ctx.instance
+    expected = {'status': status, 'terminal': status == 'ALREADY_TERMINAL'}
+    monkeypatch.setattr(runtime, 'Runtime', lambda _: instance)
+    monkeypatch.setattr(runtime, 'cancel_runtime_execution', lambda _: expected)
+    monkeypatch.setattr(runtime.sys, 'argv', runtime_arguments('cancel'))
+    monkeypatch.setattr(runtime.signal, 'signal', lambda *_: None)
+    assert runtime.main() == 0 and runtime_cancel.ctx.progress == [expected]
+    assert runtime.runtime_execution(instance)['status'] == 'RUNNING'
+
+
+@pytest.mark.parametrize('first_failure', ['SIGTERM', 'ordinary-exception'])
+def test_runtime_repeated_term_cannot_interrupt_original_failure_cleanup(monkeypatch, first_failure):
+    events, handlers = [], {}
+    def run():
+        if first_failure == 'SIGTERM': handlers[runtime.signal.SIGTERM](None, None)
+        raise ValueError('ordinary failure')
+    def cleanup():
+        handlers[runtime.signal.SIGTERM](None, None)
+        handlers[runtime.signal.SIGINT](None, None)
+        events.append('cleanup-complete')
+    instance = SimpleNamespace(owner={'phase': 'RUNNING'}, run=run, cleanup=cleanup,
+        save=lambda _: events.append('save'), failure=lambda *_: events.append('failure') or 'a' * 64,
+        transport=SimpleNamespace(progress=lambda _: None))
+    monkeypatch.setattr(runtime, 'Runtime', lambda _: instance)
+    monkeypatch.setattr(runtime, 'begin_runtime_execution', lambda _: {'executionId': 'a' * 32})
+    monkeypatch.setattr(runtime, 'finish_runtime_execution', lambda *a: events.append(a[2]))
+    monkeypatch.setattr(runtime.sys, 'argv', runtime_arguments('run'))
+    monkeypatch.setattr(runtime.signal, 'signal', lambda number, handler: handlers.__setitem__(number, handler))
+    assert runtime.main() == 2 and events == ['save', 'cleanup-complete', 'failure', 'FAILED']
+    assert handlers[runtime.signal.SIGHUP] == runtime.signal.SIG_IGN
+
+
 def test_runtime_post_guards_cover_the_database_and_tool_dependencies_not_just_runtime_services():
     source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     tools = source.split("if ($Action -in @('PrepareTools', 'CleanupTools'))", 1)[1].split("if ($Action -in @('PrepareFixtures'", 1)[0]
@@ -508,8 +664,18 @@ def test_runtime_post_guards_cover_the_database_and_tool_dependencies_not_just_r
     cleanup = source.split("if ($Action -eq 'CleanupRuntime')", 1)[1].split('$verified = Get-Content', 1)[0]
     assert tools.index('$null=Wait-ExistingRuntime') < tools.index("'$executor' cleanup")
     assert fixtures.index('$null=Wait-ExistingRuntime') < fixtures.index("'$helper' cleanup")
-    assert cleanup.index('$null=Wait-ExistingRuntime') < cleanup.index('$cleanupArguments')
+    assert cleanup.index('$null=Wait-ExistingRuntime -Cancel') < cleanup.index('$cleanupArguments')
+    assert 'Wait-ExistingRuntime -Cancel' not in tools + fixtures
     run = source.split('$fixtureResources = @{}', 1)[1].split('$runtimeResult =', 1)[0]
     assert '$runtimeExit -eq 255' in run and '$observed=Wait-ExistingRuntime' in run
-    observer = source.split('function Wait-ExistingRuntime {', 1)[1].split('function Assert-ControlPreflight', 1)[0]
+    assert 'Wait-ExistingRuntime -Cancel' not in run
+    observer = source.split('function Wait-ExistingRuntime {', 1)[1].split('function Assert-ControlSourcePackage', 1)[0]
     assert "' observe $binding" in observer and "' run $binding" not in observer
+    assert 'param([switch]$Cancel)' in observer and 'if ($Cancel)' in observer
+    assert observer.index("' cancel $binding") < observer.index('for ($readback=1;') < observer.index('return $state')
+    assert '($Cancel -and $state.executionId -cne $ack.executionId)' in observer
+    for binding in ('operation', 'executionId', 'requestedSignal', 'release', 'commit', 'sourceSha256',
+                    'candidateBuildSha256', 'runtime', 'runtimeStatus', 'terminal'):
+        assert '$ack.' + binding in observer
+    assert "@('SIGNAL_SENT','ALREADY_TERMINAL')" in observer
+    assert "artifacts/runtime-execution-cancellation.json" in observer

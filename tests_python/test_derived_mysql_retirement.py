@@ -14,6 +14,7 @@ import sys
 import tarfile
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
+import shutil
 
 import pytest
 
@@ -26,6 +27,148 @@ RECENT_RELEASE = 'ci-250-6444cbc36a65'
 BATCHES = (retirement.BATCH, retirement.RECENT_BATCH, retirement.FOLLOWUP_BATCH)
 POLICIES = ('DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283')
 ALL_POLICIES = (*POLICIES, 'DerivedMysqlHistorical15')
+
+
+def workspace_custody_validator():
+    source=FILE.with_name('retire-task-failed-mysql-data.ps1').read_text(encoding='utf-8-sig')
+    embedded=source.split("$workspaceCustodyValidator=@'\n",1)[1].split("\n'@",1)[0]
+    namespace={'__name__':'workspace_custody_contract'}
+    exec(compile(embedded,'retire-task-failed-mysql-data.ps1:workspaceCustody','exec'),namespace)
+    return namespace['validate_workspace_custody']
+
+
+@pytest.fixture
+def cancelled_workspace_custody(tmp_path):
+    custody=tmp_path/'custody'; workspace=tmp_path/'original-workspace/artifacts'
+    folder=custody/'ci-419-raw-receipts'; supplement=folder/'workspace-originals'
+    workspace.mkdir(parents=True); supplement.mkdir(parents=True)
+    commit='a'*40; release='ci-419-'+commit[:12]
+    context={'release':release,'commit':commit,'sourceSha256':retirement.digest(b'fixed source archive')}
+    binary=b'complete original application'; jar_sha=retirement.digest(binary)
+    local={'release':release,'commit':commit,'testsExecuted':False,'status':'PASS','exitCode':0,
+           'applicationJarBytes':len(binary),'applicationJarSha256':jar_sha}
+    bodies={'application.jar':binary,'source.tar.gz':b'fixed source archive',
+            'local-build.json':retirement.encoded(local),'fixture-cleanup.json':b'{"status":"STOPPED"}',
+            'ecs-tool-preparation.json':b'{"status":"PREPARED"}','candidate-build-tools-transport.json':b'{}',
+            'ecs/evidence/reports/python.xml':b'<testsuites><testsuite tests="1"/></testsuites>'}
+    bodies['release.json']=retirement.encoded({**context,'applicationJarSha256':jar_sha,
+        'localBuildReceiptSha256':retirement.digest(bodies['local-build.json'])})
+    bodies['ecs/evidence/verification-receipt.json']=retirement.encoded({**context,'kind':'doorhandle-ecs-ci',
+        'schema':1,'scope':'mysql','status':'FAILED','verificationExitCode':-2,'reportFiles':[
+            {'path':'reports/python.xml','bytes':len(bodies['ecs/evidence/reports/python.xml']),
+             'sha256':retirement.digest(bodies['ecs/evidence/reports/python.xml'])}]})
+    for name,body in bodies.items():
+        original=workspace/name; original.parent.mkdir(parents=True,exist_ok=True);original.write_bytes(body)
+        preserved=supplement/name;preserved.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(original,preserved)
+    xml=ET.fromstring(_task_flow_xml(context).replace(b'version=\'1.1\'',b'version=\'1.0\''))
+    xml.find('result').text='ABORTED'
+    action=ET.SubElement(xml.find('actions'),'hudson.plugins.git.util.BuildData')
+    branches=ET.SubElement(action,'buildsByBranchName')
+    for branch,number,sha in [('java','6','f'*40),('java-cloud','419',commit)]:
+        entry=ET.SubElement(branches,'entry');ET.SubElement(entry,'string').text='refs/remotes/origin/'+branch
+        scm=ET.SubElement(entry,'hudson.plugins.git.util.Build')
+        ET.SubElement(ET.SubElement(scm,'marked'),'sha1').text=sha
+        ET.SubElement(scm,'revision',reference='../marked');ET.SubElement(scm,'hudsonBuildNumber').text=number
+    xml_path=folder/'build.xml';xml_path.write_bytes(ET.tostring(xml))
+    original={'build':419,'commit':commit,'status':'PRESERVED','result':'ABORTED','completed':True,
+              'executionDone':True,'buildXml':{'bytes':xml_path.stat().st_size},
+              'buildXmlSha256':retirement.digest(xml_path.read_bytes())}
+    (folder/'application.jar').write_bytes(b'interrupted partial archive; do not replace')
+    catalog={**context,'build':419,'officialResult':'ABORTED','status':'PRESERVED','files':[]}
+    for name,body in bodies.items():
+        catalog['files'].append({'path':name,'original':(workspace/name).as_posix(),
+            'preserved':(supplement/name).as_posix(),'bytes':len(body),'sha256':retirement.digest(body),
+            'copyByteComparison':'IDENTICAL'})
+    roles={'release':'release.json','localBuild':'local-build.json','fixtureCleanupPublic':'fixture-cleanup.json',
+           'preparation':'ecs-tool-preparation.json','transport':'candidate-build-tools-transport.json'}
+    origin='PRESERVED_JENKINS_TERMINAL_WORKSPACE_ORIGINAL'
+    candidate={**context,'retirement':{'jarBytes':len(binary),'jarSha256':jar_sha},
+               'controls':{'buildXml':{'source':xml_path.as_posix(),'bytes':xml_path.stat().st_size,
+                                     'sha256':original['buildXmlSha256'],'origin':'PRESERVED_JENKINS_ORIGINAL'}},
+               'workspaceCustody':{'origin':origin}}
+    def refresh():
+        (folder/'preservation.json').write_bytes(retirement.encoded(original))
+        catalog['copiedFiles']=len(catalog['files']);catalog['copiedBytes']=sum(x['bytes'] for x in catalog['files'])
+        raw=retirement.encoded(catalog);(supplement/'preservation.json').write_bytes(raw)
+        candidate['workspaceCustody'].update(catalogBytes=len(raw),catalogSha256=retirement.digest(raw))
+        for role,name in roles.items():
+            entry=next((x for x in catalog['files'] if x['path']==name),None)
+            if entry:candidate['controls'][role]={'source':(supplement/name).as_posix(),'bytes':entry['bytes'],
+                                               'sha256':entry['sha256'],'origin':origin}
+    refresh()
+    return SimpleNamespace(custody=custody,workspace=workspace,folder=folder,supplement=supplement,
+        candidate=candidate,catalog=catalog,original=original,refresh=refresh,xml=xml,
+        validate=lambda:workspace_custody_validator()(candidate,custody,workspace))
+
+
+def test_finished_workspace_custody_preserves_complete_originals_without_replacing_partial_archive(cancelled_workspace_custody):
+    case=cancelled_workspace_custody;before=(case.folder/'application.jar').read_bytes()
+    proof=case.validate()
+    assert proof['completeApplicationJarPreserved'] is True and proof['files']==9
+    assert proof['bytes']==case.catalog['copiedBytes'] and proof['sourceSha256']==case.candidate['sourceSha256']
+    assert (case.folder/'application.jar').read_bytes()==before
+    assert (case.supplement/'application.jar').read_bytes()==b'complete original application'
+
+
+@pytest.mark.parametrize('damage', ['origin','not-completed','not-done','not-aborted','catalog-source','xml-not-terminal',
+    'xml-scm','xml-trusted','invalid-original','invalid-preserved','no-direct-comparison','partial-jar',
+    'source-bytes','release-commit','missing-report','extra-file','control-origin','catalog-bytes','member-bytes'])
+def test_finished_workspace_custody_refuses_partial_foreign_or_unbound_originals(cancelled_workspace_custody,damage):
+    case=cancelled_workspace_custody;catalog=case.catalog;candidate=case.candidate
+    def entry(name):return next(item for item in catalog['files'] if item['path']==name)
+    def rewrite(name,body):
+        (case.supplement/name).write_bytes(body);entry(name).update(bytes=len(body),sha256=retirement.digest(body))
+    if damage=='origin':candidate['workspaceCustody']['origin']='PRESERVED_JENKINS_ORIGINAL'
+    elif damage=='not-completed':case.original['completed']=False
+    elif damage=='not-done':case.original['executionDone']=False
+    elif damage=='not-aborted':case.original['result']='FAILURE'
+    elif damage=='catalog-source':catalog['sourceSha256']='f'*64
+    elif damage.startswith('xml-'):
+        if damage=='xml-not-terminal':case.xml.find('completed').text='false'
+        elif damage=='xml-scm':
+            for item in case.xml.findall('.//buildsByBranchName/entry'):
+                if item.findtext('string')=='refs/remotes/origin/java-cloud':
+                    item.find('hudson.plugins.git.util.Build/marked/sha1').text='f'*40
+        else:
+            for item in case.xml.findall('./actions/hudson.model.ParametersAction/parameters/*'):
+                if item.findtext('name')=='TRUSTED_COMMIT':item.find('value').text='f'*40
+        raw=ET.tostring(case.xml);(case.folder/'build.xml').write_bytes(raw)
+        case.original.update(buildXml={'bytes':len(raw)},buildXmlSha256=retirement.digest(raw))
+    elif damage=='invalid-original':entry('release.json')['original']=str(case.workspace.parent/'other/release.json')
+    elif damage=='invalid-preserved':entry('release.json')['preserved']=str(case.folder/'release.json')
+    elif damage=='no-direct-comparison':entry('release.json')['copyByteComparison']='SIZE_ONLY'
+    elif damage=='partial-jar':rewrite('application.jar',b'partial')
+    elif damage=='source-bytes':rewrite('source.tar.gz',b'foreign source')
+    elif damage=='release-commit':
+        value=json.loads((case.supplement/'release.json').read_bytes());value['commit']='f'*40
+        rewrite('release.json',retirement.encoded(value))
+    elif damage=='missing-report':
+        catalog['files'].remove(entry('ecs/evidence/reports/python.xml'))
+        (case.supplement/'ecs/evidence/reports/python.xml').unlink()
+    elif damage=='extra-file':(case.supplement/'unknown-original').write_bytes(b'unknown')
+    case.refresh()
+    if damage=='control-origin':candidate['controls']['release']['origin']='PRESERVED_JENKINS_ORIGINAL'
+    elif damage=='catalog-bytes':(case.supplement/'preservation.json').write_bytes(b'{}')
+    elif damage=='member-bytes':(case.supplement/'release.json').write_bytes(b'changed')
+    with pytest.raises(ValueError):case.validate()
+
+
+@pytest.mark.parametrize('link',['symlink','hardlink'])
+def test_finished_workspace_custody_rejects_non_owned_file_links(cancelled_workspace_custody,link):
+    case=cancelled_workspace_custody;path=case.supplement/'release.json';path.unlink()
+    if link=='symlink':path.symlink_to(case.workspace/'release.json')
+    else:os.link(case.workspace/'release.json',path)
+    with pytest.raises(ValueError):case.validate()
+
+
+def test_finished_workspace_custody_is_opt_in_before_staging_and_old_archive_provenance_is_preserved():
+    source=FILE.with_name('retire-task-failed-mysql-data.ps1').read_text(encoding='utf-8-sig')
+    assert "if($candidate.ContainsKey('workspaceCustody'))" in source
+    assert source.index('$proofLines=@(')<source.index('foreach($role in $roleNames.Keys)')
+    assert source.index('$proofLines=@(')<source.index('& ssh.exe @SshOptions -p $PortText $Destination $prepare')
+    assert '.EndsWith("/jobs/doorhandle-java/builds/$number/archive/artifacts/$name")' in source
+    assert 'if($file.source -ceq $expected)' in source and 'workspaceOriginals=$workspaceProof' in source
+    assert "$role -cne 'buildXml'" in source and '$workspaceControl -or $file.source -ceq $expected' in source
 
 
 def _task_flow_xml(context):

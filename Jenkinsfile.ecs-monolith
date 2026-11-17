@@ -4,8 +4,8 @@ def configureVerificationInputs() {
     if (!(params.ACTION in ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs', 'collect-existing-evidence'])) error('Unsupported pipeline action')
     env.MANUAL_ACCEPTANCE_ENABLED = params.MANUAL_ACCEPTANCE_ENABLED ? 'true' : 'false'
     env.MANUAL_ACCEPTANCE_MINUTES = params.MANUAL_ACCEPTANCE_MINUTES ?: '30'
-    if (params.MANUAL_ACCEPTANCE_ENABLED && (params.ACTION != 'verify-runtime' || params.DOORHANDLE_CI_SCOPE != 'mysql'
-        || params.PRODUCTION_RELEASE_ENABLED || !(env.MANUAL_ACCEPTANCE_MINUTES in ['15','30','60']))) error('Manual acceptance requires the bounded isolated verify-runtime/mysql candidate')
+    if (params.MANUAL_ACCEPTANCE_ENABLED && (!(params.ACTION in ['verify-runtime','compact-cutover']) || params.DOORHANDLE_CI_SCOPE != 'mysql'
+        || (params.ACTION == 'verify-runtime' && params.PRODUCTION_RELEASE_ENABLED) || !(env.MANUAL_ACCEPTANCE_MINUTES in ['15','30','60']))) error('Manual acceptance requires the bounded isolated mysql candidate')
     env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'
     if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283', 'DerivedMysqlHistorical15', 'SourcePytest16', 'SourcePytest307308'])) error('Unsupported native retention policy')
     if (env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs') error('An explicit retired-copy policy requires source-only build maintenance')
@@ -108,7 +108,7 @@ def configureVerificationInputs() {
     if (params.ACTION == 'verify-embedding' && (env.REMAINING_SYSTEM_DATA_SNAPSHOT || env.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT)) error('Embedding verification cannot preserve remaining business data')
     def projectSqlInputs = [env.PROJECT_MYSQL_SNAPSHOT, env.PROJECT_MYSQL_MANIFEST_SHA256, env.PROJECT_MYSQL_ARCHIVE_SHA256]
     if (projectSqlInputs.any { it } && !projectSqlInputs.every { it }) error('Project MySQL custody requires all three explicit packet inputs or all blank')
-    if (env.PROJECT_MYSQL_SNAPSHOT && (!(params.ACTION in ['verify', 'verify-runtime']) || params.DOORHANDLE_CI_SCOPE != 'mysql' || params.PRODUCTION_RELEASE_ENABLED)) error('Project MySQL custody only archives and recovers in complete MySQL verification; production and maintenance actions are forbidden')
+    if (env.PROJECT_MYSQL_SNAPSHOT && (!(params.ACTION in ['verify', 'verify-runtime', 'compact-cutover']) || params.DOORHANDLE_CI_SCOPE != 'mysql' || (params.PRODUCTION_RELEASE_ENABLED && params.ACTION != 'compact-cutover'))) error('Project MySQL custody only archives and recovers in complete MySQL verification; production and maintenance actions are forbidden')
     if (env.PROJECT_MYSQL_SNAPSHOT && (!(env.PROJECT_MYSQL_MANIFEST_SHA256 ==~ /[a-f0-9]{64}/) || !(env.PROJECT_MYSQL_ARCHIVE_SHA256 ==~ /[a-f0-9]{64}/))) error('Project MySQL custody requires explicit fixed manifest and archive SHA-256')
     def anySqlCustody = env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT || env.PROJECT_MYSQL_SNAPSHOT
     if ((anySqlCustody && !env.LOCAL_MYSQL_FIXTURE_SETTINGS) || (!anySqlCustody && env.LOCAL_MYSQL_FIXTURE_SETTINGS)) error('MySQL custody requires a sealed export packet and the shared reviewed private ECS image settings')
@@ -117,10 +117,14 @@ def configureVerificationInputs() {
     if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || env.DOORHANDLE_CI_FIXTURE_MANIFEST || !env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Automatic compact fixtures require mysql scope, private ECS settings and no conflicting manual manifest')
     } else if (params.DOORHANDLE_CI_SCOPE == 'mysql' && !env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('MySQL verification requires a pre-provisioned private ECS fixture manifest')
-    if (params.ACTION in ['verify-deploy', 'rollback', 'compact-cutover']) {
+    if (params.ACTION in ['verify-deploy', 'rollback']) {
         if (!params.PRODUCTION_RELEASE_ENABLED || env.DOORHANDLE_COMPACT_RELEASE_READY != 'true') error('Production publish/rollback remains disabled until compact database acceptance is complete')
     }
     if (params.ACTION == 'compact-cutover') {
+        if (!params.PRODUCTION_RELEASE_ENABLED || !params.MANUAL_ACCEPTANCE_ENABLED
+            || !env.DOORHANDLE_COMPACT_RELEASE_AUTHORIZATION?.trim()
+            || env.DOORHANDLE_COMPACT_RELEASE_COMMIT != env.GIT_COMMIT
+            || params.TRUSTED_COMMIT?.trim() != env.GIT_COMMIT) error('First cutover requires the versioned fixed-source authorization and explicit human acceptance; job parameters alone cannot enable publication')
         def selectedSettings = params.COMPACT_CUTOVER_SETTINGS?.trim() ?: env.DOORHANDLE_CI_FIXTURE_SETTINGS
         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || !selectedSettings) error('First cutover requires complete MySQL acceptance and explicit reviewed private ECS settings')
         if ((!env.LOCAL_MYSQL_SNAPSHOT && !env.LOCAL_MYSQL_ECS_SNAPSHOT) || !env.LOCAL_MYSQL_FIXTURE_SETTINGS) error('First cutover requires the approved legacy MySQL export and independent recovery/source-inclusion audit; its stage cannot be skipped')
@@ -162,7 +166,7 @@ pipeline {
         string(name: 'DOORHANDLE_CI_FIXTURE_MANIFEST', defaultValue: '', trim: true, description: '仅 mysql：本次远端 checkout/work 内预先准备的绝对私有清单路径；source 必须留空')
         booleanParam(name: 'DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', defaultValue: false, description: 'mysql：用本次固定提交制品，在 ECS 自动准备独立数据库和完整验收清单')
         string(name: 'DOORHANDLE_CI_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '自动夹具：ECS 现有私有 JSON 路径，仅指定原库身份、已核对时区和既有 Java')
-        booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '发布/回滚开关；机器环境 DOORHANDLE_COMPACT_RELEASE_READY 仍须为 true')
+        booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '正式发布请求；首次切表另须固定提交/输入授权及同轮完整自动、人工验收原件，参数本身不授权发布')
         string(name: 'COMPACT_CUTOVER_SETTINGS', defaultValue: '', trim: true, description: '可复用夹具设置：ECS私有JSON，version/sourceMysqlContainerId/sourceSchema/sourceOffsets/java，不含密码')
         string(name: 'CANDIDATE_BUILD_TOOLS_ARCHIVE', defaultValue: '', trim: true, description: '运行验收/首次切换的公开BuildKit OCI包；空值自动准备固定D盘缓存，不归档原tar')
         string(name: 'LEGACY_SOURCE_SNAPSHOT', defaultValue: '', trim: true, description: '可选本地原始数据字节封存目录；源码验证通过后上传ECS并逐文件恢复核对，不在本地打开数据库')
@@ -194,7 +198,7 @@ pipeline {
         string(name: 'PYTHON_EXE', defaultValue: 'D:/ruanjian/anaconda3/envs/leetcode/python.exe', description: '本地控制脚本使用的已有 Python，不在本地运行 pytest')
         choice(name: 'BUILD_NPM_REGISTRY', choices: ['https://registry.npmjs.org', 'https://registry.npmmirror.com'], description: '仅本次远端构建使用，不修改生产环境或锁文件')
         booleanParam(name: 'REHEARSAL_KEEP', defaultValue: false, description: '仅已验收的隔离演练可保留候选环境供查看')
-        booleanParam(name: 'MANUAL_ACCEPTANCE_ENABLED', defaultValue: false, description: '仅verify-runtime：自动验收通过后提供同一29表候选入口，人工确认或超时后原链收尾')
+        booleanParam(name: 'MANUAL_ACCEPTANCE_ENABLED', defaultValue: false, description: 'verify-runtime可选、compact-cutover必选：验收同一29表候选，人工确认后原链收尾；切库另须固定授权')
         choice(name: 'MANUAL_ACCEPTANCE_MINUTES', choices: ['30','15','60'], description: '人工验收固定窗口；重连不续期，结束后入口失效')
         string(name: 'COMPATIBLE_BACKEND_IMAGE', defaultValue: '', trim: true, description: '可选已独立验收的兼容旧版后端 sha256 镜像')
         string(name: 'COMPATIBLE_RUNNER_IMAGE', defaultValue: '', trim: true, description: '可选已独立验收的兼容旧版 MCP runner sha256 镜像')
@@ -213,6 +217,8 @@ pipeline {
                     env.CI_FIXTURE_PREPARATION_ATTEMPTED = 'false'
                     env.CI_RUNTIME_ATTEMPTED = 'false'
                     env.CI_RUNTIME_VERIFIED = 'false'
+                    env.CI_CUTOVER_ATTEMPTED = 'false'
+                    env.CI_CUTOVER_VERIFIED = 'false'
                     env.CI_LEGACY_CANDIDATE_ATTEMPTED = 'false'
                     env.CI_LEGACY_CANDIDATE_PREPARED = 'false'
                     env.CI_LOCAL_MYSQL_ATTEMPTED = 'false'
@@ -296,7 +302,7 @@ pipeline {
             }
         }
         stage('Preflight control scripts on ECS') {
-            when { expression { params.ACTION == 'verify-controls' || (params.ACTION in ['verify', 'verify-runtime'] && params.DOORHANDLE_CI_SCOPE == 'mysql') } }
+            when { expression { params.ACTION == 'verify-controls' } }
             steps {
                 script { env.CI_CONTROL_PREFLIGHT_PASS = 'false' }
                 withCredentials([
@@ -388,7 +394,7 @@ pipeline {
             }
         }
         stage('Recover approved three-schema MySQL packet on ECS') {
-            when { expression { params.ACTION in ['verify', 'verify-runtime'] && env.PROJECT_MYSQL_SNAPSHOT } }
+            when { expression { params.ACTION in ['verify', 'verify-runtime', 'compact-cutover'] && env.PROJECT_MYSQL_SNAPSHOT } }
             steps {
                 script { env.CI_PROJECT_MYSQL_ATTEMPTED = 'true' }
                 withCredentials([
@@ -481,7 +487,7 @@ pipeline {
             }
         }
         stage('Accept candidate application on ECS') {
-            when { expression { params.ACTION == 'verify-runtime' } }
+            when { expression { params.ACTION in ['verify-runtime','compact-cutover'] } }
             steps {
                 script { env.CI_RUNTIME_ATTEMPTED = 'true' }
                 withCredentials([
@@ -507,7 +513,8 @@ pipeline {
                                         if (remaining <= 0) error('人工验收窗口已到期，原候选正在收尾')
                                         echo "29表候选已就绪：${ready.localUrl}；私密账号说明：${ready.privateGuide}；提交 ${ready.commit}；不是生产站点"
                                         timeout(time: remaining, unit: 'SECONDS') {
-                                            def answer = input(id: 'manual-candidate-acceptance', message: "请验收 ${ready.localUrl} 的29表候选；账号见私密说明 ${ready.privateGuide}。验收结束后选择结果，入口随后关闭。", ok: '结束验收', submitterParameter: 'SUBMITTED_BY', parameters: [choice(name: 'RESULT', choices: ['发现问题','验收通过'], description: '仅确认本轮隔离候选功能；不发布生产')])
+                                            def releaseNotice = params.ACTION == 'compact-cutover' ? '选择验收通过同时批准：候选安全收尾后立即进入正式停写窗口，在同一提交迁移并上线29表；不要继续写旧站点。' : '仅确认本轮隔离候选功能，不发布生产。'
+                                            def answer = input(id: 'manual-candidate-acceptance', message: "请验收 ${ready.localUrl} 的29表候选；账号见私密说明 ${ready.privateGuide}。${releaseNotice}", ok: '提交本轮决定', submitterParameter: 'SUBMITTED_BY', parameters: [choice(name: 'RESULT', choices: ['发现问题','验收通过'], description: releaseNotice)])
                                             decision = answer.RESULT == '验收通过' ? 'ACCEPTED' : 'REJECTED'
                                             submittedBy = answer.SUBMITTED_BY
                                         }
@@ -538,14 +545,14 @@ pipeline {
         stage('First compact migration and cutover') {
             when { expression { params.ACTION == 'compact-cutover' } }
             steps {
-                script { env.CI_RUNTIME_ATTEMPTED = 'true' }
+                script { env.CI_CUTOVER_ATTEMPTED = 'true' }
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                     file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                 ]) {
                     pwsh '& ./script/jenkins/pipeline.ps1 -Action CompactCutover'
                 }
-                script { env.CI_RUNTIME_VERIFIED = 'true' }
+                script { env.CI_CUTOVER_VERIFIED = 'true' }
             }
         }
     }
@@ -564,6 +571,19 @@ pipeline {
                     }
                 } else {
                     env.CI_GENERATED_CLEANUP_ELIGIBLE = 'true'
+                    // Never rerun validation or migration after an unknown SSH
+                    // result. Settle the original journal under its same lock.
+                    if (env.CI_CUTOVER_ATTEMPTED == 'true' && env.CI_CUTOVER_VERIFIED != 'true'
+                        && fileExists('artifacts/compact-cutover-execution-request.json')) {
+                        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                            withCredentials([
+                                sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                                file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                            ]) {
+                                pwsh '& ./script/jenkins/pipeline.ps1 -Action RecoverCutover'
+                            }
+                        }
+                    }
                     // A cutover can fail after runtime acceptance and its owned
                     // cleanup have passed. Preserve that completed evidence.
                     if (env.CI_RUNTIME_ATTEMPTED == 'true' && env.CI_RUNTIME_VERIFIED != 'true' && !fileExists('artifacts/runtime-gate-passed.json')) {

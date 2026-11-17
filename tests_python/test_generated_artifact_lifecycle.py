@@ -1303,3 +1303,224 @@ def test_permission_preflight_holds_unlisted_private_target_ancestors_until_firs
     result = cleanup.repair_generated_permissions(state.root, value, remote)
     assert result['status'] == 'PARTIAL_FAILURE' and result['deletedTargets'] == 0
     assert not calls and state.cache.exists()
+
+@pytest.fixture
+def transport_copy(generated, monkeypatch, tmp_path):
+    """An exact authorized transport copy, with a separate original keeper."""
+    import base64
+    source = generated.inbox / 'source.tar.gz'
+    keeper = legacy.put(tmp_path / 'preserved-original/source.tar.gz', source.read_bytes())
+    approved = {'release': OLD, 'remotePath': str(source), 'localKeeper': str(keeper),
+                'expectedBytes': source.stat().st_size, 'expectedSourceSha256': cleanup.digest(source)}
+    # The production digest pins exactly 125 user-selected entries. Unselected
+    # synthetic entries do not create files or enlarge this test's delete scope.
+    selected = [approved] + [{**approved, 'release': 'ci-' + str(1000 + n) + '-' + 'a' * 12}
+                             for n in range(124)]
+    approval = {'approved': True, 'candidateCount': 125, 'selected': selected}
+    raw = cleanup.canonical(approval)
+    monkeypatch.setattr(cleanup, 'SCM_TRANSPORT_AUTHORIZATION_SHA256', cleanup.sha(raw))
+    monkeypatch.setattr(cleanup, 'SCM_TRANSPORT_ROOT', str(generated.root))
+    monkeypatch.setattr(cleanup, 'SCM_TRANSPORT_IDENTITY', IDENTITY)
+    value = request(generated, targets=[{'kind': cleanup.SCM_TRANSPORT_KIND,
+                                        'path': source.relative_to(generated.root).as_posix()}])
+    value['scmTransportAuthorization'] = base64.b64encode(raw).decode('ascii')
+    row = value['candidates'][0]
+    row['terminal'] = {'kind': 'JENKINS_HISTORY', 'result': 'FAILURE', 'completed': True,
+        'evidenceArchived': True, 'buildXmlSha256': '1' * 64, 'originalReleaseSha256': '2' * 64,
+        'action': 'verify-runtime', 'productionReleaseEnabled': False}
+    row['scmTransportKeeper'] = {'path': str(keeper), 'bytes': source.stat().st_size,
+        'sha256': cleanup.digest(source), 'buildXmlSha256': '1' * 64,
+        'releaseSha256': '2' * 64, 'catalogSha256': '3' * 64}
+    row['scmTransportMetadata'] = cleanup.metadata(source.lstat())
+    generated.transport = value
+    generated.source_copy, generated.original_keeper, generated.approval = source, keeper, approval
+    return generated
+
+
+def test_transport_file_retirement_keeps_originals_and_does_not_reopen_deleted_source(transport_copy, monkeypatch):
+    state = transport_copy; before = {str(p): p.read_bytes() for p in state.keep if p != state.source_copy}
+    original = state.original_keeper.read_bytes()
+    plan = make_plan(state, state.transport)
+    assert not plan['skipped'] and len(plan['candidates']) == 1
+    binding = cleanup.scm_transport_binding
+    calls = []
+    def checked(*args, **kwargs):
+        assert state.source_copy.exists(), 'No post-delete source revalidation is allowed'
+        calls.append(args[1]['release'])
+        return binding(*args, **kwargs)
+    monkeypatch.setattr(cleanup, 'scm_transport_binding', checked)
+    result = cleanup.apply_plan(state.root, state.transport, plan, remote)
+    assert calls == [OLD, OLD]  # Whole-plan freshness, then this target's boundary.
+    assert result['status'] == 'REMOVED' and result['retention']['status'] == 'SATISFIED'
+    assert result['scmTransportCopies']['deletedCount'] == 1
+    assert result['scmTransportCopies']['localOriginalArchivesPreserved'] is True
+    assert result['referenceScope'] == {'processScanUid': os.getuid(), 'containers': 'ALL_DOCKER_CONTAINERS'}
+    assert not state.source_copy.exists() and state.original_keeper.read_bytes() == original
+    assert before == {str(p): p.read_bytes() for p in state.keep if p != state.source_copy}
+    assert state.classes.exists()  # No directories, compiled output or other categories selected.
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, state.transport, plan, remote)
+
+
+@pytest.mark.parametrize('damage', ['missing-approval', 'wrong-approval', 'current-post', 'mixed-category',
+    'wrong-host', 'unselected', 'keeper-path', 'keeper-size', 'keeper-source', 'keeper-build', 'keeper-catalog',
+    'terminal-source', 'terminal-action', 'terminal-production', 'terminal-unfinished',
+    'inode', 'group-writable', 'hardlink', 'changed-bytes', 'pending-runtime', 'pending-link',
+    'published', 'publication-pointer', 'live-container', 'stopped-mount', 'process-reference'])
+def test_transport_original_identity_and_reference_failures_refuse_without_deletion(transport_copy, monkeypatch, damage):
+    state = transport_copy; value = copy.deepcopy(state.transport); row = value['candidates'][0]
+    containers = []
+    if damage == 'missing-approval': value.pop('scmTransportAuthorization')
+    elif damage == 'wrong-approval': value['scmTransportAuthorization'] = 'e30='
+    elif damage == 'current-post': value['currentPost'] = True
+    elif damage == 'mixed-category': row['targets'].append({'kind': 'NPM_CACHE', 'path': 'other'})
+    elif damage == 'wrong-host': value['identity']['machineId'] = '0' * 32
+    elif damage == 'unselected': row['release'] = 'ci-69-' + 'f' * 12
+    elif damage == 'keeper-path': row['scmTransportKeeper']['path'] += '.partial'
+    elif damage == 'keeper-size': row['scmTransportKeeper']['bytes'] -= 1
+    elif damage == 'keeper-source': row['scmTransportKeeper']['sha256'] = '0' * 64
+    elif damage == 'keeper-build': row['scmTransportKeeper']['buildXmlSha256'] = '0' * 64
+    elif damage == 'keeper-catalog': row['scmTransportKeeper']['catalogSha256'] = 'not-a-sha'
+    elif damage == 'terminal-source': row['terminal']['originalReleaseSha256'] = '0' * 64
+    elif damage == 'terminal-action': row['terminal']['action'] = 'deploy'
+    elif damage == 'terminal-production': row['terminal']['productionReleaseEnabled'] = True
+    elif damage == 'terminal-unfinished': row['terminal']['completed'] = False
+    elif damage == 'inode': row['scmTransportMetadata'][5] += 1
+    elif damage == 'group-writable': state.source_copy.chmod(0o660)
+    elif damage == 'hardlink': os.link(state.source_copy, state.source_copy.with_name('other-copy'))
+    elif damage == 'changed-bytes': state.source_copy.write_bytes(state.source_copy.read_bytes() + b'changed')
+    elif damage == 'pending-runtime': legacy.put(state.attempt / 'runtime-execution.json', b'{}')
+    elif damage == 'pending-link': (state.attempt / 'runtime-acceptance.json').symlink_to(state.root / 'missing')
+    elif damage == 'published': (state.root / 'releases' / OLD).mkdir(parents=True, mode=0o700)
+    elif damage == 'publication-pointer': legacy.put(state.root / 'state/current-directory', str(state.checkout).encode())
+    elif damage == 'live-container': containers = [['a' * 64, True, False, 123, OLD, None, []]]
+    elif damage == 'stopped-mount': containers = [['a' * 64, False, False, 0, None, None,
+        [{'Type': 'bind', 'Source': str(state.source_copy)}]]]
+    elif damage == 'process-reference':
+        def active(*args, **kwargs): raise ValueError('ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
+        monkeypatch.setattr(cleanup, 'process_references', active)
+    try:
+        result = make_plan(state, value, containers)
+    except ValueError:
+        pass  # Fixed authorization failures stop before candidate planning.
+    else:
+        assert not result['candidates'] and result['skipped']
+    assert state.source_copy.exists() and state.original_keeper.exists()
+    assert not (state.root / 'inbox' / CURRENT / 'generated-cleanup-journal.jsonl').exists()
+
+
+@pytest.mark.parametrize('change', ['metadata', 'source', 'reference', 'pending'])
+def test_transport_apply_rechecks_before_first_delete(transport_copy, monkeypatch, change):
+    state = transport_copy; value = state.transport; plan = make_plan(state, value)
+    assert plan['candidates'] and not plan['skipped']
+    if change == 'metadata': os.utime(state.source_copy, ns=(1, 1))
+    elif change == 'source': state.source_copy.write_bytes(b'replaced original transport bytes')
+    elif change == 'reference':
+        monkeypatch.setattr(cleanup, 'docker_snapshot', lambda: [['a' * 64, True, False, 123, OLD, None, []]])
+    else: legacy.put(state.attempt / 'runtime-execution.json', b'{}')
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, value, plan, remote)
+    assert state.source_copy.exists() and state.original_keeper.exists()
+
+
+def test_transport_delete_primitive_requires_authorization_even_with_valid_inventory(transport_copy):
+    state = transport_copy
+    plan = make_plan(state, state.transport); target = plan['candidates'][0]['targets'][0]
+    fd = os.open(state.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match='SCM_TRANSPORT_DELETE_REQUIRES_EXACT_AUTHORIZATION'):
+            cleanup.remove_target(fd, target)
+    finally: os.close(fd)
+    assert state.source_copy.exists()
+
+
+def test_transport_is_not_discovered_by_old_generated_auto_or_old_permission_repair(transport_copy):
+    state = transport_copy
+    assert cleanup.SCM_TRANSPORT_KIND not in cleanup.generated_paths(OLD)
+    old_plan = make_plan(state, request(state))
+    assert all(t['path'] != state.source_copy.relative_to(state.root).as_posix()
+               for c in old_plan['candidates'] for t in c['targets'])
+    invalid = copy.deepcopy(state.transport)
+    invalid['candidates'][0]['permissionRepairs'] = [{'path': 'inbox/' + OLD}]
+    with pytest.raises(ValueError, match='SCM_TRANSPORT_TARGET_NOT_AUTHORIZED'):
+        make_plan(state, invalid)
+
+
+def test_transport_mid_batch_failure_reports_only_actual_prefix_and_new_plan_selects_only_remaining(transport_copy, monkeypatch):
+    import base64
+    state = transport_copy; value = copy.deepcopy(state.transport)
+    second_tag = 'ci-69-' + 'a' * 12
+    second_source = legacy.put(state.root / 'inbox' / second_tag / 'source.tar.gz', state.source_copy.read_bytes())
+    second_row = copy.deepcopy(value['candidates'][0]); second_row['release'] = second_tag
+    second_row['targets'][0]['path'] = second_source.relative_to(state.root).as_posix()
+    second_row['scmTransportMetadata'] = cleanup.metadata(second_source.lstat())
+    value['candidates'].append(second_row)
+    approval = copy.deepcopy(state.approval)
+    approval['selected'][1] = {**approval['selected'][0], 'release': second_tag, 'remotePath': str(second_source)}
+    raw = cleanup.canonical(approval); value['scmTransportAuthorization'] = base64.b64encode(raw).decode()
+    monkeypatch.setattr(cleanup, 'SCM_TRANSPORT_AUTHORIZATION_SHA256', cleanup.sha(raw))
+    plan = make_plan(state, value)
+    assert len(plan['candidates']) == 2 and not plan['skipped']
+    original_remove = cleanup.remove_target
+    def fail_second(fd, target, **kwargs):
+        if second_tag in target['path']: raise ValueError('SYNTHETIC_SECOND_TARGET_CHANGED')
+        return original_remove(fd, target, **kwargs)
+    monkeypatch.setattr(cleanup, 'remove_target', fail_second)
+    result = cleanup.apply_plan(state.root, value, plan, remote)
+    assert result['status'] == 'PARTIAL_FAILURE' and len(result['deleted']) == 1
+    assert result['scmTransportCopies']['deletedCount'] == 1
+    assert not state.source_copy.exists() and second_source.exists() and state.original_keeper.exists()
+    assert [x['path'] for x in result['retention']['remainingTargets']] == [second_row['targets'][0]['path']]
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, value, plan, remote)
+    remaining_request = copy.deepcopy(value); remaining_request['candidates'] = [second_row]
+    remaining_plan = make_plan(state, remaining_request)
+    assert len(remaining_plan['candidates']) == 1 and not remaining_plan['skipped']
+    assert remaining_plan['candidates'][0]['release'] == second_tag
+
+@pytest.mark.parametrize('damage', ['different-commit', 'invalid-gzip'])
+def test_transport_archive_structure_and_commit_are_checked_even_when_keeper_bytes_agree(transport_copy, monkeypatch, damage):
+    import base64
+    state = transport_copy; value = copy.deepcopy(state.transport)
+    if damage == 'different-commit': legacy.package(state.source_copy, {'fixed-source.txt': b'synthetic'}, 'b' * 40)
+    else: legacy.put(state.source_copy, b'not a gzip archive')
+    raw_source = state.source_copy.read_bytes()
+    legacy.put(state.original_keeper, raw_source)
+    checksum = cleanup.sha(raw_source)
+    row = value['candidates'][0]; row['sourceSha256'] = checksum
+    row['scmTransportKeeper'].update(bytes=len(raw_source), sha256=checksum)
+    row['scmTransportMetadata'] = cleanup.metadata(state.source_copy.lstat())
+    approval = copy.deepcopy(state.approval)
+    approval['selected'][0].update(expectedBytes=len(raw_source), expectedSourceSha256=checksum)
+    raw = cleanup.canonical(approval); value['scmTransportAuthorization'] = base64.b64encode(raw).decode()
+    monkeypatch.setattr(cleanup, 'SCM_TRANSPORT_AUTHORIZATION_SHA256', cleanup.sha(raw))
+    plan = make_plan(state, value)
+    assert not plan['candidates'] and plan['skipped']
+    assert state.source_copy.exists() and state.original_keeper.exists()
+
+def test_transport_keeps_source_needed_by_existing_enrollment_and_allows_empty_enrollment(transport_copy):
+    state = transport_copy
+    legacy.put_json(state.inbox / 'generated-terminal.json', {'schema': 1,
+        'kind': cleanup.GENERATED_TERMINAL_KIND, 'identity': IDENTITY,
+        'candidate': {**state.transport['candidates'][0], 'targets': 'AUTO'}})
+    assert cleanup.has_generated_outputs(state.root, OLD)
+    refused = make_plan(state, state.transport)
+    assert not refused['candidates']
+    assert refused['skipped'][0]['reason'] == 'SCM_TRANSPORT_REQUIRED_BY_ENROLLED_OUTPUTS'
+    assert state.source_copy.exists()
+    # Once the separately authorized old outputs have actually been retired,
+    # an enrollment with no outputs is already skipped before source binding.
+    old = request(state)
+    plan = make_plan(state, old)
+    assert not plan['skipped']
+    assert cleanup.apply_plan(state.root, old, plan, remote)['status'] == 'REMOVED'
+    assert not cleanup.has_generated_outputs(state.root, OLD)
+    fresh = copy.deepcopy(state.transport)
+    fresh['currentRelease'] = 'ci-73-' + 'c' * 12
+    (state.root / 'inbox' / fresh['currentRelease']).mkdir(mode=0o700)
+    accepted = make_plan(state, fresh)
+    assert accepted['candidates'] and not accepted['skipped']
+    assert cleanup.apply_plan(state.root, fresh, accepted, remote)['status'] == 'REMOVED'
+    assert not state.source_copy.exists()
+    auto = make_plan(state, old)
+    assert not auto['candidates'] and not auto['skipped'] and auto['absent']

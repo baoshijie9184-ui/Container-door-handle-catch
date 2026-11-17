@@ -271,7 +271,7 @@
         "workbench.mysql.config"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/AgentWorkbenchServiceTest.java",
-      "minimumTests": 42,
+      "minimumTests": 51,
       "coverage": [
         "workbench execution, checkpoint and migration"
       ]
@@ -765,7 +765,7 @@
         "report.copy.target-config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/report/ReportWorkflowMigrationMySqlTest.java",
-      "minimumTests": 86,
+      "minimumTests": 96,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]
@@ -1309,7 +1309,7 @@
       },
       {
         "module": "tests_python.test_compact_cutover",
-        "minimumTests": 29,
+        "minimumTests": 106,
         "source": "tests_python/test_compact_cutover.py",
         "allowedSkippedTests": []
       },
@@ -1363,13 +1363,13 @@
       },
       {
         "module": "tests_python.test_generated_artifact_lifecycle",
-        "minimumTests": 200,
+        "minimumTests": 237,
         "source": "tests_python/test_generated_artifact_lifecycle.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_jenkins_ecs_build_cleanup",
-        "minimumTests": 231,
+        "minimumTests": 293,
         "source": "tests_python/test_jenkins_ecs_build_cleanup.py",
         "allowedSkippedTests": []
       },
@@ -1459,7 +1459,7 @@
       },
       {
         "module": "tests_python.test_derived_mysql_retirement",
-        "minimumTests": 470,
+        "minimumTests": 493,
         "source": "tests_python/test_derived_mysql_retirement.py",
         "allowedSkippedTests": []
       },
@@ -1549,7 +1549,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 237,
+        "minimumTests": 288,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1783,7 +1783,7 @@
       },
       {
         "module": "tests_python.test_collaboration_runtime_transport",
-        "minimumTests": 82,
+        "minimumTests": 114,
         "source": "tests_python/test_collaboration_runtime_transport.py",
         "allowedSkippedTests": []
       },

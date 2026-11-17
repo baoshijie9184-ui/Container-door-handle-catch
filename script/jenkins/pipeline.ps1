@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'CollectExistingEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'PreserveProjectMySql', 'CleanupProjectMySql', 'ReclaimBuildOutputs', 'CleanupGeneratedArtifacts', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'AwaitManualRuntime', 'CompleteManualRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'CollectExistingEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'PreserveProjectMySql', 'CleanupProjectMySql', 'ReclaimBuildOutputs', 'CleanupGeneratedArtifacts', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'AwaitManualRuntime', 'CompleteManualRuntime', 'Publish', 'Rehearse', 'CompactCutover', 'RecoverCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -67,6 +67,7 @@ function Wait-ExistingControlPreflight {
     throw 'Cannot reconnect to the original control preflight; do not restart it or clean its tools.'
 }
 function Wait-ExistingVerification {
+    param([switch]$Cancel)
     # Read back the same remote attempt after an SSH transport loss. Never run
     # verification again, and never clean its tools while its supervisor is live.
     $request=Get-Content -LiteralPath artifacts/ecs-verification-request.json -Raw | ConvertFrom-Json
@@ -79,6 +80,21 @@ function Wait-ExistingVerification {
     }
     $binding="--root '$remoteRoot' --tag '$tag' --source-sha256 '$($request.sourceSha256)' --commit '$($request.commit)' --instance-id '$($request.instanceId)' --machine-id '$($request.machineId)' --scope '$($request.scope)' --attempt '$($request.attempt)'"
     $observe="test `"`$(sha256sum '$remoteInbox/verify-remote.py' | cut -d ' ' -f 1)`" = '$($request.helperSha256)' && python3 -B '$remoteInbox/verify-remote.py' observe $binding"
+    if ($Cancel) {
+        $cancel="test `"`$(sha256sum '$remoteInbox/verify-remote.py' | cut -d ' ' -f 1)`" = '$($request.helperSha256)' && python3 -B '$remoteInbox/verify-remote.py' cancel $binding"
+        $lines=@(& ssh.exe @sshOptions -p $portText $destination $cancel)
+        $cancelExit=$LASTEXITCODE
+        if ($cancelExit -ne 0 -or $lines.Count -eq 0) { throw 'Owned cancellation is unconfirmed; retain the original fixture and tools.' }
+        $ack=$lines[-1] | ConvertFrom-Json
+        if ($ack.schema -ne 1 -or $ack.kind -cne 'doorhandle-verification-cancellation' -or
+            $ack.release -cne $request.release -or $ack.attempt -cne $request.attempt -or
+            $ack.commit -cne $request.commit -or $ack.sourceSha256 -cne $request.sourceSha256 -or $ack.scope -cne $request.scope -or
+            $ack.identity.instanceId -cne $request.instanceId -or $ack.identity.machineId -cne $request.machineId -or
+            $ack.requestedSignal -cne 'SIGTERM' -or $ack.status -cnotin @('SIGNAL_SENT','ALREADY_REQUESTED','ALREADY_TERMINAL')) {
+            throw 'Cancellation acknowledgement differs from the exact original supervisor.'
+        }
+        $ack | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/ecs-verification-cancellation.json -Encoding utf8
+    }
     for ($readback=1; $readback -le 3; $readback++) {
         $lines=@(& ssh.exe @sshOptions -p $portText $destination $observe)
         $exit=$LASTEXITCODE
@@ -88,7 +104,8 @@ function Wait-ExistingVerification {
         $state=$lines[-1] | ConvertFrom-Json
         if ($state.release -cne $tag -or $state.attempt -cne $request.attempt -or $state.scope -cne $request.scope -or
             $state.terminal -ne $true -or $state.status -cnotin @('PASS','FAILED') -or
-            $state.evidenceReady -isnot [bool] -or ($exit -eq 0 -and ($state.status -cne 'PASS' -or -not $state.evidenceReady))) {
+            $state.evidenceReady -isnot [bool] -or ($Cancel -and -not $state.evidenceReady) -or
+            ($exit -eq 0 -and ($state.status -cne 'PASS' -or -not $state.evidenceReady))) {
             throw 'Original verification has no matching terminal result; retain its owned resources.'
         }
         $state | ConvertTo-Json | Set-Content -LiteralPath artifacts/ecs-verification-observation.json -Encoding utf8
@@ -97,6 +114,7 @@ function Wait-ExistingVerification {
     throw 'Cannot reconnect to the original verification; retain its owned resources and inspect that same attempt.'
 }
 function Wait-ExistingRuntime {
+    param([switch]$Cancel)
     $PSNativeCommandUseErrorActionPreference=$false
     $request=Get-Content -LiteralPath artifacts/runtime-execution-request.json -Raw | ConvertFrom-Json
     $package=Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
@@ -110,6 +128,23 @@ function Wait-ExistingRuntime {
     $helper="$remoteRoot/releases/$tag/script/docker/compact-runtime-acceptance.py"
     $binding="--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --commit '$($request.commit)' --source-sha256 '$($request.sourceSha256)' --instance-id '$($request.instanceId)' --machine-id '$($request.machineId)' --settings '$($request.settings)'"
     $command="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$($request.helperSha256)' && python3 -B '$helper' observe $binding"
+    if ($Cancel) {
+        $cancel="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$($request.helperSha256)' && python3 -B '$helper' cancel $binding"
+        $lines=@(& ssh.exe @sshOptions -p $portText $destination $cancel); $cancelExit=$LASTEXITCODE
+        if ($cancelExit -ne 0 -or $lines.Count -eq 0) { throw 'Runtime cancellation is unconfirmed; retain its original resources.' }
+        $ack=$lines[-1] | ConvertFrom-Json
+        if ($ack.operation -cne 'runtime-acceptance-cancellation' -or $ack.release -cne $tag -or
+            $ack.commit -cne $request.commit -or $ack.sourceSha256 -cne $request.sourceSha256 -or
+            $ack.candidateBuildSha256 -cne $request.candidateBuildSha256 -or $ack.runtime -cne $request.runtime -or
+            $ack.identity.instanceId -cne $request.instanceId -or $ack.identity.machineId -cne $request.machineId -or
+            $ack.executionId -cnotmatch '^[a-f0-9]{32}$' -or $ack.requestedSignal -cne 'SIGTERM' -or
+            $ack.status -cnotin @('SIGNAL_SENT','ALREADY_TERMINAL') -or
+            ($ack.status -ceq 'SIGNAL_SENT' -and ($ack.terminal -ne $false -or $null -ne $ack.runtimeStatus)) -or
+            ($ack.status -ceq 'ALREADY_TERMINAL' -and ($ack.terminal -ne $true -or $ack.runtimeStatus -cnotin @('PASS','FAILED_OR_UNKNOWN')))) {
+            throw 'Runtime cancellation differs from the original owned execution.'
+        }
+        $ack | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/runtime-execution-cancellation.json -Encoding utf8
+    }
     for ($readback=1; $readback -le 3; $readback++) {
         $lines=@(& ssh.exe @sshOptions -p $portText $destination $command); $exit=$LASTEXITCODE
         $lines | Add-Content -LiteralPath artifacts/runtime-execution-observe.stdout.log -Encoding utf8
@@ -118,6 +153,7 @@ function Wait-ExistingRuntime {
         $state=$lines[-1] | ConvertFrom-Json
         if ($state.operation -cne 'runtime-acceptance' -or $state.terminal -ne $true -or
             $state.executionId -cnotmatch '^[a-f0-9]{32}$' -or $state.release -cne $tag -or
+            ($Cancel -and $state.executionId -cne $ack.executionId) -or
             $state.commit -cne $request.commit -or $state.sourceSha256 -cne $request.sourceSha256 -or
             $state.candidateBuildSha256 -cne $request.candidateBuildSha256 -or
             $state.identity.instanceId -cne $request.instanceId -or $state.identity.machineId -cne $request.machineId -or
@@ -127,15 +163,7 @@ function Wait-ExistingRuntime {
         $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/runtime-execution-observation.json -Encoding utf8
         return $state
     }
-    throw 'Cannot reconnect to the same runtime execution; do not cancel it through post cleanup.'
-}
-function Assert-ControlPreflight([string]$Commit,[string]$SourceSha) {
-    if ($env:ACTION -cne 'verify-runtime' -and -not ($env:ACTION -ceq 'verify' -and $env:DOORHANDLE_CI_SCOPE -ceq 'mysql')) { return }
-    if ($env:CI_CONTROL_PREFLIGHT_PASS -cne 'true') { throw 'Native verification requires the ECS control-script preflight first.' }
-    $gate=Get-Content -LiteralPath artifacts/control-preflight-gate.json -Raw | ConvertFrom-Json
-    $receipt=Get-Content -LiteralPath artifacts/control-preflight/receipt.json -Raw | ConvertFrom-Json
-    $actual=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($gate.status -cne 'CONTROL_PREFLIGHT_PASS' -or $gate.receiptSha256 -cne $actual -or $gate.release -cne $tag -or $gate.commit -cne $Commit -or $gate.sourceSha256 -cne $SourceSha -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.release -cne $tag -or $receipt.commit -cne $Commit -or $receipt.sourceSha256 -cne $SourceSha -or $receipt.fullProjectVerified -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true) { throw 'The native control-script preflight lacks matching original evidence and cleanup.' }
+    throw 'Cannot confirm the same runtime terminal; retain resources and do not run cleanup.'
 }
 function Assert-ControlSourcePackage($Package,[string]$Commit,[string]$SourceSha) {
     if ($env:ACTION -cne 'verify-controls') { return }
@@ -291,8 +319,8 @@ if ($nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-bu
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
 $manualEnabled=$env:MANUAL_ACCEPTANCE_ENABLED -ceq 'true'
 if ($env:MANUAL_ACCEPTANCE_ENABLED -and $env:MANUAL_ACCEPTANCE_ENABLED -cnotin @('true','false')) { throw 'Invalid manual acceptance flag.' }
-if ($manualEnabled -and ($env:ACTION -cne 'verify-runtime' -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql' -or $env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -or $env:MANUAL_ACCEPTANCE_MINUTES -cnotin @('15','30','60'))) {
-    throw 'Manual acceptance only applies to the bounded non-production verify-runtime candidate.'
+if ($manualEnabled -and ($env:ACTION -cnotin @('verify-runtime','compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql' -or ($env:ACTION -ceq 'verify-runtime' -and $env:PRODUCTION_RELEASE_ENABLED -ceq 'true') -or $env:MANUAL_ACCEPTANCE_MINUTES -cnotin @('15','30','60'))) {
+    throw 'Manual acceptance only applies to the bounded isolated candidate before any production cutover.'
 }
 if ($Action -in @('AwaitManualRuntime','CompleteManualRuntime') -and -not $manualEnabled) { throw 'Manual acceptance was not requested.' }
 $failedNativeBuildNumber=[string]$env:FAILED_NATIVE_BUILD_NUMBER
@@ -339,8 +367,8 @@ if ($env:CANDIDATE_BUILD_TOOLS_ARCHIVE -and ($env:ACTION -cnotin @('verify-runti
 $projectSqlInputs=@('PROJECT_MYSQL_SNAPSHOT','PROJECT_MYSQL_MANIFEST_SHA256','PROJECT_MYSQL_ARCHIVE_SHA256')
 $projectSqlSelected=@($projectSqlInputs | Where-Object { -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
 if($projectSqlSelected.Count) {
-    if($projectSqlSelected.Count -ne 3 -or $env:ACTION -cnotin @('verify','verify-runtime') -or
-        $env:DOORHANDLE_CI_SCOPE -cne 'mysql' -or $env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -or
+    if($projectSqlSelected.Count -ne 3 -or $env:ACTION -cnotin @('verify','verify-runtime','compact-cutover') -or
+        $env:DOORHANDLE_CI_SCOPE -cne 'mysql' -or ($env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -and $env:ACTION -cne 'compact-cutover') -or
         [string]::IsNullOrWhiteSpace($env:LOCAL_MYSQL_FIXTURE_SETTINGS) -or
         $env:PROJECT_MYSQL_MANIFEST_SHA256 -cnotmatch '^[a-f0-9]{64}$' -or $env:PROJECT_MYSQL_ARCHIVE_SHA256 -cnotmatch '^[a-f0-9]{64}$') {
         throw 'Project SQL custody requires all three sealed inputs, shared ECS image settings and archive-only complete MySQL verification.'
@@ -356,7 +384,7 @@ if ($Action -eq 'Rehearse' -and $env:DOORHANDLE_COMPACT_REHEARSAL_READY -ne 'tru
     throw 'The legacy rehearsal is disabled until its compact schema adapter is accepted.'
 }
 if ($Action -eq 'CompactCutover') {
-    if ($env:ACTION -ne 'compact-cutover' -or $env:PRODUCTION_RELEASE_ENABLED -ne 'true' -or $env:DOORHANDLE_COMPACT_RELEASE_READY -ne 'true' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true') {
+    if ($env:ACTION -ne 'compact-cutover' -or $env:PRODUCTION_RELEASE_ENABLED -ne 'true' -or $env:MANUAL_ACCEPTANCE_ENABLED -ne 'true' -or $env:CI_RUNTIME_VERIFIED -ne 'true' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true') {
         throw 'First compact cutover requires the accepted machine release gate and this build passing MySQL ECS verification.'
     }
     if ((-not $env:LOCAL_MYSQL_SNAPSHOT -and -not $env:LOCAL_MYSQL_ECS_SNAPSHOT) -or -not $env:LOCAL_MYSQL_FIXTURE_SETTINGS) {
@@ -406,7 +434,7 @@ if ($Action -eq 'CompactCutover') {
         }
     }
 }
-if ($Action -eq 'VerifyRuntime' -and ($env:ACTION -ne 'verify-runtime' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true')) {
+if ($Action -eq 'VerifyRuntime' -and ($env:ACTION -notin @('verify-runtime','compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true')) {
     throw 'Runtime acceptance requires this build passing the complete MySQL ECS verification.'
 }
 if ($Action -in @('VerifyRuntime', 'CompactCutover') -and $env:CI_LEGACY_CANDIDATE_PREPARED -ne 'true') {
@@ -975,7 +1003,7 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
     } else {
         if (Test-Path -LiteralPath artifacts/control-preflight/execution-request.json) { $null=Wait-ExistingControlPreflight }
         if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
-        if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification }
+        if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification -Cancel }
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' cleanup --manifest '$remoteInbox/tool-runtime/manifest.json'"))
         $stopped = ($result | Select-Object -Last 1) | ConvertFrom-Json
         if ($stopped.status -ne 'STOPPED' -or $stopped.release -ne $tag -or @($stopped.remaining).Count -ne 0) { throw 'Owned tool containers did not stop.' }
@@ -996,7 +1024,6 @@ if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
     $helper = "$remoteInbox/prepare-compact-fixtures.py"
     $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --settings '$settings'"
     if ($Action -eq 'PrepareFixtures') {
-        Assert-ControlPreflight $commit $sha
         $jarSha = (Get-FileHash -LiteralPath artifacts/application.jar -Algorithm SHA256).Hash.ToLowerInvariant()
         $jarBytes = (Get-Item -LiteralPath artifacts/application.jar).Length
         if ($package.applicationJarSha256 -ne $jarSha) { throw 'Fixture migration jar differs from the fixed commit build.' }
@@ -1018,7 +1045,7 @@ if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
         $safe | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/fixture-preparation.json -Encoding utf8
     } else {
         if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
-        if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification }
+        if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification -Cancel }
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' cleanup $arguments"))
         $safe = ($result | Select-Object -Last 1) | ConvertFrom-Json
         if ($safe.status -ne 'STOPPED' -or $safe.commit -ne $commit -or $safe.release -ne $tag) { throw 'Owned test resources did not stop with a matching cleanup receipt.' }
@@ -1045,7 +1072,6 @@ if ($Action -eq 'VerifyEcs') {
     $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha) { throw 'The immutable source package metadata differs.' }
-    Assert-ControlPreflight $commit $sha
     if (Test-Path -LiteralPath artifacts/ecs) { throw 'Use a fresh build artifacts directory; existing ECS evidence is retained.' }
     New-Item -ItemType Directory -Path artifacts/ecs | Out-Null
     $attempt = [guid]::NewGuid().ToString('N')
@@ -1091,7 +1117,9 @@ print(json.dumps({'status':'SEALED','file':'verify-remote.py','sha256':expected,
     @{ release=$tag;commit=$commit;sourceSha256=$sha;attempt=$attempt;scope=$scope;
        instanceId=$instance;machineId=$machine;helperSha256=$verifyHelperSha } |
         ConvertTo-Json | Set-Content -LiteralPath artifacts/ecs-verification-request.json -Encoding utf8
-    $remoteCommand = "python3 -B '$remoteInbox/verify-remote.py' --root '$remoteRoot' --tag '$tag' --source-sha256 '$sha' --commit '$commit' --instance-id '$instance' --machine-id '$machine' --scope '$scope' --attempt '$attempt'$manifestFlag"
+    $controlGateRequired=$scope -ceq 'mysql' -and ($env:ACTION -cin @('verify-runtime','compact-cutover') -or $env:DOORHANDLE_CI_AUTO_COMPACT_FIXTURES -ceq 'true')
+    $controlFlag=if ($controlGateRequired) {' --control-gate'} else {''}
+    $remoteCommand = "python3 -B '$remoteInbox/verify-remote.py' --root '$remoteRoot' --tag '$tag' --source-sha256 '$sha' --commit '$commit' --instance-id '$instance' --machine-id '$machine' --scope '$scope' --attempt '$attempt'$manifestFlag$controlFlag"
     $verifyExit = 1
     try {
         $verifyArguments = $sshOptions + @('-p', $portText, $destination, $remoteCommand)
@@ -1121,6 +1149,7 @@ print(json.dumps({'status':'SEALED','file':'verify-remote.py','sha256':expected,
     if ($verified.status -ne 'PASS' -or $verified.verificationExitCode -ne 0 -or $verified.attempt -ne $attempt -or $verified.commit -ne $commit -or $verified.sourceSha256 -ne $sha -or $verified.identity.instanceId -ne $instance -or $verified.identity.machineId -ne $machine) {
         throw 'Collected ECS verification receipt is not a passing result for this source and admitted host.'
     }
+    if ($controlGateRequired -and ($verified.controlGate.status -cne 'PASS' -or $verified.controlGate.execution -cne 'SAME_PYTEST_INVOCATION' -or $verified.controlGate.report -cne 'python.xml')) { throw 'The same full Python execution did not pass its original control gate.' }
     Write-Host 'ECS verification passed; source, execution identity and bounded evidence were validated. ECS lifecycle remains external.'
     return
 }
@@ -1129,7 +1158,7 @@ if ($Action -in @('AwaitManualRuntime','CompleteManualRuntime')) {
     if ($Action -eq 'AwaitManualRuntime') { Await-ManualRuntime } else { Complete-ManualRuntime }
     return
 }
-if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
+if ($Action -in @('VerifyRuntime', 'CleanupRuntime')) {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
     $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
@@ -1326,7 +1355,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         }
     }
     if ($Action -eq 'CleanupRuntime') {
-        if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
+        if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime -Cancel }
         foreach ($name in @('model', 'mcp', 'browser')) {
             $null = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"
         }
@@ -1534,6 +1563,7 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     if ($manualEnabled) {
         if ($runtimeProof.manualAcceptance.enabled -ne $true -or $runtimeProof.manualAcceptance.status -cne 'ACCEPTED') { throw 'The requested human acceptance did not pass.' }
         $manualReady=Get-Content -LiteralPath artifacts/manual-acceptance-ready.json -Raw | ConvertFrom-Json
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P',$portText,"${destination}:$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/manual-decision.json",'artifacts/manual-acceptance-decision.json'))
         if ($runtimeProof.manualAcceptance.executionId -cne $manualReady.executionId -or
             $runtimeProof.manualAcceptance.expiresAtUnix -ne $manualReady.expiresAtUnix -or
             $runtimeProof.manualAcceptance.submittedAtUnix -ge $manualReady.expiresAtUnix) { throw 'Human acceptance receipt belongs to another window.' }
@@ -1654,20 +1684,90 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
        resourceProbeSha256=$resourceSummary.rawProbeSha256 } |
         ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-gate-passed.json -Encoding utf8
     if ($Action -eq 'VerifyRuntime') { return }
+    return
+}
+
+# Controlled cutover consumes the completed same-build runtime, never reruns it.
+if ($Action -in @('CompactCutover','RecoverCutover')) {
+    $commit=Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $instance=Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+    $machine=Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+    $sha=(Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $settings=Require-Value 'COMPACT_CUTOVER_SETTINGS' '^/(home|srv|opt)/[A-Za-z0-9_./-]+\.json$'
+    if ($settings -match '(^|/)\.\.(/|$)') { throw 'Unsafe cutover settings path.' }
+    $approvalFile='artifacts/compact-release-approval.json'
+    $executionFile='artifacts/compact-cutover-execution-request.json'
+    if ($Action -eq 'CompactCutover') {
+        $authorization=Require-Value 'DOORHANDLE_COMPACT_RELEASE_AUTHORIZATION' '^[A-Za-z]:[\\/][^\r\n]+[.]json$'
+        $settingsSha=([string](Invoke-Checked 'ssh.exe' ($sshOptions + @('-p',$portText,$destination,"sha256sum '$settings' | cut -d ' ' -f 1")))).Trim()
+        if ($settingsSha -cnotmatch '^[a-f0-9]{64}$') { throw 'Original source settings digest is unavailable.' }
+        $inputs=[ordered]@{}
+        foreach ($name in @('REMOTE_ROOT','REMOTE_RUNTIME','COMPACT_CUTOVER_SETTINGS','LOCAL_MYSQL_FIXTURE_SETTINGS','LEGACY_SOURCE_SNAPSHOT','LEGACY_SOURCE_ECS_SNAPSHOT','LOCAL_ARTIFACTS_SNAPSHOT','LOCAL_ARTIFACTS_ECS_SNAPSHOT','LOCAL_ARTIFACTS_PROFILE','LOCAL_MYSQL_SNAPSHOT','LOCAL_MYSQL_ECS_SNAPSHOT','COLD_STORES_SNAPSHOT','COLD_STORES_ECS_SNAPSHOT','COLD_STORES_PROFILE','COLD_HISTORY_SNAPSHOT','COLD_HISTORY_ECS_SNAPSHOT','PROJECT_MYSQL_SNAPSHOT','PROJECT_MYSQL_MANIFEST_SHA256','PROJECT_MYSQL_ARCHIVE_SHA256','REMAINING_SYSTEM_DATA_SNAPSHOT','REMAINING_SYSTEM_DATA_ECS_SNAPSHOT','CANDIDATE_BUILD_TOOLS_ARCHIVE')) {
+            $inputs[$name]=[string][Environment]::GetEnvironmentVariable($name)
+        }
+        @{release=$tag;commit=$commit;sourceSha256=$sha;identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};inputs=$inputs;settingsSha256=$settingsSha} |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath artifacts/compact-release-request.json -Encoding utf8
+        $sourceHelper=Get-PinnedSourceFile 'script/docker/compact-cutover.py'
+        $python=Require-Value 'LOCAL_PYTHON_EXE' '^[A-Za-z]:[\\/][^\r\n]+$'
+        $approved=Invoke-Checked $python @('-I','-B',$sourceHelper,'authorize','--authorization',$authorization,'--request','artifacts/compact-release-request.json','--runtime-gate','artifacts/runtime-gate-passed.json','--runtime-proof','artifacts/runtime-acceptance.json','--manual-decision','artifacts/manual-acceptance-decision.json')
+        ($approved -join "`n") | Set-Content -LiteralPath $approvalFile -Encoding utf8
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P',$portText,$approvalFile,"${destination}:$remoteRoot/releases/$tag/work/production-release-approval.json"))
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p',$portText,$destination,"chmod 600 '$remoteRoot/releases/$tag/work/production-release-approval.json'"))
+        @{release=$tag;commit=$commit;sourceSha256=$sha;runtime=$runtime;settings=$settings;approvalSha256=(Get-FileHash -LiteralPath $approvalFile -Algorithm SHA256).Hash.ToLowerInvariant()} |
+            ConvertTo-Json | Set-Content -LiteralPath $executionFile -Encoding utf8
+    } else {
+        if ($env:ACTION -cne 'compact-cutover' -or -not (Test-Path -LiteralPath $executionFile)) { throw 'Recovery requires this same attempted cutover request.' }
+        $request=Get-Content -LiteralPath $executionFile -Raw | ConvertFrom-Json
+        if ($request.release -cne $tag -or $request.commit -cne $commit -or $request.sourceSha256 -cne $sha -or $request.runtime -cne $runtime -or $request.settings -cne $settings -or $request.approvalSha256 -cne (Get-FileHash -LiteralPath $approvalFile -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Recovery cannot change the original target, code or authorization.' }
+    }
     $inputFile = "$remoteRoot/releases/$tag/work/private-cutover-input.json"
     $helper = "$remoteRoot/releases/$tag/script/docker/compact-cutover.py"
     $cutoverArgs = "--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --source-sha256 '$sha' --config '$inputFile'"
+    $cutoverArgs += " --approval '$remoteRoot/releases/$tag/work/production-release-approval.json'"
     $failed = $null
     try {
-        foreach ($phase in @('prepare', 'migrate', 'activate')) {
-            $gate = 'DOORHANDLE_COMPACT_RELEASE_READY=true '
-            Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "${gate}python3 -B '$helper' $phase $cutoverArgs"))
+        if ($Action -eq 'RecoverCutover') {
+            $cancel=Invoke-Checked 'ssh.exe' ($sshOptions + @('-p',$portText,$destination,"python3 -B '$helper' cancel $cutoverArgs"))
+            $ack=($cancel | Select-Object -Last 1) | ConvertFrom-Json
+            if ($ack.operation -cne 'cutover-cancellation' -or $ack.requestedSignal -cne 'SIGTERM' -or
+                $ack.release -cne $tag -or $ack.commit -cne $commit -or $ack.sourceSha256 -cne $sha -or $ack.runtime -cne $runtime -or
+                $ack.identity.instanceId -cne $instance -or $ack.identity.machineId -cne $machine -or
+                $ack.status -cnotin @('SIGNAL_SENT','ALREADY_REQUESTED','ALREADY_TERMINAL','CANCELLED_BEFORE_START')) {
+                throw 'Cutover cancellation is not bound to this release; retain maintenance.'
+            }
+            $ack | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/compact-cutover-cancellation.json -Encoding utf8
+            $observed=Invoke-Checked 'ssh.exe' ($sshOptions + @('-p',$portText,$destination,"python3 -B '$helper' observe $cutoverArgs"))
+            $terminal=($observed | Select-Object -Last 1) | ConvertFrom-Json
+            if ($terminal.terminal -ne $true -or $terminal.release -cne $tag -or $terminal.commit -cne $commit -or
+                $terminal.sourceSha256 -cne $sha -or $terminal.runtime -cne $runtime -or
+                $terminal.identity.instanceId -cne $instance -or $terminal.identity.machineId -cne $machine) {
+                throw 'Original cutover finally/maintenance ownership is unresolved; do not settle concurrently.'
+            }
+            $terminal | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/compact-cutover-observation.json -Encoding utf8
         }
+        $phase=if ($Action -eq 'RecoverCutover') {'settle'} else {'run'}
+        $gate='DOORHANDLE_COMPACT_RELEASE_READY=true '
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p',$portText,$destination,"${gate}python3 -B '$helper' $phase $cutoverArgs"))
     } catch { $failed = $_ }
     try {
         $output = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' status $cutoverArgs"))
         $summary = ($output | Select-Object -Last 1) | ConvertFrom-Json
         $summary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath artifacts/compact-cutover.json -Encoding UTF8
+        if ($Action -eq 'RecoverCutover') {
+            $summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath artifacts/compact-cutover-recovery.json -Encoding utf8
+            if ($summary.recovery) {
+                $recovery=$summary.recovery
+                if ($recovery.file -cnotmatch ('^'+[regex]::Escape("$remoteRoot/releases/$tag/work/")+'compact-cutover-[a-f0-9]{10}/recovery-receipt\.json$') -or $recovery.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Recovery evidence escaped the exact original cutover.' }
+                Invoke-Checked 'scp.exe' ($sshOptions + @('-P',$portText,"${destination}:$($recovery.file)",'artifacts/compact-cutover-recovery-receipt.json'))
+                if ((Get-FileHash -LiteralPath artifacts/compact-cutover-recovery-receipt.json -Algorithm SHA256).Hash.ToLowerInvariant() -cne $recovery.sha256) { throw 'Original recovery receipt changed during collection.' }
+                $original=Get-Content -LiteralPath artifacts/compact-cutover-recovery-receipt.json -Raw | ConvertFrom-Json
+                if ($original.release -cne $tag -or $original.commit -cne $commit -or $original.sourceSha256 -cne $sha -or $original.identity.instanceId -cne $instance -or $original.identity.machineId -cne $machine -or $original.status -cne $recovery.status) { throw 'Recovery receipt belongs to another cutover.' }
+            }
+            if ($summary.recovery -and $summary.recovery.status -eq 'COMPACT_FORWARD_REQUIRED') { throw 'Compact target writes are preserved and writers frozen; component-specific forward repair is required. Do not replay migration or restore legacy writers.' }
+            if ($summary.phase -eq 'SOURCE_RESTORED' -and $summary.recovery.healthVerified -ne $true) { throw 'Source restoration lacks actual health evidence.' }
+            if ($summary.phase -notin @('ACTIVE','SOURCE_RESTORED','NOT_STARTED')) { throw 'Cutover recovery remains unresolved; preserve maintenance.' }
+            if ($failed) { throw $failed }; return
+        }
         if (-not $failed -and ($summary.phase -ne 'ACTIVE' -or $summary.status -ne 'ACTIVE' -or $summary.sourceRestorationAllowed -ne $false -or $summary.migrationReceiptSha256 -notmatch '^[a-f0-9]{64}$' -or $summary.candidateSemanticVerified -ne $true -or $summary.productionDataMaterialized -ne $true -or $summary.nativeProductionReadback.sha256 -notmatch '^[a-f0-9]{64}$')) { throw 'Cutover health/publication evidence is incomplete.' }
         if (-not $failed) {
             $nativeProduction = $summary.nativeProductionReadback

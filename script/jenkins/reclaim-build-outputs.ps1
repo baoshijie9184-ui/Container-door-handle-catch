@@ -115,6 +115,182 @@ $context = @{ root = $RemoteRoot; tag = $Tag; commit = $Commit; sourceSha256 = $
     instanceId = $instance; machineId = $machine; helpers = $helpers; mode = $Mode; sourceBytes = $sourceBytes;
     evidencePrefix = $evidencePrefix; generated = [bool]$GeneratedArtifacts }
 if ($Mode -ceq 'Verified') { $context.verificationReceiptSha256 = (Get-FileHash -LiteralPath $verifiedFile -Algorithm SHA256).Hash.ToLowerInvariant() }
+$scmTransportReader = @'
+import base64,hashlib,json,os,re,stat,sys,tarfile
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
+AUTH_PATH = 'D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/scm-transport-cleanup-user-authorization-20261117.json'
+AUTH_SHA = 'd592584541931b82e5a41f21ecb8acb791a4f4a6b1a4f9995bdc3478b36b3e03'
+CUSTODY_ROOT = Path('D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107')
+SHA = re.compile(r'[a-f0-9]{64}')
+
+def need(value, code):
+    if not value: raise ValueError(code)
+
+def unique(pairs):
+    value = {}
+    for key,item in pairs:
+        need(key not in value, 'SCM_DUPLICATE_FIELD'); value[key] = item
+    return value
+
+def parsed(raw):
+    return json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
+
+def regular(path, maximum):
+    path = Path(path)
+    need(path.is_absolute() and '..' not in path.parts, 'SCM_ORIGINAL_PATH_INVALID')
+    for parent in (path, *path.parents):
+        info = parent.lstat()
+        need(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400,
+             'SCM_ORIGINAL_REPARSE_POINT')
+    info = path.lstat()
+    need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= maximum,
+         'SCM_ORIGINAL_FILE_INVALID')
+    return info
+
+def fingerprint(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
+
+def original_bytes(path, maximum):
+    before = regular(path, maximum)
+    with Path(path).open('rb') as stream:
+        need(fingerprint(os.fstat(stream.fileno())) == fingerprint(before), 'SCM_ORIGINAL_CHANGED')
+        raw = stream.read(maximum + 1)
+        need(len(raw) == before.st_size and fingerprint(os.fstat(stream.fileno())) == fingerprint(before),
+             'SCM_ORIGINAL_CHANGED')
+    need(fingerprint(regular(path, maximum)) == fingerprint(before), 'SCM_ORIGINAL_CHANGED')
+    return raw
+
+def catalog_member(catalog, name, path, size, digest):
+    matches = [entry for entry in catalog.get('files', []) if entry.get('path') == name]
+    need(len(matches) == 1, 'SCM_CATALOG_MEMBER_MISSING_OR_DUPLICATE')
+    entry = matches[0]
+    need(Path(entry.get('preserved') or '') == path and type(entry.get('bytes')) is int
+         and entry['bytes'] == size, 'SCM_CATALOG_MEMBER_DIFFERS')
+    if 'sha256' in entry:
+        need(entry['sha256'] == digest, 'SCM_CATALOG_DIGEST_DIFFERS')
+    else:
+        need(entry.get('copyByteComparison') == 'IDENTICAL', 'SCM_CATALOG_PROOF_MISSING')
+
+def keeper_proof(approved, row):
+    build = approved['build']; folder = CUSTODY_ROOT / f'ci-{build}-raw-receipts'
+    source = folder / 'source.tar.gz'
+    need(Path(approved['localKeeper']) == source, 'SCM_KEEPER_OUTSIDE_FIXED_CUSTODY')
+    before = regular(source, 134217728)
+    need(before.st_size == approved['expectedBytes'], 'SCM_KEEPER_BYTES_DIFFER')
+    # The caller holds FileShare.Read for source AND controls until remote apply
+    # and evidence collection finish. These reads never import archived code.
+    with source.open('rb') as stream:
+        need(fingerprint(os.fstat(stream.fileno())) == fingerprint(before), 'SCM_ORIGINAL_CHANGED')
+        hasher = hashlib.sha256()
+        for block in iter(lambda:stream.read(1048576), b''): hasher.update(block)
+        source_sha = hasher.hexdigest()
+        need(source_sha == approved['expectedSourceSha256'] == row['sourceSha256'], 'SCM_KEEPER_SHA_DIFFERS')
+        stream.seek(0)
+        with tarfile.open(fileobj=stream, mode='r:gz') as archive:
+            need(archive.pax_headers.get('comment') == row['commit'], 'SCM_SOURCE_COMMIT_DIFFERS')
+        need(fingerprint(os.fstat(stream.fileno())) == fingerprint(before), 'SCM_ORIGINAL_CHANGED')
+    need(fingerprint(regular(source, 134217728)) == fingerprint(before), 'SCM_ORIGINAL_CHANGED')
+    release_raw = original_bytes(folder / 'release.json', 1048576)
+    catalog_raw = original_bytes(folder / 'preservation.json', 8388608)
+    xml_raw = original_bytes(folder / 'build.xml', 8388608)
+    release = parsed(release_raw); catalog = parsed(catalog_raw)
+    digests = {name:hashlib.sha256(raw).hexdigest() for name,raw in
+               [('releaseSha256',release_raw),('catalogSha256',catalog_raw),('buildXmlSha256',xml_raw)]}
+    need(release.get('release') == row['release'] and release.get('commit') == row['commit']
+         and release.get('sourceSha256') == source_sha, 'SCM_RELEASE_SOURCE_DIFFERS')
+    need('sourceBytes' not in release or release['sourceBytes'] == before.st_size, 'SCM_RELEASE_BYTES_DIFFER')
+    need(catalog.get('build') == build and catalog.get('commit') == row['commit'], 'SCM_CATALOG_CONTEXT_DIFFERS')
+    catalog_member(catalog, 'source.tar.gz', source, before.st_size, source_sha)
+    catalog_member(catalog, 'release.json', folder / 'release.json', len(release_raw), digests['releaseSha256'])
+    binding = catalog.get('buildXml')
+    if binding is not None:
+        need(binding.get('path') == 'build.xml' and Path(binding.get('preserved') or '') == folder / 'build.xml'
+             and binding.get('bytes') == len(xml_raw), 'SCM_BUILD_CUSTODY_DIFFERS')
+        need(binding.get('sha256') == digests['buildXmlSha256'] if 'sha256' in binding
+             else binding.get('copyByteComparison') == 'IDENTICAL', 'SCM_BUILD_CUSTODY_PROOF_MISSING')
+    else:
+        need(catalog.get('buildXmlSha256') == digests['buildXmlSha256'], 'SCM_BUILD_CUSTODY_PROOF_MISSING')
+    if 'buildXmlSha256' in catalog:
+        need(catalog['buildXmlSha256'] == digests['buildXmlSha256'], 'SCM_BUILD_CUSTODY_DIGEST_DIFFERS')
+    need(b'<!DOCTYPE' not in xml_raw and b'<!ENTITY' not in xml_raw, 'SCM_BUILD_XML_DECLARATION_FORBIDDEN')
+    build_xml = ET.fromstring(xml_raw)
+    result = build_xml.findtext('result')
+    need(result in ('SUCCESS','UNSTABLE','FAILURE','ABORTED','NOT_BUILT') and result == catalog.get('result')
+         and build_xml.findtext('completed') == 'true' and build_xml.findtext('execution/done') == 'true',
+         'SCM_BUILD_NOT_TERMINAL')
+    params = unique((entry.findtext('name'),entry.findtext('value'))
+                    for entry in build_xml.findall('.//hudson.model.ParametersAction/parameters/*'))
+    action = params.get('ACTION')
+    need(action in ('verify','verify-runtime','verify-controls')
+         and params.get('PRODUCTION_RELEASE_ENABLED') == 'false', 'SCM_BUILD_PUBLICATION_NOT_ALLOWED')
+    need('action' not in release or release['action'] == action, 'SCM_RELEASE_ACTION_DIFFERS')
+    revisions = []
+    for data in build_xml.iter('hudson.plugins.git.util.BuildData'):
+        for entry in data.findall('buildsByBranchName/entry/hudson.plugins.git.util.Build'):
+            if entry.findtext('hudsonBuildNumber') == str(build):
+                revisions.append(entry.findtext('marked/sha1') or entry.findtext('revision/sha1'))
+    # Jenkins BuildData also contains inherited branches from older builds.
+    need(revisions and set(revisions) == {row['commit']}, 'SCM_CURRENT_BUILD_COMMIT_DIFFERS')
+    keeper = {'path':approved['localKeeper'],'bytes':before.st_size,'sha256':source_sha,**digests}
+    terminal = {'kind':'JENKINS_HISTORY','result':result,'completed':True,'evidenceArchived':True,
+                'buildXmlSha256':digests['buildXmlSha256'],'originalReleaseSha256':digests['releaseSha256'],
+                'action':action,'productionReleaseEnabled':False}
+    return keeper,terminal
+
+def transport_request(manifest, authorization_raw, current, root, identity):
+    need(hashlib.sha256(authorization_raw).hexdigest() == AUTH_SHA, 'SCM_AUTHORIZATION_NOT_APPROVED')
+    approval = parsed(authorization_raw)
+    need(set(manifest) == {'schemaVersion','root','identity','transportAuthorizationFile','rows'}
+         and manifest['schemaVersion'] == 1 and manifest['root'] == root and manifest['identity'] == identity
+         and manifest['transportAuthorizationFile'] == AUTH_PATH, 'SCM_MANIFEST_SCOPE_DIFFERS')
+    need(approval.get('approved') is True and approval.get('candidateCount') == 125
+         and len(approval['selected']) == 125, 'SCM_AUTHORIZATION_SELECTION_INVALID')
+    approved = unique((row['release'],row) for row in approval['selected'])
+    need(re.fullmatch(r'ci-[1-9][0-9]*-[a-f0-9]{12}',current) and type(manifest['rows']) is list
+         and 0 < len(manifest['rows']) <= 125, 'SCM_SELECTION_INVALID')
+    candidates = []; seen = set()
+    for row in manifest['rows']:
+        need(set(row) == {'release','commit','sourceSha256','targets','scmTransportMetadata'}, 'SCM_MIXED_TARGETS_FORBIDDEN')
+        tag = row['release']; original = approved.get(tag)
+        need(original is not None and tag not in seen and tag != current
+             and original['build'] not in (117,266,419) and original['build'] < int(current.split('-')[1]),
+             'SCM_TARGET_NOT_AUTHORIZED')
+        seen.add(tag)
+        need(re.fullmatch(r'[a-f0-9]{40}',row['commit']) and SHA.fullmatch(row['sourceSha256'])
+             and tag == f"ci-{original['build']}-{row['commit'][:12]}"
+             and row['sourceSha256'] == original['expectedSourceSha256']
+             and original['remotePath'] == f'{root}/inbox/{tag}/source.tar.gz'
+             and row['targets'] == [{'kind':'SCM_TRANSPORT_COPY','path':f'inbox/{tag}/source.tar.gz'}],
+             'SCM_TARGET_BINDING_DIFFERS')
+        metadata = row['scmTransportMetadata']
+        need(type(metadata) is list and len(metadata) == 9 and all(type(v) is int and v >= 0 for v in metadata)
+             and metadata[3] == original['expectedBytes'], 'SCM_METADATA_INVALID')
+        keeper,terminal = keeper_proof(original,row)
+        candidates.append({'release':tag,'commit':row['commit'],'sourceSha256':row['sourceSha256'],
+                           'terminal':terminal,'scmTransportKeeper':keeper,'scmTransportMetadata':metadata,
+                           'targets':[{'kind':'GENERATED_SCM_TRANSPORT_COPY','path':f'inbox/{tag}/source.tar.gz'}]})
+    return {'schema':1,'kind':'doorhandle-generated-artifact-cleanup-request','currentRelease':current,
+            'identity':identity,'protectedReleases':['ci-266-f6e062edc7b6'],'currentPost':False,
+            'scmTransportAuthorization':base64.b64encode(authorization_raw).decode('ascii'),'candidates':candidates}
+
+if __name__ == '__main__':
+    try:
+        manifest = parsed(original_bytes(Path(sys.argv[1]),1048576))
+        raw = original_bytes(Path(AUTH_PATH),262144)
+        identity = {'instanceId':sys.argv[4],'machineId':sys.argv[5],'executionLocation':'ECS'}
+        print(json.dumps(transport_request(manifest,raw,sys.argv[2],sys.argv[3],identity)))
+    except Exception:
+        # No arbitrary XML/JSON, filesystem error text, or credentials in logs.
+        raise SystemExit('SCM transport custody refused; retained originals were not modified.') from None
+'@
+# Held through all remote writes AND the existing evidence-collection finally.
+# Read sharing prevents another process from opening these originals for write
+# or deletion; failure before remote admission also releases every opened file.
+$transportHolds = [Collections.Generic.List[IO.FileStream]]::new()
+$scmTransportOperation = $false
+try {
 $repairGeneratedPermissions = $false
 if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
     $manifestPath = $env:GENERATED_RETENTION_MANIFEST
@@ -124,6 +300,28 @@ if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
     Require-Reclaim ($inputManifest.schemaVersion -eq 1 -and $inputManifest.root -ceq $RemoteRoot -and
         $inputManifest.identity.instanceId -ceq $instance -and $inputManifest.identity.machineId -ceq $machine -and
         $inputManifest.rows.Count -gt 0 -and $inputManifest.rows.Count -le 128) 'Generated input belongs to another ECS or exceeds its exact bound.'
+    if ($inputManifest.ContainsKey('transportAuthorizationFile')) {
+        $authPath = 'D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/scm-transport-cleanup-user-authorization-20261117.json'
+        Require-Reclaim ($inputManifest.transportAuthorizationFile -ceq $authPath) 'SCM transport requires its exact independent authorization.'
+        foreach ($path in @($manifestPath,$authPath)) {
+            Assert-ReclaimPath $path
+            $transportHolds.Add([IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
+        }
+        $inputManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+        $approval = Get-Content -LiteralPath $authPath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+        foreach ($row in $inputManifest.rows) {
+            $selected = @($approval.selected | Where-Object { $_.release -ceq $row.release })
+            Require-Reclaim ($selected.Count -eq 1 -and $selected[0].build -is [long]) 'SCM transport must be an exact approved subset.'
+            $folder = "D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107/ci-$($selected[0].build)-raw-receipts"
+            Require-Reclaim ($selected[0].localKeeper.Replace('\','/') -ceq "$folder/source.tar.gz") 'SCM keeper must remain in its fixed D-drive custody directory.'
+            foreach ($name in @('source.tar.gz','preservation.json','build.xml','release.json')) {
+                $path = "$folder/$name"; Assert-ReclaimPath $path
+                $transportHolds.Add([IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
+            }
+        }
+        $requestValue = (Invoke-Reclaim $python @('-I','-B','-c',$scmTransportReader,$manifestPath,$Tag,$RemoteRoot,$instance,$machine) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+        $scmTransportOperation = $true
+    } else {
     Assert-ReclaimPath $inputManifest.authorizationFile
     $authorization = Get-Content -LiteralPath $inputManifest.authorizationFile -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
     Require-Reclaim ($authorization.version -eq 1 -and $authorization.userReply -and
@@ -198,6 +396,7 @@ if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
     $requestValue = @{schema=1;kind='doorhandle-generated-artifact-cleanup-request';currentRelease=$Tag;
         identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@('ci-266-f6e062edc7b6');currentPost=$false;candidates=$rows}
     if ($null -ne $historicalOutputsAuthorization) { $requestValue.historicalOutputsAuthorization=$historicalOutputsAuthorization }
+    }
     $requestLocal = Join-Path $artifacts 'generated-cleanup-request.json'
     Require-Reclaim (-not (Test-Path -LiteralPath $requestLocal)) 'Generated request must use a fresh controller output.'
     $requestBytes = [Text.UTF8Encoding]::new($false).GetBytes(($requestValue | ConvertTo-Json -Depth 16 -Compress))
@@ -503,4 +702,11 @@ try {
 if ($null -ne $failure -or $result.status -cin @('FAILED_OR_UNKNOWN','RETAINED_OUTPUTS_REQUIRE_ACTION')) {
     throw 'Old build output cleanup did not complete with verified original evidence; collected files are retained.'
 }
-Write-Host ('Old build output cleanup: ' + $result.status + '. Business data, original reports, source archives, published artifacts and shared Maven dependencies are retained.')
+if ($scmTransportOperation) {
+    Write-Host ('Old build output cleanup: ' + $result.status + '. Complete D-drive source originals are retained; only approved ECS transport copies are retired. Business data, original reports, published artifacts and shared Maven dependencies are retained.')
+} else {
+    Write-Host ('Old build output cleanup: ' + $result.status + '. Business data, original reports, source archives, published artifacts and shared Maven dependencies are retained.')
+}
+} finally {
+    foreach ($heldOriginal in $transportHolds) { $heldOriginal.Dispose() }
+}

@@ -594,7 +594,7 @@ def acceptance_profile():
     return profile, hashlib.sha256(raw).hexdigest()
 
 
-def python_report_counts(path):
+def python_report_counts(path, *, require_pass=True):
     counts, modules = empty_counts(), {}
     for case in ET.parse(path).getroot().iter('testcase'):
         name = case.get('classname', '')
@@ -607,9 +607,32 @@ def python_report_counts(path):
             case.find('failure') is not None or case.find('error') is not None) else 'passed'
         for destination in (counts, tally):
             destination['found'] += 1; destination[result] += 1
-    if counts['passed'] == 0 or counts['failed']:
+    if require_pass and (counts['passed'] == 0 or counts['failed']):
         raise RuntimeError('Python verification did not record actual passing testcases')
     return counts, modules
+
+
+def control_gate_minimum(profile=None):
+    """Use the independent control entry's exact module set and fixed profile."""
+    file = ROOT / 'script/jenkins/control-preflight.py'
+    spec = importlib.util.spec_from_file_location('same_attempt_control_definition', file)
+    helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+    if profile is None:
+        profile, _ = acceptance_profile()
+    return {'tests_python.' + name: count for name, count in helper.required_minimum(profile).items()}
+
+
+def control_gate_report(path, profile):
+    if not path.is_file() or path.is_symlink() or path.stat().st_size > 32 * 1024 ** 2:
+        raise ValueError('Same-attempt controls require the bounded original Python XML')
+    minimum = control_gate_minimum(profile)
+    _, all_modules = python_report_counts(path, require_pass=False)
+    modules = {name: all_modules.get(name, empty_counts()) for name in minimum}
+    passed = all(row['passed'] >= minimum[name] and not row['failed'] and not row['skipped']
+                 for name, row in modules.items())
+    return {'schemaVersion': 1, 'status': 'PASS' if passed else 'FAILED',
+            'execution': 'SAME_PYTEST_INVOCATION', 'report': 'python.xml',
+            'minimumTests': minimum, 'modules': modules}
 
 
 def frontend_test_files(profile, directory):
@@ -1032,6 +1055,8 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--java-tests', help='Optional explicit Surefire selection; receipt records the reduced scope')
     parser.add_argument('--java-only', action='store_true', help='Do not claim Python/frontend coverage')
+    parser.add_argument('--control-gate', action='store_true',
+                        help='Gate remaining Python and native tests on controls within this one pytest invocation')
     parser.add_argument('--fixture-property', action='append', default=[], metavar='KEY=ABSOLUTE_JSON',
                         help='Explicit isolated MySQL fixture property; requires an explicit Java class selection')
     parser.add_argument('--fixture-manifest', type=Path,
@@ -1053,6 +1078,8 @@ def main():
     if semantic_mysql_class is not None:
         selected_classes = [semantic_mysql_class]
     profile, profile_sha = acceptance_profile()
+    if args.control_gate and args.java_only:
+        raise ValueError('Same-attempt control gate requires full Python execution, not javaOnly')
     output = args.output or ROOT / 'work' / ('ecs-ci-' + uuid.uuid4().hex)
     if not output.is_absolute() or output.resolve() != output or not output.is_relative_to(ROOT / 'work'):
         raise ValueError('A fresh absolute output under this checkout work directory is required')
@@ -1233,8 +1260,20 @@ def main():
                 (args.compact_migration_config, args.compact_migration_config_sha256),
                 (args.worker_mysql_config, args.worker_mysql_config_sha256)) if file})
             receipt['pythonTemporaryCleanup'] = {'status': 'RETAINED_PYTHON_NOT_PASSED' if ordinary_source else 'RETAINED_NATIVE_EVIDENCE'}
-            execute('python', [tools['PYTHON_EXE'], '-B', '-m', 'pytest', 'tests_python', '-q',
-                              '--basetemp=' + str(output / 'tmp' / 'pytest'), '--junitxml=' + str(output / 'python.xml')], ROOT, environment=python_env)
+            command = [tools['PYTHON_EXE'], '-B', '-m', 'pytest', 'tests_python', '-q',
+                       '--basetemp=' + str(output / 'tmp' / 'pytest'), '--junitxml=' + str(output / 'python.xml')]
+            if args.control_gate:
+                command.append('--doorhandle-control-gate')
+            try:
+                execute('python', command, ROOT, environment=python_env)
+            finally:
+                if args.control_gate and (output / 'python.xml').is_file():
+                    # Preserve partial/failed counts too. This is not full Python acceptance.
+                    receipt['pythonTests'], receipt['selectedPythonSuites'] = python_report_counts(
+                        output / 'python.xml', require_pass=False)
+                    receipt['controlGate'] = control_gate_report(output / 'python.xml', profile)
+            if args.control_gate and receipt.get('controlGate', {}).get('status') != 'PASS':
+                raise RuntimeError('Same-attempt control modules were missing, failed or skipped')
             receipt['pythonTests'], receipt['selectedPythonSuites'] = python_report_counts(output / 'python.xml')
             if args.worker_mysql_config:
                 worker_tally = receipt['selectedPythonSuites'].get('tests_python.test_detection_worker_receipts', empty_counts())
@@ -1267,7 +1306,7 @@ def main():
             if env.get('DOORHANDLE_REQUIRE_REDIS_TESTS') == 'true':
                 receipt['redisProtocol'] = redis_protocol_reports(output)
             receipt['sharedJavaBuildCleanup'] = remove_owned_build(shared_build_root, output)
-        python_first = bool(args.compact_migration_config)
+        python_first = bool(args.compact_migration_config) or args.control_gate
         if python_first:
             if args.java_only:
                 raise ValueError('Whole migration acceptance requires Python execution, not javaOnly')

@@ -20,6 +20,8 @@ Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.clo
 
 用例、fixture 输入、原始 XML 路径和通过门不变；跨语言协议汇总在两种语言完成后进行，Java 输出仍在 Java 结束后清理。迁移、Python 临时物会更早与后续 Java 输出共存，不能将旧顺序的磁盘峰值视为新顺序的容量保证；原实时磁盘保底、资源采样和失败收尾保持生效。
 
+完整自动夹具入口现在在同一次 Python 执行中先完成既有控制模块，再执行其余 Python/整库与 Java；原 `python.xml` 保留全部真实用例，不重复运行一遍独立控制阶段。`--control-gate` 的收集、每例 setup/call/teardown 和原 XML 复核共同构成前置门，身份、owner、包管理、内存和磁盘准入仍在工具/夹具启动前执行。独立 `ACTION=verify-controls` 保留，旧手工局部调用不隐式升级为完整验收。
+
 ## 真实 Redis 验证
 
 固定源码的完整 ECS 验证由现有 `verify-remote.py` 创建一个合成 Redis fixture，仅复用正式 Redis 的 immutable image，不读取正式凭据或数据。临时服务映射随机回环端口、无持久卷，内存硬上限 128 MiB、Redis 数据上限 64 MiB；监督器负责就绪检查、运行观察、失败收尾和原始回执。现有 25 项真实 Redis 用例仅操作少量合成缓存条目或固定字段熔断 Hash；保留 64 MiB `maxmemory`、`noeviction` 和无 AOF/RDB，容器的额外 64 MiB 用于进程及客户端开销，不减少用例或宿主保底。
@@ -49,6 +51,24 @@ fixture 将 `DOORHANDLE_CACHE_REDIS_TEST_HOST/PORT/DATABASE` 及 `DOORHANDLE_REQ
 全部自动断言及 21 项真实页面检查通过后，原 runtime 保持运行和资源采样，Jenkins 建立有界 SSH 回环转发，并写入 `artifacts/manual-acceptance-ready.json`。其中 `localUrl` 是用户在 Jenkins 所在本机浏览器使用的入口；`privateGuide` 指向项目 Git 忽略的 `work/jenkins/manual-acceptance/<release>/access.md`，包含本轮四个测试账号。账号由已有凭据通道私密传输，不输出控制台或归档。`configure-local.groovy` 维护该私有根路径，不需要新增用户参数。
 
 用户在当前构建的 `manual-candidate-acceptance` input 选择“验收通过”或“发现问题”，也可在聊天告知助手处理同一 input。截止时间由原 runtime 固定，重连不续期；拒绝、取消或超时按原失败路径保全证据并收尾。确认通过后也必须完成原 `STOPPED` 清理及最终证据检查才能得到 SUCCESS。窗口结束关闭本轮入口并删除临时私密账号说明，不关闭 ECS 或原业务服务。READY 只表示可以开始人工操作，不是最终 PASS；模型仍使用隔离脚本/本地配置，不调用付费外部模型。
+
+## 同轮验收、首次切表与失败处置
+
+正式首次发布使用 `ACTION=compact-cutover`、`DOORHANDLE_CI_SCOPE=mysql`、明确完整 `TRUSTED_COMMIT`、`PRODUCTION_RELEASE_ENABLED=true` 和 `MANUAL_ACCEPTANCE_ENABLED=true`。其余封存输入及 `COMPACT_CUTOVER_SETTINGS` 必须与批准的固定输入相同。流水线只执行一次完整自动验收和一次同候选人验；临时候选 `STOPPED`、全部原件核验通过后，直接消费本轮证据切换，不再重跑一轮 runtime，也不跨构建拼接 PASS。此动作的人验 input 明确包含批准正式停写上线；没有用户实际确认、拒绝或过期，均不进入生产。
+
+机器环境的 `DOORHANDLE_COMPACT_RELEASE_READY` 仍默认 `false`。版本化配置仅从本地私有 `local-node.json` 的可选 `compactReleaseAuthorization` 读取 `work/jenkins/compact-release-authorization-<完整40位提交>.json`，默认空；该路径不是 Jenkins 页面参数。授权 JSON 使用 `schemaVersion=1`、`kind=doorhandle-compact-release-authorization`、`scope=first-production-131-to-29`、`job=doorhandle-java`、`branch=java-cloud`，明确 `approved=true`、`revoked=false`、当前用户授权 `approvalReference`、完整 `commit/sourceSha256/identity`，以及 `settingsSha256` 和全部固定 `inputs`。`inputs` 精确键名见 `compact-cutover.py:RELEASE_INPUTS`，未使用项也明确为空字符串；包含源/封存输入、ECS 根与正式运行目录。配置阶段和实际发布阶段分别重新核验，授权文件不提交、不归档。
+
+恢复策略必须明确 `allowPreActivationSourceRestore=true` 与 `afterActivationFailure=FAIL_CLOSED_COMPACT_ONLY`。发布前，控制器用本轮 `runtime-gate-passed.json`、原 runtime 回执和原 `manual-decision.json` 生成无凭据的批准投影；ECS 再核实际固定镜像、候选绑定的源设置字节、完整自动/人工原件后才开始 `prepare → migrate → activate`。MySQL 使用正式停写后的新鲜快照、备份和完整迁移/双恢复，不用数小时前的候选库覆盖正式数据；RAG/Mem0 既有物化来源的未变化门保持。正式流程保全源备份、双恢复及 native 原件，创建29表目标并验证，最后健康检查通过才开放入口。
+
+旧 worker 只有已审核的 immutable Kafka/OSS 镜像、默认实际命令、七个固定代码文件及父目录未被挂载/写层覆盖时，才允许没有独立 SQL 账号；此旧版本仍必须停止并禁用重启，全部源 SQL 写身份仍盘点和冻结。其他 worker 仍须明确可冻结的非 root 账号，新 compact worker 的目标 DML 账号不豁免。
+
+发布错误或中断沿同一 Jenkins `RecoverCutover` 收尾入口消费原 `compact-cutover-execution-request.json`，不重跑未知迁移：
+
+- **新进程从未启动**：确认冻结及旧源未变后调用原 `recover`，逐个核对原容器身份、运行状态和实际健康，只有 `SOURCE_RESTORED/healthVerified=true` 才报告旧服务恢复；原构建仍保留失败结果。
+- **新进程已经启动**：保留目标及全部新写，停止入口/写者，锁住本次创建的目标 DML 账号并核无残留会话。输出 `COMPACT_FORWARD_REQUIRED` 和实际冻结状态；它不是恢复成功。责任人为发布负责人，依据归档回执中的原目标、失败阶段及保留私有原件，对 MCP、memory 或对应失败组件做保数据前向修复，不能改 phase 后重跑 copy、恢复旧快照或启动131表旧写者。
+- **身份、冻结、连接或原件未知**：保留 `NEEDS_REVIEW`/原错误与原资源，不盲重放。状态、恢复回执与正式数据读回由当前构建归档；私有配置/密码/SQL 不归档。
+
+验证和应用 runtime 取消分别使用原 helper 的 `cancel`：严格绑定 release、attempt/executionId、固定源码、ECS 和 PID/startTicks，随后原 `observe` 等到终态才清理自有资源。正式切表同样先 exact cancel → 原 finally 终态及维护锁释放 → settle；取消持久化后仅向绑定的 supervisor 发一次 TERM，迁移子会话收到正常中断且必须退出、无剩余迁移 SQL 会话后才允许恢复旧服务。子进程或锁仍未知则保留维护状态，不杀数据库/业务容器来伪造退出。SSH 255 重连仍只观察，不当作用户取消；Jenkins 已取消后不在归档期间再次 `/stop`。
 
 ## 生成物收尾与独立维护
 

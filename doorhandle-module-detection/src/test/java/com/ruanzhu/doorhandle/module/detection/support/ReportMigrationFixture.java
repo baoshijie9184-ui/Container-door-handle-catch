@@ -48,6 +48,12 @@ public final class ReportMigrationFixture implements AutoCloseable {
             }
         } catch(Exception failure){try{databases.close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}throw failure;}
     }
+    public static ReportMigrationFixture forReusableDataCases() throws Exception {
+        var fixture=new ReportMigrationFixture();
+        try {fixture.databases.enableReportDataReset();return fixture;}
+        catch(Exception failure){try{fixture.close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}throw failure;}
+    }
+    public void resetData() throws Exception {databases.resetReportData();}
     private static void collectTables(String text,Set<String> tables) {
         var matcher=TABLE.matcher(text);while(matcher.find())tables.add(matcher.group(1));
     }

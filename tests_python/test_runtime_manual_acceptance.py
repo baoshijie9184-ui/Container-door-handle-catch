@@ -157,7 +157,7 @@ def test_existing_runtime_keeps_auto_gates_before_handoff_and_stopped_cleanup_be
     assert handoff < run.index('self.cleanup()') < run.index("'status': 'PASS'")
     assert "'ownedCleanup': 'STOPPED'" in run
     assert "original.get('manualAcceptanceSeconds', 0)" in source
-    assert "if args.phase in ('observe', 'manual-status', 'manual-decision'):" in source
+    assert "if args.phase in ('observe', 'cancel', 'manual-status', 'manual-decision'):" in source
 
 
 def test_jenkins_input_and_private_delivery_reuse_original_execution_without_waiting_for_own_build():
@@ -186,8 +186,8 @@ def test_manual_feature_is_default_off_and_never_reuses_production_or_old_rehear
     assert "def finishedOutputsDirectory = new File(project, 'work/table-switch-20261115')" in controller
     assert "if (finishedOutputsManifest) {" in controller
     assert "'CI_FINISHED_OUTPUTS_MANIFEST': finishedOutputsManifest" in controller
-    assert "params.ACTION != 'verify-runtime'" in pipeline and "params.PRODUCTION_RELEASE_ENABLED" in pipeline
-    assert "'15','30','60'" in pipeline and 'bounded non-production verify-runtime candidate' in powershell
+    assert "params.ACTION in ['verify-runtime','compact-cutover']" in pipeline and "params.PRODUCTION_RELEASE_ENABLED" in pipeline
+    assert "'15','30','60'" in pipeline and 'bounded isolated candidate before any production cutover' in powershell
     assert "runtimeProof.manualAcceptance.status -cne 'ACCEPTED'" in powershell
     assert "runtimeResult.ownedCleanup -ne 'STOPPED'" in powershell
 
