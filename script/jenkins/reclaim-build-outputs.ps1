@@ -124,6 +124,7 @@ AUTH_PATH = 'D:/AI/lunwen1/DoorHandleCatch/work/table-switch-20261115/scm-transp
 AUTH_SHA = 'd592584541931b82e5a41f21ecb8acb791a4f4a6b1a4f9995bdc3478b36b3e03'
 CUSTODY_ROOT = Path('D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107')
 SHA = re.compile(r'[a-f0-9]{64}')
+RESTORE_RELEASES = {'ci-297-bb38f0fc9b33','ci-301-cfc056762f1f','ci-302-28e41fc4eae1'}
 
 def need(value, code):
     if not value: raise ValueError(code)
@@ -242,9 +243,17 @@ def keeper_proof(approved, row):
 def transport_request(manifest, authorization_raw, current, root, identity):
     need(hashlib.sha256(authorization_raw).hexdigest() == AUTH_SHA, 'SCM_AUTHORIZATION_NOT_APPROVED')
     approval = parsed(authorization_raw)
-    need(set(manifest) == {'schemaVersion','root','identity','transportAuthorizationFile','rows'}
+    restore = manifest.get('transportOperation') == 'RESTORE'
+    extra = {'transportOperation','transportRetirement'} if restore else set()
+    need(set(manifest) == {'schemaVersion','root','identity','transportAuthorizationFile','rows'} | extra
          and manifest['schemaVersion'] == 1 and manifest['root'] == root and manifest['identity'] == identity
          and manifest['transportAuthorizationFile'] == AUTH_PATH, 'SCM_MANIFEST_SCOPE_DIFFERS')
+    if restore:
+        retired = manifest['transportRetirement']
+        need(type(retired) is dict and set(retired) == {'release','planSha256','receiptSha256','journalSha256'}
+             and retired['release'] == 'ci-423-3a2d2e573086'
+             and all(type(retired[k]) is str and SHA.fullmatch(retired[k]) for k in ('planSha256','receiptSha256','journalSha256')),
+             'SCM_RESTORATION_RETIREMENT_PROOF_REQUIRED')
     need(approval.get('approved') is True and approval.get('candidateCount') == 125
          and len(approval['selected']) == 125, 'SCM_AUTHORIZATION_SELECTION_INVALID')
     approved = unique((row['release'],row) for row in approval['selected'])
@@ -252,12 +261,14 @@ def transport_request(manifest, authorization_raw, current, root, identity):
          and 0 < len(manifest['rows']) <= 125, 'SCM_SELECTION_INVALID')
     candidates = []; seen = set()
     for row in manifest['rows']:
-        need(set(row) == {'release','commit','sourceSha256','targets','scmTransportMetadata'}, 'SCM_MIXED_TARGETS_FORBIDDEN')
+        need(set(row) == {'release','commit','sourceSha256','targets','scmTransportMetadata'}
+             | ({'scmTransportParentMetadata'} if restore else set()), 'SCM_MIXED_TARGETS_FORBIDDEN')
         tag = row['release']; original = approved.get(tag)
         need(original is not None and tag not in seen and tag != current
              and original['build'] not in (117,266,419) and original['build'] < int(current.split('-')[1]),
              'SCM_TARGET_NOT_AUTHORIZED')
         seen.add(tag)
+        if restore: need(tag in RESTORE_RELEASES, 'SCM_RESTORATION_SOURCE_NOT_APPROVED')
         need(re.fullmatch(r'[a-f0-9]{40}',row['commit']) and SHA.fullmatch(row['sourceSha256'])
              and tag == f"ci-{original['build']}-{row['commit'][:12]}"
              and row['sourceSha256'] == original['expectedSourceSha256']
@@ -267,13 +278,21 @@ def transport_request(manifest, authorization_raw, current, root, identity):
         metadata = row['scmTransportMetadata']
         need(type(metadata) is list and len(metadata) == 9 and all(type(v) is int and v >= 0 for v in metadata)
              and metadata[3] == original['expectedBytes'], 'SCM_METADATA_INVALID')
+        if restore:
+            parent = row['scmTransportParentMetadata']
+            need(type(parent) is list and len(parent) == 9 and all(type(v) is int and v >= 0 for v in parent)
+                 and stat.S_ISDIR(parent[0]) and parent[1] == 1000 and not parent[0] & 0o022,
+                 'SCM_RESTORATION_PARENT_METADATA_INVALID')
         keeper,terminal = keeper_proof(original,row)
         candidates.append({'release':tag,'commit':row['commit'],'sourceSha256':row['sourceSha256'],
                            'terminal':terminal,'scmTransportKeeper':keeper,'scmTransportMetadata':metadata,
                            'targets':[{'kind':'GENERATED_SCM_TRANSPORT_COPY','path':f'inbox/{tag}/source.tar.gz'}]})
-    return {'schema':1,'kind':'doorhandle-generated-artifact-cleanup-request','currentRelease':current,
+        if restore: candidates[-1]['scmTransportParentMetadata'] = parent
+    result = {'schema':1,'kind':'doorhandle-generated-artifact-cleanup-request','currentRelease':current,
             'identity':identity,'protectedReleases':['ci-266-f6e062edc7b6'],'currentPost':False,
             'scmTransportAuthorization':base64.b64encode(authorization_raw).decode('ascii'),'candidates':candidates}
+    if restore: result.update(scmTransportOperation='RESTORE',scmTransportRetirement=retired)
+    return result
 
 if __name__ == '__main__':
     try:
@@ -290,6 +309,7 @@ if __name__ == '__main__':
 # or deletion; failure before remote admission also releases every opened file.
 $transportHolds = [Collections.Generic.List[IO.FileStream]]::new()
 $scmTransportOperation = $false
+$scmTransportRestoration = $false
 try {
 $repairGeneratedPermissions = $false
 if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
@@ -321,6 +341,12 @@ if ($GeneratedArtifacts -and $Mode -ceq 'Maintenance') {
         }
         $requestValue = (Invoke-Reclaim $python @('-I','-B','-c',$scmTransportReader,$manifestPath,$Tag,$RemoteRoot,$instance,$machine) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
         $scmTransportOperation = $true
+        $scmTransportRestoration = $requestValue.ContainsKey('scmTransportOperation') -and $requestValue.scmTransportOperation -ceq 'RESTORE'
+        if ($scmTransportRestoration) {
+            $context.restoreUploads = @($requestValue.candidates | ForEach-Object {
+                @{release=$_.release;file="restore-source-$($_.release).tar.gz";bytes=$_.scmTransportKeeper.bytes;sha256=$_.sourceSha256}
+            })
+        }
     } else {
     Assert-ReclaimPath $inputManifest.authorizationFile
     $authorization = Get-Content -LiteralPath $inputManifest.authorizationFile -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
@@ -455,6 +481,45 @@ root=Path(data['root']); inbox=root/'inbox'/data['tag']
 identity={'instanceId':data['instanceId'],'machineId':data['machineId'],'executionLocation':'ECS'}
 for path in (root,root/'inbox',root/'verification'):chain(path,True)
 archive=inbox/('cleanup-source.tar.gz' if data['mode']=='Maintenance' else 'source.tar.gz')
+def restore_uploads():
+    rows=data.get('restoreUploads',[])
+    need(type(rows) is list and len(rows)<=125)
+    if rows:need(data['mode']=='Maintenance' and data['generated'])
+    seen=set()
+    for row in rows:
+        need(type(row) is dict and set(row)=={'release','file','bytes','sha256'})
+        tag=row['release'];parts=tag.split('-') if type(tag) is str else []
+        need(len(parts)==3 and parts[0]=='ci' and parts[1].isdigit() and len(parts[2])==12
+             and all(c in '0123456789abcdef' for c in parts[2]) and tag not in seen and tag!=data['tag'])
+        need(row['file']=='restore-source-'+tag+'.tar.gz' and type(row['bytes']) is int and 0<row['bytes']<=134217728
+             and type(row['sha256']) is str and len(row['sha256'])==64 and all(c in '0123456789abcdef' for c in row['sha256']))
+        seen.add(tag)
+    return rows
+
+def prepare_restore_staging(request):
+    uploads=restore_uploads()
+    need(request.get('scmTransportOperation')=='RESTORE' and uploads and uploads==[
+        {'release':row['release'],'file':'restore-source-'+row['release']+'.tar.gz',
+         'bytes':row['scmTransportKeeper']['bytes'],'sha256':row['sourceSha256']} for row in request['candidates']])
+    paths=[inbox/row['file'] for row in uploads];record=inbox/'restore-source-staging.json'
+    need(all(not os.path.lexists(path) for path in [*paths,record]))
+    actual=[]
+    for row,path in zip(uploads,paths):
+        fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+        try:
+            os.fsync(fd);info=os.fstat(fd)
+            need(info.st_uid==1000 and info.st_nlink==1 and info.st_size==0 and stat.S_IMODE(info.st_mode)==0o600)
+            actual.append({**row,'device':info.st_dev,'inode':info.st_ino})
+        finally:os.close(fd)
+    request_sha=hashlib.sha256(json.dumps(request,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+    value={'schema':1,'currentRelease':data['tag'],'requestSha256':request_sha,'uploads':actual}
+    with os.fdopen(os.open(record,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600),'wb') as stream:
+        stream.write(json.dumps(value,sort_keys=True,separators=(',',':')).encode());stream.flush();os.fsync(stream.fileno())
+    directory=os.open(inbox,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(directory)
+    finally:os.close(directory)
+    return value
+
 def control_growth(include_source):
     usage=os.statvfs(root); unit=max(4096,usage.f_frsize)
     need(unit<=1048576 and unit&(unit-1)==0)
@@ -465,6 +530,7 @@ def control_growth(include_source):
     need(all(type(size) is int and 0<size<=1048576 for size in sizes))
     if include_source:sizes.append(data['sourceBytes'])
     if data.get('generatedRequest'):sizes.append(data['generatedRequest']['bytes'])
+    sizes += [row['bytes'] for row in restore_uploads()]
     # Only fixed archive/helper bytes and the existing directory/inode allowance
     # are written by this stage. The generated plan/journal/receipt are admitted
     # later from the actual in-memory plan; no file limit is reduced here.
@@ -547,11 +613,13 @@ if mode=='prepare':
         request=json.loads(request_path.read_bytes())
         need(request['currentRelease']==data['tag'] and request['identity']==identity)
         prepared['request']=data['generatedRequest']
+        if data.get('restoreUploads'):prepared['restoreStaging']=prepare_restore_staging(request)
     print(json.dumps(prepared))
 else:
     need(mode=='inspect');files={}
     names=[('plan',data['evidencePrefix']+'-plan.json'),('receipt',data['evidencePrefix']+'-receipt.json'),('journal',data['evidencePrefix']+'-journal.jsonl')]
     if data['generated']:names += [('permissions','generated-cleanup-permissions.json'),('permissionJournal','generated-cleanup-permissions-journal.jsonl')]
+    if data.get('restoreUploads'):names += [('restoreStaging','restore-source-staging.json')]
     for label,name in names:
         path=inbox/name
         if path.exists() or path.is_symlink():
@@ -581,7 +649,7 @@ function Copy-ReclaimEvidence([string]$Name, [string]$LocalPath, $Expected) {
     Require-Reclaim ((Get-Item -LiteralPath $LocalPath).Length -eq $Expected.bytes -and (Get-FileHash -LiteralPath $LocalPath -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $Expected.sha256) 'Cleanup evidence changed during collection; existing evidence is retained.'
 }
 $evidenceReader = @'
-import hashlib,json,sys
+import hashlib,json,stat,sys
 from pathlib import Path
 def unique(pairs):
     value={}
@@ -589,6 +657,41 @@ def unique(pairs):
         if k in value:raise ValueError('Duplicate cleanup evidence field')
         value[k]=v
     return value
+def restoration_receipt(value, request, staging, staging_sha, journal_sha):
+    def need(ok):
+        if not ok:raise ValueError('SCM restoration receipt does not prove the exact original sources')
+    request_sha=hashlib.sha256(json.dumps(request,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+    need(request.get('scmTransportOperation')=='RESTORE' and value.get('schema')==1
+         and value.get('kind')=='doorhandle-scm-transport-restoration-receipt'
+         and value.get('status') in ('RESTORED','PARTIAL_FAILURE')
+         and value.get('currentRelease')==request['currentRelease'] and value.get('identity')==request['identity']
+         and value.get('requestSha256')==request_sha and value.get('stagingSha256')==staging_sha
+         and value.get('journalSha256')==journal_sha and value.get('originalKeepersPreserved') is True
+         and value.get('businessDataChanged') is False
+         and value.get('retirement')==request['scmTransportRetirement'] and type(value.get('restored')) is list)
+    need(staging.get('schema')==1 and staging.get('currentRelease')==request['currentRelease']
+         and staging.get('requestSha256')==request_sha and type(staging.get('uploads')) is list)
+    uploads={row['release']:row for row in staging['uploads']}
+    need(len(uploads)==len(staging['uploads'])==len(request['candidates'])
+         and set(uploads)=={row['release'] for row in request['candidates']})
+    expected={row['targets'][0]['path']:row for row in request['candidates']};seen=set();total=0
+    for row in value['restored']:
+        path=row.get('path');original=expected.get(path);metadata=row.get('newMetadata')
+        need(original is not None and path not in seen and row.get('release')==original['release']
+             and row.get('sourceSha256')==original['sourceSha256']
+             and row.get('oldMetadata')==original['scmTransportMetadata']
+             and type(row.get('bytes')) is int and row['bytes']==original['scmTransportKeeper']['bytes']
+             and type(row.get('allocatedBytes')) is int and row['allocatedBytes']>=0
+             and type(metadata) is list and len(metadata)==9 and all(type(v) is int and v>=0 for v in metadata)
+             and stat.S_ISREG(metadata[0]) and stat.S_IMODE(metadata[0])==0o600
+             and metadata[1]==1000 and metadata[3]==row['bytes'] and metadata[5]>0 and metadata[8]==1)
+        upload=uploads[original['release']]
+        need(upload.get('file')=='restore-source-'+original['release']+'.tar.gz'
+             and upload.get('bytes')==row['bytes'] and upload.get('sha256')==row['sourceSha256']
+             and upload.get('inode')==metadata[5] and upload.get('device')==metadata[6])
+        seen.add(path);total+=row['bytes']
+    need(value['status']!='RESTORED' or seen==set(expected))
+    return {'restoration':True,'restoredCount':len(seen),'restoredBytes':total}
 raw=Path(sys.argv[1]).read_bytes()
 if not 0<len(raw)<=33554432:raise ValueError('Cleanup evidence exceeds its bound')
 v=json.loads(raw,object_pairs_hook=unique);result={'rawSha256':hashlib.sha256(raw).hexdigest(),'canonicalSha256':hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()}
@@ -596,10 +699,19 @@ result.update({k:v[k] for k in ('kind','currentRelease','identity')})
 if 'status' in v:result['status']=v['status']
 for k in ('planSha256','originalEvidencePreserved','sharedMavenCachePreserved','publishedArtifactsPreserved','oldMavenRepositoriesPreserved','businessDataDeleted','generatedLifecycle','unselectedMavenRepositoriesPreserved','retention'):
     if k in v:result[k]=v[k]
+if len(sys.argv)==5:
+    request_raw=Path(sys.argv[2]).read_bytes()
+    if not 0<len(request_raw)<=1048576:raise ValueError('SCM restoration request exceeds its bound')
+    staging_raw=Path(sys.argv[3]).read_bytes();journal_raw=Path(sys.argv[4]).read_bytes()
+    if not 0<len(staging_raw)<=1048576 or not 0<len(journal_raw)<=1048576:raise ValueError('SCM restoration controls exceed their bound')
+    result.update(restoration_receipt(v,json.loads(request_raw,object_pairs_hook=unique),
+        json.loads(staging_raw,object_pairs_hook=unique),hashlib.sha256(staging_raw).hexdigest(),hashlib.sha256(journal_raw).hexdigest()))
 print(json.dumps(result))
 '@
 $admitted = $false
 $applyAttempted = $false
+$restorationAttempted = $false
+$restoreStagingSha = $null
 $permissionRepairAttempted = $false
 $completed = $false
 $planProof = $null
@@ -617,6 +729,7 @@ try {
         $expectedGrowth=1048576L + [long]([Math]::Ceiling($sourceBytes/[double]$unit)*$unit)
         foreach ($binding in $helpers.Values) { $expectedGrowth += [long]([Math]::Ceiling($binding.bytes/[double]$unit)*$unit) }
         if ($context.ContainsKey('generatedRequest')) { $expectedGrowth += [long]([Math]::Ceiling($context.generatedRequest.bytes/[double]$unit)*$unit) }
+        if ($scmTransportRestoration) { foreach ($upload in $context.restoreUploads) { $expectedGrowth += [long]([Math]::Ceiling($upload.bytes/[double]$unit)*$unit) } }
         Require-Reclaim ($bootstrap.status -ceq 'UPLOAD_REQUIRED' -and $bootstrap.release -ceq $Tag -and $bootstrap.commit -ceq $Commit -and $bootstrap.sourceSha256 -ceq $SourceSha256 -and $bootstrap.sourceBytes -eq $sourceBytes -and $bootstrap.identity.instanceId -ceq $instance -and $bootstrap.identity.machineId -ceq $machine -and $bootstrap.identity.executionLocation -ceq 'ECS' -and $bootstrap.file -ceq "$remoteInbox/cleanup-source.tar.gz" -and $bootstrap.reserveBytes -eq 2147483648 -and $bootstrap.requiredBytes -eq (2147483648L + $expectedGrowth) -and $bootstrap.controlGrowthBytes -eq ($expectedGrowth-$sourceBytes) -and $bootstrap.availableBytes -ge $bootstrap.requiredBytes -and $bootstrap.uploadIdentity.device -is [long] -and $bootstrap.uploadIdentity.inode -is [long] -and $bootstrap.uploadIdentity.device -ge 0 -and $bootstrap.uploadIdentity.inode -gt 0 -and @($bootstrap.uploadIdentity.PSObject.Properties).Count -eq 2) 'Maintenance source upload lacks its exact fresh directory, ECS identity or bounded reserve.'
         if ($context.ContainsKey('generatedRequest')) {
             Assert-ReclaimPath $requestLocal
@@ -641,6 +754,27 @@ try {
             Copy-ReclaimEvidence 'generated-cleanup-request.json' (Join-Path $artifacts 'generated-cleanup-request.json') $ready.request
             $planArguments += " --request '$remoteInbox/generated-cleanup-request.json' --request-sha256 '$($ready.request.sha256)'"
         }
+        if ($scmTransportRestoration) {
+            $staging = $ready.restoreStaging
+            $requestProof = (Invoke-Reclaim $python @('-I', '-B', '-c', $evidenceReader, $requestLocal) | Select-Object -Last 1) | ConvertFrom-Json
+            Require-Reclaim ($requestProof.rawSha256 -ceq $context.generatedRequest.sha256 -and $staging.schema -eq 1 -and $staging.currentRelease -ceq $Tag -and $staging.requestSha256 -ceq $requestProof.canonicalSha256 -and @($staging.uploads).Count -eq @($context.restoreUploads).Count) 'Restoration upload slots do not match the admitted request.'
+            $seenUploads = @{}
+            foreach ($upload in $staging.uploads) {
+                $source = @($requestValue.candidates | Where-Object {$_.release -ceq $upload.release})
+                Require-Reclaim ($source.Count -eq 1 -and -not $seenUploads.ContainsKey($upload.release) -and $upload.file -ceq "restore-source-$($upload.release).tar.gz" -and $upload.bytes -eq $source[0].scmTransportKeeper.bytes -and $upload.sha256 -ceq $source[0].sourceSha256 -and $upload.device -is [long] -and $upload.device -ge 0 -and $upload.inode -is [long] -and $upload.inode -gt 0) 'Restoration upload is not a fresh exact source slot.'
+                $seenUploads[$upload.release] = $true
+            }
+            $inspection = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand inspect")) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+            Require-Reclaim ($inspection.files.ContainsKey('restoreStaging')) 'Restoration staging lacks its original private identity record.'
+            Copy-ReclaimEvidence 'restore-source-staging.json' (Join-Path $artifacts 'restore-source-staging.json') $inspection.files.restoreStaging
+            $restoreStagingSha = $inspection.files.restoreStaging.sha256
+            foreach ($upload in $staging.uploads) {
+                $source = @($requestValue.candidates | Where-Object {$_.release -ceq $upload.release})[0]
+                $null = Invoke-Reclaim $scp ($SshOptions + @('-P', $PortText, $source.scmTransportKeeper.path, "${Destination}:$remoteInbox/$($upload.file)"))
+            }
+            $restorationAttempted = $true
+            $null = Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' restore-transport $planArguments --output '$remoteInbox/$evidencePrefix-receipt.json'"))
+        } else {
         if ($repairGeneratedPermissions) {
             $permissionRepairAttempted = $true
             $repairResult = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' repair-permissions $planArguments --output '$remoteInbox/generated-cleanup-permissions.json'")) | Select-Object -Last 1) | ConvertFrom-Json
@@ -654,6 +788,7 @@ try {
         Require-Reclaim ($planProof.kind -ceq 'doorhandle-old-build-cleanup-plan' -and $planProof.currentRelease -ceq $Tag -and $planProof.identity.instanceId -ceq $instance -and $planProof.identity.machineId -ceq $machine -and $planProof.identity.executionLocation -ceq 'ECS') 'Collected cleanup plan belongs to another build or ECS.'
         $applyAttempted = $true
         $null = Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "exec python3 -I -B '$helper' apply $arguments --plan '$remoteInbox/$evidencePrefix-plan.json' --plan-sha256 '$($planProof.rawSha256)' --output '$remoteInbox/$evidencePrefix-receipt.json'"))
+        }
     }
     $completed = $true
 } catch {
@@ -666,17 +801,31 @@ try {
             if ($inspection.files.ContainsKey('permissionJournal')) { Copy-ReclaimEvidence 'generated-cleanup-permissions-journal.jsonl' (Join-Path $artifacts 'generated-cleanup-permissions-journal.jsonl') $inspection.files.permissionJournal }
             Require-Reclaim (-not $permissionRepairAttempted -or $inspection.files.ContainsKey('permissions')) 'Permission repair lacks its retained original receipt.'
             if ($GeneratedArtifacts -and $inspection.files.ContainsKey('journal')) { Copy-ReclaimEvidence "$evidencePrefix-journal.jsonl" (Join-Path $artifacts "$evidencePrefix-journal.jsonl") $inspection.files.journal }
+            if ($scmTransportRestoration -and $inspection.files.ContainsKey('restoreStaging')) {
+                Copy-ReclaimEvidence 'restore-source-staging.json' (Join-Path $artifacts 'restore-source-staging.json') $inspection.files.restoreStaging
+                Require-Reclaim ($null -eq $restoreStagingSha -or $restoreStagingSha -ceq $inspection.files.restoreStaging.sha256) 'Restoration staging identity changed during the transfer.'
+                $restoreStagingSha = $inspection.files.restoreStaging.sha256
+            }
             if ($inspection.files.ContainsKey('plan')) { Copy-ReclaimEvidence "$evidencePrefix-plan.json" $localPlan $inspection.files.plan }
             if ($inspection.files.ContainsKey('receipt')) {
                 Copy-ReclaimEvidence "$evidencePrefix-receipt.json" $localReceipt $inspection.files.receipt
-                $receiptProof = (Invoke-Reclaim $python @('-I', '-B', '-c', $evidenceReader, $localReceipt) | Select-Object -Last 1) | ConvertFrom-Json
+                $receiptArguments = @('-I', '-B', '-c', $evidenceReader, $localReceipt)
+                if ($scmTransportRestoration) {
+                    Require-Reclaim ($restoreStagingSha -cmatch '^[a-f0-9]{64}$' -and $inspection.files.ContainsKey('journal') -and (Get-FileHash -LiteralPath $requestLocal -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $context.generatedRequest.sha256) 'Restoration receipt requires the unchanged request and original staging identity.'
+                    $receiptArguments += @($requestLocal,(Join-Path $artifacts 'restore-source-staging.json'),(Join-Path $artifacts "$evidencePrefix-journal.jsonl"))
+                }
+                $receiptProof = (Invoke-Reclaim $python $receiptArguments | Select-Object -Last 1) | ConvertFrom-Json
+                if (-not $scmTransportRestoration) {
                 $mavenPreserved = if ($GeneratedArtifacts) { $receiptProof.generatedLifecycle -eq $true -and $receiptProof.unselectedMavenRepositoriesPreserved -eq $true } else { $receiptProof.oldMavenRepositoriesPreserved -eq $true }
                 Require-Reclaim ($null -ne $planProof -and $receiptProof.kind -ceq 'doorhandle-old-build-cleanup-receipt' -and $receiptProof.currentRelease -ceq $Tag -and $receiptProof.identity.instanceId -ceq $instance -and $receiptProof.identity.machineId -ceq $machine -and $receiptProof.identity.executionLocation -ceq 'ECS' -and $receiptProof.planSha256 -ceq $planProof.canonicalSha256 -and $receiptProof.status -cin @('REMOVED', 'NO_ACTION', 'PARTIAL_FAILURE') -and $receiptProof.originalEvidencePreserved -eq $true -and $receiptProof.sharedMavenCachePreserved -eq $true -and $receiptProof.publishedArtifactsPreserved -eq $true -and $mavenPreserved -and $receiptProof.businessDataDeleted -eq $false) 'Collected cleanup receipt lacks its exact build, plan or preservation boundary.'
+                }
             }
             Require-Reclaim (-not $applyAttempted -or $null -ne $receiptProof) 'Cleanup execution lacks its original receipt; keep the build failed.'
+            Require-Reclaim (-not $restorationAttempted -or ($null -ne $receiptProof -and $inspection.files.ContainsKey('journal'))) 'Restoration execution lacks its original receipt or journal; keep the build failed.'
         } catch { $collectionFailed = $true }
     }
     $status = if ($completed -and -not $collectionFailed -and $null -ne $receiptProof -and $receiptProof.status -cin @('REMOVED', 'NO_ACTION')) { $receiptProof.status } else { 'FAILED_OR_UNKNOWN' }
+    if ($scmTransportRestoration -and $completed -and -not $collectionFailed -and $null -ne $receiptProof -and $receiptProof.status -ceq 'RESTORED') { $status = 'RESTORED' }
     if($PrepareOnly -and $completed -and -not $collectionFailed){$status='SOURCE_PREPARED'}
     $result = @{ schema = 1; kind = 'doorhandle-build-cleanup-controller'; status = $status; currentRelease = $Tag;
         commit = $Commit; sourceSha256 = $SourceSha256; identity = @{ instanceId = $instance; machineId = $machine; executionLocation = 'ECS' };
@@ -689,7 +838,11 @@ try {
         $result.mode = 'Maintenance'; $result.testsExecuted = $false; $result.applicationBuilt = $false
         $result.sourceBytes = $sourceBytes; $result.admission = $bootstrap
     }
-    if ($GeneratedArtifacts) {
+    if ($scmTransportRestoration) {
+        $result.restoration = $true; $result.deletionPerformed = $false; $result.restorationAttempted = $restorationAttempted
+        $result.restoredCount = if ($null -ne $receiptProof) { $receiptProof.restoredCount } else { 0 }
+        $result.restoredBytes = if ($null -ne $receiptProof) { $receiptProof.restoredBytes } else { 0 }
+    } elseif ($GeneratedArtifacts) {
         $result.generatedLifecycle = $true
         $result.permissionRepairAttempted = $permissionRepairAttempted
         $result.retention = if ($receiptProof) { $receiptProof.retention } else { @{status='UNKNOWN';budgetVerdict='UNKNOWN'} }
@@ -702,7 +855,9 @@ try {
 if ($null -ne $failure -or $result.status -cin @('FAILED_OR_UNKNOWN','RETAINED_OUTPUTS_REQUIRE_ACTION')) {
     throw 'Old build output cleanup did not complete with verified original evidence; collected files are retained.'
 }
-if ($scmTransportOperation) {
+if ($scmTransportRestoration) {
+    Write-Host ('Source transport restoration: ' + $result.status + '. Exact retired ECS provenance copies are restored from retained complete D-drive originals. No historical data or reports are deleted.')
+} elseif ($scmTransportOperation) {
     Write-Host ('Old build output cleanup: ' + $result.status + '. Complete D-drive source originals are retained; only approved ECS transport copies are retired. Business data, original reports, published artifacts and shared Maven dependencies are retained.')
 } else {
     Write-Host ('Old build output cleanup: ' + $result.status + '. Business data, original reports, source archives, published artifacts and shared Maven dependencies are retained.')

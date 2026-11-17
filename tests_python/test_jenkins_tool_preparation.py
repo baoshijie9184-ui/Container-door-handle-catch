@@ -897,6 +897,25 @@ class CompletedRuntimeDependencyReuseTests(unittest.TestCase):
             SOURCE_SHA, uid=1000, gid=1000)
         self.assertEqual([tools.CACHED_PYTHON, '--version'], legacy[-2:])
 
+    def test_missing_shared_installer_source_reports_safe_producer_identity_and_does_not_reinstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+            value, sources, pinned = self.current_consumer(source, producer, image, calls)
+            original = source.archive.read_bytes()
+            source.archive.unlink()
+            with self.assertRaises(tools.PreparationError) as raised:
+                value.inspect_completed_dependencies(sources, pinned, image_id=image['Id'])
+            self.assertEqual('COMPLETED_PRODUCER_SOURCE_MISSING producerRelease='
+                             + source.args.tag + ' member=source.tar.gz', str(raised.exception))
+            self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+            self.assertNotIn(str(source.root), str(raised.exception))
+            restored = source.archive.with_name('restored-original.tar.gz')
+            restored.write_bytes(original); restored.chmod(0o600); restored.rename(source.archive)
+            proof = value.inspect_completed_dependencies(sources, pinned, image_id=image['Id'])
+            self.assertEqual(image['Id'], proof[0]['Id'])
+            self.assertEqual(producer['Id'], proof[2]['Id'])
+            self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
     def test_current_22_pin_producer_is_reused_across_build_and_recipe_changes_readonly(self):
         with tempfile.TemporaryDirectory() as directory:
             source, producer, image, calls, owner = self.completed_runtime_producer(Path(directory))

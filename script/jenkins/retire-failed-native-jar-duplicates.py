@@ -251,6 +251,10 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('a7a0e1b5f710500d5c5834fb0bb8a5dfc506c1ae51d99b3e4d435c3be99a8c5e',
      'f54373a3b588eaee1c6b669e89d2a4be01d4e6cbeb17575343189febc8b1798d',
      '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e'),
+    # Authored missing-installer-source diagnostic only; admission stays strict.
+    ('a7a0e1b5f710500d5c5834fb0bb8a5dfc506c1ae51d99b3e4d435c3be99a8c5e',
+     'f54373a3b588eaee1c6b669e89d2a4be01d4e6cbeb17575343189febc8b1798d',
+     'aa40822dc069b3e71250b6977fbec9da08a5276c27a7f7fd3c40859d563172f0'),
 })
 
 

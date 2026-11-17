@@ -835,7 +835,13 @@ class Preparation:
         checker = object.__new__(PreparedReadback)
         checker.root = self.root; checker.inbox = canonical(origin.parent)
         checker.folder = origin; checker.reports = origin / 'reports'
-        checker.archive = canonical(checker.inbox / 'source.tar.gz')
+        try:
+            checker.archive = canonical(checker.inbox / 'source.tar.gz')
+        except FileNotFoundError:
+            # This is a retained installer dependency, not a disposable upload.
+            # Keep the original admission strict and expose only fixed fields.
+            raise PreparationError('COMPLETED_PRODUCER_SOURCE_MISSING producerRelease='
+                                   + release + ' member=source.tar.gz') from None
         control_bytes(checker.archive, maximum=512 * MIB)
         checker.identity = self.identity; checker.docker = self.docker
         checker.args = argparse.Namespace(root=str(self.root), tag=release, commit=commit,

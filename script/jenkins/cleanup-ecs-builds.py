@@ -60,6 +60,14 @@ SCM_TRANSPORT_ROOT = '/home/ecs-user/doorhandle-ci'
 SCM_TRANSPORT_IDENTITY = {'instanceId': 'i-2zeieuov2aum486jm1ek',
     'machineId': '1ebe8f77e3104ab6a49a9386e38abd20', 'executionLocation': 'ECS'}
 SCM_TRANSPORT_PROTECTED = frozenset({'ci-419-67188368c905', GENERATED_TOOL_KEEPER}) | GENERATED_PROTECTED_RELEASES
+# control-preflight.recover_control_scratch validates these source originals
+# even when the fixed recovery already says ALREADY_COMPLETE.
+SCM_CONTROL_SOURCE_KEEPERS = frozenset({'ci-301-cfc056762f1f', 'ci-302-28e41fc4eae1'})
+SCM_RESTORE_SOURCES = SCM_CONTROL_SOURCE_KEEPERS | {'ci-297-bb38f0fc9b33'}
+SCM_RESTORE_RETIREMENT = {'release': 'ci-423-3a2d2e573086',
+    'planSha256': '5a2fb27ee73b74088972b7b0eb1383fa9ad4b0925215fee1939b7953825b5a32',
+    'receiptSha256': '15a90a25ed7c73c153f56aefa70d01afb8ee69f241d5836a24bb13b83060ec59',
+    'journalSha256': '1d2c79ada84ed8287871623d6e4cb369eb191ed054528e692812cf205851891a'}
 # These reviewed functions route checkout commands to this one disposable cache.
 # Compare syntax only; never execute an old source or infer ownership by name.
 NPM_ROUTING_AST = {
@@ -1207,9 +1215,10 @@ def scm_transport_authorization(request, root):
             'SCM_TRANSPORT_EXACT_SELECTION_REQUIRED')
     for row in request['candidates']:
         tag = row.get('release'); original = selected.get(tag)
+        restoration_fields = {'scmTransportParentMetadata'} if request.get('scmTransportOperation') == 'RESTORE' else set()
         require(original is not None and tag not in SCM_TRANSPORT_PROTECTED and tag != request['currentRelease']
                 and set(row) == {'release', 'commit', 'sourceSha256', 'terminal', 'targets',
-                                 'scmTransportKeeper', 'scmTransportMetadata'}
+                                 'scmTransportKeeper', 'scmTransportMetadata'} | restoration_fields
                 and row['targets'] == [{'kind': SCM_TRANSPORT_KIND, 'path': f'inbox/{tag}/source.tar.gz'}]
                 and original['remotePath'] == f'{root}/inbox/{tag}/source.tar.gz'
                 and row['sourceSha256'] == original['expectedSourceSha256'],
@@ -1225,6 +1234,14 @@ def scm_transport_binding(root, row, identity, verifier, authorized):
     the result without trying to read that intentionally removed input again.
     """
     tag = row['release']; approved = authorized[tag]; keeper = row.get('scmTransportKeeper', {})
+    require(tag not in SCM_CONTROL_SOURCE_KEEPERS, 'SCM_TRANSPORT_REQUIRED_BY_CONTROL_RECOVERY')
+    installer = root / 'inbox' / tag / 'python-tools/preparation.json'
+    if installer.exists() or installer.is_symlink():
+        original = read_json(owned_chain(installer, root, maximum=2 * 1024 ** 2), 2 * 1024 ** 2)
+        # A completed original installer remains a shared dependency producer.
+        # Stopped containers and idle processes do not end this source contract.
+        require(type(original) is dict and original.get('dependencyPreparation') != 'INSTALLED_CURRENT_SOURCE',
+                'SCM_TRANSPORT_REQUIRED_BY_SHARED_INSTALLER')
     terminal = row['terminal']; expected = row.get('scmTransportMetadata')
     attempt = root / 'verification' / tag
     pending = [root / 'releases' / tag, attempt / 'runtime-execution.json', attempt / 'runtime-acceptance.json',
@@ -1259,6 +1276,161 @@ def scm_transport_binding(root, row, identity, verifier, authorized):
     return {'checkout': checkout if checkout.exists() else None, 'inbox': source.parent, 'token': None,
             'sourceArchive': str(source), 'scmTransportKeeper': keeper,
             'evidenceArchive': None, 'claimSha256': None, 'toolManifestSha256': None}
+
+
+def restore_scm_transports(root, request, verifier):
+    """Restore only the three proven source dependencies removed by #423.
+
+    No overwrite, recursive action, Docker mutation, or trust fallback. A staged
+    original is renamed atomically: interruption leaves one complete file at
+    either name, never a partial original or a two-link source archive.
+    """
+    require(sys.platform == 'linux' and set(request) == {'schema', 'kind', 'currentRelease', 'identity',
+            'protectedReleases', 'currentPost', 'candidates', 'scmTransportAuthorization',
+            'scmTransportOperation', 'scmTransportRetirement'}
+            and request['schema'] == 1 and request['kind'] == GENERATED_REQUEST_KIND
+            and request['scmTransportOperation'] == 'RESTORE'
+            and request['scmTransportRetirement'] == SCM_RESTORE_RETIREMENT,
+            'SCM_RESTORE_EXACT_REPAIR_REQUIRED')
+    root = owned(root, directory=True); approved = scm_transport_authorization(request, root)
+    current = request['currentRelease']; rows = request['candidates']
+    require(TAG.fullmatch(current or '') and 0 < len(rows) <= 3
+            and len({row['release'] for row in rows}) == len(rows)
+            and all(row['release'] in SCM_RESTORE_SOURCES for row in rows),
+            'SCM_RESTORE_SOURCE_SET_DIFFERS')
+    retirement = request['scmTransportRetirement']; old_inbox = root / 'inbox' / retirement['release']
+    originals = {}
+    for kind in ('plan', 'receipt', 'journal'):
+        suffix = 'jsonl' if kind == 'journal' else 'json'
+        path = owned_chain(old_inbox / ('generated-cleanup-' + kind + '.' + suffix), root)
+        raw = path.read_bytes()
+        require(sha(raw) == retirement[kind + 'Sha256'], 'SCM_RESTORE_RETIREMENT_ORIGINAL_CHANGED')
+        originals[kind] = [json.loads(line) for line in raw.splitlines()] if kind == 'journal' else json.loads(raw)
+    old_plan, receipt, journal = (originals[key] for key in ('plan', 'receipt', 'journal'))
+    require(old_plan['currentRelease'] == receipt['currentRelease'] == retirement['release']
+            and old_plan['identity'] == receipt['identity'] == request['identity']
+            and old_plan['requestSha256'] == sha(canonical(old_plan['request']))
+            and receipt['status'] == 'REMOVED' and receipt['planSha256'] == sha(canonical(old_plan))
+            and receipt['journalSha256'] == retirement['journalSha256']
+            and receipt['scmTransportCopies']['authorizationSha256'] == SCM_TRANSPORT_AUTHORIZATION_SHA256
+            and journal[0]['phase'] == 'STARTED' and journal[0]['planSha256'] == receipt['planSha256']
+            and journal[-1] == {'phase': 'FINISHED', 'deletedTargets': len(receipt['deleted'])},
+            'SCM_RESTORE_ORIGINAL_DELETION_NOT_COMPLETE')
+    scm_transport_authorization(old_plan['request'], root)
+    inbox = owned_chain(root / 'inbox' / current, root, directory=True)
+    staging_path = owned_chain(inbox / 'restore-source-staging.json', root, maximum=1024 ** 2)
+    staging_raw = staging_path.read_bytes(); staging = json.loads(staging_raw)
+    require(set(staging) == {'schema', 'currentRelease', 'requestSha256', 'uploads'} and staging['schema'] == 1
+            and staging['currentRelease'] == current and staging['requestSha256'] == sha(canonical(request))
+            and len(staging['uploads']) == len(rows)
+            and {item['release'] for item in staging['uploads']} == {row['release'] for row in rows},
+            'SCM_RESTORE_STAGING_NOT_BOUND')
+    # Validate the complete fixed restoration set before the first rename.
+    actions = []
+    for row in rows:
+        tag = row['release']; generated_terminal(row, current)
+        original_row = next(item for item in old_plan['request']['candidates'] if item['release'] == tag)
+        original_target = next(item for candidate in old_plan['candidates'] if candidate['release'] == tag
+                               for item in candidate['targets'] if item['path'] == row['targets'][0]['path'])
+        require(all(row[key] == original_row[key] for key in ('release', 'commit', 'sourceSha256',
+                    'targets', 'scmTransportKeeper', 'scmTransportMetadata'))
+                and original_target['rootMetadata'] == row['scmTransportMetadata']
+                and deleted_projection(original_target) in receipt['deleted']
+                and {'phase': 'DELETE_FINISHED', **deleted_projection(original_target)} in journal,
+                'SCM_RESTORE_TARGET_NOT_DELETED_BY_ORIGINAL')
+        upload = next(item for item in staging['uploads'] if item['release'] == tag)
+        require(set(upload) == {'release', 'file', 'bytes', 'sha256', 'device', 'inode'}
+                and upload['file'] == 'restore-source-' + tag + '.tar.gz'
+                and upload['bytes'] == approved[tag]['expectedBytes']
+                and upload['sha256'] == row['sourceSha256']
+                and all(type(upload[key]) is int and upload[key] > 0 for key in ('device', 'inode')),
+                'SCM_RESTORE_UPLOAD_IDENTITY_INVALID')
+        actions.append((row, upload))
+    disk = os.statvfs(root)
+    require(disk.f_bavail * disk.f_frsize >= CONTROL_DISK_RESERVE + 3 * CONTROL_METADATA_BYTES,
+            'SCM_RESTORE_CONTROL_RESERVE_REQUIRED')
+    result = {'schema': 1, 'kind': 'doorhandle-scm-transport-restoration-receipt', 'currentRelease': current,
+              'identity': request['identity'], 'requestSha256': sha(canonical(request)),
+              'retirement': retirement, 'stagingSha256': sha(staging_raw), 'restored': [],
+              'originalKeepersPreserved': True, 'businessDataChanged': False}
+    with cleanup_lock(root), ExitStack() as locks:
+        for row, _ in actions: locks.enter_context(attempt_lock(root, row['release'], generated=True))
+        path = inbox / 'generated-cleanup-journal.jsonl'
+        with os.fdopen(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as stream:
+            written = 0
+            def record(event):
+                nonlocal written
+                raw = canonical(event) + b'\n'; written += len(raw)
+                require(written <= CONTROL_METADATA_BYTES, 'SCM_RESTORE_JOURNAL_BOUND_EXCEEDED')
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            record({'phase': 'RESTORE_STARTED', 'requestSha256': result['requestSha256']})
+            active = None
+            try:
+                for row, upload in actions:
+                    active = row['release']; parent = owned_chain(root / 'inbox' / active, root, directory=True)
+                    require(metadata(parent.lstat()) == row['scmTransportParentMetadata'],
+                            'SCM_RESTORE_PARENT_CHANGED')
+                    target = parent / 'source.tar.gz'
+                    require(not target.exists() and not target.is_symlink(), 'SCM_RESTORE_TARGET_ALREADY_EXISTS')
+                    stage = owned_chain(inbox / upload['file'], root, maximum=verifier.MAX_SOURCE_ARCHIVE)
+                    checkout = root / 'verification' / active / 'checkout'
+                    if checkout.exists() or checkout.is_symlink(): owned_chain(checkout, root, directory=True)
+                    binding = {'inbox': parent, 'checkout': checkout if checkout.exists() else None, 'token': None}
+                    generated_quiescent(root, binding, active, docker_snapshot(), row['targets'])
+                    with ExitStack() as files:
+                        fd = os.open(stage, os.O_RDONLY | os.O_NOFOLLOW); files.callback(os.close, fd)
+                        before = os.fstat(fd)
+                        require(before.st_dev == upload['device'] and before.st_ino == upload['inode']
+                                and before.st_dev == root.stat().st_dev and stat.S_ISREG(before.st_mode)
+                                and before.st_uid == os.getuid() and stat.S_IMODE(before.st_mode) == 0o600
+                                and before.st_nlink == 1 and before.st_size == upload['bytes'],
+                                'SCM_RESTORE_UPLOADED_FILE_CHANGED')
+                        checksum = hashlib.sha256()
+                        for block in iter(lambda: os.read(fd, 1024 ** 2), b''): checksum.update(block)
+                        require(checksum.hexdigest() == row['sourceSha256'], 'SCM_RESTORE_SOURCE_BYTES_DIFFER')
+                        with verifier.bounded_tar(stage, verifier.MAX_SOURCE_BYTES) as archive:
+                            require(archive.pax_headers.get('comment') == row['commit'], 'SCM_RESTORE_SOURCE_COMMIT_DIFFERS')
+                            for _member in archive: pass
+                        require(metadata(os.fstat(fd)) == metadata(stage.lstat()) == metadata(before),
+                                'SCM_RESTORE_UPLOADED_FILE_CHANGED')
+                        source_dir = os.open(inbox, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                        target_dir = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                        files.callback(os.close, source_dir); files.callback(os.close, target_dir)
+                        require(metadata(os.fstat(target_dir)) == row['scmTransportParentMetadata'],
+                                'SCM_RESTORE_PARENT_CHANGED')
+                        os.fsync(fd)
+                        record({'phase': 'RESTORE_INTENT', 'release': active, 'path': row['targets'][0]['path'],
+                                'sourceSha256': row['sourceSha256'], 'stageMetadata': metadata(before)})
+                        restore_no_replace(source_dir, stage.name, target_dir, target.name)
+                        after = os.fstat(fd)
+                        require(metadata(after) == metadata(target.lstat())
+                                and all(metadata(after)[i] == metadata(before)[i] for i in range(9) if i != 7),
+                                'SCM_RESTORE_PUBLISHED_FILE_CHANGED')
+                        os.fsync(target_dir); os.fsync(source_dir)
+                        item = {'release': active, 'path': row['targets'][0]['path'], 'sourceSha256': row['sourceSha256'],
+                                'oldMetadata': row['scmTransportMetadata'], 'newMetadata': metadata(after),
+                                'bytes': after.st_size, 'allocatedBytes': after.st_blocks * 512}
+                        result['restored'].append(item); record({'phase': 'RESTORE_COMPLETED', **item})
+                result['status'] = 'RESTORED'; record({'phase': 'RESTORE_FINISHED', 'restoredCount': len(result['restored'])})
+            except (OSError, ValueError) as error:
+                result['status'] = 'PARTIAL_FAILURE'
+                result['failure'] = {'release': active, 'guardCode': failure_guard_code(error), 'errorType': type(error).__name__}
+                record({'phase': 'RESTORE_FAILED', **result['failure'], 'restoredCount': len(result['restored'])})
+    result['journalSha256'] = digest(path)
+    return result
+
+
+def restore_no_replace(source_fd, source_name, destination_fd, destination_name):
+    """Same Linux no-overwrite publication primitive as tool completion."""
+    import ctypes
+    library = ctypes.CDLL(None, use_errno=True)
+    operation = getattr(library, 'renameat2', None)
+    require(operation is not None, 'SCM_RESTORE_ATOMIC_NOREPLACE_REQUIRED')
+    operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    operation.restype = ctypes.c_int
+    if operation(source_fd, os.fsencode(source_name), destination_fd, os.fsencode(destination_name), 1):
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number))
 
 
 def generated_binding(root, row, identity, verifier, *, transport_authorization=None):
@@ -2296,7 +2468,7 @@ def main(argv=None):
         print(json.dumps(result, sort_keys=True)); return
     require(not (sys.platform == 'linux' and os.geteuid() == 0), 'ROOT_PERMITS_ONLY_PROCESS_METADATA_MODE')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('custody', 'plan', 'apply', 'repair-permissions'))
+    parser.add_argument('phase', choices=('custody', 'plan', 'apply', 'repair-permissions', 'restore-transport'))
     parser.add_argument('--retained-directory'); parser.add_argument('--output', required=True)
     parser.add_argument('--root'); parser.add_argument('--current-tag'); parser.add_argument('--commit')
     parser.add_argument('--instance-id'); parser.add_argument('--machine-id')
@@ -2323,9 +2495,11 @@ def main(argv=None):
         suffix = '-permissions.json' if args.phase == 'repair-permissions' else '-plan.json' if args.phase == 'plan' else '-receipt.json'
         expected_output = root / 'inbox' / args.current_tag / (prefix + suffix)
         require(Path(args.output) == expected_output, 'CLEANUP_OUTPUT_OUTSIDE_CURRENT_INBOX')
-        if args.phase in ('plan', 'repair-permissions'):
+        if args.phase in ('plan', 'repair-permissions', 'restore-transport'):
             require(args.phase != 'repair-permissions' or args.generated and args.request and not args.evidence_archived,
                     'GENERATED_PERMISSION_EXPLICIT_MAINTENANCE_REQUIRED')
+            require(args.phase != 'restore-transport' or args.generated and args.request and not args.evidence_archived,
+                    'SCM_RESTORE_EXPLICIT_MAINTENANCE_REQUIRED')
             if args.request:
                 request_file = owned(Path(args.request)); require(digest(request_file) == args.request_sha256, 'CLEANUP_REQUEST_SHA_DIFFERS')
                 require(request_file == root / 'inbox' / args.current_tag / (prefix + '-request.json'), 'CLEANUP_REQUEST_OUTSIDE_CURRENT_INBOX')
@@ -2337,7 +2511,10 @@ def main(argv=None):
                 request = discover_request(root, args.current_tag, identity, args.protected_release)
             require((request.get('kind') == GENERATED_REQUEST_KIND) == args.generated, 'GENERATED_MODE_REQUEST_MISMATCH')
             require(request['currentRelease'] == args.current_tag and request['identity'] == identity, 'REQUEST_BELONGS_TO_ANOTHER_BUILD_OR_ECS')
-            if args.phase == 'repair-permissions':
+            if args.phase == 'restore-transport':
+                result = restore_scm_transports(root, request, verifier)
+                control_budget = {'receiptBytes': CONTROL_METADATA_BYTES}
+            elif args.phase == 'repair-permissions':
                 result = repair_generated_permissions(root, request, verifier)
                 control_budget = {'receiptBytes': 4 * 1024 ** 2}
             else:

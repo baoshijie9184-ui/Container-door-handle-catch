@@ -1531,3 +1531,150 @@ def test_transport_keeps_source_needed_by_existing_enrollment_and_allows_empty_e
     assert not state.source_copy.exists()
     auto = make_plan(state, old)
     assert not auto['candidates'] and not auto['skipped'] and auto['absent']
+
+@pytest.mark.parametrize('phase', ['plan', 'apply'])
+@pytest.mark.parametrize('consumer', ['shared-installer', 'control-recovery'])
+def test_transport_retains_static_producer_dependencies_even_when_no_process_is_running(transport_copy, monkeypatch, phase, consumer):
+    state = transport_copy; value = state.transport
+    plan = make_plan(state, value)
+    assert not plan['skipped'] and plan['candidates']
+    if consumer == 'shared-installer':
+        legacy.put_json(state.inbox / 'python-tools/preparation.json', {
+            'kind': 'doorhandle-ecs-tool-preparation', 'status': 'PREPARED', 'release': OLD,
+            'dependencyPreparation': 'INSTALLED_CURRENT_SOURCE', 'pipExecutedThisAttempt': True})
+        code = 'SCM_TRANSPORT_REQUIRED_BY_SHARED_INSTALLER'
+    else:
+        monkeypatch.setattr(cleanup, 'SCM_CONTROL_SOURCE_KEEPERS', {OLD})
+        code = 'SCM_TRANSPORT_REQUIRED_BY_CONTROL_RECOVERY'
+    if phase == 'plan':
+        refused = make_plan(state, value)
+        assert not refused['candidates'] and refused['skipped'][0]['reason'] == code
+    else:
+        with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+            cleanup.apply_plan(state.root, value, plan, remote)
+    assert state.source_copy.exists() and state.original_keeper.exists()
+
+
+def test_transport_fixed_control_source_keepers_match_the_actual_original_consumer():
+    import ast
+    source = ast.parse((legacy.ROOT / 'script/jenkins/control-preflight.py').read_bytes())
+    originals = {node.targets[0].id: ast.literal_eval(node.value) for node in source.body
+                 if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                 and node.targets[0].id in ('SCRATCH_301', 'SCRATCH_302')}
+    assert len(originals) == 2
+    assert cleanup.SCM_CONTROL_SOURCE_KEEPERS == {row['release'] for row in originals.values()}
+
+
+@pytest.fixture
+def restore_transport(transport_copy, monkeypatch):
+    state = transport_copy; delete_request = copy.deepcopy(state.transport)
+    plan = make_plan(state, delete_request)
+    result = cleanup.apply_plan(state.root, delete_request, plan, remote)
+    assert result['status'] == 'REMOVED' and not state.source_copy.exists()
+    old = state.root / 'inbox' / CURRENT
+    legacy.put_json(old / 'generated-cleanup-plan.json', plan)
+    legacy.put_json(old / 'generated-cleanup-receipt.json', result)
+    proof = {'release': CURRENT, 'planSha256': cleanup.digest(old / 'generated-cleanup-plan.json'),
+             'receiptSha256': cleanup.digest(old / 'generated-cleanup-receipt.json'),
+             'journalSha256': cleanup.digest(old / 'generated-cleanup-journal.jsonl')}
+    monkeypatch.setattr(cleanup, 'SCM_RESTORE_RETIREMENT', proof)
+    monkeypatch.setattr(cleanup, 'SCM_RESTORE_SOURCES', {OLD})
+    request = copy.deepcopy(delete_request)
+    request['currentRelease'] = 'ci-73-' + 'c' * 12
+    request['scmTransportOperation'] = 'RESTORE'; request['scmTransportRetirement'] = proof
+    request['candidates'][0]['scmTransportParentMetadata'] = cleanup.metadata(state.inbox.lstat())
+    inbox = state.root / 'inbox' / request['currentRelease']; inbox.mkdir(mode=0o700)
+    stage = legacy.put(inbox / ('restore-source-' + OLD + '.tar.gz'), state.original_keeper.read_bytes())
+    info = stage.lstat()
+    staging = {'schema': 1, 'currentRelease': request['currentRelease'], 'requestSha256': cleanup.sha(cleanup.canonical(request)),
+        'uploads': [{'release': OLD, 'file': stage.name, 'bytes': info.st_size,
+                     'sha256': cleanup.digest(stage), 'device': info.st_dev, 'inode': info.st_ino}]}
+    legacy.put_json(inbox / 'restore-source-staging.json', staging)
+    state.restore_request, state.restore_stage, state.restore_inbox = request, stage, inbox
+    state.retirement_proof, state.staging = proof, staging
+    return state
+
+
+def test_restore_original_source_uses_new_inode_and_actual_original_deletion_evidence(restore_transport):
+    state = restore_transport; original = state.original_keeper.read_bytes()
+    stage_identity = (state.restore_stage.stat().st_dev, state.restore_stage.stat().st_ino)
+    result = cleanup.restore_scm_transports(state.root, state.restore_request, remote)
+    assert result['status'] == 'RESTORED' and len(result['restored']) == 1
+    item = result['restored'][0]
+    assert item['newMetadata'] == cleanup.metadata(state.source_copy.lstat())
+    assert (item['newMetadata'][6], item['newMetadata'][5]) == stage_identity
+    assert item['oldMetadata'] == state.restore_request['candidates'][0]['scmTransportMetadata']
+    assert item['sourceSha256'] == cleanup.sha(original) and state.source_copy.read_bytes() == original
+    assert not state.restore_stage.exists() and state.source_copy.stat().st_nlink == 1
+    assert state.original_keeper.read_bytes() == original
+    journal = [json.loads(line) for line in (state.restore_inbox / 'generated-cleanup-journal.jsonl').read_bytes().splitlines()]
+    assert [event['phase'] for event in journal] == ['RESTORE_STARTED', 'RESTORE_INTENT', 'RESTORE_COMPLETED', 'RESTORE_FINISHED']
+    assert result['originalKeepersPreserved'] and result['businessDataChanged'] is False
+
+
+@pytest.mark.parametrize('damage', ['retirement-binding', 'retirement-plan', 'retirement-receipt', 'retirement-journal',
+    'not-restorable', 'different-keeper', 'old-metadata', 'staging-request', 'staging-inode',
+    'changed-upload', 'target-exists', 'target-symlink', 'parent-changed', 'active-reference'])
+def test_restore_refuses_unknown_or_changed_inputs_without_overwriting(restore_transport, monkeypatch, damage):
+    state = restore_transport; value = copy.deepcopy(state.restore_request)
+    if damage == 'retirement-binding': value['scmTransportRetirement'] = {**value['scmTransportRetirement'], 'planSha256': '0' * 64}
+    elif damage.startswith('retirement-'):
+        kind = damage.split('-')[1]; suffix = 'jsonl' if kind == 'journal' else 'json'
+        original = state.root / 'inbox' / CURRENT / ('generated-cleanup-' + kind + '.' + suffix)
+        original.write_bytes(original.read_bytes() + b'changed')
+    elif damage == 'not-restorable': monkeypatch.setattr(cleanup, 'SCM_RESTORE_SOURCES', set())
+    elif damage == 'different-keeper': value['candidates'][0]['scmTransportKeeper']['catalogSha256'] = '0' * 64
+    elif damage == 'old-metadata': value['candidates'][0]['scmTransportMetadata'][5] += 1
+    elif damage == 'staging-request':
+        state.staging['requestSha256'] = '0' * 64
+        legacy.put_json(state.restore_inbox / 'restore-source-staging.json', state.staging)
+    elif damage == 'staging-inode':
+        state.staging['uploads'][0]['inode'] += 1
+        legacy.put_json(state.restore_inbox / 'restore-source-staging.json', state.staging)
+    elif damage == 'changed-upload': state.restore_stage.write_bytes(b'unknown incomplete input')
+    elif damage == 'target-exists': legacy.put(state.source_copy, b'unknown existing file')
+    elif damage == 'target-symlink': state.source_copy.symlink_to(state.original_keeper)
+    elif damage == 'parent-changed': os.utime(state.inbox, ns=(1, 1))
+    elif damage == 'active-reference':
+        monkeypatch.setattr(cleanup, 'docker_snapshot', lambda: [['a' * 64, True, False, 123, OLD, None, []]])
+    if damage != 'staging-request':
+        # Keep the transfer envelope coherent so row/keeper/metadata mutations
+        # reach their intended original-deletion or file admission boundary.
+        state.staging['requestSha256'] = cleanup.sha(cleanup.canonical(value))
+        legacy.put_json(state.restore_inbox / 'restore-source-staging.json', state.staging)
+    before = state.source_copy.read_bytes() if state.source_copy.exists() else None
+    try: result = cleanup.restore_scm_transports(state.root, value, remote)
+    except (ValueError, OSError): pass
+    else: assert result['status'] == 'PARTIAL_FAILURE' and result['restored'] == []
+    assert state.restore_stage.exists() and state.original_keeper.exists()
+    assert (state.source_copy.read_bytes() if state.source_copy.exists() else None) == before
+
+
+@pytest.mark.parametrize('point', ['before-rename', 'after-rename'])
+def test_restore_interruption_never_leaves_partial_or_double_link_original(restore_transport, monkeypatch, point):
+    state = restore_transport; original = cleanup.restore_no_replace
+    def interrupt(*args):
+        if point == 'after-rename': original(*args)
+        raise KeyboardInterrupt('synthetic transport interruption')
+    monkeypatch.setattr(cleanup, 'restore_no_replace', interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        cleanup.restore_scm_transports(state.root, state.restore_request, remote)
+    survivor = state.source_copy if point == 'after-rename' else state.restore_stage
+    assert survivor.read_bytes() == state.original_keeper.read_bytes() and survivor.stat().st_nlink == 1
+    assert state.source_copy.exists() != state.restore_stage.exists()
+    journal = [json.loads(line) for line in (state.restore_inbox / 'generated-cleanup-journal.jsonl').read_bytes().splitlines()]
+    assert journal[-1]['phase'] == 'RESTORE_INTENT'
+    assert not (state.restore_inbox / 'generated-cleanup-receipt.json').exists()
+
+
+def test_restore_atomic_no_replace_preserves_an_existing_file(restore_transport):
+    state = restore_transport
+    legacy.put(state.source_copy, b'not ours')
+    source_fd = os.open(state.restore_inbox, os.O_RDONLY | os.O_DIRECTORY)
+    target_fd = os.open(state.inbox, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(FileExistsError):
+            cleanup.restore_no_replace(source_fd, state.restore_stage.name, target_fd, state.source_copy.name)
+    finally: os.close(source_fd); os.close(target_fd)
+    assert state.source_copy.read_bytes() == b'not ours'
+    assert state.restore_stage.read_bytes() == state.original_keeper.read_bytes()

@@ -1825,9 +1825,223 @@ def test_scm_transport_controller_holds_originals_until_after_remote_receipt_col
     assert opened < validated < bootstrap < apply < receipt < disposal
     assert '[IO.FileAccess]::Read,[IO.FileShare]::Read' in text[opened:validated]
     assert "@('source.tar.gz','preservation.json','build.xml','release.json')" in text[opened:validated]
-    assert '$transportHolds = [Collections.Generic.List[IO.FileStream]]::new()\n$scmTransportOperation = $false\ntry {' in text
+    assert '$transportHolds = [Collections.Generic.List[IO.FileStream]]::new()\n$scmTransportOperation = $false\n$scmTransportRestoration = $false\ntry {' in text
     assert "} finally {\n    foreach ($heldOriginal in $transportHolds)" in text
     assert "$requestValue.historicalOutputsAuthorization=$historicalOutputsAuthorization" in text
     assert "Require-Reclaim (-not $PrepareOnly -or ($Mode -ceq 'Maintenance' -and -not $GeneratedArtifacts))" in text
     assert 'if ($scmTransportOperation) {' in text
     assert 'Complete D-drive source originals are retained; only approved ECS transport copies are retired.' in text
+
+
+@pytest.fixture
+def scm_transport_restoration(scm_transport_custody):
+    value = scm_transport_custody
+    # Only this synthetic local original stands in for the three fixed releases.
+    assert value.namespace['RESTORE_RELEASES'] == {
+        'ci-297-bb38f0fc9b33', 'ci-301-cfc056762f1f', 'ci-302-28e41fc4eae1'}
+    value.namespace['RESTORE_RELEASES'] = {value.tag}
+    value.manifest.update(transportOperation='RESTORE', transportRetirement={
+        'release':'ci-423-3a2d2e573086', 'planSha256':'1' * 64,
+        'receiptSha256':'2' * 64, 'journalSha256':'3' * 64})
+    value.row['scmTransportParentMetadata'] = [16832,1000,1000,4096,321,654,789,321,2]
+    return value
+
+
+def test_scm_restoration_reuses_original_custody_and_keeps_old_and_new_parent_identities_separate(scm_transport_restoration):
+    value = scm_transport_restoration
+    before = {path.name:path.read_bytes() for path in value.folder.iterdir()}
+    request = value.run(); candidate, = request['candidates']
+    assert request['scmTransportOperation'] == 'RESTORE'
+    assert request['scmTransportRetirement'] == value.manifest['transportRetirement']
+    assert candidate['scmTransportMetadata'] == value.row['scmTransportMetadata']
+    assert candidate['scmTransportParentMetadata'] == value.row['scmTransportParentMetadata']
+    assert candidate['scmTransportKeeper']['sha256'] == value.approved['expectedSourceSha256']
+    assert candidate['terminal']['action'] == 'verify-runtime'
+    assert candidate['terminal']['productionReleaseEnabled'] is False
+    assert {path.name:path.read_bytes() for path in value.folder.iterdir()} == before
+
+
+@pytest.mark.parametrize('damage', ['unknown-operation','no-retirement','wrong-retirement','retirement-sha',
+                                  'retirement-extra','unapproved-release','missing-parent','parent-bool',
+                                  'parent-file','parent-owner','parent-writable','deletion-mixed-parent'])
+def test_scm_restoration_rejects_unbound_or_mixed_inputs_before_custody(scm_transport_restoration, damage):
+    value = scm_transport_restoration
+    if damage == 'unknown-operation': value.manifest['transportOperation'] = 'RECOVER_ANY'
+    elif damage == 'no-retirement': value.manifest.pop('transportRetirement')
+    elif damage == 'wrong-retirement': value.manifest['transportRetirement']['release'] = 'ci-424-' + 'a' * 12
+    elif damage == 'retirement-sha': value.manifest['transportRetirement']['planSha256'] = 'not-a-digest'
+    elif damage == 'retirement-extra': value.manifest['transportRetirement']['allowOverwrite'] = True
+    elif damage == 'unapproved-release': value.namespace['RESTORE_RELEASES'] = set()
+    elif damage == 'missing-parent': value.row.pop('scmTransportParentMetadata')
+    elif damage == 'parent-bool': value.row['scmTransportParentMetadata'][1] = True
+    elif damage == 'parent-file': value.row['scmTransportParentMetadata'][0] = 33152
+    elif damage == 'parent-owner': value.row['scmTransportParentMetadata'][1] = 999
+    elif damage == 'parent-writable': value.row['scmTransportParentMetadata'][0] |= 0o020
+    elif damage == 'deletion-mixed-parent':
+        value.manifest.pop('transportOperation'); value.manifest.pop('transportRetirement')
+    def unexpected_keeper(*_args): raise AssertionError('Malformed restoration scope reached local custody')
+    value.namespace['keeper_proof'] = unexpected_keeper
+    with pytest.raises(ValueError, match='SCM_'): value.run()
+
+
+def literal_controller_functions(controller, block):
+    """Evaluate definitions only, never the embedded remote admission/program."""
+    source = controller.split('$' + block + " = @'\n", 1)[1].split("\n'@", 1)[0]
+    tree = ast.parse(source)
+    definitions = ast.Module(body=[node for node in tree.body if isinstance(
+        node, (ast.Import, ast.ImportFrom, ast.FunctionDef))], type_ignores=[])
+    namespace = {'__name__':'synthetic_restoration_controller'}
+    exec(compile(definitions, 'literal-' + block, 'exec'), namespace)
+    return namespace
+
+
+@pytest.fixture
+def scm_restore_stage(scm_transport_restoration, tmp_path):
+    value = scm_transport_restoration; request = value.run()
+    namespace = literal_controller_functions(value.controller, 'remoteProgram')
+    inbox = tmp_path / 'current-inbox'; inbox.mkdir(mode=0o700)
+    uploads = [{'release':row['release'], 'file':'restore-source-' + row['release'] + '.tar.gz',
+                'bytes':row['scmTransportKeeper']['bytes'], 'sha256':row['sourceSha256']}
+               for row in request['candidates']]
+    # Deliberately noncanonical PS-style bytes: the raw transfer binding differs.
+    raw = json.dumps(request, indent=2).encode()
+    data = {'tag':value.current, 'mode':'Maintenance', 'generated':True, 'restoreUploads':uploads,
+            'sourceBytes':4097, 'generatedRequest':{'bytes':len(raw),'sha256':cleanup.sha(raw)},
+            'helpers':{name:{'bytes':1} for name in ('script/jenkins/cleanup-ecs-builds.py',
+                'script/jenkins/verify-remote.py', 'script/jenkins/retire-source-pytest.py',
+                'script/jenkins/repair-ci-evidence-permissions.py')}}
+    namespace.update(data=data, root=tmp_path, inbox=inbox)
+    return SimpleNamespace(namespace=namespace, request=request, data=data, inbox=inbox,
+                           value=value, prepare=lambda:namespace['prepare_restore_staging'](request))
+
+
+def test_scm_restore_prepares_only_exclusive_private_upload_slots_bound_to_canonical_request(scm_restore_stage):
+    value = scm_restore_stage
+    before = {path.name:path.read_bytes() for path in value.value.folder.iterdir()}
+    staging = value.prepare(); upload, = staging['uploads']
+    assert staging['requestSha256'] == cleanup.sha(cleanup.canonical(value.request))
+    assert staging['requestSha256'] != value.data['generatedRequest']['sha256']
+    path = value.inbox / upload['file']; info = path.stat()
+    assert path.read_bytes() == b'' and info.st_nlink == 1 and info.st_mode & 0o777 == 0o600
+    assert (upload['device'], upload['inode']) == (info.st_dev, info.st_ino)
+    assert json.loads((value.inbox / 'restore-source-staging.json').read_bytes()) == staging
+    assert set(p.name for p in value.inbox.iterdir()) == {upload['file'], 'restore-source-staging.json'}
+    assert {path.name:path.read_bytes() for path in value.value.folder.iterdir()} == before
+
+
+@pytest.mark.parametrize('existing', ['upload','upload-link','record'])
+def test_scm_restore_staging_never_overwrites_existing_upload_or_record(scm_restore_stage, existing):
+    value = scm_restore_stage
+    path = value.inbox / ('restore-source-staging.json' if existing == 'record'
+                         else value.data['restoreUploads'][0]['file'])
+    if existing == 'upload-link': path.symlink_to(value.inbox / 'missing-original')
+    else: path.write_bytes(b'prior retained bytes')
+    before = set(value.inbox.iterdir())
+    with pytest.raises(ValueError): value.prepare()
+    assert set(value.inbox.iterdir()) == before
+    assert path.is_symlink() if existing == 'upload-link' else path.read_bytes() == b'prior retained bytes'
+
+
+@pytest.mark.parametrize('damage', ['different-request','unsafe-name','duplicate','delete-operation'])
+def test_scm_restore_upload_shape_fails_before_creating_files(scm_restore_stage, damage):
+    value = scm_restore_stage
+    if damage == 'different-request': value.request['candidates'][0]['scmTransportKeeper']['bytes'] += 1
+    elif damage == 'unsafe-name': value.data['restoreUploads'][0]['file'] = '../source.tar.gz'
+    elif damage == 'duplicate': value.data['restoreUploads'].append(copy.deepcopy(value.data['restoreUploads'][0]))
+    elif damage == 'delete-operation': value.request.pop('scmTransportOperation')
+    with pytest.raises(ValueError): value.prepare()
+    assert list(value.inbox.iterdir()) == []
+
+
+@pytest.mark.parametrize('shortfall', [0,1])
+def test_scm_restore_upload_bytes_are_added_to_existing_two_gib_reserve(scm_restore_stage, monkeypatch, shortfall):
+    value = scm_restore_stage; data = value.data
+    rounded = lambda n: ((n + 4095) // 4096) * 4096
+    sizes = [entry['bytes'] for entry in data['helpers'].values()]
+    sizes += [data['sourceBytes'], data['generatedRequest']['bytes'], data['restoreUploads'][0]['bytes']]
+    growth = sum(map(rounded, sizes)) + 1048576
+    available = 2147483648 + growth - shortfall
+    monkeypatch.setattr(value.namespace['os'], 'statvfs', lambda _p: SimpleNamespace(f_bavail=available,f_frsize=1))
+    if shortfall:
+        with pytest.raises(ValueError): value.namespace['control_growth'](True)
+    else:
+        assert value.namespace['control_growth'](True) == (growth,available,4096)
+    assert list(value.inbox.iterdir()) == []
+
+
+@pytest.fixture
+def scm_restore_receipt(scm_restore_stage):
+    value = scm_restore_stage; staging = value.prepare(); request = value.request
+    namespace = literal_controller_functions(value.value.controller, 'evidenceReader')
+    original, = request['candidates']; upload, = staging['uploads']
+    staging_sha = cleanup.sha((value.inbox / 'restore-source-staging.json').read_bytes())
+    journal_sha = cleanup.sha(b'{"phase":"RESTORE_FINISHED"}\n')
+    restored = {'release':original['release'], 'path':original['targets'][0]['path'],
+        'sourceSha256':original['sourceSha256'], 'oldMetadata':original['scmTransportMetadata'],
+        'newMetadata':[33152,1000,1000,upload['bytes'],321,upload['inode'],upload['device'],321,1],
+        'bytes':upload['bytes'], 'allocatedBytes':4096}
+    receipt = {'schema':1, 'kind':'doorhandle-scm-transport-restoration-receipt', 'status':'RESTORED',
+        'currentRelease':request['currentRelease'], 'identity':request['identity'],
+        'requestSha256':cleanup.sha(cleanup.canonical(request)), 'retirement':request['scmTransportRetirement'],
+        'stagingSha256':staging_sha, 'journalSha256':journal_sha, 'restored':[restored],
+        'originalKeepersPreserved':True, 'businessDataChanged':False}
+    def validate():
+        return namespace['restoration_receipt'](receipt,request,staging,staging_sha,journal_sha)
+    return SimpleNamespace(receipt=receipt, request=request, staging=staging, row=restored,
+                           validate=validate, value=value)
+
+
+@pytest.mark.parametrize('status', ['RESTORED','PARTIAL_FAILURE'])
+def test_scm_restore_receipt_keeps_actual_partial_status_and_new_inode(scm_restore_receipt, status):
+    value = scm_restore_receipt; value.receipt['status'] = status
+    if status == 'PARTIAL_FAILURE': value.receipt['restored'] = []
+    proof = value.validate()
+    assert value.receipt['status'] == status
+    assert proof == {'restoration':True,'restoredCount':1 if status == 'RESTORED' else 0,
+                     'restoredBytes':value.row['bytes'] if status == 'RESTORED' else 0}
+    assert value.row['oldMetadata'] == value.request['candidates'][0]['scmTransportMetadata']
+    assert value.row['newMetadata'][5] == value.staging['uploads'][0]['inode']
+
+
+@pytest.mark.parametrize('damage', ['raw-request-sha','staging-sha','journal-sha','retirement',
+                                  'keeper-not-preserved','business-changed','foreign-release','foreign-path',
+                                  'source-sha','old-metadata','wrong-new-inode','wrong-new-mode','new-links',
+                                  'missing-restored','duplicate-restored','missing-staging','staging-request'])
+def test_scm_restore_receipt_cannot_claim_unbound_or_partial_work_as_complete(scm_restore_receipt, damage):
+    value = scm_restore_receipt; receipt = value.receipt; row = value.row
+    if damage == 'raw-request-sha': receipt['requestSha256'] = value.value.data['generatedRequest']['sha256']
+    elif damage == 'staging-sha': receipt['stagingSha256'] = 'f' * 64
+    elif damage == 'journal-sha': receipt['journalSha256'] = 'f' * 64
+    elif damage == 'retirement': receipt['retirement'] = {}
+    elif damage == 'keeper-not-preserved': receipt['originalKeepersPreserved'] = False
+    elif damage == 'business-changed': receipt['businessDataChanged'] = True
+    elif damage == 'foreign-release': row['release'] = 'ci-999-' + 'f' * 12
+    elif damage == 'foreign-path': row['path'] += '.other'
+    elif damage == 'source-sha': row['sourceSha256'] = 'f' * 64
+    elif damage == 'old-metadata': row['oldMetadata'] = row['oldMetadata'][:-1] + [2]
+    elif damage == 'wrong-new-inode': row['newMetadata'][5] += 1
+    elif damage == 'wrong-new-mode': row['newMetadata'][0] |= 0o020
+    elif damage == 'new-links': row['newMetadata'][8] = 2
+    elif damage == 'missing-restored': receipt['restored'] = []
+    elif damage == 'duplicate-restored': receipt['restored'].append(copy.deepcopy(row))
+    elif damage == 'missing-staging': value.staging['uploads'] = []
+    elif damage == 'staging-request': value.staging['requestSha256'] = 'f' * 64
+    with pytest.raises(ValueError, match='SCM restoration receipt'): value.validate()
+
+
+def test_scm_restore_controller_separates_transfer_restore_and_original_retirement_contract(scm_transport_restoration):
+    text = scm_transport_restoration.controller
+    branch = text.index('        if ($scmTransportRestoration) {', text.index('$admitted = $true'))
+    restore = text.index("'$helper' restore-transport $planArguments", branch)
+    old_plan = text.index("'$helper' plan $planArguments", restore)
+    assert 'Copy-ReclaimEvidence \'restore-source-staging.json\'' in text[branch:restore]
+    assert '$source.scmTransportKeeper.path' in text[branch:restore]
+    assert '} else {' in text[restore:old_plan]
+    assert '$staging.requestSha256 -ceq $requestProof.canonicalSha256' in text[branch:restore]
+    assert '$requestProof.rawSha256 -ceq $context.generatedRequest.sha256' in text[branch:restore]
+    final = text[text.index('} finally {', old_plan):]
+    assert "if ($scmTransportRestoration) {" in final and '} elseif ($GeneratedArtifacts) {' in final
+    assert '$receiptProof.status -ceq \'RESTORED\'' in final
+    assert '$result.deletionPerformed = $false' in final
+    assert '$inspection.files.ContainsKey(\'journal\')' in final
+    assert final.index('$receiptArguments += @($requestLocal,') < final.index('foreach ($heldOriginal in $transportHolds)')
