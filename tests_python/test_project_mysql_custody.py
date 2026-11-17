@@ -357,7 +357,16 @@ def test_standard_jenkins_entry_wires_explicit_inputs_and_fresh_post_cleanup_aft
         assert len(re.findall(r"new StringParameterDefinition\('" + name + "'", configure)) == 1
         assert '$env:' + name in controller
     assert "projectSqlInputs.any { it } && !projectSqlInputs.every { it }" in pipeline
-    assert "params.ACTION in ['verify', 'verify-runtime']" in pipeline
+    project_gate = next(line for line in pipeline.splitlines()
+                        if "if (env.PROJECT_MYSQL_SNAPSHOT && (!(params.ACTION in" in line)
+    assert "!(params.ACTION in ['verify', 'verify-runtime', 'compact-cutover'])" in project_gate
+    assert "params.DOORHANDLE_CI_SCOPE != 'mysql'" in project_gate
+    assert "(params.PRODUCTION_RELEASE_ENABLED && params.ACTION != 'compact-cutover')" in project_gate
+    controller_gate = controller.split('$projectSqlSelected=@(', 1)[1].split("if ($Action -eq 'Publish')", 1)[0]
+    assert "$projectSqlSelected.Count -ne 3" in controller_gate
+    assert "$env:ACTION -cnotin @('verify','verify-runtime','compact-cutover')" in controller_gate
+    assert "$env:DOORHANDLE_CI_SCOPE -cne 'mysql'" in controller_gate
+    assert "($env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -and $env:ACTION -cne 'compact-cutover')" in controller_gate
     assert 'def anySqlCustody = env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT || env.PROJECT_MYSQL_SNAPSHOT' in pipeline
     assert pipeline.index("stage('Recover approved three-schema MySQL packet on ECS')") > pipeline.index('-Action VerifyEcs')
     assert '-Action PreserveProjectMySql' in pipeline and '-Action CleanupProjectMySql' in pipeline

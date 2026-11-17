@@ -245,6 +245,12 @@ DATABASE_VERIFY_REVIEWED_RECIPES = frozenset({
     ('2f1cffde19be763864207456a083dd643eb7179fcd741d128759b618b0eb93a9',
      'fbf0db208bba6959ae154321f4aef72e39b05d48e66b163de7f5f69afa49a8ca',
      '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e'),
+    # Same-run control ordering/cancellation and opt-in production cutover.
+    # Explicit verify/mysql still cannot request a candidate builder or publish;
+    # runtime/cutover retirement remains a separate exact-manifest policy.
+    ('a7a0e1b5f710500d5c5834fb0bb8a5dfc506c1ae51d99b3e4d435c3be99a8c5e',
+     'f54373a3b588eaee1c6b669e89d2a4be01d4e6cbeb17575343189febc8b1798d',
+     '006c6ce83ad3cec1c5dc922ca67cb3d5f3d967df01c55e766eee7b73c95e591e'),
 })
 
 

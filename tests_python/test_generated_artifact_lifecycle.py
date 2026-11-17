@@ -1348,8 +1348,11 @@ def test_transport_file_retirement_keeps_originals_and_does_not_reopen_deleted_s
         assert state.source_copy.exists(), 'No post-delete source revalidation is allowed'
         calls.append(args[1]['release'])
         return binding(*args, **kwargs)
-    monkeypatch.setattr(cleanup, 'scm_transport_binding', checked)
-    result = cleanup.apply_plan(state.root, state.transport, plan, remote)
+    # Observe only the successful operation. The deliberate replay below must
+    # reach the real missing-source guard, not this first-operation assertion.
+    with monkeypatch.context() as observation:
+        observation.setattr(cleanup, 'scm_transport_binding', checked)
+        result = cleanup.apply_plan(state.root, state.transport, plan, remote)
     assert calls == [OLD, OLD]  # Whole-plan freshness, then this target's boundary.
     assert result['status'] == 'REMOVED' and result['retention']['status'] == 'SATISFIED'
     assert result['scmTransportCopies']['deletedCount'] == 1
@@ -1358,8 +1361,12 @@ def test_transport_file_retirement_keeps_originals_and_does_not_reopen_deleted_s
     assert not state.source_copy.exists() and state.original_keeper.read_bytes() == original
     assert before == {str(p): p.read_bytes() for p in state.keep if p != state.source_copy}
     assert state.classes.exists()  # No directories, compiled output or other categories selected.
+    journal = state.root / 'inbox' / CURRENT / 'generated-cleanup-journal.jsonl'
+    original_journal = journal.read_bytes()
     with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
         cleanup.apply_plan(state.root, state.transport, plan, remote)
+    assert calls == [OLD, OLD] and journal.read_bytes() == original_journal
+    assert not state.source_copy.exists() and state.original_keeper.read_bytes() == original
 
 
 @pytest.mark.parametrize('damage', ['missing-approval', 'wrong-approval', 'current-post', 'mixed-category',
