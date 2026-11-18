@@ -54,7 +54,7 @@ def main():
     shutil.copyfile(root/'deploy/worker/licenses/PyMySQL-LICENSE.txt',target/'PyMySQL-LICENSE.txt')
     deployment=target/'deployment';deployment.mkdir(exist_ok=True)
     shutil.copyfile(root/'deploy/worker/manifest.wacga.json',deployment/'manifest.json')
-    shutil.copyfile(root/'compose.detection.yml',deployment/'compose.detection.yml')
+    shutil.copyfile(root/'deploy/compose/compose.detection.yml',deployment/'compose.detection.yml')
     if args.archive:
         with tarfile.open(args.archive,'w:gz') as archive:
             for path in sorted(target.iterdir()):archive.add(path,arcname=path.name)

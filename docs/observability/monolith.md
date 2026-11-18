@@ -9,7 +9,7 @@
 - Langfuse 完整自建栈是单独 `langfuse` profile：Web、Worker、PostgreSQL、ClickHouse、专用 Redis、现有 OSS 的隔离前缀。不能用 MySQL 代替 PostgreSQL，不能省略 ClickHouse，也不能让业务 Redis 的淘汰策略承担 Langfuse 队列。
 - 单体不引入 Seata、Nacos、Dubbo、额外业务网关或 Langfuse AI Gateway。保留的分布式历史设计和原数据不因本轮配置调整而删除。
 
-新增入口为 `compose.observability.monolith.yml`；`observability` profile 仅启动 Prometheus/Alertmanager，`langfuse` profile 才包含完整 Langfuse 栈。所有入口都仍由本地 Jenkins 调度 ECS，不能在开发机运行这些 Compose。
+新增入口为 `deploy/compose/compose.observability.monolith.yml`；`observability` profile 仅启动 Prometheus/Alertmanager，`langfuse` profile 才包含完整 Langfuse 栈。所有入口都仍由本地 Jenkins 调度 ECS，不能在开发机运行这些 Compose。
 
 本轮验收必要组件 Qdrant、Resilience4j、OTel 和 Prometheus；完整 Langfuse 暂留配置，待资源审定后再部署。OTel 使用真实 SDK 向本轮自有假 HTTP 接收端导出，验证关联、协议、脱敏和失败隔离；该结果不代替后续 Langfuse 存储查询验收。
 
@@ -65,7 +65,7 @@ Prometheus 保存7天并设512MB TSDB保留目标；WAL、head和压缩过程仍
 
 磁盘是本项目保守启动预算，不是厂商容量保证，包含镜像、各数据目录初期增长和压缩瞬时余量；运行后仍需持续监测。调用必须显式提供业务保留预算和输出回执，并设置匹配的审核值 `LANGFUSE_RESOURCE_APPROVED=production-reviewed` 或 `isolated-smoke-reviewed`。Compose 内第二道 gate 再检查内存/磁盘、私有配置和初始化信息；它不能替代拉镜像前的原生预检。
 
-隔离 smoke 另叠加 `compose.observability.smoke.yml`，使用完整相同版本组件，只降低资源限制并限制为少量合成事件。它只用于验证接入、异常和恢复，不代表高可用、生产吞吐或性能SLO，更不能暗中取代生产配置。即便设置了 profile，没有独立审核和足够资源也不启动；本轮未授权新增ECS/磁盘/EE/SaaS。
+隔离 smoke 另叠加 `deploy/compose/compose.observability.smoke.yml`，使用完整相同版本组件，只降低资源限制并限制为少量合成事件。它只用于验证接入、异常和恢复，不代表高可用、生产吞吐或性能SLO，更不能暗中取代生产配置。即便设置了 profile，没有独立审核和足够资源也不启动；本轮未授权新增ECS/磁盘/EE/SaaS。
 
 免费自建核心的自动 Data Retention 不可假定存在：官方将自建自动保留策略列为 Enterprise Edition，免费核心默认永久保存。长期启用前须审定可恢复的独立保留/删除流程及增长预算；本实现不填一个7天参数冒充已获得付费能力，也不自动删除既有业务资料。
 

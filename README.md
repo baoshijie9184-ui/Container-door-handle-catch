@@ -74,9 +74,9 @@ Agent 对话支持安全切点暂停/继续、本人持久消息排队与逐条�
 
 开发中的新版流水线默认仅验证并关闭生产发布；数据库重构与迁移尚未验收，发布和旧库演练额外受默认未设置的机器环境门禁 `DOORHANDLE_COMPACT_RELEASE_READY` / `DOORHANDLE_COMPACT_REHEARSAL_READY` 限制，不能仅修改页面参数启用。模型治理的 Secret 挂载、独立加密备份与离线恢复证明已有新增代码，尚未验证或启用。见 [模型密钥与发布接入](docs/模型主密钥备份与发布接入.md)。
 
-应用、中间件、记忆服务和 CPU PTH 检测 worker 均运行在北京 ECS。部署使用 `compose.monolith.yml`、`compose.cloud.yml` 和 `compose.detection.yml`，本分支已移除本地一键启动与停止脚本。
+应用、中间件、记忆服务和 CPU PTH 检测 worker 均运行在北京 ECS。部署使用 `compose.monolith.yml`、`deploy/compose/compose.cloud.yml` 和 `deploy/compose/compose.detection.yml`，本分支已移除本地一键启动与停止脚本。
 
-后端 Dockerfile 只负责 Java 镜像；当前源码的 MySQL、Redis、Kafka、Mem0、Qdrant 在 `compose.cloud.yml`，旧 Chroma 卷仅保留为迁移来源。各 Compose 文件、初始化容器和网关之间的关系见 [容器与配置入口](docs/docker-monolith-deployment.md#容器与配置入口2026-10-22-整理)。
+后端 Dockerfile 只负责 Java 镜像；当前源码的 MySQL、Redis、Kafka、Mem0、Qdrant 在 `deploy/compose/compose.cloud.yml`，旧 Chroma 卷仅保留为迁移来源。各 Compose 文件、初始化容器和网关之间的关系见 [容器与配置入口](docs/docker-monolith-deployment.md#容器与配置入口2026-10-22-整理)。
 
 在项目根目录建立访问隧道并保持终端运行：
 
@@ -205,7 +205,7 @@ docs/chroma-rag-setup.md
 
 镜像设计见 [Docker 部署说明](docs/docker-monolith-deployment.md)，已部署服务的日常使用见 [服务器运行说明](docs/服务器运行说明.md)。应用更新从 Jenkins 发布；同一数据代际沿用原持久卷，Chroma→Qdrant 必须使用候选迁移与独立恢复流程，不能把旧 Mem0 卷直接挂到新运行时。首次部署与已部署实例恢复应分别按对应文档操作。
 
-原 `compose.nginx.yml` 与 [双实例部署说明](docs/nginx-compose-deployment.md) 保留为实验入口，不作为当前单体默认方案。
+原 `deploy/compose/compose.nginx.yml` 与 [双实例部署说明](docs/nginx-compose-deployment.md) 保留为实验入口，不作为当前单体默认方案。
 
 ### 图像检测
 

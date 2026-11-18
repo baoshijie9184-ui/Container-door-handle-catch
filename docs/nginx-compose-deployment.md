@@ -23,7 +23,7 @@ PowerShell：
 ```powershell
 Copy-Item deploy/docker.env.example deploy/docker.env
 notepad deploy/docker.env
-$env:DOORHANDLE_ENV_FILE = 'deploy/docker.env'
+$env:DOORHANDLE_ENV_FILE = (Resolve-Path deploy/docker.env).Path
 ```
 
 Linux：
@@ -31,7 +31,7 @@ Linux：
 ```bash
 cp deploy/docker.env.example deploy/docker.env
 vi deploy/docker.env
-export DOORHANDLE_ENV_FILE=deploy/docker.env
+export DOORHANDLE_ENV_FILE="$(pwd)/deploy/docker.env"
 ```
 
 必须替换数据库密码、JWT Secret、DeepSeek Key 和 OSS 凭据。根目录 `.env` 与 `deploy/docker.env` 均不得提交；仓库中只保留不含真实凭据的 `.example` 模板。
@@ -44,35 +44,37 @@ MEM0_ENABLED=false
 
 ## 3. 构建并启动
 
+从仓库根目录执行。此方案独立使用子目录中的配置，`--project-directory .` 让构建上下文和相对路径仍指向仓库根目录，而不是配置所在目录。
+
 ```powershell
-docker compose -f compose.nginx.yml up -d --build
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml up -d --build
 ```
 
 如果系统使用独立 Compose，可将后续命令中的 `docker compose` 替换为：
 
 ```powershell
-docker-compose -f compose.nginx.yml up -d --build
+docker-compose --project-directory . -f deploy/compose/compose.nginx.yml up -d --build
 ```
 
 默认访问地址为 `http://localhost`。如需修改端口：
 
 ```powershell
 $env:NGINX_PORT = '8088'
-docker compose -f compose.nginx.yml up -d --build
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml up -d --build
 ```
 
 Linux 可使用：
 
 ```bash
-NGINX_PORT=8088 docker compose -f compose.nginx.yml up -d --build
+NGINX_PORT=8088 docker compose --project-directory . -f deploy/compose/compose.nginx.yml up -d --build
 ```
 
 ## 4. 检查运行状态
 
 ```powershell
-docker compose -f compose.nginx.yml ps
-docker compose -f compose.nginx.yml logs --tail=100 nginx
-docker compose -f compose.nginx.yml logs --tail=100 backend-1 backend-2
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml ps
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml logs --tail=100 nginx
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml logs --tail=100 backend-1 backend-2
 ```
 
 三个容器均应处于 running/healthy 状态。
@@ -97,19 +99,19 @@ curl.exe -i http://localhost/api/auth/check
 连续调用同一个业务 API，并同时观察两个后端日志：
 
 ```powershell
-docker compose -f compose.nginx.yml logs -f backend-1 backend-2
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml logs -f backend-1 backend-2
 ```
 
 在另一个终端临时停止一个实例：
 
 ```powershell
-docker compose -f compose.nginx.yml stop backend-1
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml stop backend-1
 ```
 
 业务请求应继续由 `backend-2` 处理。恢复实例：
 
 ```powershell
-docker compose -f compose.nginx.yml start backend-1
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml start backend-1
 ```
 
 ## 6. 验证智能助手 SSE
@@ -128,20 +130,20 @@ Nginx 已为该接口配置：
 重新构建并滚动启动：
 
 ```powershell
-docker compose -f compose.nginx.yml up -d --build
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml up -d --build
 ```
 
 停止服务但保留运行数据卷：
 
 ```powershell
-docker compose -f compose.nginx.yml down
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml down
 ```
 
 查看镜像并回滚到之前的 Git 提交：
 
 ```powershell
 git switch --detach <previous-commit>
-docker compose -f compose.nginx.yml up -d --build
+docker compose --project-directory . -f deploy/compose/compose.nginx.yml up -d --build
 ```
 
 不要使用 `down -v`，除非明确需要删除共享运行目录卷。

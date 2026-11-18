@@ -573,7 +573,7 @@ def main(argv=None, actor=None, controlled_build=None):
             images['services']['mem0'] = {'build': {'context': str(mem0_context), 'dockerfile': 'Dockerfile'}}
             common.write_json(runtime_file, images)
             if args.phase == 'build':
-                require(re.search(r'^\s+PIP_INDEX_URL: https://mirrors\.aliyun\.com/pypi/simple\s*$', (source / 'compose.cloud.yml').read_text(), re.M),
+                require(re.search(r'^\s+PIP_INDEX_URL: https://mirrors\.aliyun\.com/pypi/simple\s*$', (source / 'deploy/compose/compose.cloud.yml').read_text(), re.M),
                         'Reviewed cloud pip build index changed')
                 specifications = [
                     {'service': 'backend', 'context': backend_context, 'tag': 'doorhandlecatch/backend:' + args.tag, 'runWriteEnvelopeBytes': 512 * resources.MIB},

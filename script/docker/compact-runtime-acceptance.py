@@ -996,7 +996,8 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                            QDRANT_IMAGE=self.qdrant_image, QDRANT_PRIVATE_DIR=str(vector_private),
                            OBSERVABILITY_SECRETS_DIR=str(observability_private), OTEL_ENABLED='false', TELEMETRY_METRICS_ENABLED='false')
         command = ['compose', '--project-name', 'doorhandlecatch-monolith', '--profile', 'observability', '--env-file', str(self.runtime / 'deploy/cloud.env')]
-        for name in ('compose.monolith.yml', 'compose.cloud.yml', 'compose.detection.yml', 'compose.ai-gateway.yml', 'compose.observability.monolith.yml'):
+        for name in ('compose.monolith.yml', 'deploy/compose/compose.cloud.yml', 'deploy/compose/compose.detection.yml',
+                     'deploy/compose/compose.ai-gateway.yml', 'deploy/compose/compose.observability.monolith.yml'):
             command += ['-f', str(self.source / name)]
         config = json.loads(self.ops.docker(*command, 'config', '--format', 'json', env=environment))
         config = self.observability.select_overlay(config, monitoring_images)

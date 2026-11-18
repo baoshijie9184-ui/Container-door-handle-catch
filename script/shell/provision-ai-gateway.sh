@@ -10,7 +10,14 @@ for path in "$runtime" "$current"; do
 done
 envfile="$runtime/deploy/cloud.env"
 test -r "$envfile"
+# The current release can still have the original root-level overlays.
+current_overlays="$current"
+if [[ -d "$current/deploy/compose" ]]; then current_overlays="$current/deploy/compose"; fi
+gateway_overlay="$source_dir/deploy/compose/compose.ai-gateway.yml"
 test -r "$current/compose.monolith.yml"
+test -r "$current_overlays/compose.cloud.yml"
+test -r "$current_overlays/compose.detection.yml"
+test -r "$gateway_overlay"
 cd "$source_dir"
 # Docker/containerd may remove a bare image ID from lookup after its last tag moves.
 # Retain prior referenced images under a private immutable tag before rebuilding.
@@ -49,9 +56,9 @@ temp=path.with_suffix('.env.tmp');temp.write_text(content);os.chmod(temp,0o600);
 PY
 export DOORHANDLE_ENV_FILE="$envfile"
 export DETECTION_BUILD_CONTEXT="$runtime/work/cloud/pth-worker-build"
-dc=(docker compose --project-name doorhandlecatch-monolith --env-file "$envfile"
-  -f "$current/compose.monolith.yml" -f "$current/compose.cloud.yml" -f "$current/compose.detection.yml"
-  -f "$source_dir/compose.ai-gateway.yml")
+dc=(docker compose --project-name doorhandlecatch-monolith --project-directory "$current" --env-file "$envfile"
+  -f "$current/compose.monolith.yml" -f "$current_overlays/compose.cloud.yml" -f "$current_overlays/compose.detection.yml"
+  -f "$gateway_overlay")
 "${dc[@]}" config --quiet
 "${dc[@]}" up -d --no-build --pull never --wait --wait-timeout 300 higress mcp-egress mcp-runner
 # The rollout marker is only written once authentication through Higress is verified.

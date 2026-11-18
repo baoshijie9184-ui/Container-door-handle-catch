@@ -48,22 +48,33 @@ if [[ "$model_key_source" != disabled ]]; then
     export MODEL_CONFIG_MASTER_KEY_SOURCE="$model_key_source"
 fi
 
+# A rollback can target a sealed release from before the Compose relocation.
+compose_overlay_dir() {
+    if [[ -d "$1/deploy/compose" ]]; then
+        printf '%s\n' "$1/deploy/compose"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 dc() {
     local dir=$1 override=$2
     shift 2
+    local compose_dir
+    compose_dir=$(compose_overlay_dir "$dir")
     local overlays=()
-    if [[ -f "$runtime/deploy/ai-gateway.enabled" && -f "$dir/compose.ai-gateway.yml" ]]; then
-        overlays=(-f "$dir/compose.ai-gateway.yml")
+    if [[ -f "$runtime/deploy/ai-gateway.enabled" && -f "$compose_dir/compose.ai-gateway.yml" ]]; then
+        overlays=(-f "$compose_dir/compose.ai-gateway.yml")
     fi
     if [[ "$model_key_source" != disabled ]]; then
-        [[ -r "$dir/compose.model-config.yml" ]] || { echo 'Release has no model Secret overlay; select a compatible version.' >&2; return 1; }
-        overlays+=(-f "$dir/compose.model-config.yml")
+        [[ -r "$compose_dir/compose.model-config.yml" ]] || { echo 'Release has no model Secret overlay; select a compatible version.' >&2; return 1; }
+        overlays+=(-f "$compose_dir/compose.model-config.yml")
     fi
     local connection_override=() native_override=()
     if [[ -r "$root/state/compact-connection.override.yml" ]]; then connection_override=(-f "$root/state/compact-connection.override.yml"); fi
     if [[ -r "$root/state/native-data.override.json" ]]; then native_override=(-f "$root/state/native-data.override.json"); fi
-    docker compose --project-name "$project" --env-file "$envfile" \
-        -f "$dir/compose.monolith.yml" -f "$dir/compose.cloud.yml" -f "$dir/compose.detection.yml" \
+    docker compose --project-name "$project" --project-directory "$dir" --env-file "$envfile" \
+        -f "$dir/compose.monolith.yml" -f "$compose_dir/compose.cloud.yml" -f "$compose_dir/compose.detection.yml" \
         "${overlays[@]}" -f "$override" "${memory_override[@]}" "${mcp_override[@]}" \
         "${connection_override[@]}" "${native_override[@]}" "$@"
 }
@@ -149,7 +160,7 @@ activate() {
     dc "$dir" "$images" up -d --no-deps --no-build --pull never --force-recreate --wait --wait-timeout 90 nginx || return 1
     dc "$dir" "$images" exec -T backend curl -fsS http://127.0.0.1:8080/actuator/health >/dev/null || return 1
     dc "$dir" "$images" exec -T nginx wget -q -O /dev/null http://127.0.0.1/nginx-health || return 1
-    if [[ -f "${runtime:-}/deploy/ai-gateway.enabled" && -f "$dir/compose.ai-gateway.yml" ]]; then
+    if [[ -f "${runtime:-}/deploy/ai-gateway.enabled" ]] && [[ -f "$(compose_overlay_dir "$dir")/compose.ai-gateway.yml" ]]; then
         dc "$dir" "$images" exec -T backend curl -fsS http://higress:15021/healthz/ready >/dev/null || return 1
     fi
 }
@@ -204,7 +215,9 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
             raise SystemExit('Unsafe source archive entry')
     archive.extractall(destination, filter='data')
 PY
-for file in compose.monolith.yml compose.cloud.yml compose.detection.yml; do test -r "$release/$file"; done
+for file in compose.monolith.yml deploy/compose/compose.cloud.yml deploy/compose/compose.detection.yml; do
+    test -r "$release/$file"
+done
 previous=$runtime
 if [[ -s "$root/state/current-directory" ]]; then previous=$(cat "$root/state/current-directory"); fi
 [[ "$previous" == "$runtime" || "$previous" == "$root/releases/"* ]] || exit 2

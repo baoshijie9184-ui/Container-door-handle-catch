@@ -4,15 +4,17 @@
 
 `deploy/backend/Dockerfile` 定义 Java 后端镜像的构建过程，不是整个系统的容器清单。中间件通过 Compose 使用各自镜像，拥有独立进程、健康检查和数据卷；Java 业务模块仍在同一个 Spring Boot 应用中运行。
 
+从仓库根目录执行本文命令：第一个 `-f` 始终使用根目录的 `compose.monolith.yml`，其余配置从 [deploy/compose](../deploy/compose/) 叠加。Compose 按首个配置确定相对路径基准，因此配置移入子目录后，镜像构建上下文、相对挂载及根目录的 `.dockerignore` 都不变。独立使用[双后端实验配置](nginx-compose-deployment.md)时，需显式传入 `--project-directory .`。旧发布包回滚沿用包内原路径，不迁移历史归档。
+
 | 配置文件 | 定义的服务或配置 | 用途 |
 | --- | --- | --- |
 | [`compose.monolith.yml`](../compose.monolith.yml) | `backend`、`nginx` | 应用基础编排；Nginx 同时托管 Vue 主站和 React Agent UI |
-| [`compose.cloud.yml`](../compose.cloud.yml) | `mysql`、`redis`、`kafka`、`mem0`、`chroma` | 云端中间件及记忆、向量服务，合并到基础编排 |
-| [`compose.detection.yml`](../compose.detection.yml) | `detection-worker` | CPU PyTorch/PTH 检测，合并到前两份文件 |
-| [`compose.ai-gateway.yml`](../compose.ai-gateway.yml) | `higress`、`mcp-runner`、`mcp-egress` | 可选 AI 网关与固定 Fetch 执行边界，需预先配置并显式启用 |
-| [`compose.model-config.yml`](../compose.model-config.yml) | 现有 `backend`、`mem0` 的环境配置与 Secret 挂载 | 开发中的模型治理配置，不增加服务容器，须由部署策略校验后选择 |
+| [`deploy/compose/compose.cloud.yml`](../deploy/compose/compose.cloud.yml) | `mysql`、`redis`、`kafka`、`mem0`、`qdrant` | 云端中间件及记忆、向量服务，合并到基础编排 |
+| [`deploy/compose/compose.detection.yml`](../deploy/compose/compose.detection.yml) | `detection-worker` | CPU PyTorch/PTH 检测，合并到前两份文件 |
+| [`deploy/compose/compose.ai-gateway.yml`](../deploy/compose/compose.ai-gateway.yml) | `higress`、`mcp-runner`、`mcp-egress` | 可选 AI 网关与固定 Fetch 执行边界，需预先配置并显式启用 |
+| [`deploy/compose/compose.model-config.yml`](../deploy/compose/compose.model-config.yml) | 现有 `backend`、`mem0` 的环境配置与 Secret 挂载 | 开发中的模型治理配置，不增加服务容器，须由部署策略校验后选择 |
 
-`compose.cloud.yml` 另有 `kafka-storage-init`、`kafka-init`，网关编排另有 `higress-seed`、`higress-config`。它们执行初始化后成功退出，不计入常驻服务数。基础、云端和检测编排合计八个常驻服务；启用网关后合计十一个。这是源码定义的组成，不代表当前服务器已运行或健康。
+`deploy/compose/compose.cloud.yml` 另有 `kafka-storage-init`、`kafka-init`、`qdrant-storage-init`，网关编排另有 `higress-seed`、`higress-config`。它们执行初始化后成功退出，不计入常驻服务数。基础、云端和检测编排合计八个常驻服务；启用网关后合计十一个。
 
 ```mermaid
 flowchart LR
@@ -22,7 +24,8 @@ flowchart LR
     Backend --> Redis[Redis]
     Backend --> Kafka[Kafka]
     Backend --> Mem0[Mem0 长期记忆]
-    Backend --> Chroma[Chroma RAG]
+    Backend --> Qdrant[Qdrant 向量服务]
+    Mem0 --> Qdrant
     Kafka --> Worker[CPU PTH worker]
     Worker --> OSS[OSS 图片与结果]
     Worker --> Kafka
@@ -31,7 +34,7 @@ flowchart LR
     Higress --> Runner[固定 Fetch 运行器]
 ```
 
-`backend`、`mysql`、`redis`、`kafka` 等名称也是私网服务地址。基础编排默认仅将 Nginx 映射到宿主机 `127.0.0.1:8088`，上述中间件和网关没有发布宿主机端口；浏览器通过 SSH 隧道访问 Nginx。MySQL、Redis、Kafka、Mem0、Chroma 分别使用持久卷，检测模型目录只读挂载到 worker。Mem0 和 Chroma 复用同一个 Python 镜像，但运行在两个容器，使用各自数据卷；不能据此把两者当作同一服务。
+`backend`、`mysql`、`redis`、`kafka` 等名称也是私网服务地址。基础编排默认仅将 Nginx 映射到宿主机 `127.0.0.1:8088`，上述中间件和网关没有发布宿主机端口；浏览器通过 SSH 隧道访问 Nginx。MySQL、Redis、Kafka、Mem0、Qdrant 分别使用持久卷，检测模型目录只读挂载到 worker。旧 Chroma 卷只保留供恢复，不挂载到当前栈。
 
 现有 Jenkins 发布脚本 [`deploy-remote.sh`](../script/jenkins/deploy-remote.sh) 合并基础、云端、检测三份 Compose 文件，再根据私有启用标记选择网关配置，并根据受保护的模型配置策略选择 Secret 配置。日常发布沿用该流程；在编辑器中只打开某份 Dockerfile 不会改变 Jenkins 编排。模型 Secret 的启用条件见 [密钥与发布接入](模型主密钥备份与发布接入.md)。
 
@@ -47,7 +50,7 @@ flowchart LR
 
 ## 2026-10-15 CPU PTH 检测补充
 
-服务器现已启用 `compose.detection.yml`，以 Python/PyTorch `2.5.1+cpu` 直接加载 `best_stg2.pth`。模型编号 105 已发布并设为默认，正常图片和 Missing 缺陷图片各完成一条真实上传、Kafka 推理、OSS 结果、Java 入库任务；八项服务 healthy。本节更新优先于下方 2026-10-14 的“worker 关闭”历史记录。服务器页面仍待恢复本机 SSH 隧道后验收，API 验收不能替代页面验收。
+服务器现已启用 `deploy/compose/compose.detection.yml`，以 Python/PyTorch `2.5.1+cpu` 直接加载 `best_stg2.pth`。模型编号 105 已发布并设为默认，正常图片和 Missing 缺陷图片各完成一条真实上传、Kafka 推理、OSS 结果、Java 入库任务；八项服务 healthy。本节更新优先于下方 2026-10-14 的“worker 关闭”历史记录。服务器页面仍待恢复本机 SSH 隧道后验收，API 验收不能替代页面验收。
 
 在能连接官方 PyTorch 下载源的构建机，准备 Linux / Python 3.12 的 CPU wheel 和隔离上下文：
 
@@ -61,8 +64,8 @@ python script/shell/prepare-pth-worker.py --source-zip work/model-inputs/wacga_s
 服务器私有 `deploy/cloud.env` 已配置 `DETECTION_MODEL_ID=105`、`DETECTION_MODELS_DIR=/srv/doorhandle/models`、`DETECTION_MODEL_GID=1000`、`DETECTION_CPU_THREADS=2`。其他环境的模型编号须取该环境实际登记并发布的编号。权重与清单只读挂载；worker 以 UID 10001 运行，附加文件组 1000，不放宽模型目录为全员可写。
 
 ```bash
-docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml -f compose.detection.yml build detection-worker
-docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml -f compose.detection.yml up -d --no-build --pull never
+docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml -f deploy/compose/compose.detection.yml build detection-worker
+docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml -f deploy/compose/compose.detection.yml up -d --no-build --pull never
 ```
 
 仅在源码/镜像有变更时重新构建；普通恢复启动使用第二条命令。构建时 `docker.m.daocloud.io` 返回 HEAD 502，本轮改用显式代理前缀及官方核对的 Linux amd64 摘要：`m.daocloud.io/docker.io/library/python@sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe`。需要复用时，将 `DETECTION_PYTHON_BASE_IMAGE` 设为该值；后续更新版本需重新核对官方摘要。
@@ -70,7 +73,7 @@ docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cl
 该 CPU 运行时不会因为安装 CUDA 依赖而获得 GPU 加速。未来更换 GPU 实例后，再单独配置驱动、容器 GPU 支持和 CUDA 版依赖；当前没有创建 GPU 资源。PyTorch 版本组合见 [官方版本安装说明](https://pytorch.org/get-started/previous-versions/#v251)。详细验证见 [六分类检测链路接入](六分类检测链路接入.md)。
 
 
-当前推荐入口是 `compose.monolith.yml`：一个 Java 模块化单体容器，加一个托管两套前端的 Nginx 容器。数据库、Redis、Kafka、Python 检测 worker、Mem0 和 Chroma 按已有服务边界单独配置；本文件不会自动创建这些服务或迁移数据库。
+当前推荐入口是 `compose.monolith.yml`：一个 Java 模块化单体容器，加一个托管两套前端的 Nginx 容器。数据库、Redis、Kafka、Python 检测 worker、Mem0 和 Qdrant 按已有服务边界单独配置；本文件不会自动创建这些服务或迁移数据库。
 
 ## 镜像设计
 
@@ -100,7 +103,7 @@ cp deploy/docker.env.example deploy/docker.env
 
 新库先按 `sql/mysql/README.md` 完成基础表及所需迁移。Agent 功能默认关闭，按已迁移的范围启用 `AGENTSCOPE_AI_ENABLED`、运行日志、人工确认、技能演化及本地 MCP 等开关。Kafka 检测仍需要可用的 Python worker，不会因为 Java 容器已启动而自动获得推理能力。
 
-使用外部 Mem0 时设置 `MEM0_ENABLED=true`、服务地址和双方一致的 `MEM0_BRIDGE_TOKEN`；Chroma 同理。需要把中间件一起部署到本机服务器时，使用下文的 `compose.cloud.yml`，它们分别运行在独立容器中。
+使用外部 Mem0 时设置 `MEM0_ENABLED=true`、服务地址和双方一致的 `MEM0_BRIDGE_TOKEN`。需要同时部署中间件时，叠加 `deploy/compose/compose.cloud.yml`。
 
 ## 构建与启动
 
@@ -154,18 +157,18 @@ docker compose --env-file deploy/docker.env -f compose.monolith.yml down
 
 ## 原有双实例方案
 
-`compose.nginx.yml` 继续保留作实验入口，其两个后端仍属于同一个单体应用。它不等同于微服务，也不代表跨服务器高可用。当前单机论文演示优先使用这里的单后端方案。
+`deploy/compose/compose.nginx.yml` 继续保留作实验入口，其两个后端仍属于同一个单体应用。它不等同于微服务，也不代表跨服务器高可用。当前单机论文演示优先使用这里的单后端方案。
 
 ## 服务器完整单机环境
 
-`compose.cloud.yml` 在同一私网加入 MySQL 8.4、Redis 7.4、Kafka 4.2.2、Mem0 2.0.19 和 Chroma 1.5.9。只发布 Nginx 的端口，数据库、队列及记忆服务不映射到公网。Mem0 和 Chroma 复用一个 Python 镜像、使用独立数据卷；固定这些版本是为了避免旧 Chroma 与 Mem0 对 PostHog 的依赖冲突。
+`deploy/compose/compose.cloud.yml` 在同一私网加入 MySQL 8.4、Redis 7.4、Kafka 4.2.2、Mem0 和 Qdrant。只发布 Nginx 的端口，数据库、队列及记忆服务不映射到公网。Qdrant 使用验收回执中的固定镜像 ID 和服务器私有配置目录。
 
 ```bash
 cp deploy/cloud.env.example deploy/cloud.env
 chmod 600 deploy/cloud.env
 # 编辑并填写凭据；MYSQL_PASSWORD 与 DB_PASSWORD 必须一致。
-docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml config --quiet
-docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml build backend nginx mem0
+docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml config --quiet
+docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml build backend nginx mem0
 ```
 
 云部署构建使用阿里云 Maven/PyPI/Ubuntu 源和 npm 镜像，默认 Dockerfile 仍使用各官方源。这些源仅加速下载，不替换应用架构。首次 Kafka 启动前，`kafka-storage-init` 为数据卷设置官方镜像所需的 UID 1000；`kafka-init` 等待健康后幂等创建四个业务主题。日常进程保持非 root。
@@ -188,15 +191,15 @@ docker tag m.daocloud.io/docker.io/apache/kafka:4.2.2 apache/kafka:4.2.2
 若复制现有演示数据，先取得源库一致性快照及运行文件归档，保留原始数据；以下恢复脚本仅允许目标库为空，不会覆盖已有表。文件归档使用 `uploads/` 与 `agent-workspace/` 两个顶层目录，不包含 Windows MCP 虚拟环境：
 
 ```bash
-docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml up -d --no-build --pull never mysql redis
+docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml up -d --no-build --pull never mysql redis
 sudo bash script/docker/restore-demo-snapshot.sh demo-database.sql.gz demo-runtime-files.tar.gz
-docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml up -d --no-build --pull never
-docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml ps
+docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml up -d --no-build --pull never
+docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml ps
 ```
 
 全新库仍需按 SQL 文档初始化业务表；`cloud.env.example` 默认关闭需额外迁移的 Agent 功能，填写真实 LLM/Embedding 配置后再启动 Mem0。已迁移的演示库可按功能范围启用。服务端配置文件、数据库快照和运行文件归档均包含敏感数据，不纳入 Git 或镜像构建上下文。
 
-完整环境另有五个中间件数据卷。停止使用 `down`，保留所有卷；不要使用 `down -v`。Mem0 当前按单进程运行，其内嵌记忆向量库与面向应用 RAG 的 Chroma 服务分别持久化。
+停止容器使用 `down`，保留命名卷；不要使用 `down -v`。Mem0 当前按单进程运行，桥接状态和 Qdrant 向量数据分别持久化。
 
 ## 本轮验证范围（2026-10-14）
 

@@ -80,7 +80,7 @@ python3 deploy/mcp/egress-acceptance.py \
 touch /home/ecs-user/doorhandle-release-20261014/deploy/ai-gateway.enabled
 ```
 
-`deploy-remote.sh` 在标记和本次源码的 `compose.ai-gateway.yml` 同时存在时合并 overlay。应用发布仍只替换 backend/nginx；网关、运行器和出口镜像单独按本节升级。没有 overlay 的旧成功发布仍按原直连方式回滚，不自动删除网关资源。
+`deploy-remote.sh` 在标记和本次源码的 `deploy/compose/compose.ai-gateway.yml` 同时存在时合并 overlay。应用发布仍只替换 backend/nginx；网关、运行器和出口镜像单独按本节升级。没有 overlay 的旧成功发布仍按原直连方式回滚，不自动删除网关资源。
 
 Higress DNS 注册使用带点的 `mcp-runner.ai.internal` 网络别名，standalone 的插件规则按 Ingress 名 `mcp-fetch` 匹配；不能直接照搬另一种部署模式的命名。镜像构建关闭随机 attestation，保留 `pin-<digest>` 标签，避免 Docker/containerd 在移动唯一标签后无法再按旧裸 ID 查找镜像。旧 pin 标签供回退使用，不能在仍有注册或容器引用时清理。
 

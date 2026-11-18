@@ -841,10 +841,10 @@ class Cutover:
 
     def compose(self, *args, overlays=(), data=None, timeout=240):
         command = ['compose', '--project-name', PROJECT, '--env-file', str(self.envfile)]
-        for name in ('compose.monolith.yml', 'compose.cloud.yml', 'compose.detection.yml'):
+        for name in ('compose.monolith.yml', 'deploy/compose/compose.cloud.yml', 'deploy/compose/compose.detection.yml'):
             command += ['-f', str(self.source / name)]
         if (self.runtime / 'deploy/ai-gateway.enabled').is_file():
-            command += ['-f', str(self.source / 'compose.ai-gateway.yml')]
+            command += ['-f', str(self.source / 'deploy/compose/compose.ai-gateway.yml')]
         secret = module('cutover_model_secrets', self.source / 'script/docker/model-secrets.py')
         setting = secret.load_settings(self.root, self.runtime)
         environment = dict(os.environ, DOORHANDLE_ENV_FILE=str(self.envfile),
@@ -852,7 +852,7 @@ class Cutover:
                            QDRANT_IMAGE=self.images['qdrant'])
         if setting:
             environment['MODEL_CONFIG_MASTER_KEY_SOURCE'] = setting['masterKeyFile']
-            command += ['-f', str(self.source / 'compose.model-config.yml')]
+            command += ['-f', str(self.source / 'deploy/compose/compose.model-config.yml')]
         command += ['-f', str(self.work / 'candidate-images.json')]
         for path in overlays:
             command += ['-f', str(path)]

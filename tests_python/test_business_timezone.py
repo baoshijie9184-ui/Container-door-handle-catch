@@ -27,5 +27,5 @@ def test_jdbc_session_and_mysql_defaults_use_same_offset_without_multistatement_
     sql=settings['spring']['datasource']['hikari']['connection-init-sql']
     assert "time_zone = '+08:00'" in sql and ';' not in sql
     assert all(charset in sql for charset in ('character_set_client','character_set_connection','character_set_results'))
-    cloud=yaml.safe_load((ROOT/'compose.cloud.yml').read_text(encoding='utf8'))
+    cloud=yaml.safe_load((ROOT/'deploy/compose/compose.cloud.yml').read_text(encoding='utf8'))
     assert '--default-time-zone=+08:00' in cloud['services']['mysql']['command']

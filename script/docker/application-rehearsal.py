@@ -774,11 +774,12 @@ def run(args):
         env = {**os.environ, 'DOORHANDLE_ENV_FILE': str(runtime/'deploy/cloud.env'),
                'DETECTION_BUILD_CONTEXT': str(runtime/'work/cloud/pth-worker-build'), 'APP_IMAGE_TAG': args.tag}
         command = ['compose', '--project-name', project, '--env-file', str(runtime/'deploy/cloud.env')]
-        for file in ('compose.monolith.yml', 'compose.cloud.yml', 'compose.detection.yml', 'compose.ai-gateway.yml'):
+        for file in ('compose.monolith.yml', 'deploy/compose/compose.cloud.yml',
+                     'deploy/compose/compose.detection.yml', 'deploy/compose/compose.ai-gateway.yml'):
             command += ['-f', str(source/file)]
         if model_secret_source:
             env['MODEL_CONFIG_MASTER_KEY_SOURCE']=model_secret_source
-            command+=['-f',str(source/'compose.model-config.yml')]
+            command+=['-f',str(source/'deploy/compose/compose.model-config.yml')]
         connection_overlay=root/'state/compact-connection.override.yml'
         require(connection_overlay.is_file() and not connection_overlay.is_symlink(),'Compact application rehearsal requires an admitted cutover connection')
         command+=['-f',str(connection_overlay)]

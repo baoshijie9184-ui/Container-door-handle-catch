@@ -386,7 +386,7 @@ MySQL文档说明重复键可能持有共享索引锁，单条语句回滚会保
 
 单体入口必须显式设置 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD`，没有本机库和 root 回退。Java 不再自动读取工作目录 `.env`。Compose 部署继续使用 `DOORHANDLE_ENV_FILE` 指定主机上的私有环境文件；Java 若需要读取容器内的文件，使用独立的 `DOORHANDLE_JAVA_ENV_FILE`，且必须是容器内存在的绝对路径。两者不能混用。
 
-`compose.cloud.yml` 中 `mysql`、`redis` 等容器 DNS 指向服务器内部服务，应继续保留。ECS 上的健康检查回环地址也有效。不要把容器内 `mysql:3306` 改成开发机地址，或将服务器数据库暴露到公网。仓库 `.env.example` 与 `deploy/docker.env.example` 中需要明确填写的连接项已留空。
+`deploy/compose/compose.cloud.yml` 中 `mysql`、`redis` 等容器 DNS 指向服务器内部服务，应继续保留。ECS 上的健康检查回环地址也有效。不要把容器内 `mysql:3306` 改成开发机地址，或将服务器数据库暴露到公网。仓库 `.env.example` 与 `deploy/docker.env.example` 中需要明确填写的连接项已留空。
 
 ## 执行入口
 

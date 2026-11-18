@@ -15,7 +15,7 @@ const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/pr
   }
 
   test('compose declares two private Spring Boot instances with explicit ECS configuration', () => {
-    const compose = readProjectFile('compose.nginx.yml')
+    const compose = readProjectFile('deploy', 'compose', 'compose.nginx.yml')
     assert.match(compose, /^\s{2}backend-1:/m)
     assert.match(compose, /^\s{2}backend-2:/m)
     assert.doesNotMatch(serviceBlock(compose, 'backend-1'), /ports:/)
@@ -54,7 +54,7 @@ const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/pr
   })
 
   test('compose exposes only nginx to the host', () => {
-    const compose = readProjectFile('compose.nginx.yml')
+    const compose = readProjectFile('deploy', 'compose', 'compose.nginx.yml')
     assert.match(compose, /^\s{2}nginx:/m)
     assert.match(compose, /NGINX_PORT:-80}:80/)
     assert.match(compose, /condition:\s*service_healthy/)
@@ -75,7 +75,7 @@ const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/pr
 
   test('deployment guide documents standalone Compose fallback', () => {
     const guide = readProjectFile('docs', 'nginx-compose-deployment.md')
-    assert.match(guide, /docker-compose -f compose\.nginx\.yml/)
+    assert.match(guide, /docker-compose --project-directory \. -f deploy\/compose\/compose\.nginx\.yml/)
   })
 }
 

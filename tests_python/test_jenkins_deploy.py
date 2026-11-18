@@ -99,6 +99,37 @@ def test_pipeline_uploads_guard_for_legacy_rollback_and_allows_recovering_unheal
     assert 'snapshot "$root/state/rollback-current.yml" all yes' in source
 
 
+@pytest.mark.parametrize('layout', ['.', 'deploy/compose'])
+def test_release_compose_keeps_project_directory_and_selects_release_overlay_layout(tmp_path, layout):
+    source = (Path(__file__).resolve().parents[1] / 'script/jenkins/deploy-remote.sh').read_text(encoding='utf-8')
+    functions = [
+        re.search(rf'^{name}\(\) \{{.*?^\}}', source, flags=re.M | re.S).group()
+        for name in ('compose_overlay_dir', 'dc')
+    ]
+    release = tmp_path / 'release'
+    overlays = release / layout
+    overlays.mkdir(parents=True)
+    runtime = tmp_path / 'runtime'
+    (runtime / 'deploy').mkdir(parents=True)
+    (runtime / 'deploy/ai-gateway.enabled').touch()
+    for name in ('cloud', 'detection', 'ai-gateway', 'model-config'):
+        (overlays / f'compose.{name}.yml').touch()
+    script = '\n'.join([
+        'set -euo pipefail', 'root="$FIXTURE"; runtime="$root/runtime"',
+        'project=doorhandlecatch-monolith; envfile="$runtime/deploy/cloud.env"; model_key_source=fixture',
+        'memory_override=(); mcp_override=()', 'docker() { printf "%s\\n" "$@"; }',
+        *functions, 'dc "$root/release" "$root/images.yml" config --quiet',
+    ])
+    output = subprocess.run([git_bash(), '-c', script], env={**os.environ, 'FIXTURE': tmp_path.as_posix()},
+                            text=True, capture_output=True, timeout=15, check=True).stdout.splitlines()
+    assert output[output.index('--project-directory') + 1] == release.as_posix()
+    assert [output[i + 1] for i, arg in enumerate(output) if arg == '-f'] == [
+        (release / 'compose.monolith.yml').as_posix(),
+        *((overlays / f'compose.{name}.yml').as_posix() for name in ('cloud', 'detection', 'ai-gateway', 'model-config')),
+        (tmp_path / 'images.yml').as_posix(),
+    ]
+
+
 def test_invalid_persistent_native_binding_stops_deploy_before_any_application_operation(tmp_path):
     source = (Path(__file__).resolve().parents[1] / 'script/jenkins/deploy-remote.sh').read_text(encoding='utf8')
     activate = re.search(r'^activate\(\) \{.*?^\}', source, flags=re.M | re.S).group()

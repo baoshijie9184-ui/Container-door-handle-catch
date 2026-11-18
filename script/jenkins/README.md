@@ -6,7 +6,7 @@
 
 本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins 始终运行；ECS 保持开启，由用户自行关闭；助手不在测试前后自动启停，也不安排验收后的关机任务。本轮自有临时资源仍须收尾并保全报告，不停止业务服务或 ECS。流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
 
-Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.cloud.yml` 的阿里云 HTTPS PyPI 镜像 `https://mirrors.aliyun.com/pypi/simple`。安装仍使用隔离 pip、固定版本、禁用缓存、原始 pip 下载摘要报告、`pip check` 和实际版本回读；不增加备用源或绕过 TLS 校验。2 GiB 总增长包络、磁盘保底、容器内存限制及 1,800 秒期限保持不变，真实安装和新增命令回归均由后续固定提交在 ECS 验证。
+Python 测试工具需要新装依赖时，固定源码配方沿用 `deploy/compose/compose.cloud.yml` 的阿里云 HTTPS PyPI 镜像 `https://mirrors.aliyun.com/pypi/simple`。安装仍使用隔离 pip、固定版本、禁用缓存、原始 pip 下载摘要报告、`pip check` 和实际版本回读；不增加备用源或绕过 TLS 校验。2 GiB 总增长包络、磁盘保底、容器内存限制及 1,800 秒期限保持不变，真实安装和新增命令回归均由后续固定提交在 ECS 验证。
 
 新建工具准备前只读检查 apt 服务和内核包管理锁，活动升级未结束时拒绝开始；原件回读及清理不受此门影响，不停止或禁用系统更新。长轮验证前还须核对实际更新计时器，选择不重叠的窗口。MySQL 内核限额检查失败时分别保存两个控制文件的读数及采样阶段；`lastKernelObservation` 仅代表上次成功探针，不能当作失败现场。限额和失败即停止规则保持不变。
 

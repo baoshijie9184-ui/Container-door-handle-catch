@@ -4,7 +4,7 @@ set -euo pipefail
 snapshot=${1:?Usage: restore-demo-snapshot.sh database.sql.gz [runtime-files.tar.gz]}
 runtime_archive=${2:-}
 test -f "$snapshot"
-dc=(docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f compose.cloud.yml)
+dc=(docker compose --env-file deploy/cloud.env -f compose.monolith.yml -f deploy/compose/compose.cloud.yml)
 table_count=$("${dc[@]}" exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -N -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()"')
 if [ "$table_count" != 0 ]; then
     echo 'Refusing to restore: target database is not empty.' >&2

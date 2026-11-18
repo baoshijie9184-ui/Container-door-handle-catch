@@ -1,4 +1,4 @@
-# 叠加到 compose.monolith.yml + compose.cloud.yml；直接加载已验证的 PTH。
+# 叠加到根目录 compose.monolith.yml 和 deploy/compose/compose.cloud.yml；直接加载已验证的 PTH。
 services:
   backend:
     environment:
