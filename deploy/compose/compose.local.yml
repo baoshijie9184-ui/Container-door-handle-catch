@@ -35,6 +35,9 @@ services:
   mem0:
     image: ${LOCAL_MEM0_IMAGE:?Set the local Mem0 image ID}
 
+  qdrant:
+    command: ["./entrypoint.sh", "--config-path", "/run/doorhandle-vector/server.yaml"]
+
   redis:
     image: ${LOCAL_REDIS_IMAGE:?Set the local Redis image ID}
 
