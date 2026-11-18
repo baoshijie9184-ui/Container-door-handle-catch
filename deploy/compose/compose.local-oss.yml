@@ -1,0 +1,49 @@
+# Optional Linux overlay when the existing host HTTP proxy reaches OSS.
+# TLS passes through unchanged and provider credentials remain with their clients.
+services:
+  backend:
+    depends_on:
+      oss-tunnel:
+        condition: service_healthy
+
+  detection-worker:
+    depends_on:
+      oss-tunnel:
+        condition: service_healthy
+
+  nginx:
+    depends_on:
+      oss-tunnel:
+        condition: service_healthy
+
+  oss-tunnel:
+    image: ${LOCAL_WORKER_IMAGE:?Set the local Worker image ID providing Python}
+    entrypoint: ["python", "-B", "/opt/doorhandle/local-oss-tunnel.py"]
+    command: []
+    environment:
+      OSS_UPLOAD_HOST: ${OSS_UPLOAD_HOST:?Set the OSS bucket hostname}
+      OSS_LOCAL_PROXY_HOST: ${OSS_LOCAL_PROXY_HOST:?Set the local Docker bridge proxy address}
+      OSS_LOCAL_PROXY_PORT: ${OSS_LOCAL_PROXY_PORT:?Set the local Docker bridge proxy port}
+    volumes:
+      - type: bind
+        source: ./script/docker/local-oss-tunnel.py
+        target: /opt/doorhandle/local-oss-tunnel.py
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      doorhandle-network:
+        aliases: ["${OSS_UPLOAD_HOST:?Set the OSS bucket hostname}"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "443"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 443), 2).close()"]
+      interval: 20s
+      timeout: 4s
+      retries: 3
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 64
+    restart: unless-stopped
