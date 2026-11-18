@@ -1,3 +1,5 @@
+import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
+
 // Both chat entrances use session-owned files and a versioned server model preference.
 export function modelLabel(model){const provider={dashscope:'百炼',deepseek:'DeepSeek 直连',openai:'OpenAI 兼容'}[model.provider]||model.provider;return provider?`${model.model} · ${provider}`:model.model}
 export function defaultModelLabel(state){const model=state.models.find(item=>item.id===state.defaultModelId);return model?'系统默认 · '+modelLabel(model):'系统默认'}
@@ -5,7 +7,7 @@ export function selectedModelMissing(state){return !!state.modelId&&!state.model
 function validSelection(value){if(typeof value?.modelId!=='string'||!Number.isSafeInteger(value.revision)||value.revision<0)throw Error('模型选择响应无效，请核对后再试');return value}
 function catalogState(catalog){if(!Array.isArray(catalog?.models))throw Error('模型目录暂不可用');return {models:catalog.models.filter(m=>m.configured===true&&typeof m.id==='string'&&typeof m.model==='string'),defaultModelId:typeof catalog.selectedModel==='string'?catalog.selectedModel:'',fallbackEnabled:catalog.fallbackEnabled===true}}
 export class ComposerResources {
- constructor({base='',fetcher=globalThis.__doorhandleAccountFetch?.capture?.() || ((...args)=>(globalThis.__doorhandleAccountFetch || globalThis.fetch)(...args)),onState=()=>{},onDraft=()=>{},storage}={}){Object.assign(this,{base,fetcher,onState,onDraft,storage});this.generation=0;this.pending=new Map();this.text='';this.edits=0;this.hydrated=false;this.state={ready:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:''}}
+ constructor({base='',fetcher=captureWorkspaceFetch(),onState=()=>{},onDraft=()=>{},storage}={}){Object.assign(this,{base,fetcher,onState,onDraft,storage});this.generation=0;this.pending=new Map();this.text='';this.edits=0;this.hydrated=false;this.state={ready:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:''}}
  publish(value){this.state={...this.state,...value};this.onState(this.state);if(Object.hasOwn(value,'files'))this.persist()}
  draft(text){const value=typeof text==='string'?text:'';if(value!==this.text){this.text=value;this.edits++;this.persist()}}
  persist(){

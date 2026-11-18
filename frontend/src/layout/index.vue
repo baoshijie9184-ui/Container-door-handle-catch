@@ -406,14 +406,17 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   .layout-shell,.layout-shell.sidebar-collapsed { grid-template-columns:minmax(0,1fr); }
   .layout-sidebar { display:none; }
-  .layout-header { min-height:54px; padding:9px 14px; gap:8px; }
-  .header-left { gap:8px; } .header-actions { gap:4px; }
+  .layout-header { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; min-height:54px; padding:9px 14px; gap:6px 8px; }
+  .header-left { grid-column:1; grid-row:1; gap:8px; }
+  .header-actions { display:contents; }
+  .header-actions > .assistant-entry-link { grid-column:2; grid-row:1; }
+  .header-actions > .app-account-menu { grid-column:3; grid-row:1; }
+  .header-actions > .collaboration-status { grid-column:1/-1; grid-row:2; min-width:0; padding:4px 0 0; }
   .assistant-entry-link { padding:6px; width:30px; height:30px; justify-content:center; }
   .assistant-entry-link > span { display:none; }
   .layout-content { padding:22px 16px 78px; }
   .is-agent-workspace .layout-content,.is-trace-workspace .layout-content { padding:0; }
   .back-top-btn { bottom:78px; right:20px; }
 }
-@media(max-width:360px) { .assistant-entry-link { display:none; } }
 @media(prefers-reduced-motion:reduce) { .layout-shell,.brand-mark { transition:none; } .brand-mark:hover { transform:none; } .layout-content { scroll-behavior:auto; } }
 </style>

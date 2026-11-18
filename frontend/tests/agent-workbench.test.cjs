@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict')
-const {readFrontendFile}=require('./helpers/project-source.cjs')
-const utility=import(`data:text/javascript;base64,${Buffer.from(readFrontendFile('src','utils','agentWorkbench.js')).toString('base64')}`)
+const {importFrontendModule}=require('./helpers/project-source.cjs')
+const utility=importFrontendModule('src','utils','agentWorkbench.js')
 const id='00000000-0000-0000-0000-000000000001'
 test('file normalization retains unknown historical civil time without coercing an offset',async()=>{
  const {normalizeWorkbench}=await utility

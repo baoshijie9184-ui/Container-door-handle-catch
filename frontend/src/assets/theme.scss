@@ -511,15 +511,15 @@ select {
 }
 
 .el-menu-item.is-active {
-  color: var(--app-primary) !important;
-  background: var(--app-primary-soft) !important;
+  color: var(--nav-accent, var(--app-primary)) !important;
+  background: var(--nav-selected, var(--app-primary-soft)) !important;
   font-weight: 600;
 }
 
 .el-menu-item:not(.is-active):hover,
 .el-sub-menu:not(.is-active) > .el-sub-menu__title:hover {
-  background: var(--app-surface-hover) !important;
-  color: var(--app-text) !important;
+  background: var(--nav-hover, var(--app-surface-hover)) !important;
+  color: var(--nav-accent, var(--app-text)) !important;
 }
 
 /* 分页 */

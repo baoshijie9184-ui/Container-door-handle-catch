@@ -1,3 +1,5 @@
+import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
+
 // Shared presentation/read boundary for Vue and React. Never derive receipts from prose.
 const valid=value=>typeof value==='string'&&/^[A-Za-z0-9_:.-]{1,160}$/.test(value);
 const states={TOOL_STARTED:'calling',TOOL_COMPLETED:'returned',TOOL_ERROR:'failed',TOOL_CANCELLED:'cancelled'};
@@ -47,7 +49,7 @@ export function executionClockHint(status,wallTimes) {
 }
 
 export class ToolExecutionReader {
-  constructor({fetcher=globalThis.__doorhandleAccountFetch?.capture?.() || ((...args)=>(globalThis.__doorhandleAccountFetch || globalThis.fetch)(...args)),onChange=()=>{}}={}){Object.assign(this,{fetcher,onChange});this.version=0;this.timer=null;this.controller=null;}
+  constructor({fetcher=captureWorkspaceFetch(),onChange=()=>{}}={}){Object.assign(this,{fetcher,onChange});this.version=0;this.timer=null;this.controller=null;}
   open(sessionId,runId,active=false){this.close();this.session=sessionId;this.runId=runId;this.active=active;this.events=[];this.cursor=0;this.state={events:[],phase:active?'RUNNING':'finished',known:false,complete:false,error:'',denied:false};if(active)this.read();return this.state;}
   publish(patch){this.state={...this.state,...patch};this.onChange(this.state);}
   async read(){

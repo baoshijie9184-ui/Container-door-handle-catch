@@ -177,7 +177,7 @@ const handleLogin = async () => {
 .login-card-desc { margin: 9px 0 30px; font-size: 14px; color: var(--app-text-secondary); }
 .login-card .el-alert { margin-bottom: 20px; }
 .login-form :deep(.el-form-item__label) { font-weight: 550; color: var(--app-text); }
-.login-form :deep(.el-input__wrapper) { min-height: 48px; padding-inline: 15px; border-radius: 9px; box-shadow: 0 0 0 1px var(--app-border-strong) inset; background: white; }
+.login-form :deep(.el-input__wrapper) { min-height: 48px; padding-inline: 15px; border-radius: 9px; border: 1px solid var(--app-border-strong); background: white; }
 .login-form :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--app-primary) inset, 0 0 0 3px var(--app-primary-glow); }
 .login-form :deep(.el-form-item) { margin-bottom: 23px; }
 .login-options { display:flex; align-items:center; justify-content:space-between; margin:0 0 3px; gap:12px; }
@@ -187,7 +187,7 @@ const handleLogin = async () => {
 .login-inline-note.is-warning { color:var(--app-warning); background:var(--app-warning-soft); }
 .login-open-workspace { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:46px; box-sizing:border-box; padding:11px 18px; border-radius:8px; color:white; background:var(--app-primary); font-size:14px; text-decoration:none; }
 .login-open-workspace:hover { background:var(--app-primary-hover); }
-.login-form :deep(.el-form-item.is-error .el-input__wrapper) { box-shadow:0 0 0 1px var(--app-danger) inset; }
+.login-form :deep(.el-form-item.is-error .el-input__wrapper) { border-color:var(--app-danger); }
 .login-card .el-alert:focus-visible { outline:2px solid var(--app-danger); outline-offset:3px; }
 .password-help-heading { display:flex; align-items:center; gap:9px; margin:4px 0 12px; color:var(--app-text); font-size:14px; line-height:1.7; }
 .password-help-heading > .el-icon { flex:0 0 auto; color:var(--app-primary); }

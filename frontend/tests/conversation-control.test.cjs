@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict')
-const {readFrontendFile}=require('./helpers/project-source.cjs')
-const utility=import(`data:text/javascript;base64,${Buffer.from(readFrontendFile('src','utils','conversationControl.js')).toString('base64')}`)
+const {importFrontendModule}=require('./helpers/project-source.cjs')
+const utility=importFrontendModule('src','utils','conversationControl.js')
 const id='00000000-0000-0000-0000-000000000001'
 const snapshot=(session='s1',extra={})=>({run:{sessionId:session,runId:'run-1',phase:'RUNNING',revision:0,local:true,text:''},inputs:[{id,mode:'NEXT_TURN',status:'QUEUED',revision:0,content:'<img src=x> plain text'}],...extra})
 const response=(body,ok=true,status=200)=>({ok,status,json:async()=>body})

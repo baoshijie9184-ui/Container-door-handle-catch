@@ -1,3 +1,5 @@
+import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
+
 export const workbenchTabs=[['PLAN','计划与任务'],['QUESTION','待回答'],['FILE','文件产物'],['CHILD','子 Agent'],['EXECUTION','后台任务'],['USAGE','用量'],['RECOVERY','恢复'],['FORK','分支']]
 export function availableWorkbenchTabs(capabilities={}){const keys={PLAN:'plans',QUESTION:'questions',FILE:'files',CHILD:'children',EXECUTION:'jobs',USAGE:'usage',RECOVERY:'recovery',FORK:'forks'};return workbenchTabs.filter(([key])=>capabilities[keys[key]]!==false)}
 export const workbenchStatus={PENDING:'待处理',APPROVED:'已批准',CHANGES_REQUESTED:'待修订',RUNNING:'执行中',READY:'待继续',QUEUED:'排队中',WAITING_PLAN:'等待审阅',WAITING_INPUT:'等待回答',WAITING_CHILD:'等待专业任务',COMPLETED:'已完成',CANCELLED:'已取消',NEEDS_REVIEW:'中断待核对',ANSWERED:'已回答',ACTIVE:'进行中',REFERENCE_ONLY:'仅供参考'}
@@ -27,7 +29,7 @@ export function normalizeWorkbench(value){
  return {items,files,businessFiles,limits,lineage:typeof value.lineage?.sourceSessionId==='string'?value.lineage:null}
 }
 export class AgentWorkbenchClient {
- constructor({base='',fetcher=globalThis.__doorhandleAccountFetch?.capture?.() || ((...args)=>(globalThis.__doorhandleAccountFetch || globalThis.fetch)(...args)),onState=()=>{}}={}){Object.assign(this,{base,fetcher,onState});this.generation=0;this.pending=new Map();this.busy=false;this.value={enabled:false,items:[],files:[],capabilities:{}}}
+ constructor({base='',fetcher=captureWorkspaceFetch(),onState=()=>{}}={}){Object.assign(this,{base,fetcher,onState});this.generation=0;this.pending=new Map();this.busy=false;this.value={enabled:false,items:[],files:[],capabilities:{}}}
  async read(path,options={}){const response=await this.fetcher(this.base+path,{credentials:'include',cache:'no-store',...options});if(!response.ok){const error=Error(response.status===409?'状态已变化，请刷新核对；不会自动重试':response.status===403?'当前账号无法执行此操作':response.status===415?'文件格式、编码或内容无效，请核对后重新上传':response.status===429?'文件解析繁忙，请稍后重试':response.status===413?'文件大小、尺寸或存储配额超出限制':'结果尚未确认，请刷新核对；不会自动重试');error.status=response.status;throw error}return response}
  publish(value){this.value={...this.value,...value};this.onState(this.value)}
  async open(session){clearTimeout(this.timer);const generation=++this.generation;this.session=session;this.publish({sessionId:session,enabled:false,items:[],files:[],businessFiles:[],limits:null,loaded:false,loading:false,lineage:null,error:'',capabilities:{},notifications:[],recoveryModels:[],recoveryConfigVersion:0,recoveryDefault:'',recoveryModelError:'',recoveryModelsLoading:false});if(!session)return;try{const capability=await (await this.read('/api/agent/workbench/capabilities')).json();if(generation!==this.generation)return;if(capability.enabled===true){this.publish({enabled:true,capabilities:capability});await this.poll(generation);if(capability.modelConfig===true)await this.loadRecoveryModels(generation)}}catch{/* Older backend: keep its existing workspace. */}}

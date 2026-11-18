@@ -1,3 +1,5 @@
+import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
+
 export const controlPhaseLabels={IDLE:'空闲',RUNNING:'执行中',PAUSE_REQUESTED:'等待安全切点暂停',PAUSED:'已暂停',REMOTE_RUNNING:'其他实例执行中',WAITING_PLAN:'等待计划审阅',WAITING_INPUT:'等待补充信息',WAITING_CHILD:'后台专业任务执行中',AWAITING_RECOVERY:'等待核对与恢复'}
 export const inputStatusLabels={QUEUED:'待处理',STARTED:'已领取执行',APPLIED:'已交付安全切点',COMPLETED:'已完成',FAILED:'已停止或失败',CANCELLED:'已撤回',EXPIRED:'已过期'}
 // The current/first message is not a visible backlog. Show only extra waiting input.
@@ -23,7 +25,7 @@ export function normalizeControl(value,sessionId){
 }
 // Reads may be repeated. Mutations are never retried automatically; an uncertain submit retains its request ID.
 export class ConversationControlClient{
- constructor({base='/api/agent/conversations',entryPoint='CHAT',fetcher=globalThis.__doorhandleAccountFetch?.capture?.() || ((...args)=>(globalThis.__doorhandleAccountFetch || globalThis.fetch)(...args)),onState=()=>{},onRefresh=()=>{}}={}){Object.assign(this,{base,entryPoint,fetcher,onState,onRefresh});this.generation=0;this.enabled=false;this.timer=null;this.session='';this.uncertain=new Map();this.writing=false}
+ constructor({base='/api/agent/conversations',entryPoint='CHAT',fetcher=captureWorkspaceFetch(),onState=()=>{},onRefresh=()=>{}}={}){Object.assign(this,{base,entryPoint,fetcher,onState,onRefresh});this.generation=0;this.enabled=false;this.timer=null;this.session='';this.uncertain=new Map();this.writing=false}
  async request(path,body){
   const response=await this.fetcher(this.base+path,{credentials:'include',cache:'no-store',...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-Agent-Action':'conversation-control'},body:JSON.stringify(body)})})
   if(!response.ok)throw Error(response.status===409?'状态已变化，请刷新核对；不会自动重试。':response.status===429?'待处理消息或本轮补充要求已达上限，请等待或撤回。':'操作结果未确认，请刷新核对；不会自动重试。')

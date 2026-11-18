@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict');
-const {readFrontendFile}=require('./helpers/project-source.cjs');
-const mod=import('data:text/javascript;base64,'+Buffer.from(readFrontendFile('src','utils','composerResources.js')).toString('base64'));
+const {readFrontendFile, importFrontendModule}=require('./helpers/project-source.cjs');
+const mod=importFrontendModule('src','utils','composerResources.js')
 const response=(value,status=200)=>({ok:status===200,status,json:async()=>value});
 const fid='00000000-0000-0000-0000-000000000001';
 const fixture=(path)=>path.endsWith('capabilities')?response({enabled:true,files:true}):path==='/agui/models'?response({models:[{id:'deepseek:demo',model:'demo',configured:true},{id:'missing',model:'missing',configured:false}]}):response({modelId:'',revision:0});
