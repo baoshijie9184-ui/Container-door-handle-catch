@@ -46,7 +46,7 @@ body { font-family: var(--app-font); background: var(--app-bg); color: var(--app
 @media(max-width:640px) { .management-filter-form { grid-template-columns:minmax(0,1fr); } .employee-page .management-filter-actions { grid-column:auto; justify-content:flex-start; } }
 @media(prefers-reduced-motion:reduce) { .management-more > summary,.management-more > summary .el-icon { transition:none; } }
 button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
-:is(button, a, input, select, textarea, summary, [tabindex]):focus-visible { outline: 3px solid #2563eb80; outline-offset: 3px; }
+:is(button, a, input, select, textarea, summary, [tabindex]):focus-visible { outline: 3px solid var(--app-border-focus); outline-offset: 3px; }
 button:disabled { cursor: not-allowed; }
 button:not(:disabled), a { transition: background-color var(--app-transition-fast), color var(--app-transition-fast), border-color var(--app-transition-fast), box-shadow var(--app-transition-fast), transform var(--app-transition-fast); }
 button:not(:disabled):active { transform: scale(.985); }
@@ -58,9 +58,9 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .layout-content :is(.toolbar-grid, .panel-actions) .el-button + .el-button { margin-left: 0; }
 #app .layout-content .el-card { --el-card-border-color: var(--app-border); border-radius: 12px; box-shadow: none; }
 #app .layout-content .el-card:hover { box-shadow: none; }
-#app .layout-content .el-card__header { padding: 17px 20px; border-bottom-color: #eef2f6; font-weight: 650; }
+#app .layout-content .el-card__header { padding: 17px 20px; border-bottom-color: var(--app-border); font-weight: 650; }
 #app .layout-content .el-card__body { padding: 20px; }
-#app .layout-content .el-table { --el-table-border-color: var(--app-border); --el-table-header-bg-color: var(--app-surface-muted); --el-table-header-text-color: var(--app-text-secondary); --el-table-text-color: var(--app-text); --el-table-row-hover-bg-color: #f7f9fd; font-size: 13px; border-radius: 0; }
+#app .layout-content .el-table { --el-table-border-color: var(--app-border); --el-table-header-bg-color: var(--app-surface-muted); --el-table-header-text-color: var(--app-text-secondary); --el-table-text-color: var(--app-text); --el-table-row-hover-bg-color: var(--app-primary-light); font-size: 13px; border-radius: 0; }
 #app .layout-content .el-table th.el-table__cell { padding-block: 11px; font-size: 12px; font-weight: 550; letter-spacing: 0; }
 #app .layout-content .el-table td.el-table__cell { padding-block: 11px; }
 #app .layout-content .el-table .cell { line-height: 1.7; overflow-wrap: anywhere; }
@@ -265,16 +265,25 @@ button:not(:disabled):active { transform: scale(.985); }
 .quality-overview h2 { font-size:16px; font-weight:600; color:var(--app-text); }
 .quality-overview header p { margin-top: 5px; font-size: 11px; color: var(--app-text-muted); }
 .quality-overview header > a { display: inline-flex; align-items: center; flex-direction: row-reverse; gap: 6px; font-size: 12px; color: var(--app-primary); padding-block: 4px; }
-.quality-overview-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:0; padding-block:4px; }
-.quality-overview-grid > a { display:flex; align-items:center; gap:10px; padding:16px 14px; min-width:0; border:0; border-right:1px solid var(--app-border); border-radius:0; background:transparent; text-decoration:none; transition:background-color var(--app-transition-fast); }
-.quality-overview-grid > a:hover { background:var(--app-surface-muted); transform:none; }
-.quality-overview-grid > a:last-child { border-right:0; }
-@media(min-width:641px) and (max-width:1280px) { .quality-overview-grid > a:nth-child(3n) { border-right:0; } .quality-overview-grid > a:nth-child(n+4) { border-top:1px solid var(--app-border); } }
-
-.quality-overview-grid > a > :last-child { color: #7e8da2; margin-left: auto; }
-.quality-overview-grid strong { display: block; font-size: 24px; line-height: 1.2; font-weight: 700; color: var(--app-text); font-variant-numeric: tabular-nums; }
-.quality-overview-grid small { display: block; font-size: 11px; margin-top: 5px; color: var(--app-text-secondary); }
-.quality-overview-icon { display: grid; place-items: center; color: var(--app-primary); }
+.quality-overview-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 9px; }
+.quality-overview-grid > a {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-content: start;
+  gap: 12px 4px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: #f8faf7;
+  text-decoration: none;
+}
+.quality-overview-grid > a:hover { background: var(--app-primary-light); border-color: var(--app-border-focus); }
+.quality-overview-grid > a > span:nth-child(2) { grid-row: 2; grid-column: 1 / -1; }
+.quality-overview-grid > a > .el-icon { justify-self: end; color: var(--app-text-muted); }
+.quality-overview-grid strong { display: block; font-size: 28px; line-height: 1.15; font-weight: 650; color: var(--app-text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.quality-overview-grid small { display: block; font-size: 12px; margin-top: 5px; color: var(--app-text-secondary); }
+.quality-overview-icon { color: var(--app-primary); }
 .quality-overview-grid > [data-tone=warning] .quality-overview-icon { color: var(--app-warning); }
 .quality-overview-grid > [data-tone=danger] .quality-overview-icon { color: var(--app-danger); }
 .quality-overview-note { margin: 13px 0 0; font-size: 11px; color: var(--app-text-muted); line-height: 1.7; }
@@ -362,9 +371,7 @@ button:not(:disabled):active { transform: scale(.985); }
   .upload-flow > li + li { border-left: 0; border-top: 1px solid var(--app-border); }
   .collection-heading { padding: 15px; }
   .quality-overview { padding: 16px; }
-  .quality-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:0; }
-  .quality-overview-grid > a:nth-child(2n) { border-right:0; }
-  .quality-overview-grid > a:nth-child(n+3) { border-top:1px solid var(--app-border); }
+  .quality-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
   .quality-overview-grid > a { padding: 12px 10px; }
   .quality-overview-grid strong { font-size: 22px; }
   #app .layout-content .stats-bar-item > div:last-child { min-width: 0; }

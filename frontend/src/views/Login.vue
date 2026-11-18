@@ -1,25 +1,20 @@
 <template>
   <div class="login-page">
     <section class="login-showcase" aria-label="系统介绍">
-      <a class="login-brand" href="#/login" :title="SYSTEM_NAME" :aria-label="SYSTEM_NAME"><span class="login-brand-mark"><AppIcon name="Picture" :size="23" /></span><span>{{ SYSTEM_SHORT_NAME }}<small>{{ SYSTEM_SCOPE }}</small></span></a>
+      <a class="login-brand" href="#/login" :title="SYSTEM_NAME" :aria-label="SYSTEM_NAME">
+        <img src="/favicon.svg" width="40" height="40" alt="" />
+        <span>{{ SYSTEM_SHORT_NAME }}<small>{{ SYSTEM_TAGLINE }}</small></span>
+      </a>
       <div class="showcase-inner">
-        <span class="login-product-label">{{ SYSTEM_NAME }}</span>
-        <h1>从一张原图<br />到有据可查的质量结论</h1>
-        <p>连接图片采集、缺陷检测、人工复核与报告，让现场团队在同一个工作空间协作。</p>
-        <HandleInspectionGraphic />
-        <div class="login-capabilities">
-          <span><AppIcon name="Picture" :size="17" />图片检测</span>
-          <span><AppIcon name="CircleCheck" :size="17" />人工质检</span>
-          <span><AppIcon name="ChatDotRound" :size="17" />智能助手</span>
-        </div>
+        <h1>集装箱门把手盖<br /><em>视觉质检</em></h1>
+        <p>从原图采集到人工复核，追溯每一次质量判断。</p>
       </div>
-      <p class="login-scope-note"><AppIcon name="Lock" :size="15" />员工查看本人及分派任务，主管查看企业业务</p>
     </section>
     <section class="login-panel" aria-labelledby="login-title">
       <div class="login-card">
-        <span class="login-card-icon"><AppIcon name="User" :size="25" /></span>
+        <span class="login-card-icon"><AppIcon name="Key" :size="24" /></span>
         <h2 id="login-title">登录工作空间</h2>
-        <p class="login-card-desc">使用你的员工或主管账号继续</p>
+        <p class="login-card-desc">使用员工或主管账号，进入检测与质检工作台。</p>
         <el-alert v-if="loginError" id="login-error" ref="loginErrorRef" tabindex="-1" :title="loginError" type="error" :closable="false" show-icon role="alert" />
         <p v-if="!online" class="login-inline-note is-warning" role="status"><AppIcon name="Connection" :size="15" />浏览器报告网络已断开，请核对连接。恢复后不会自动提交登录。</p>
         <el-form ref="loginFormRef" :model="loginForm" :rules="rules" :disabled="loading || loginAccepted" label-position="top" class="login-form" :aria-busy="loading" @submit.prevent="handleLogin">
@@ -38,7 +33,7 @@
         </el-form>
         <p class="login-card-footer"><AppIcon name="Lock" :size="14" />账号权限与操作记录随登录身份生效</p>
       </div>
-      <span class="login-timezone">业务时间统一使用北京时间 UTC+8</span>
+      <span class="login-timezone"><AppIcon name="Clock" :size="14" />北京时间 · UTC+8</span>
     </section>
     <el-dialog v-model="showForgotDialog" title="找回密码" width="min(440px, 94vw)" class="login-password-help">
       <div class="password-help-heading"><AppIcon name="Key" :size="21" /><strong>联系企业主管或系统管理员</strong></div>
@@ -49,13 +44,12 @@
 </template>
 
 <script setup>
-import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_SCOPE} from '@/utils/systemBrand'
+import {SYSTEM_NAME, SYSTEM_SHORT_NAME, SYSTEM_TAGLINE} from '@/utils/systemBrand'
 import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue'
 import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
-import HandleInspectionGraphic from '@/components/HandleInspectionGraphic.vue'
 import { readAccountPreference, writeAccountPreference } from '@/utils/accountPreferences'
 
 const router = useRouter()
@@ -141,29 +135,50 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
-.login-page { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-columns:minmax(0,1fr) minmax(420px,1fr); background: white; }
-.login-showcase { display: flex; flex-direction: column; padding:32px clamp(28px,5.5vw,84px); background:var(--app-bg-alt); border-right: 1px solid var(--app-border); }
-.login-brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 700; color: var(--app-text); }
-.login-brand > span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.login-brand-mark { flex-shrink: 0; display: grid; place-items: center; width:36px; height:36px; background:var(--app-text); border-radius:9px; color: white; }
-.login-brand small { line-height: 1.6; display: block; font-weight: 400; font-size: 12px; margin-top: 3px; color: var(--app-text-secondary); }
-.showcase-inner { max-width: 560px; margin-block: auto; padding-block: 38px; }
-.login-product-label { color: var(--app-primary); font-size: 12px; font-weight: 600; }
-.showcase-inner h1 { margin: 18px 0 16px; color: var(--app-text); font-size:clamp(28px,2.8vw,40px); font-weight:600; letter-spacing: -.04em; line-height: 1.38; }
-.showcase-inner > p { color: var(--app-text-secondary); font-size: 14px; line-height: 1.9; max-width: 39em; }
-.login-capabilities { display: flex; flex-wrap: wrap; gap: 18px; }
-.login-capabilities span, .login-scope-note, .login-card-footer { display: flex; align-items: center; gap: 7px; color: var(--app-text-secondary); font-size: 12px; }
-.login-capabilities .el-icon { color: var(--app-primary); }
-.login-scope-note { font-size:12px; line-height:1.8; padding-top: 18px; border-top: 1px solid var(--app-border); }
-.login-scope-note > .el-icon { flex-shrink:0; }
-.login-panel { position: relative; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 52px 32px; }
-.login-card { width: 100%; max-width:360px; animation: login-reveal 200ms ease both; }
-.login-card-icon { width: 49px; height: 49px; display: grid; place-items: center; background:white; color:var(--app-text); border:1px solid var(--app-border); border-radius:11px; margin-bottom: 22px; }
-.login-card h2 { font-size:26px; font-weight:600; letter-spacing: -.025em; }
-.login-card-desc { margin: 8px 0 26px; font-size: 13px; color: var(--app-text-muted); }
+.login-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(380px, 1fr);
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: clamp(12px, 1.45vw, 24px);
+  background: #fafbf7;
+}
+.login-showcase {
+  isolation: isolate;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  overflow: hidden;
+  padding: clamp(28px, 3.4vw, 62px);
+  border-radius: 20px;
+  color: white;
+  background: #103e37 url('../assets/images/container-lock.webp') center 48% / cover no-repeat;
+}
+.login-showcase::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(180deg, #07211e70, transparent 25%, transparent 53%, #031c19b8 79%, #031c19f2);
+}
+.login-brand { display: inline-flex; align-items: center; align-self: flex-start; gap: 12px; color: white; font-size: 17px; font-weight: 650; }
+.login-brand img { border: 1px solid #c2e4d35c; border-radius: 10px; }
+.login-brand small { display: block; margin-top: 2px; font-size: 11px; font-weight: 450; letter-spacing: .09em; color: #d3e4db; }
+.showcase-inner { padding-block: 32px 8px; }
+.showcase-inner h1 { margin: 0; font-size: clamp(36px, 4vw, 70px); line-height: 1.18; font-weight: 650; letter-spacing: -.055em; }
+.showcase-inner em { color: #c3f0c9; font-style: normal; }
+.showcase-inner p { margin-top: 19px; font-size: 14px; line-height: 1.85; color: #e0eae4; }
+.login-panel { display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative; min-width: 0; padding: 70px 32px; }
+.login-card { width: 100%; max-width: 368px; animation: login-reveal 200ms ease both; }
+.login-card-icon { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 20px; background: var(--app-primary-soft); color: var(--app-primary); border-radius: 14px; }
+.login-card h2 { font-size: clamp(28px, 2.4vw, 38px); line-height: 1.35; font-weight: 650; letter-spacing: -.045em; }
+.login-card-desc { margin: 9px 0 30px; font-size: 14px; color: var(--app-text-secondary); }
 .login-card .el-alert { margin-bottom: 20px; }
-.login-form :deep(.el-input__wrapper) { min-height: 46px; box-shadow: 0 0 0 1px var(--app-border) inset; background: white; }
-.login-form :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--app-primary) inset, 0 0 0 3px #2563eb10; }
+.login-form :deep(.el-form-item__label) { font-weight: 550; color: var(--app-text); }
+.login-form :deep(.el-input__wrapper) { min-height: 48px; padding-inline: 15px; border-radius: 9px; box-shadow: 0 0 0 1px var(--app-border-strong) inset; background: white; }
+.login-form :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--app-primary) inset, 0 0 0 3px var(--app-primary-glow); }
 .login-form :deep(.el-form-item) { margin-bottom: 23px; }
 .login-options { display:flex; align-items:center; justify-content:space-between; margin:0 0 3px; gap:12px; }
 .login-remember-note { margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
@@ -177,13 +192,26 @@ const handleLogin = async () => {
 .password-help-heading { display:flex; align-items:center; gap:9px; margin:4px 0 12px; color:var(--app-text); font-size:14px; line-height:1.7; }
 .password-help-heading > .el-icon { flex:0 0 auto; color:var(--app-primary); }
 .login-page :is(button,a,input):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
-.login-button { width: 100%; height: 46px; justify-content: space-between; padding-inline: 18px; box-shadow: none; }
-.login-card-footer { margin-top: 24px; justify-content: center; font-size:12px; line-height:1.8; }
+.login-button { width: 100%; height: 48px; border-radius: 9px; font-weight: 600; }
+.login-button :deep(> span) { width: 100%; justify-content: space-between; }
+.login-card-footer, .login-timezone { display: flex; align-items: center; gap: 7px; color: var(--app-text-muted); font-size: 12px; line-height: 1.8; }
+.login-card-footer { margin-top: 22px; justify-content: center; }
 .login-card-footer > .el-icon { flex-shrink:0; }
 .login-timezone { position: absolute; bottom: 24px; font-size:12px; color:var(--app-text-secondary); }
 .password-help { color: var(--app-text-secondary); line-height: 1.8; }
 @keyframes login-reveal { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
-@media(max-width: 850px) { .login-page { grid-template-columns: 1fr; } .login-showcase { padding: 24px; border-right: 0; border-bottom: 1px solid var(--app-border); } .showcase-inner, .login-scope-note { display: none; } .login-panel { padding: 44px 24px 70px; flex: 1; } .login-brand { font-size: 15px; } .login-card h2 { font-size: 25px; } }
-@media(max-width:420px) { .login-panel { padding-inline:20px; }.login-card-footer { align-items:flex-start; }.login-card-footer .el-icon { flex:0 0 auto; margin-top:3px; }.login-timezone { position:static; margin-top:30px; text-align:center; line-height:1.7; } }
+@media (max-width: 800px) {
+  .login-page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; padding: 10px; }
+  .login-showcase { min-height: clamp(92px, 18vh, 160px); border-radius: 14px; padding: 18px 22px; justify-content: center; background-position: center 51%; }
+  .login-showcase::before { background: linear-gradient(90deg, #052722ed, #05272285 55%, transparent); }
+  .showcase-inner { display: none; }
+  .login-panel { padding: 30px 16px 20px; }
+  .login-card-desc { margin-bottom: 22px; }
+  .login-timezone { position: static; margin-top: 32px; }
+}
+@media (max-height: 630px) and (min-width: 801px) {
+  .login-panel { padding-block: 26px; }
+  .login-timezone { position: static; margin-top: 20px; }
+}
 @media(prefers-reduced-motion: reduce) { .login-card { animation: none; } }
 </style>

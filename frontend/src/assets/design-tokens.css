@@ -1,12 +1,12 @@
 /* Shared by the Vue business console and the React Agent entry. */
 :root {
-  --app-primary: #2563eb;
-  --app-primary-hover: #1d4ed8;
-  --app-primary-active: #1e40af;
-  --app-primary-deep: #16345c;
-  --app-primary-soft: #eef3ff;
-  --app-primary-light: #f7faff;
-  --app-primary-glow: #2563eb20;
+  --app-primary: #116859;
+  --app-primary-hover: #095548;
+  --app-primary-active: #063e35;
+  --app-primary-deep: #103e37;
+  --app-primary-soft: #e5f3ed;
+  --app-primary-light: #f2f8f4;
+  --app-primary-glow: #11685925;
   --app-cyan: #0284c7;
   --app-cyan-soft: #edf7fc;
   --app-steel: #414957;
@@ -22,21 +22,21 @@
   --app-danger-light: #fff8f8;
   --app-info: #475569;
   --app-info-soft: #f1f5f9;
-  --app-bg: #fafbfc;
-  --app-bg-alt: #f5f6f8;
+  --app-bg: #f4f6f3;
+  --app-bg-alt: #edf1ed;
   --app-surface: #ffffff;
   --app-surface-strong: #ffffff;
-  --app-surface-muted: #f6f7f9;
-  --app-surface-hover: #f0f2f5;
+  --app-surface-muted: #f2f5f1;
+  --app-surface-hover: #e8eeea;
   --app-surface-glass: #ffffffef;
-  --app-surface-blueprint: #f5f8ff;
-  --app-text: #181b23;
-  --app-text-secondary: #525b6a;
-  --app-text-muted: #687080;
-  --app-text-placeholder: #737c8c;
-  --app-border: #e6e8ec;
-  --app-border-strong: #cbd0d9;
-  --app-border-focus: #93b4fa;
+  --app-surface-blueprint: #eff6f2;
+  --app-text: #182922;
+  --app-text-secondary: #475b52;
+  --app-text-muted: #607168;
+  --app-text-placeholder: #65756d;
+  --app-border: #dce4dd;
+  --app-border-strong: #becdc2;
+  --app-border-focus: #72a894;
   --app-radius-xs: 5px;
   --app-radius-sm: 8px;
   --app-radius-md: 12px;
@@ -65,11 +65,11 @@
   --app-content-width: 1440px;
   --app-page-gutter: clamp(20px, 3vw, 44px);
   --app-control-height: 36px;
-  --app-font-title: 26px;
+  --app-font-title: 28px;
   --app-font-section: 16px;
   --app-font-body: 14px;
   --app-font-caption: 12px;
-  --app-font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --app-font: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --el-color-primary: var(--app-primary);
   --el-color-success: var(--app-success);
   --el-color-warning: var(--app-warning);
@@ -83,5 +83,10 @@
   --el-fill-color-light: var(--app-surface-muted);
   --el-fill-color-blank: var(--app-surface);
   --el-border-color-light: var(--app-border);
+  --el-color-primary-dark-2: var(--app-primary-hover);
+  --el-color-primary-light-3: #498779;
+  --el-color-primary-light-5: #84ada1;
+  --el-color-primary-light-7: #b7d3c7;
+  --el-color-primary-light-8: #d1e4da;
   --el-color-primary-light-9: var(--app-primary-soft);
 }

@@ -22,7 +22,7 @@
           aria-controls="system-sidebar"
           @click="toggleNavigation"
         >
-          <AppIcon name="Picture" :size="19" />
+          <img src="/favicon.svg" width="36" height="36" alt="" />
         </button>
         <div v-show="!collapsed" class="brand-text" :title="SYSTEM_NAME" :aria-label="SYSTEM_NAME">
           <div class="brand-title">{{ SYSTEM_SHORT_NAME }}</div>
@@ -362,25 +362,30 @@ onBeforeUnmount(() => {
 <style scoped>
 .layout-shell { display:grid; grid-template-columns:232px minmax(0,1fr); height:100vh; height:100dvh; overflow:hidden; background:var(--app-bg); transition:grid-template-columns var(--app-transition-base); }
 .layout-shell.sidebar-collapsed { grid-template-columns:68px minmax(0,1fr); }
-.layout-sidebar { display:flex; flex-direction:column; height:100%; min-height:0; padding:20px 12px 14px; overflow-y:auto; overflow-x:hidden; background:var(--app-bg-alt); border:0; border-right:1px solid var(--app-border); border-radius:0; box-shadow:none; }
+.layout-sidebar { display:flex; flex-direction:column; height:100%; min-height:0; padding:20px 12px 14px; overflow-y:auto; overflow-x:hidden; --nav-label: #c6d9d0;
+  --nav-muted: #a6c0b4;
+  --nav-hover: #244d43;
+  --nav-selected: #31564a;
+  --nav-accent: #c1eec1;
+  background:#142f29; border:0; border-right:1px solid #18392f; border-radius:0; box-shadow:none; }
 .layout-sidebar::before { content:none; }
 .brand-block { display:flex; align-items:center; gap:10px; min-height:40px; padding:0 7px; margin-bottom:30px; }
-.brand-mark { display:grid; place-items:center; flex:0 0 32px; height:32px; padding:0; border:1px solid #181b2310; border-radius:9px; background:var(--app-text); color:white; font:700 13px var(--app-font); cursor:pointer; transition:transform var(--app-transition-fast),background var(--app-transition-fast); }
-.brand-mark:hover { background:var(--app-primary); transform:scale(1.035); }
-.brand-mark:active { transform:scale(.97); }
+.brand-mark { display:grid; place-items:center; flex:0 0 36px; height:36px; padding:0; border:0; border-radius:9px; color:white; background:transparent; cursor:pointer; }
+.brand-mark:hover { box-shadow:0 0 0 2px var(--nav-accent); }
+.brand-mark:focus-visible { outline:2px solid var(--nav-accent); }
 .brand-text { min-width:0; overflow:hidden; white-space:nowrap; }
-.brand-title { font-size:14px; font-weight:650; letter-spacing:-.025em; color:var(--app-text); }
-.brand-subtitle { margin-top:3px; font-size:11px; color:var(--app-text-muted); }
-.nav-section-label { margin:0 12px 9px; color:var(--app-text-muted); font-size:11px; font-weight:500; }
+.brand-title { font-size:15px; font-weight:650; letter-spacing:-.02em; color:#fff; }
+.brand-subtitle { margin-top:2px; font-size:11px; color:var(--nav-muted); }
+.nav-section-label { margin:0 12px 9px; color:var(--nav-muted); font-size:11px; letter-spacing:.08em; }
 .sidebar-footer { margin-top:auto; padding-top:26px; }
-.footer-card { padding:14px 12px 4px; border-top:1px solid var(--app-border); }
-.footer-card-label { margin-bottom:7px; font-size:11px; color:var(--app-text-muted); }
-.footer-card-title { font-size:12px; font-weight:600; color:var(--app-text); }
-.footer-card-desc { margin-top:5px; color:var(--app-text-muted); font-size:11px; line-height:1.7; }
+.footer-card { padding:16px; border:1px solid #39584c; border-radius:12px; background:#1b3930; }
+.footer-card-label { margin-bottom:7px; font-size:11px; color:var(--nav-muted); }
+.footer-card-title { font-size:14px; font-weight:600; color:#ecf7ec; }
+.footer-card-desc { margin-top:5px; color:var(--nav-label); font-size:11px; line-height:1.7; }
 .sidebar-collapsed .brand-block { justify-content:center; padding:0; }
 .sidebar-collapsed .layout-sidebar { padding-inline:7px; }
 .layout-main { display:flex; flex-direction:column; position:relative; min-width:0; min-height:0; overflow:hidden; }
-.layout-header { display:flex; align-items:center; justify-content:space-between; flex:0 0 auto; min-height:58px; padding:8px var(--app-page-gutter); gap:16px; background:var(--app-surface); border-bottom:1px solid var(--app-border); }
+.layout-header { display:flex; align-items:center; justify-content:space-between; flex:0 0 auto; min-height:62px; padding:8px var(--app-page-gutter); gap:16px; background:var(--app-surface); border-bottom:1px solid var(--app-border); }
 .header-left,.header-actions { display:flex; align-items:center; gap:14px; min-width:0; }
 .header-left { flex:1; }
 .header-actions { flex:0 0 auto; }

@@ -32,28 +32,24 @@
 
     <!-- ═══ 真实内容 ═══ -->
     <template v-else>
-    <PageHero :title="userStore.role === 'SUPERVISOR' ? '企业质量工作台' : '我的检测工作台'" icon="DataAnalysis" :description="userStore.role === 'SUPERVISOR' ? '查看企业检测与质量情况，安排复核、跟进异常和设备维护。' : '查看本人及分派任务，跟进检测结果、质检处理和工作记录。'">
-      <template #actions>
-          <el-button type="primary" @click="router.push('/inspection/workbench')">
-            <el-icon style="margin-right:6px"><Search /></el-icon>
-            开始图像检测
-          </el-button>
-          <el-button plain @click="router.push('/models')">
-            <el-icon style="margin-right:6px"><Setting /></el-icon>
-            管理检测模型
-          </el-button>
-          <el-button plain @click="router.push('/agent/chat')">向 AI 助手提问 <el-icon style="margin-left:4px"><ArrowRight /></el-icon></el-button>
-      </template>
-    </PageHero>
-    <CollaborationTodos />
+    <header class="dashboard-hero">
+      <div class="dashboard-hero-copy">
+        <h1>{{ userStore.role === 'SUPERVISOR' ? '企业质量工作台' : '我的检测工作台' }}</h1>
+        <p>{{ userStore.role === 'SUPERVISOR' ? '查看企业检测与质量情况，安排复核、跟进异常和设备维护。' : '查看本人及分派任务，跟进检测结果、质检处理和工作记录。' }}</p>
+        <nav class="dashboard-shortcuts" aria-label="工作台快捷入口">
+          <router-link class="dashboard-start" to="/inspection/workbench"><AppIcon name="Search" :size="16" />开始图像检测</router-link>
+          <router-link to="/models"><AppIcon name="Tickets" :size="16" />管理检测模型</router-link>
+          <router-link to="/agent/chat"><AppIcon name="ChatDotRound" :size="16" />向 AI 助手提问</router-link>
+        </nav>
+      </div>
+    </header>
     <div role="status" class="dashboard-refresh-note">
+      <AppIcon name="Clock" :size="14" />
       <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
       <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }} UTC+8</span>
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
     </div>
-    <p class="dashboard-data-note">任务统计按当前账号可访问范围汇总；历史累计沿用历史登记数值，设备与人员为全部登记资料。“—”表示尚未读取、字段缺失或无法计算，不代表零。</p>
-    <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
     <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
       <header><div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按当前账号可访问任务统计 · 当前状态 · 时间 UTC+8</p></div><router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="16" />全部质检任务</router-link></header>
       <div class="quality-overview-grid">
@@ -62,6 +58,9 @@
       <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
       <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '各类待办可能交叉，不能直接相加作为任务总数。' }}</p>
     </section>
+    <CollaborationTodos />
+    <p class="dashboard-data-note">任务统计按当前账号可访问范围汇总；历史累计沿用历史登记数值，设备与人员为全部登记资料。“—”表示尚未读取、字段缺失或无法计算，不代表零。</p>
+    <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
       <div class="hero-panel app-panel command-panel">
@@ -438,7 +437,6 @@
 import CollaborationTodos from '../components/CollaborationTodos.vue'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import {beijingDateTime} from '@/utils/beijingTime'
 import { knownCount } from '@/utils/countPresentation'
@@ -447,14 +445,13 @@ import ChartDataDetails from '@/components/ChartDataDetails.vue'
 import HistoricalDetectionOverview from '@/components/HistoricalDetectionOverview.vue'
 import * as echarts from 'echarts'
 import {
-  User, Monitor, Search, Setting,
+  User, Monitor, Setting,
   DataAnalysis, Refresh, WarningFilled, UserFilled, ArrowRight
 } from '@element-plus/icons-vue'
 import { captureAccountRequest } from '../api/request'
 const request=captureAccountRequest()
 import { getWorkUnitSummary, getDuplicateSummary } from '../api/dashboard'
 
-const router = useRouter()
 const userStore = useUserStore()
 
 const pageLoading = ref(true)
@@ -1036,6 +1033,39 @@ useResourceChanges({refresh:()=>refreshAll()})
 </script>
 
 <style scoped>
+.dashboard-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(24px, 3vw, 44px);
+  border-radius: 18px;
+  background: #123b31;
+  color: #fff;
+}
+.dashboard-hero::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 0 48%;
+  background: linear-gradient(90deg, #123b31, #123b3170 37%, transparent 75%),
+    url('../assets/images/container-lock.webp') 70% 50% / cover;
+}
+.dashboard-hero-copy { position: relative; max-width: 72%; }
+.dashboard-hero h1 { color: white; font-size: clamp(27px, 2.5vw, 39px); font-weight: 650; letter-spacing: -.045em; line-height: 1.3; }
+.dashboard-hero p { margin: 7px 0 22px; color: #d7e8dd; font-size: 14px; line-height: 1.8; }
+.dashboard-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; }
+.dashboard-shortcuts a { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 7px 12px; border-radius: 8px; border: 1px solid #77988a; background: #193e34; color: white; font-size: 12px; }
+.dashboard-shortcuts a:hover { background: #31574a; }
+.dashboard-shortcuts a.dashboard-start { background: #d3f3ca; color: #153e31; border-color: transparent; font-weight: 650; }
+.dashboard-shortcuts a.dashboard-start:hover { background: #e7fbdf; }
+.dashboard-shortcuts a:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.home-page > .collaboration-todos { margin: 0; }
+@media (max-width: 700px) {
+  .dashboard-hero { padding: 21px 18px; }
+  .dashboard-hero::before { inset-inline-start: 45%; opacity: .32; }
+  .dashboard-hero-copy { max-width: 100%; }
+  .dashboard-hero p { margin-bottom: 16px; font-size: 13px; }
+}
 .home-page > .dashboard-refresh-note { margin:0; }
 .home-page .hero-panel > .app-panel-title { font-size:16px; font-weight:600; margin-bottom:16px; }
 .home-page .hero-panel .hero-telemetry { margin:0 0 20px; gap:12px; }
@@ -1054,7 +1084,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 .home-page {
   display: flex;
   flex-direction: column;
-  gap:24px;
+  gap:18px;
 }
 
 /* ── Hero + 运行态势 ── */
