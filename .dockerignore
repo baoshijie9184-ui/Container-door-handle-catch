@@ -30,7 +30,6 @@ tmp-*
 .claude
 ruanzhuss
 script/paper
-docs/examples
 **/*.docx
 **/.venv
 **/venv
