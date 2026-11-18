@@ -24,7 +24,7 @@ const ossAgent = new https.Agent({
 export default defineConfig(({ command }) => {
   if (command === 'serve') {
     if (!process.env.DOORHANDLE_DEV_API_TARGET) throw new Error('Set DOORHANDLE_DEV_API_TARGET to the ECS gateway')
-    execFileSync(process.env.PYTHON_EXE || 'python3', ['-B', path.resolve(__dirname, '../scripts/ecs_execution.py')], { stdio: 'inherit' })
+    execFileSync(process.env.PYTHON_EXE || 'python3', ['-B', path.resolve(__dirname, '../script/ecs_execution.py')], { stdio: 'inherit' })
   }
   return {
   plugins: [vue()],

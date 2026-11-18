@@ -10,22 +10,9 @@
   -> 填入智能助手输入框，由用户确认后发送
 ```
 
-## 安装与启动
+## ASR 服务与健康检查
 
-项目统一使用 `leetcode` Conda 环境。首次使用时安装 ASR 依赖：
-
-```powershell
-.\scripts\run-python.ps1 -m pip install -r requirements-asr.txt
-```
-
-先启动 ASR，再启动后端：
-
-```powershell
-.\scripts\start-asr.ps1
-.\scripts\start-backend-with-business-seed.ps1
-```
-
-首次启动会下载 `base` 模型，完成后可通过健康检查确认就绪：
+语音服务源码在 [asr_service.py](../python/asr/asr_service.py)，依赖声明在 [requirements-asr.txt](../python/asr/requirements-asr.txt)。旧 Windows 启动器已退役；在获准的运行环境准备 ASR 和模型后，再把单体后端指向该服务可达的地址。若采用原来的 `base` 模型，首次准备会下载权重。以下健康检查只用于 ASR 已监听当前主机环回地址的情形：
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:9001/health
@@ -35,7 +22,7 @@ Invoke-RestMethod http://127.0.0.1:9001/health
 
 ## Spring Boot 配置
 
-开发启动脚本会自动配置本地 ASR 地址；直接启动后端时也可以手动设置：
+通过私有运行配置设置 ASR 地址和允许主机。下例适用于后端与 ASR 共用环回网络的情形；容器隔离部署时应改用后端容器可达的服务地址：
 
 ```powershell
 $env:CHAT_ASSISTANT_VOICE_TRANSCRIBE_URL="http://127.0.0.1:9001/transcribe"

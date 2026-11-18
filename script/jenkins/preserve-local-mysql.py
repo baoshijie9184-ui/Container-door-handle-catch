@@ -230,7 +230,7 @@ def admit(args):
         for name in ('script/jenkins/preserve-local-mysql.py', 'script/jenkins/restore-local-mysql.py',
                      'script/jenkins/preserve-local-artifacts.py', 'script/schema/compact_migration_runtime.py',
                      'script/schema/build_compact_schema.py', 'script/schema/compact_clock_policy.py',
-                     'script/docker/compact-schema-guard.py', 'scripts/ecs_execution.py'):
+                     'script/docker/compact-schema-guard.py', 'script/ecs_execution.py'):
             member = package.getmember(name)
             need(member.isfile() and 0 < member.size <= MIB and hashlib.sha256(package.extractfile(member).read(MIB + 1)).hexdigest()
                  == digest(utility.safe(ROOT / name)), 'Custody/recovery code differs from fixed source')

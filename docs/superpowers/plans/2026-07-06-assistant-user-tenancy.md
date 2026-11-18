@@ -1,5 +1,7 @@
 # Assistant Per-User Tenancy Implementation Plan
 
+> 历史实施计划。文中的旧 Windows 包装命令仅供追溯，现行执行边界见[运行约定](../../ECS-only-runtime.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Isolate every user's assistant projects, sessions, messages, pending actions, checkpoints, Mem0 memories, and rate limits while keeping enterprise business data and RAG knowledge shared.

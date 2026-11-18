@@ -20,7 +20,7 @@
 
 Agent 前端参照本地 DeepSeek Harness：会话侧栏、居中正文、右侧按需工作面板，集中导航技能/MCP/记忆/执行追溯，并保留窄屏抽屉及键盘操作。两入口实现与验证见 [Harness 布局设计](docs/Agent前端Harness布局设计.md)。
 
-项目功能清单、已开发能力、未完成事项及后续任务见 [开发进展](开发进展.md)。
+项目功能清单、已开发能力、未完成事项及后续任务见 [开发进展](docs/开发进展.md)。
 
 2026-10-27 完成主站与独立 Agent 的 [UI 视觉与交互升级](docs/UI视觉与交互升级-20261027.md)：统一导航、页面标题、表格/表单/弹层，重排首页入口与统计层级，并同步聊天阅读与输入布局。124 个 Vue 脚本及原事件绑定保持不变；145 项前端检查、两套生产构建和响应式/交互复核通过，尚未部署。
 
@@ -34,7 +34,7 @@ Agent 前端参照本地 DeepSeek Harness：会话侧栏、居中正文、右侧
 
 2026-10-26 本地收尾修复了 Node 模块加载、后端编译及缓存类型恢复问题，并补齐当前权限、质检、身份回填、MCP 与运维测试夹具。最新验证与云端剩余条件见 [本地收尾验收](docs/本地收尾验收-20261026.md)，本地结果不代表生产已升级。
 
-已实现功能的用途、技术栈、模块划分及交付边界见 [系统功能说明](系统功能说明.md)。
+已实现功能的用途、技术栈、模块划分及交付边界见 [系统功能说明](docs/系统功能说明.md)。
 
 当前 `java-cloud` 分支用于服务器部署的模块化单体，微服务拆分另行推进。主站聊天和独立 AG-UI 均使用 AgentScope Java 2.0.4，旧 StateGraph 与独立 DeepSeek 客户端已移除。员工使用角色限定的只读工具；启用确认功能时，主管可提出质检分配提议并通过人工确认执行。模型配置与自动备用见 [平台配置](docs/agentscope-platform-config.md)，迁移边界、真实轨迹与验证记录见 [实施进度](docs/agent-role-toolkit-progress.md)。
 
@@ -86,7 +86,7 @@ ssh -F work/cloud/ssh-config -N -L 127.0.0.1:18088:127.0.0.1:8088 doorhandle-bj
 
 主站登录地址为 <http://127.0.0.1:18088/#/login>，独立 Agent 页面为 <http://127.0.0.1:18088/agent-ui/>。连接配置与私钥位于本机忽略目录，新克隆仓库需单独配置。使用与排查见 [服务器运行说明](docs/服务器运行说明.md)，部署验收见 [服务器演示部署记录](docs/服务器演示部署记录.md)。
 
-原 `doorhandle-java` 任务曾跟踪远程 `java-cloud`。本机切换分支不会改变 Jenkins 的构建来源；当前数据重构候选尚未迁移验收，不能按旧任务说明推断提交后即可发布，详见 [开发进展](开发进展.md)。
+原 `doorhandle-java` 任务曾跟踪远程 `java-cloud`。本机切换分支不会改变 Jenkins 的构建来源；当前数据重构候选尚未迁移验收，不能按旧任务说明推断提交后即可发布，详见 [开发进展](docs/开发进展.md)。
 
 员工、主管各两个可登录测试账号及密码见 [测试用户账号](docs/测试用户账号.md)。
 
@@ -169,10 +169,10 @@ npm run build
 
 ### ECS 验证环境
 
-Java/Maven/Python/Node 与浏览器依赖准备在服务器独立测试目录，和既有部署目录分开。`environment.yml` 保留 Python 依赖清单；已有兼容 Conda 环境需要更新时，只在 ECS 上操作：
+Java/Maven/Python/Node 与浏览器依赖准备在服务器独立测试目录，和既有部署目录分开。[python/environment.yml](python/environment.yml) 保留 Python 依赖清单；已有兼容 Conda 环境需要更新时，只在 ECS 上操作：
 
 ```bash
-conda env update -n leetcode -f environment.yml
+conda env update -n leetcode -f python/environment.yml
 ```
 
 进入已核验的 ECS 隔离源码目录后，设置 `DOORHANDLE_ECS_INSTANCE_ID`、实际 `DOORHANDLE_ECS_MACHINE_ID` 及工具绝对路径，使用以下入口：

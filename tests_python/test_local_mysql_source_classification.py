@@ -36,7 +36,7 @@ def test_projection_source_archive_reader_and_remote_guards_bind_real_dependency
         'compact_migration_runtime.py': 'script/schema/compact_migration_runtime.py',
         'compact_clock_policy.py': 'script/schema/compact_clock_policy.py',
         'build_compact_schema.py': 'script/schema/build_compact_schema.py',
-        'ecs_execution.py': 'scripts/ecs_execution.py'})
+        'ecs_execution.py': 'script/ecs_execution.py'})
     commit = 'a' * 40
     archive_path = tmp_path / 'fixed-source.tar.gz'
     hashes = {}

@@ -1,6 +1,6 @@
 """The smoke CLI must retain cookie authentication across its requests."""
 import sys
-from scripts.diagnostics import agent_live_smoke as agent
+from script.diagnostics import agent_live_smoke as agent
 
 
 class FakeResponse:

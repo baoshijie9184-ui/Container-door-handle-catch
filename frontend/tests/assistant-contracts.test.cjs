@@ -170,7 +170,8 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
   const userManualSource = readFrontendFile('src', 'views', 'UserManual.vue')
   const dbReadmeSource = readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'README.md')
   const userGuideSource = readProjectFile('docs', 'system-user-guide.md')
-  const businessSeedStartScript = readProjectFile('scripts', 'start-backend-with-business-seed.ps1')
+  const businessSeedConfig = readProjectFile('doorhandle-module-app', 'src', 'main', 'java', 'com', 'ruanzhu',
+    'doorhandle', 'module', 'app', 'config', 'BusinessSeedDataConfig.java')
   const businessSeedSources = [
     readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'business-seed-new-features.sql'),
     readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'business-seed-more-features.sql'),
@@ -209,16 +210,15 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
   }
 
   assert.match(dbReadmeSource, /业务预置数据/)
-  assert.match(dbReadmeSource, /APP_BUSINESS_SEED_ENABLED=true/)
-  assert.match(dbReadmeSource, /start-backend-with-business-seed\.ps1/)
+  assert.match(dbReadmeSource, /APP_BUSINESS_SEED_ENABLED=false/)
+  assert.doesNotMatch(dbReadmeSource, /APP_BUSINESS_SEED_ENABLED=true|start-backend-with-business-seed\.ps1/)
   assert.doesNotMatch(userGuideSource, /初始化演示数据/)
   assert.doesNotMatch(businessSeedEmptyHintSource, /APP_BUSINESS_SEED_ENABLED|业务预置数据导入/)
   assert.match(businessSeedEmptyHintSource, /当前范围暂无记录/)
   assert.match(businessSeedEmptyHintSource, /to="\/manual"/)
   assert.match(userManualSource, /从图片采集流程创建真实任务/)
   assert.doesNotMatch(userManualSource, /APP_BUSINESS_SEED_ENABLED|start-backend-with-business-seed\.ps1/)
-  assert.match(businessSeedStartScript, /APP_BUSINESS_SEED_ENABLED\s*=\s*'true'/)
-  assert.match(businessSeedStartScript, /mvnw\.cmd spring-boot:run/)
+  assert.match(businessSeedConfig, /throw new IllegalStateException\("APP_BUSINESS_SEED_ENABLED 已退役/)
 
   assert.match(migrationSource, /REPLACE\(`work_order_no`, 'WO-DEMO-', 'WO-'\)/)
   assert.match(migrationSource, /ALERT-BIZ-/)

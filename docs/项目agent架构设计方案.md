@@ -1,10 +1,10 @@
 **项目 Agent 架构设计方案**
 
-2026-10-13 Agent 报告更新：两类角色增加报告专业 Agent，支持授权查询、本人草稿创建/编辑、运行来源和审计轨迹关联；审批与导出仍走业务页面。实现及 Eval v2 边界见 [Agent 报告工具接入](docs/Agent报告工具接入.md)。
+2026-10-13 Agent 报告更新：两类角色增加报告专业 Agent，支持授权查询、本人草稿创建/编辑、运行来源和审计轨迹关联；审批与导出仍走业务页面。实现及 Eval v2 边界见 [Agent 报告工具接入](Agent报告工具接入.md)。
 
-2026-10-13 报告流程更新：私人草稿、冻结提交、独立主管预览确认、审批/驳回、历史修订和审计导出已实现，见 [报告草稿与独立审批](docs/报告草稿与独立审批.md)。本轮没有 Agent 自动审批、会签或公共发布；outbox 事件投递仍待开发。
+2026-10-13 报告流程更新：私人草稿、冻结提交、独立主管预览确认、审批/驳回、历史修订和审计导出已实现，见 [报告草稿与独立审批](报告草稿与独立审批.md)。本轮没有 Agent 自动审批、会签或公共发布；outbox 事件投递仍待开发。
 
-2026-10-13 组织身份更新：账号、员工与部门稳定 ID 关联、主管管理页面、员工本人身份、版本与事务审计已实现，见 [账号员工部门关联](docs/账号员工部门关联.md)。部门数据权限、动态 RBAC、独立任务复核申请和任务用户 ID 迁移仍为后续开发。
+2026-10-13 组织身份更新：账号、员工与部门稳定 ID 关联、主管管理页面、员工本人身份、版本与事务审计已实现，见 [账号员工部门关联](账号员工部门关联.md)。部门数据权限、动态 RBAC、独立任务复核申请和任务用户 ID 迁移仍为后续开发。
 
 调研日期：2026-10-12。项目：DoorHandleCatch 集装箱门把手缺陷检测系统。当前实施分支：`java`。
 
@@ -14,7 +14,7 @@
 
 **一、调研基线与关键判断**
 
-初次调研基线为 AgentScope Java `2.0.1`；模型管理实现已统一升级为 `2.0.4`，以复用原生 Responses 适配器。以下早期版本资料作为设计参考，具体实现以当前锁定版本和验证结果为准。调研时官方最新稳定 Release 为 `v2.0.4`，发布于 2026-10-08；是否升级需要单独验证接口、模型、持久化格式和测试兼容性，不能直接以最新版在线示例替换现有代码。[项目版本配置](D:/AI/lunwen1/DoorHandleCatch/pom.xml:34)、[官方 v2.0.4 Release](https://github.com/agentscope-ai/agentscope-java/releases/tag/v2.0.4)。
+初次调研基线为 AgentScope Java `2.0.1`；模型管理实现已统一升级为 `2.0.4`，以复用原生 Responses 适配器。以下早期版本资料作为设计参考，具体实现以当前锁定版本和验证结果为准。调研时官方最新稳定 Release 为 `v2.0.4`，发布于 2026-10-08；是否升级需要单独验证接口、模型、持久化格式和测试兼容性，不能直接以最新版在线示例替换现有代码。[项目版本配置](../pom.xml#L34)、[官方 v2.0.4 Release](https://github.com/agentscope-ai/agentscope-java/releases/tag/v2.0.4)。
 
 官方采用两层设计：`ReActAgent` 提供推理、工具调用、权限和中间件；`HarnessAgent` 在其上组合工作区、记忆、会话、技能、子 Agent 与沙箱。工程能力按需配置，不需要重写推理循环。[Java 2.0.1 Harness 架构](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.1/docs/v2/en/docs/harness/architecture.md)。
 
@@ -42,7 +42,7 @@ AgentScope Service 是可以自托管的独立服务平台，与在 Spring Boot 
 | A2UI             | 现有渲染器仅识别自定义`v1.0` envelope 中的 Text、Column                                           | 属于有限组件实现，不能声称完整协议兼容     |
 | 外部集成         | 多组环境配置属于预留契约                                                                            | 不将开关存在视为连接器已实现               |
 
-依据：[服务模块装配](D:/AI/lunwen1/DoorHandleCatch/doorhandle-server/pom.xml)、[旧助手 Controller](D:/AI/lunwen1/DoorHandleCatch/doorhandle-module-app/src/main/java/com/ruanzhu/doorhandle/module/app/controller/ChatAssistantController.java)、[新助手 Controller](D:/AI/lunwen1/DoorHandleCatch/doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/api/RoleAgentController.java)、[Agent 工厂](D:/AI/lunwen1/DoorHandleCatch/doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/agent/RoleAgentFactory.java)、[A2UI 渲染器](D:/AI/lunwen1/DoorHandleCatch/frontend-agent/src/A2uiSurface.jsx)、[已实现范围与限制](D:/AI/lunwen1/DoorHandleCatch/docs/agent-role-toolkit-progress.md)、[平台配置说明](D:/AI/lunwen1/DoorHandleCatch/docs/agentscope-platform-config.md)。
+依据：[服务模块装配](../doorhandle-server/pom.xml)、[旧助手 Controller](../doorhandle-module-app/src/main/java/com/ruanzhu/doorhandle/module/app/controller/ChatAssistantController.java)、[新助手 Controller](../doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/api/RoleAgentController.java)、[Agent 工厂](../doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/agent/RoleAgentFactory.java)、[A2UI 渲染器](../frontend-agent/src/A2uiSurface.jsx)、[已实现范围与限制](agent-role-toolkit-progress.md)、[平台配置说明](agentscope-platform-config.md)。
 
 **三、单体阶段的目标架构**
 
@@ -164,7 +164,7 @@ Spark Design 是独立的组件与聊天体验库。官方仓库提供 `@agentsc
 
 主站与 AG-UI 角色助手均已使用统一模型服务，支持 DashScope-compatible Chat Completions、DeepSeek Formatter 和原生 Responses。旧 DeepSeekClient、StateGraph 和专业服务已删除；主站保留会话与 SSE 适配，RAG 也通过 AgentScope 生成检索文本。
 
-灵算 Responses 端点为 `https://lingsuan.top/v1`，默认 `gpt-6.1-sol`，绑定用户提供的请求头并发送 `store=false`。已实现模型注册校验、输出预算、首段内容和总执行超时、可选代理、多级备用及进程内熔断恢复；本地已开启 `gpt-6.1-sol → deepseek-flash → kimi-k3`。网络、限流、服务端故障、凭证失败、明确的余额不足错误可在输出前切换；参数错误及部分输出后不切换，不重放工具。登录后的 `/agui/models` 返回脱敏配置、备用顺序与健康状态，助手页面展示默认模型及冷却情况。详细参数与验证记录见 [平台配置说明](D:/AI/lunwen1/DoorHandleCatch/docs/agentscope-platform-config.md)。
+灵算 Responses 端点为 `https://lingsuan.top/v1`，默认 `gpt-6.1-sol`，绑定用户提供的请求头并发送 `store=false`。已实现模型注册校验、输出预算、首段内容和总执行超时、可选代理、多级备用及进程内熔断恢复；本地已开启 `gpt-6.1-sol → deepseek-flash → kimi-k3`。网络、限流、服务端故障、凭证失败、明确的余额不足错误可在输出前切换；参数错误及部分输出后不切换，不重放工具。登录后的 `/agui/models` 返回脱敏配置、备用顺序与健康状态，助手页面展示默认模型及冷却情况。详细参数与验证记录见 [平台配置说明](agentscope-platform-config.md)。
 
 验收至少覆盖普通问答、工具调用、流式输出、限流、超时、凭证失败、备用模型策略与最终模型记录。不能用模拟测试代替真实模型联调，也不在未经明确安排时消耗大量模型额度进行批量评测。
 
@@ -177,7 +177,7 @@ Spark Design 是独立的组件与聊天体验库。官方仓库提供 `@agentsc
 
 来源：[2.0.1 上下文压缩](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.1/docs/v2/en/docs/harness/compaction.md)、[当前上下文管理设计](https://java.agentscope.io/v2/en/docs/harness/context)。
 
-会话历史、模型工作上下文、业务状态和长期记忆是四种不同数据。压缩工作上下文不应删除完整审计历史；模型摘要不能替代数据库中的质检结论或审批结果。2026-10-16 已补可选的主 Agent 运行内结构化摘要压缩，复用 2.0.4 原生切点，增加校验、失败回退与轨迹；默认关闭，文件卸载仍未开放，见 [上下文压缩](docs/Agent长对话上下文压缩.md)。
+会话历史、模型工作上下文、业务状态和长期记忆是四种不同数据。压缩工作上下文不应删除完整审计历史；模型摘要不能替代数据库中的质检结论或审批结果。2026-10-16 已补可选的主 Agent 运行内结构化摘要压缩，复用 2.0.4 原生切点，增加校验、失败回退与轨迹；默认关闭，文件卸载仍未开放，见 [上下文压缩](Agent长对话上下文压缩.md)。
 
 **十二、Agent Middleware：智能体中间件**
 
@@ -304,38 +304,38 @@ AgentScope Java 官方许可证为 Apache-2.0。Spark Design 的具体包及 A2U
 
 **当前迁移边界（2026-10-12）**
 
-主站已提供按会话所有权读取的最新 AgentScope 执行摘要与真实事件页面，保留 MySQL 文本历史。旧待确认动作只能取消，不能恢复执行。该摘要只记录至多 200 条框架事件元数据，不等同于本文规划的持久 Turn/Call 审计、全量子 Agent 轨迹、可恢复人工确认或 Eval 系统。完整迁移说明与验收结果见 [实施进度](docs/agent-role-toolkit-progress.md)。
+主站已提供按会话所有权读取的最新 AgentScope 执行摘要与真实事件页面，保留 MySQL 文本历史。旧待确认动作只能取消，不能恢复执行。该摘要只记录至多 200 条框架事件元数据，不等同于本文规划的持久 Turn/Call 审计、全量子 Agent 轨迹、可恢复人工确认或 Eval 系统。完整迁移说明与验收结果见 [实施进度](agent-role-toolkit-progress.md)。
 
 
 **阶段 B 实施更新（2026-10-12）**
 
-已新增 AgentScope SDK 中间件、`agent_run` / `agent_run_event` 迁移、两个入口的持久运行终态、主 Agent 与专业业务工具调用关联、按账号所属权读取的历史与事件游标、运行取消、AG-UI 重复请求拒绝，以及租约过期中断标记。主站轨迹页支持历史选择、全部入口、分页补读和完整分页导出。详情见 [运行日志实施说明](docs/agentscope-run-journal.md)。
+已新增 AgentScope SDK 中间件、`agent_run` / `agent_run_event` 迁移、两个入口的持久运行终态、主 Agent 与专业业务工具调用关联、按账号所属权读取的历史与事件游标、运行取消、AG-UI 重复请求拒绝，以及租约过期中断标记。主站轨迹页支持历史选择、全部入口、分页补读和完整分页导出。详情见 [运行日志实施说明](agentscope-run-journal.md)。
 
 此实现提供已记录结果的恢复读取，未实现 SDK 任意断点续跑或可靠后台任务；统一 AG-UI 数据库消息历史已在后续会话统一阶段完成。当前本机业务库 `doorhandledb` 已执行 V16 新表迁移并开启 `AGENT_RUN_JOURNAL_ENABLED`，后端健康检查通过。只读查询权限与事件审计已有代码，完整业务审计、写操作确认和 Eval 仍属于后续阶段。
 
 **阶段 C 第一项实施更新（2026-10-13）**
 
-已增加主管质检分配提议、持久人工确认、账号限定的详情与审计查询、过期与失效处理、重复确认保护、资源快照校验和单数据库事务。主站提供确认卡片与操作确认页面，独立 Agent UI 使用同一确认页。SDK 工具只保存提议，确认接口核对已存参数后才调用业务服务；没有开放任意客户端 resume。配置、迁移和验证见 [质检分配与人工确认](docs/agentscope-action-confirmation.md)。其他写工具、完整身份关系、独立审批、全业务审计、Eval 和微服务仍按后续阶段实施。
+已增加主管质检分配提议、持久人工确认、账号限定的详情与审计查询、过期与失效处理、重复确认保护、资源快照校验和单数据库事务。主站提供确认卡片与操作确认页面，独立 Agent UI 使用同一确认页。SDK 工具只保存提议，确认接口核对已存参数后才调用业务服务；没有开放任意客户端 resume。配置、迁移和验证见 [质检分配与人工确认](agentscope-action-confirmation.md)。其他写工具、完整身份关系、独立审批、全业务审计、Eval 和微服务仍按后续阶段实施。
 
 **多用户范围实施更新（2026-10-13）**
 
-采用用户明确选择的“员工看本人及分派任务、主管看全企业”。检测业务查询、旧记录、统计、Agent 工具和文件权限已统一；私人聊天、记忆、运行日志与确认记录保持所属账号边界。三个账号的真实接口、重新分派后访问撤销和浏览器页面已验收，详情见 [多用户权限与数据范围方案](docs/多用户权限与数据范围方案.md)。部门公共发布仍为后续方案，不扩大现阶段员工数据范围。
+采用用户明确选择的“员工看本人及分派任务、主管看全企业”。检测业务查询、旧记录、统计、Agent 工具和文件权限已统一；私人聊天、记忆、运行日志与确认记录保持所属账号边界。三个账号的真实接口、重新分派后访问撤销和浏览器页面已验收，详情见 [多用户权限与数据范围方案](多用户权限与数据范围方案.md)。部门公共发布仍为后续方案，不扩大现阶段员工数据范围。
 
 **第一版 Eval 实施更新（2026-10-13）**
 
-已按单体方案增加 22 项固定规则用例、评分与完整性门槛、JSON/Markdown 报告和基线比较脚本，复用 SDK 执行链与确认事务。模型与业务门面采用合成 fixture，确认使用隔离 H2；真实模型语义路由、回答质量、提示注入与跨用户负载评测仍待开发。使用范围和验收见 [AgentScope Eval](docs/agentscope-eval.md)。
+已按单体方案增加 22 项固定规则用例、评分与完整性门槛、JSON/Markdown 报告和基线比较脚本，复用 SDK 执行链与确认事务。模型与业务门面采用合成 fixture，确认使用隔离 H2；真实模型语义路由、回答质量、提示注入与跨用户负载评测仍待开发。使用范围和验收见 [AgentScope Eval](agentscope-eval.md)。
 
 **业务卡片实施更新（2026-10-13）**
 
-两套前端已接通任务、质检、统计、报告查询与草稿结果卡片；卡片引用来自注册业务工具的实际返回，主站消息持久化，查看及手动刷新重新校验当前角色和对象范围，不重放模型或写操作。AG-UI 使用版本化项目自定义事件，尚非完整 A2UI 标准或统一服务端 AG-UI 消息历史。细节与验收见 [Agent 业务卡片接入](docs/Agent业务卡片接入.md)。
+两套前端已接通任务、质检、统计、报告查询与草稿结果卡片；卡片引用来自注册业务工具的实际返回，主站消息持久化，查看及手动刷新重新校验当前角色和对象范围，不重放模型或写操作。AG-UI 使用版本化项目自定义事件，尚非完整 A2UI 标准或统一服务端 AG-UI 消息历史。细节与验收见 [Agent 业务卡片接入](Agent业务卡片接入.md)。
 
 **技能演化实施更新（2026-10-13）**
 
-本人主动授权已完成运行的脱敏工具证据后，可由 Agent 或人工提议私人 Skill 草稿。服务端规则 Eval、主动提交、独立主管业务与隐私审核后按角色发布，经 AgentScope 原生 `load_skill_through_path` 读取；支持加载审计、回退、停用与定期老化。V23 和单体功能开关见 [技能自学习与受控发布](docs/Agent技能自学习与受控发布.md)。此阶段未接入 ReMe、底层模型训练或自动语义质量评测，不开放技能自由改写工具及脚本执行。
+本人主动授权已完成运行的脱敏工具证据后，可由 Agent 或人工提议私人 Skill 草稿。服务端规则 Eval、主动提交、独立主管业务与隐私审核后按角色发布，经 AgentScope 原生 `load_skill_through_path` 读取；支持加载审计、回退、停用与定期老化。V23 和单体功能开关见 [技能自学习与受控发布](Agent技能自学习与受控发布.md)。此阶段未接入 ReMe、底层模型训练或自动语义质量评测，不开放技能自由改写工具及脚本执行。
 
 **外部资源市场目录（2026-10-13）**
 
-主站新增登录保护的 Agent/MCP/Skill 资源市场入口，收录魔搭、阿里云与腾讯等 11 个平台，区分已核实市场、仅接口和未核实能力。目录提供筛选、官方导航与接入说明；Skill ZIP 上传已移除，外部 Skill 链接下载仍待实现，远程 Agent/MCP、凭证和脚本执行仍待开发。见 [资源市场接入](docs/Agent资源市场接入.md)。
+主站新增登录保护的 Agent/MCP/Skill 资源市场入口，收录魔搭、阿里云与腾讯等 11 个平台，区分已核实市场、仅接口和未核实能力。目录提供筛选、官方导航与接入说明；Skill ZIP 上传已移除，外部 Skill 链接下载仍待实现，远程 Agent/MCP、凭证和脚本执行仍待开发。见 [资源市场接入](Agent资源市场接入.md)。
 
 **移除 Skill ZIP 上传（2026-10-13）**
 
@@ -343,20 +343,20 @@ AgentScope Java 官方许可证为 Apache-2.0。Spark Design 的具体包及 A2U
 
 **单机内网 AI 网关与隔离 MCP（2026-10-15）**
 
-`java-cloud` 保留 Nginx 业务入口，在容器内网接入 Higress 2.2.5。模型继续由 AgentScope Java 2.0.4 工厂接入并保留故障切换；Fetch 经 SDK Streamable HTTP、网关服务认证及运行器签名身份验证后，每次在独立非 root 容器内执行固定 Stdio 服务。用户目录保存注册与版本摘要，运行包和许可证在不可变镜像中；人工确认、按账号启用、工具白名单、运行授权和审计保持在单体。出口代理限制公开网页访问，取消和超时回收容器。当前只是固定 Fetch 的隔离执行，不开放任意脚本或通用沙箱池，见 [实现与服务器部署](deploy/mcp/README.md)。
+`java-cloud` 保留 Nginx 业务入口，在容器内网接入 Higress 2.2.5。模型继续由 AgentScope Java 2.0.4 工厂接入并保留故障切换；Fetch 经 SDK Streamable HTTP、网关服务认证及运行器签名身份验证后，每次在独立非 root 容器内执行固定 Stdio 服务。用户目录保存注册与版本摘要，运行包和许可证在不可变镜像中；人工确认、按账号启用、工具白名单、运行授权和审计保持在单体。出口代理限制公开网页访问，取消和超时回收容器。当前只是固定 Fetch 的隔离执行，不开放任意脚本或通用沙箱池，见 [实现与服务器部署](../deploy/mcp/README.md)。
 
 **本地 Stdio MCP 首个服务（2026-10-13，历史 STDIO 模式）**
 
-Fetch 已实现按账号固定版本下载与依赖锁定、许可保留、隔离 Python 环境、人工安装确认及主动启用。每用户注册与审计在 V25，文件在 users/{userId}/mcp/fetch，主 Agent 使用原生 SDK 协议/工具转换，项目白名单及中间件检查本人启用状态、配置和公开 URL。取消/停用/超时关闭连接；网页及安装提议不会伪装为业务工具学习证据。不是 OS 沙箱或通用 MCP 市场安装器，远程服务、凭证管理、跨实例可靠队列及完整对抗 Eval 后置，见 [本地 Stdio MCP 接入](docs/本地StdioMCP接入.md)。
+Fetch 已实现按账号固定版本下载与依赖锁定、许可保留、隔离 Python 环境、人工安装确认及主动启用。每用户注册与审计在 V25，文件在 users/{userId}/mcp/fetch，主 Agent 使用原生 SDK 协议/工具转换，项目白名单及中间件检查本人启用状态、配置和公开 URL。取消/停用/超时关闭连接；网页及安装提议不会伪装为业务工具学习证据。不是 OS 沙箱或通用 MCP 市场安装器，远程服务、凭证管理、跨实例可靠队列及完整对抗 Eval 后置，见 [本地 Stdio MCP 接入](本地StdioMCP接入.md)。
 
 **Skill 斜杠命令（2026-10-13）**
 
-两套聊天界面已支持 `/` 菜单和按名称或唯一编号明确选择经验技能。后端仅解析本轮用户命令，目录按当前角色提供发布版本；明确调用先核对状态、摘要、来源和规则 Eval，再将经验作为本轮参考交给原 AgentScope Harness。加载有独立审计和脱敏轨迹，菜单补全不执行操作，命令不能新增工具或绕过审批。外部 Skill 下载、安装、卸载和脚本能力仍待开发，见 [Skill 斜杠命令](docs/Agent技能斜杠命令.md)。
+两套聊天界面已支持 `/` 菜单和按名称或唯一编号明确选择经验技能。后端仅解析本轮用户命令，目录按当前角色提供发布版本；明确调用先核对状态、摘要、来源和规则 Eval，再将经验作为本轮参考交给原 AgentScope Harness。加载有独立审计和脱敏轨迹，菜单补全不执行操作，命令不能新增工具或绕过审批。外部 Skill 下载、安装、卸载和脚本能力仍待开发，见 [Skill 斜杠命令](Agent技能斜杠命令.md)。
 
 ## 会话历史与记忆统一实施（2026-10-13）
 
-主站与 AG-UI 已共用服务端 MySQL 会话、历史、RAG 与账号范围 Mem0 记忆，不再采用独立页面传入的历史作为模型上下文。React 可选择和新建会话，刷新恢复文字与业务卡片；不同账号保持私人数据隔离。该阶段完成会话统一，仍未开发 SDK 断点恢复、长上下文压缩和个人记忆治理界面。见 [会话历史与记忆统一](docs/Agent会话历史与记忆统一.md) 及 [开发进展](开发进展.md)。
+主站与 AG-UI 已共用服务端 MySQL 会话、历史、RAG 与账号范围 Mem0 记忆，不再采用独立页面传入的历史作为模型上下文。React 可选择和新建会话，刷新恢复文字与业务卡片；不同账号保持私人数据隔离。该阶段完成会话统一，仍未开发 SDK 断点恢复、长上下文压缩和个人记忆治理界面。见 [会话历史与记忆统一](Agent会话历史与记忆统一.md) 及 [开发进展](开发进展.md)。
 
 ## 个人长期记忆治理基础（2026-10-13）
 
-已增加本人查看、读取/自动保存设置、删除人工确认、请求去重和无正文审计。账号由服务端身份决定，主管不能管理员工私人记忆。V26 和认证 Mem0 桥接保持原存储，设置由两个聊天入口共用；不向模型注册记忆删除工具。更多分页、编辑、自动过期和真实效果仍待开发，见 [个人长期记忆治理](docs/个人长期记忆治理.md)。
+已增加本人查看、读取/自动保存设置、删除人工确认、请求去重和无正文审计。账号由服务端身份决定，主管不能管理员工私人记忆。V26 和认证 Mem0 桥接保持原存储，设置由两个聊天入口共用；不向模型注册记忆删除工具。更多分页、编辑、自动过期和真实效果仍待开发，见 [个人长期记忆治理](个人长期记忆治理.md)。

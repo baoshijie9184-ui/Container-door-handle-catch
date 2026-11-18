@@ -61,7 +61,7 @@ Token 量是 SDK 估算，不是实际用量或所有备用模型的容量保证
 
 实现前核对了当前依赖的 Apache-2.0 [AgentScope Java](https://github.com/agentscope-ai/agentscope-java)、2.0.4 的 [压缩配置](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/agentscope-harness/src/main/java/io/agentscope/harness/agent/memory/compaction/CompactionConfig.java)、[原生压缩器](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/agentscope-harness/src/main/java/io/agentscope/harness/agent/memory/compaction/ConversationCompactor.java)和本机 JAR 接口。复用现有依赖，不复制算法、不升级 SDK。文档 MCP 的 `llms.txt` 当次返回 404，改用官方仓库与已安装 JAR 核对。
 
-测试使用真实 Harness、脚本模型与隔离 H2，覆盖阈值、近期消息/工具调用对、结构和字符数、来源编号、失败/超时/取消、预算、账号隔离、未新增工具、Spring 配置、模型路由及私人轨迹、无正文文件落盘。前端验收覆盖事件分类、字段裁剪、用途和桌面/手机详情。完整结果见 [开发进展](../开发进展.md) 与 `work/context-compaction-*`。
+测试使用真实 Harness、脚本模型与隔离 H2，覆盖阈值、近期消息/工具调用对、结构和字符数、来源编号、失败/超时/取消、预算、账号隔离、未新增工具、Spring 配置、模型路由及私人轨迹、无正文文件落盘。前端验收覆盖事件分类、字段裁剪、用途和桌面/手机详情。完整结果见 [开发进展](开发进展.md) 与 `work/context-compaction-*`。
 
 | 检查 | 本轮结果 |
 | --- | --- |

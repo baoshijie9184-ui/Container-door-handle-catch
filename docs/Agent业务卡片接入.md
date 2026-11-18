@@ -89,7 +89,7 @@ $env:JAVA_HOME='C:/Program Files/Java/jdk-17'
 
 业务库限本机 `doorhandledb`，凭证读取项目忽略的 `.env`，不输出或写入命令。模型响应脚本化，不能据此声称实际模型一定选择正确工具、回答准确或提示注入已完全防御。
 
-浏览器脚本 `scripts/diagnostics/agent_cards_browser_acceptance.py` 读取保留的实际 MySQL 样本。主站使用真实登录、消息恢复与卡片查询；React 仅将模型流替换为测试事件，卡片数据仍走真实接口与 MySQL。验证页面刷新、只读刷新不重放模型或写操作、报告跳转、标题文本渲染、手机布局和其他账号范围。
+浏览器脚本 `script/diagnostics/agent_cards_browser_acceptance.py` 读取保留的实际 MySQL 样本。主站使用真实登录、消息恢复与卡片查询；React 仅将模型流替换为测试事件，卡片数据仍走真实接口与 MySQL。验证页面刷新、只读刷新不重放模型或写操作、报告跳转、标题文本渲染、手机布局和其他账号范围。
 
 最终验收（2026-10-13）：全量 Maven `verify` 成功，384 项中执行并通过 370 项，14 项可选模型/数据库联调默认跳过；30 项固定 Eval v2 仍全部通过。证据 `work/agent-cards-full-verify.log`。显式真实业务 MySQL 测试另行通过，实际 SDK 使用 11 次脚本模型响应生成四个业务引用，样本与结果在 `work/agent-cards-local-mysql.json`、`work/agent-cards-live-mysql.log`。不调用付费模型。
 

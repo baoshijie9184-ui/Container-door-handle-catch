@@ -10,6 +10,8 @@ V58 `migration-V58-native-fetch-install-evidence.sql` 为固定 Fetch 安装增�
 
 ## 文件说明
 
+- [历史 MySQL 全局字符集配置](archive/mysql-setup.sql)：保留原始 SQL 供追溯，不是 29 表初始化或迁移入口。
+
 - `migration-V57-identity-reconciliation.sql`：依赖 V40/V55/V56，新增历史身份一致快照报告及差异明细，只保存观察，不自动回填或启用授权；Detection classpath 保存同一文本。`DETECTION_IDENTITY_RECONCILIATION_ENABLED=false`，未运行报告、编译、测试或迁移。见 [历史身份核对与迁移摘要](../../docs/历史身份快照核对与迁移摘要.md)。
 
 - `migration-V56-identity-binding-evidence.sql`：依赖 V40/V55，新增身份来源事件、当前指针及收集/激活模式。不开启授权、不认领历史任务；Detection classpath 保存同一文本。`DETECTION_IDENTITY_EVIDENCE_ENABLED=false`，源码未编译、测试或执行迁移，详见 [身份来源与回执导航](../../docs/身份来源保护与回执导航.md)。
@@ -81,22 +83,9 @@ mysql -u用户名 -p密码 数据库名 < migration-V13-business-seed-data-norma
 mysql -u用户名 -p密码 数据库名 < migration-V14-security-reliability-hardening.sql
 ```
 
-### 方法五：启动时自动导入业务预置数据
+### 业务预置数据
 
-业务预置数据默认不会自动写入数据库。需要一键准备演示/验收环境时，可在启动后端前开启：
-
-```bash
-set APP_BUSINESS_SEED_ENABLED=true
-mvnw spring-boot:run
-```
-
-Windows PowerShell 也可以直接运行项目脚本：
-
-```powershell
-.\scripts\start-backend-with-business-seed.ps1
-```
-
-自动导入会先执行历史数据归一化脚本，再导入三份业务预置 SQL。脚本按幂等方式设计，可重复执行；如果是真实生产库，请保持 `APP_BUSINESS_SEED_ENABLED=false`。
+启动时自动导入已退役，请保持 `APP_BUSINESS_SEED_ENABLED=false`。29 表初始化和旧数据迁移使用[受控迁移入口](../../docs/database/compact-deployment.md)，不在应用启动时执行旧库的业务预置 SQL。
 
 ## 数据生成
 

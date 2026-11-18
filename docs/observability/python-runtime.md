@@ -1,6 +1,6 @@
 # Python runtime telemetry
 
-Detection Worker 和 Mem0 共用项目根目录的 `runtime_telemetry.py`。导入不启动 HTTP、线程或导出；由应用启动和关闭时管理生命周期。默认全部关闭，不改变已有业务可用性。
+Detection Worker 和 Mem0 共用 [runtime_telemetry.py](../../python/shared/runtime_telemetry.py)。导入不启动 HTTP、线程或导出；由应用启动和关闭时管理生命周期。默认全部关闭，不改变已有业务可用性。
 
 ```python
 from runtime_telemetry import RuntimeTelemetry

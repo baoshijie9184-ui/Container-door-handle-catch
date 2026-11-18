@@ -1,5 +1,7 @@
 # 测试结构优化实施计划
 
+> 历史实施计划。下文的旧目录和 Windows 执行命令按原记录保留；现行诊断入口见[在线诊断脚本](../../在线诊断脚本.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将自动化测试、在线诊断脚本和源码契约测试明确分层，减少重复样板并拆解超大 Java 测试，同时保持关键业务覆盖。

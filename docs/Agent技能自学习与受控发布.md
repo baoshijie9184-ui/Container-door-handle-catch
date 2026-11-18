@@ -96,7 +96,7 @@ $env:JAVA_HOME='C:/Program Files/Java/jdk-17'
 
 该测试读取上一轮 `work/agent-cards-local-mysql.json` 的实际运行，没有伪造成功来源。如果没有样本，先按业务卡片说明运行本机验收。结果 `work/skill-evolution-local-mysql.json` 和 `work/skill-evolution-live-mysql.log`。
 
-随后 `scripts/diagnostics/skill_evolution_browser_acceptance.py` 通过实际登录、业务接口和浏览器核对待审冻结内容、主管二次确认、回退停用、本人来源链接与审计，不发起付费模型请求。
+随后 `script/diagnostics/skill_evolution_browser_acceptance.py` 通过实际登录、业务接口和浏览器核对待审冻结内容、主管二次确认、回退停用、本人来源链接与审计，不发起付费模型请求。
 
 最终验证（2026-10-13）：全量 Maven `verify` 成功，398 项中 383 项执行通过、15 项可选联调默认跳过；包含新增十项 H2/SDK 技能测试、两项 HTTP 流程测试、一项仅开启技能草稿能力时的模式状态回归，以及原有三十项 Eval v2。实际业务 MySQL 测试另行执行通过，验证真实提议与原生加载工具、来源隔离、独立发布、两版切换、回退和停用；模型响应均脚本化，未调用供应商。证据 `work/skill-evolution-full-verify.log`、`work/skill-evolution-live-mysql.log`。
 

@@ -12,7 +12,7 @@ from detection_worker_receipts import (
     Claim, MysqlDetectionReceipts, ReceiptPending, ReceiptUnavailable, execute_once,
 )
 from kafka_event_models import DetectionTaskCreatedEvent
-from scripts.ecs_execution import require_ecs_execution
+from script.ecs_execution import require_ecs_execution
 from script.schema.worker_mysql_fixture import (
     read_mysql_fixture as _read_mysql_fixture,
     assert_mysql_identity as _assert_mysql_identity,

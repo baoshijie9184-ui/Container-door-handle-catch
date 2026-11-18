@@ -26,13 +26,18 @@ try:
     from .embedding_config import (embedder_config, configure_runtime as configure_embedding_runtime,
                                    profile as embedding_profile, FREE_PROFILE, COLLECTION as BGE_COLLECTION)
     from .qdrant_store import qdrant_config, admit_collection, persist_storage_floor, vector_identity, GENERATION, PREPROCESSING
-except ImportError:  # Docker / start_server.py load main as a top-level module.
+except ImportError:  # The image and direct file entry load main as a top-level module.
     from write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from lifecycle import GovernedVectorStore, memory_digest
     from embedding_config import (embedder_config, configure_runtime as configure_embedding_runtime,
                                   profile as embedding_profile, FREE_PROFILE, COLLECTION as BGE_COLLECTION)
     from qdrant_store import qdrant_config, admit_collection, persist_storage_floor, vector_identity, GENERATION, PREPROCESSING
-from runtime_telemetry import RuntimeTelemetry
+if __name__ == "__main__" and not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+if __package__ or __name__ == "__main__":
+    from python.shared.runtime_telemetry import RuntimeTelemetry
+else:
+    from runtime_telemetry import RuntimeTelemetry
 
 # Runtime settings are injected by the ECS deployment. Never load a workstation .env.
 
@@ -807,8 +812,7 @@ async def retired_unscoped_operation(user_id: str = "", memory_id: str = ""):
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from ecs_execution import require_ecs_execution
+    from script.ecs_execution import require_ecs_execution
     require_ecs_execution()
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8081)

@@ -198,7 +198,7 @@ def test_isolated_launcher_imports_only_fixed_checkout_snapshot_helpers_without_
     checkout = tmp_path / 'separate-checkout'; checkout.mkdir()
     for relative in ('script/jenkins/restore-local-mysql.py', 'script/schema/compact_migration_runtime.py',
                      'script/schema/build_compact_schema.py', 'script/schema/compact_clock_policy.py',
-                     'script/schema/compact_ddl_policy.py', 'scripts/ecs_execution.py'):
+                     'script/schema/compact_ddl_policy.py', 'script/ecs_execution.py'):
         target = checkout / relative; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
     # Run the real -I launcher with a distinct CWD and no PYTHONPATH. Importing
@@ -270,7 +270,7 @@ def test_fixed_source_admission_accepts_real_ci_work_permissions_without_changin
     members = ('script/jenkins/preserve-local-mysql.py', 'script/jenkins/restore-local-mysql.py',
         'script/jenkins/preserve-local-artifacts.py', 'script/schema/compact_migration_runtime.py',
         'script/schema/build_compact_schema.py', 'script/schema/compact_clock_policy.py',
-        'script/docker/compact-schema-guard.py', 'scripts/ecs_execution.py')
+        'script/docker/compact-schema-guard.py', 'script/ecs_execution.py')
     for name in members:
         target = checkout / name; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(ROOT / name, target)
     archive_file = root / 'inbox' / ('ci-999-' + 'a' * 12) / 'source.tar.gz'; archive_file.parent.mkdir(parents=True)

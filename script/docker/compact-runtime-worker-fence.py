@@ -347,8 +347,8 @@ with urllib.request.urlopen(r,timeout=60) as s:
             'actualRedelivery': replayed, 'actualUncommittedPartition': offset,
             'observationSettingsBeforeSha256': instrumentation_sha, 'compactMetadataSha256': original_metadata,
             'replayProof': 'NEEDS_REVIEW row unchanged; actual OSS bytes/etag/lastModified unchanged; no finished event; actual worker paused with input uncommitted',
-            'workerCodeSha256': sha((ctx.source / 'kafka_detection_worker.py').read_bytes()),
-            'receiptCodeSha256': sha((ctx.source / 'detection_worker_receipts.py').read_bytes())}
+            'workerCodeSha256': sha((ctx.source / 'python/worker/kafka_detection_worker.py').read_bytes()),
+            'receiptCodeSha256': sha((ctx.source / 'python/worker/detection_worker_receipts.py').read_bytes())}
         evidence = {**ctx.context(), 'kind': 'doorhandle-runtime-worker-unknown-result', 'project': ctx.project,
             'status': 'VERIFIED', 'schema': ctx.db.schema, 'serverUuid': server['serverUuid'], 'observations': observed}
         evidence_sha = private(ctx, folder / 'evidence.json', evidence)

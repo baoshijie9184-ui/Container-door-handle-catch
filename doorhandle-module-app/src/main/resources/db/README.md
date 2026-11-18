@@ -59,22 +59,9 @@ mysql -u用户名 -p密码 数据库名 < migration-V13-business-seed-data-norma
 mysql -u用户名 -p密码 数据库名 < migration-V14-security-reliability-hardening.sql
 ```
 
-### 方法五：启动时自动导入业务预置数据
+### 业务预置数据
 
-业务预置数据默认不会自动写入数据库。需要一键准备演示/验收环境时，可在启动后端前开启：
-
-```bash
-set APP_BUSINESS_SEED_ENABLED=true
-mvnw spring-boot:run
-```
-
-Windows PowerShell 也可以直接运行项目脚本：
-
-```powershell
-.\scripts\start-backend-with-business-seed.ps1
-```
-
-自动导入会先执行历史数据归一化脚本，再导入三份业务预置 SQL。脚本按幂等方式设计，可重复执行；如果是真实生产库，请保持 `APP_BUSINESS_SEED_ENABLED=false`。
+启动时自动导入已退役，请保持 `APP_BUSINESS_SEED_ENABLED=false`。29 表初始化和旧数据迁移使用[受控迁移入口](../../../../../docs/database/compact-deployment.md)，不在应用启动时执行旧库的业务预置 SQL。
 
 ## 数据生成
 

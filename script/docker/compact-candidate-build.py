@@ -171,7 +171,9 @@ def worker_source_files(source):
         'requirements.txt': source / 'deploy/worker/requirements.txt',
         'DINOv3-LICENSE.md': source / 'deploy/worker/licenses/DINOv3-LICENSE.md',
         'PyMySQL-LICENSE.txt': source / 'deploy/worker/licenses/PyMySQL-LICENSE.txt',
-        'LICENSE': source / 'LICENSE', **{name: source / name for name in WORKER_PYTHON_FILES}}
+        'LICENSE': source / 'LICENSE',
+        **{name: source / ('python/shared' if name == 'runtime_telemetry.py' else 'python/worker') / name
+           for name in WORKER_PYTHON_FILES}}
 
 
 def worker_runtime_dockerfile(body, image, *, add_pymysql, telemetry_pins=(), verify_versions=None):
@@ -342,7 +344,7 @@ print(json.dumps({'versions':versions,'requirements':Path('/app/requirements.txt
 MEM0_SOURCE_FILES = ('deploy/mem0/requirements.txt', 'memory_service/main.py',
     'memory_service/write_receipts.py', 'memory_service/lifecycle.py', 'memory_service/duplicate_review.py',
     'memory_service/model_config.py', 'memory_service/embedding_config.py', 'memory_service/qdrant_store.py',
-    'runtime_telemetry.py', 'LICENSE')
+    'python/shared/runtime_telemetry.py', 'LICENSE')
 
 
 def mem0_runtime_dockerfile(body, image):

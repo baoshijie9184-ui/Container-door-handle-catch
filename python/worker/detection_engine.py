@@ -18,7 +18,8 @@ import math
 from typing import List, Dict
 
 # --- 引擎和配置导入 ---
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(os.path.abspath(os.path.join(SOURCE_ROOT, '..', '..')))
 from engine.core import YAMLConfig
 
 # --- 绘图工具导入 ---
@@ -43,11 +44,11 @@ transforms = T.Compose([
 
 CONFIG_PATH = os.environ.get(
     "DEIM_CONFIG_PATH",
-    os.path.join(os.path.dirname(__file__), "configs", "deim_dfine", "dfine_hgnetv2_n_coco.yml"),
+    os.path.join(SOURCE_ROOT, "configs", "deim_dfine", "dfine_hgnetv2_n_coco.yml"),
 )
 RESUME_PATH = os.environ.get(
     "DEIM_RESUME_PATH",
-    os.path.join(os.path.dirname(__file__), "deim_outputs", "deim_hgnetv2_n_coco", "best_stg2.pth"),
+    os.path.join(SOURCE_ROOT, "deim_outputs", "deim_hgnetv2_n_coco", "best_stg2.pth"),
 )
 
 NAMES = {

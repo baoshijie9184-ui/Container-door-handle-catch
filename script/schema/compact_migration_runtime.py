@@ -22,7 +22,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'scripts'))
+sys.path.insert(0, str(ROOT / 'script'))
 from ecs_execution import require_ecs_execution
 from build_compact_schema import AFTER_GUARDS, GUARD_RESOURCES, compile_schema, split_top_level, without_comments
 import compact_clock_policy as clocks

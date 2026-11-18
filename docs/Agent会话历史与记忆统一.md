@@ -41,7 +41,7 @@ React 已增加会话选择、新建和刷新，支持 `?sessionId=已有会话�
 - 模型与 Mem0 响应在该测试中使用替身；Java HTTP 桥接测试和 Python 范围测试分别验证实际请求字段及检索过滤。Python 5 项通过，记录 `work/session-unification-python-tests.log`。
 - Vue 49 项、React 5 项检查及两套生产构建通过，保留既有前端包体积提示。日志为 `work/session-unification-vue-*` 和 `work/session-unification-react-*`。
 
-真实浏览器记录由 `scripts/diagnostics/session_unification_browser_acceptance.py` 写入 `work/session-unification-browser-acceptance.json`。它使用实际登录、MySQL 历史和 `/` 命令，避免调用收费模型；页面恢复、跨入口接续和手机布局以该记录为准。
+真实浏览器记录由 `script/diagnostics/session_unification_browser_acceptance.py` 写入 `work/session-unification-browser-acceptance.json`。它使用实际登录、MySQL 历史和 `/` 命令，避免调用收费模型；页面恢复、跨入口接续和手机布局以该记录为准。
 
 最终九项浏览器/HTTP 检查通过，页面 JavaScript 异常为 0；桌面和手机截图已复核。项目已通过统一脚本重新启动，MySQL、Redis、Kafka、Chroma、Mem0 与后端六项健康检查通过，两套前端可用。启动记录 `work/session-unification-start.log`，Mem0 健康接口已实际确认支持 `ACCOUNT` 范围。
 

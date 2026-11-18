@@ -149,7 +149,7 @@ def main(argv=None):
         keyed = audit.load_keyed_documents(work, docs)
         audit.reconcile_keyed_documents(documents, expected_context=context, anchors=anchors, keyed_documents=keyed)
         proofs = audit.load_projection_proofs(work)
-        sys.path.insert(0, str(ROOT / 'script/schema')); sys.path.insert(0, str(ROOT / 'scripts'))
+        sys.path.insert(0, str(ROOT / 'script/schema')); sys.path.insert(0, str(ROOT / 'script'))
         import compact_migration_runtime as runtime
         config, config_bindings = admitted_clone(runtime, work, docs, proofs, context)
         output = runtime.fresh_output(work / 'compact-fixtures/source-legacy-projection')

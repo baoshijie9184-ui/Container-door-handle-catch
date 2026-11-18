@@ -1,7 +1,7 @@
 """Execution guard boundaries; run this suite on the admitted ECS as well."""
 from unittest.mock import Mock
 import pytest
-from scripts import ecs_execution as execution
+from script import ecs_execution as execution
 
 
 def test_non_linux_is_rejected_before_metadata(monkeypatch):

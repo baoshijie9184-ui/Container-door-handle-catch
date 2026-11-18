@@ -6,7 +6,7 @@
 
 ## 已核对的训练资料
 
-来源为项目已有 [训练代码包](../wacga_shrinkage_seed42_60e_code_20261014.zip) 内的 `DEIMv2_WACGA/README_中文.md` 与 `CHECKPOINT_METADATA.json`。训练按验证集 Box AP 选取第 60 轮 `best_stg2.pth`；下表是包内保存的历史评测记录，本轮没有重新运行评测，也没有证明当前服务器模型目录已登记这些数值。
+来源为本地保留的 [训练代码包](../work/model-inputs/wacga_shrinkage_seed42_60e_code_20261014.zip) 内的 `DEIMv2_WACGA/README_中文.md` 与 `CHECKPOINT_METADATA.json`。训练按验证集 Box AP 选取第 60 轮 `best_stg2.pth`；下表是包内保存的历史评测记录，本轮没有重新运行评测，也没有证明当前服务器模型目录已登记这些数值。
 
 | 数据划分 | Box AP | AP50 | AP75 |
 | --- | ---: | ---: | ---: |

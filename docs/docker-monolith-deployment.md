@@ -41,6 +41,10 @@ flowchart LR
 
 本次只整理源码导航和部署说明，没有启动 Docker、构建镜像、执行配置检查、迁移或连接 ECS。下文带日期的验收结果属于对应历史版本。
 
+## Python 组件与镜像上下文
+
+[检测 Worker](../python/worker/) 和 [语音识别](../python/asr/) 的源码与各自依赖说明放在组件目录；[公共遥测模块](../python/shared/runtime_telemetry.py) 由 Worker 和 Mem0 共用。Worker 和 Mem0 镜像分别使用 [Worker 运行依赖](../deploy/worker/requirements.txt) 和 [Mem0 运行依赖](../deploy/mem0/requirements.txt)，构建时仍将运行模块按文件名放入容器的 `/app/`。
+
 ## 2026-10-15 CPU PTH 检测补充
 
 服务器现已启用 `compose.detection.yml`，以 Python/PyTorch `2.5.1+cpu` 直接加载 `best_stg2.pth`。模型编号 105 已发布并设为默认，正常图片和 Missing 缺陷图片各完成一条真实上传、Kafka 推理、OSS 结果、Java 入库任务；八项服务 healthy。本节更新优先于下方 2026-10-14 的“worker 关闭”历史记录。服务器页面仍待恢复本机 SSH 隧道后验收，API 验收不能替代页面验收。
@@ -49,7 +53,7 @@ flowchart LR
 
 ```powershell
 python -m pip download torch==2.5.1+cpu torchvision==0.20.1+cpu --index-url https://download.pytorch.org/whl/cpu --platform linux_x86_64 --python-version 312 --implementation cp --abi cp312 --only-binary=:all: --no-deps --dest work/cloud/pth-cpu-wheels
-python script/shell/prepare-pth-worker.py --source-zip wacga_shrinkage_seed42_60e_code_20261014.zip --wheels work/cloud/pth-cpu-wheels --archive work/cloud/pth-worker-build.tar.gz
+python script/shell/prepare-pth-worker.py --source-zip work/model-inputs/wacga_shrinkage_seed42_60e_code_20261014.zip --wheels work/cloud/pth-cpu-wheels --archive work/cloud/pth-worker-build.tar.gz
 ```
 
 归档仅包含运行器、匹配的训练源码、许可与 wheel，不包含 PTH、数据库或凭据。解压到服务器发布目录的 `work/cloud/pth-worker-build`；将上下文 `deployment/manifest.json` 以 640、原文件所有者复制到 `/srv/doorhandle/models/manifest.json`。清单只适用于已核验的这份 WACGA 权重，不适用于任意 PTH。许可文件来自项目内 `deploy/worker/licenses`，不依赖开发机其他工程路径。

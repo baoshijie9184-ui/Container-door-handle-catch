@@ -32,8 +32,10 @@ def main():
     if any(hashlib.sha256((source/name).read_bytes()).hexdigest()!=digest for name,digest in hashes.items()):
         raise ValueError('Training source hashes do not match')
     files=['kafka_detection_worker.py','kafka_event_models.py','kafka_settings.py','detection_worker_receipts.py','oss_result_uploader.py',
-           'pth_detection_engine.py','detection_image.py','worker_health.py','LICENSE']
-    for name in files:shutil.copyfile(root/name,target/name)
+           'pth_detection_engine.py','detection_image.py','worker_health.py','tenant_detection_authority.py','tenant_execution_security.py']
+    for name in files:shutil.copyfile(root/'python/worker'/name,target/name)
+    shutil.copyfile(root/'python/shared/runtime_telemetry.py',target/'runtime_telemetry.py')
+    shutil.copyfile(root/'LICENSE',target/'LICENSE')
     for name in ['Dockerfile','requirements.txt']:shutil.copyfile(root/'deploy/worker'/name,target/name)
     wheels=target/'cpu-wheels';wheels.mkdir(exist_ok=True)
     for wheel in args.wheels.glob('*.whl'):

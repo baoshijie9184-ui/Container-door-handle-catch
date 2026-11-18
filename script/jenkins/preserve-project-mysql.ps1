@@ -88,7 +88,7 @@ paths=['script/jenkins/'+name for name in ('preserve-project-mysql.ps1','project
  'preserve-local-mysql.py','restore-local-mysql.py','preserve-local-artifacts.py','export-legacy-local-mysql.ps1',
  'export-remaining-local-mysql.ps1','nonadmin-local-mysql-source.ps1','nonadmin-local-mysql-policy.py')]
 paths+=['script/schema/'+name for name in ('compact_migration_runtime.py','build_compact_schema.py','compact_clock_policy.py','compact_ddl_policy.py')]
-paths+=['script/docker/compact-schema-guard.py','scripts/ecs_execution.py']
+paths+=['script/docker/compact-schema-guard.py','script/ecs_execution.py']
 result={}
 with tarfile.open(sys.argv[1],'r:gz') as archive:
  assert archive.pax_headers.get('comment')==sys.argv[2]

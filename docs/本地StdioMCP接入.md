@@ -77,12 +77,7 @@ AGENT_LOCAL_MCP_PYTHON=已有Python解释器绝对路径
 
 AI 聊天工具还需开启 AgentScope 和持久运行日志；主站管理页面和手动握手检查不调用生成模型。沿用 workspace，不额外安装到 C 盘。
 
-```powershell
-./scripts/run-python.ps1 script/shell/migrate-local-mcp.py --apply
-./scripts/run-python.ps1 script/shell/migrate-local-mcp.py
-```
-
-本地入口仅允许已配置的本机 doorhandledb，核对根 SQL 与 App classpath 副本，可重复运行。应用启动只检查表，不自动迁移；关闭功能保留文件、状态与审计。
+历史 V25 迁移辅助程序见 [migrate-local-mcp.py](../script/shell/migrate-local-mcp.py)，旧 Windows 启动包装已退役。该入口仅适用于已配置的旧版 doorhandledb，会核对根 SQL 与 App classpath 副本；不是 29 表迁移入口。应用启动只检查表，不自动迁移；关闭功能保留文件、状态与审计。
 
 接口 `/api/agent/mcp/fetch`：GET 本人状态；POST `/install` 为固定安装、`/enabled` 为启停、`/probe` 为握手。写请求需 `X-MCP-Action: update`，响应不缓存。没有公开 shell、包名、用户目录或远程 URL 的修改接口。
 

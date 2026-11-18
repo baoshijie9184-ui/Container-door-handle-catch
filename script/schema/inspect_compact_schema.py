@@ -94,7 +94,7 @@ def main():
     parser.add_argument('--output', required=True, type=Path, help='Fresh absolute JSON path below checkout/work')
     args = parser.parse_args()
     contract = load_contract()
-    sys.path.insert(0, str(ROOT / 'scripts'))
+    sys.path.insert(0, str(ROOT / 'script'))
     from ecs_execution import require_ecs_execution
     identity = require_ecs_execution()
     databases = sorted(set(args.database))

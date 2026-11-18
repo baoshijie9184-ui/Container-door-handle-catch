@@ -45,7 +45,7 @@ AGENT_RESEARCH_EXPORT_WINDOW_SECONDS=60
 
 隔离 H2 测试覆盖账号跨运行/实例共享、双服务并发争抢最后额度及首次插入、其他账号独立、确认和私有运行权限、窗口到期、等待秒数向上取整、新增与已有计数的审计失败回滚、数据库失败、事务约束、重新过滤来源、开关装配及配置范围。
 
-API 验证 429 等待头与无附件响应；Node 验证提示边界及忽略异常正文；隔离浏览器验证等待提示、无自动重试/下载，并回归原导出校验、取消、迟到响应和手机流程。检查记录见 [开发进展](../开发进展.md) 与 `work/research-limit-*.log`，截图为 `work/agent-trace/research-export-rate-limit-desktop.png`。
+API 验证 429 等待头与无附件响应；Node 验证提示边界及忽略异常正文；隔离浏览器验证等待提示、无自动重试/下载，并回归原导出校验、取消、迟到响应和手机流程。检查记录见 [开发进展](开发进展.md) 与 `work/research-limit-*.log`，截图为 `work/agent-trace/research-export-rate-limit-desktop.png`。
 
 真实 MySQL 的 V35 执行、并发与执行计划验收及云端发布尚未完成。账号计数元数据的账号注销清理、审计保留期、下载幂等和网关整体限流仍待完善，P15 保持部分完成。
 

@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict')
+const { existsSync } = require('node:fs')
+const path = require('node:path')
 const test = require('node:test')
-const { readFrontendFile, readProjectFile } = require('./helpers/project-source.cjs')
+const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/project-source.cjs')
 
 {
   const serviceBlock = (compose, name) => {
@@ -79,7 +81,7 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
 
 {
   test('retains the declared Python dependency versions for managed environments', () => {
-    const environment = readProjectFile('environment.yml')
+    const environment = readProjectFile('python', 'environment.yml')
 
     assert.match(environment, /^name:\s*leetcode\s*$/m)
     assert.match(environment, /python=3\.10/)
@@ -89,12 +91,13 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
     assert.match(environment, /Pillow>=10\.0\.0/)
   })
 
-  test('retires the Windows Python runtime wrapper before it can start a local process', () => {
-    const runner = readProjectFile('scripts', 'run-python.ps1')
+  test('removes the retired Windows Python launcher and retains the ECS runtime guard', () => {
+    const guard = readProjectFile('script', 'ecs_execution.py')
 
-    assert.match(runner, /throw 'Runtime and tests are ECS-only/)
-    assert.match(runner, /docs\/ECS-only-runtime\.md/)
-    assert.doesNotMatch(runner, /conda\s+run|Start-Process|&\s*(?:conda|python)/i)
+    assert.equal(existsSync(path.join(projectRoot, 'scripts', 'run-python.ps1')), false)
+    assert.match(guard, /if platform\.system\(\) != 'Linux':\s+raise RuntimeError/)
+    assert.match(guard, /Explicit ECS instance and machine IDs are required/)
+    assert.match(guard, /ECS machine identity differs from the admitted execution target/)
   })
 
   test('keeps editor analysis while disabling local Python tests and the batch launcher', () => {

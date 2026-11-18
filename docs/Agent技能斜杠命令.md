@@ -43,6 +43,6 @@
 - 实际 MySQL 与 AgentScope Harness 的 `SkillCommandLocalMysqlTest` 通过：发布版本先加载再进入模型、角色拒绝、版本审计、私人运行记录和原生流式回答。使用脚本模型，不请求收费供应商；结果 `work/skill-command-local-mysql.json`。
 - 主站 49 项检查、Agent 页面 3 项检查和两套生产构建通过。主站窄侧栏修复及 Escape 行为通过实际浏览器验收，保留现有构建大包提示。
 - 带点号账号的操作确认列表改用与运行日志一致的会话编号校验，运行/操作编号校验与账号隔离保持原规则。最终技能、日志、确认与入口的 54 项定向回归及重新打包通过，日志 `work/skill-commands-final-package.log`。
-- `scripts/diagnostics/skill_commands_browser_acceptance.py` 的 8 项实际浏览器/HTTP 验收通过，覆盖两套菜单、键盘补全、明确加载、角色拒绝、无模型的安装拒绝、脱敏日志、手机布局、加载审计及匿名保护。结果 `work/skill-commands-browser-acceptance.json`，验收样本已停用保留历史。
+- `script/diagnostics/skill_commands_browser_acceptance.py` 的 8 项实际浏览器/HTTP 验收通过，覆盖两套菜单、键盘补全、明确加载、角色拒绝、无模型的安装拒绝、脱敏日志、手机布局、加载审计及匿名保护。结果 `work/skill-commands-browser-acceptance.json`，验收样本已停用保留历史。
 
 以上验证说明命令路由、加载、权限和传输正常，不代表真实模型对技能的理解或业务效果已经完成语义评测。不需要新增数据库迁移或环境开关；当前分支的运行方式见 [服务器运行说明](服务器运行说明.md)。

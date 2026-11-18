@@ -306,7 +306,7 @@ kafkaTemplate.send(topic, taskId, event)
 
 ### 5.3 工作进程手动提交消费位点
 
-文件：kafka_detection_worker.py
+文件：[`kafka_detection_worker.py`](../../python/worker/kafka_detection_worker.py)
 
 ~~~python
 producer.produce(

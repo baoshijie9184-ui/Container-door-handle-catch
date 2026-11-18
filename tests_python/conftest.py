@@ -3,8 +3,9 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+for source_dir in (ROOT_DIR / 'python/asr', ROOT_DIR / 'python/shared', ROOT_DIR / 'python/worker', ROOT_DIR):
+    if str(source_dir) not in sys.path:
+        sys.path.insert(0, str(source_dir))
 
 
 import pytest

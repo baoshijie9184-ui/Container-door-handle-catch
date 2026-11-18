@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKER_FIXTURE_HELPER = ROOT / 'script/schema/worker_mysql_fixture.py'
-sys.path.insert(0, str(ROOT / 'scripts'))
+sys.path.insert(0, str(ROOT / 'script'))
 from ecs_execution import require_ecs_execution
 
 
