@@ -1,5 +1,7 @@
 # Java 单体 Docker 部署
 
+服务器上的完整运行拓扑、候选隔离及发布顺序见 [服务器单机 Docker 部署方案](服务器单机部署方案.md)。本页保留镜像、配置和历史部署细节。
+
 ## 容器与配置入口（2026-10-22 整理）
 
 `deploy/backend/Dockerfile` 定义 Java 后端镜像的构建过程，不是整个系统的容器清单。中间件通过 Compose 使用各自镜像，拥有独立进程、健康检查和数据卷；Java 业务模块仍在同一个 Spring Boot 应用中运行。
@@ -47,6 +49,20 @@ flowchart LR
 ## Python 组件与镜像上下文
 
 [检测 Worker](../../python/worker/) 和 [语音识别](../../python/asr/) 的源码与各自依赖说明放在组件目录；[公共遥测模块](../../python/shared/runtime_telemetry.py) 由 Worker 和 Mem0 共用。Worker 和 Mem0 镜像分别使用 [Worker 运行依赖](../../deploy/worker/requirements.txt) 和 [Mem0 运行依赖](../../deploy/mem0/requirements.txt)，构建时仍将运行模块按文件名放入容器的 `/app/`。
+
+## 实验室候选四子带下采样 v1
+
+实验室候选选用 `lunwen1` 的 DEIMv2-S 四子带下采样 v1，输入固定 640×640。v5 划分中该权重来自第 40 轮，Box AP50:95 为验证集 64.23%、测试集 62.84%。[四子带清单](../../deploy/worker/manifest.fourband-v1.json) 固定 `best_stg1.pth` 及其推理配置摘要。打包脚本复用既有便携源码包内的 `HybridEncoderNonAttention` 实现，Worker 仍从 EMA 权重严格加载，使用相同的六类编号。
+
+在构建机用已有的源码 ZIP、Linux amd64/Python 3.12 CPU wheel 和该权重准备新构建目录。
+
+```bash
+python3 script/shell/prepare-pth-worker.py \
+  --source-zip "$source_zip" --wheels "$cpu_wheels" \
+  --fourband-checkpoint "$checkpoint" --output "$new_worker_context"
+```
+
+将 `$new_worker_context` 指定为候选的 `DETECTION_BUILD_CONTEXT`。将已校验的 `best_stg1.pth` 与该目录 `deployment/manifest.json` 放在同一个候选私有模型目录，使用 `DETECTION_MODELS_DIR` 只读挂载。候选库实际登记并发布此模型后，将真实编号填入 `DETECTION_MODEL_ID`。容器启动时会核对配置、权重和源码摘要，并完成一次 640×640 推理后才连接 Kafka。完整验收还需实际执行检测上传、消费、结果与回执入库，正式部署仍受 29 表迁移门禁控制。 [服务器单机部署方案](服务器单机部署方案.md)
 
 ## 2026-10-15 CPU PTH 检测补充
 

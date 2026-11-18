@@ -1,0 +1,23 @@
+__include__:
+- ./wacga_shrinkage_s3_inference.yml
+
+DEIM:
+  encoder: HybridEncoderNonAttention
+
+HybridEncoderNonAttention:
+  in_channels: [192, 192, 192]
+  feat_strides: [8, 16, 32]
+  hidden_dim: 192
+  use_encoder_idx: [2]
+  num_encoder_layers: 1
+  nhead: 8
+  dim_feedforward: 512
+  dropout: 0.0
+  enc_act: gelu
+  expansion: 0.34
+  depth_mult: 0.67
+  act: silu
+  version: deim
+  csp_type: csp2
+  fuse_op: sum
+  component: fourband_down

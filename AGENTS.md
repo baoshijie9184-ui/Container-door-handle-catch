@@ -15,14 +15,15 @@
 
 ## 开发与 CI/CD
 
+- 本轮单体目标是用户自己的 Ubuntu 服务器。直接使用该机 Docker 开发、构建、迁移和部署，无需 Jenkins 或云端 ECS。优先使用服务器上的独立容器、端口、目录和账号。历史 ECS 条目仅适用于另外启用的旧流程。
 - 用户已确定：后续单体与微服务的 CI/CD 统一由本地 Jenkins `http://127.0.0.1:8080/` 自动流水线编排，包括代码检出、构建、集成测试、制品归档、部署、健康检查及发布失败处置。不要另建云端 Jenkins 控制器。
 - Jenkinsfile 和执行脚本放在版本库中维护；在现有实现上补齐自动化，不把手工执行或临时修改 Jenkins 页面作为最终交付方式。
 - Windows 工作站只编辑、编译、打包及运行 Jenkins 控制器；不启动项目应用、数据库、前端预览或测试。
-- 当前单体开发可在 [实验室 Ubuntu](docs/monolith/配置方案.md) 直接编辑及跳测试构建，暂不通过 Jenkins 调度。本阶段不启用旧 ECS 流水线、不修改实验室主机已有 Redis。实验室隔离验收的目标准入、执行入口和最终发布需在整合后确认。
+- 当前单体按 [服务器单机 Docker 部署](docs/monolith/服务器单机部署方案.md) 和 [隔离迁移入口](docs/database/compact-migration-orchestration.md#个人-ubuntu-上的隔离迁移) 实施。开发期间按顺序整合和构建，运行时保留备份及迁移读回回执，沿用项目专属 Redis。
 - 现有正式 ECS 流程由本地专用节点 `doorhandle-local-ci` 通过 SSH/SCP 调度已启动的 ECS（私网地址 `172.29.146.74`），保留实例和执行身份校验，不新增常驻 ECS Jenkins agent 或额外 JRE。未经准入不得把 ECS 验收脚本直接改指实验室主机。
 - 发布以已提交推送的固定提交及对应流水线制品为依据，保留提交号、构建号、摘要、测试报告和部署回执；不使用未提交工作区作为发布源。测试失败或必要证据缺失时阻止发布。
 - 自动部署按已配置的分支和环境规则执行，不绕过流水线直接手工发布。排障可以执行必要的只读检查；修复后应通过流水线验证。
 - Jenkins 控制器始终保持运行。使用 ECS 时，北京时间 09:00 至 24:00 保持开启；开关机由用户决定，不因测试结束自动关机，不安排验收后的关机任务。测试结束只收集证据并清理本轮拥有的临时测试资源，不停止业务服务或 ECS。流水线检查目标连通性与身份，未就绪时明确失败并告知用户；云端启停不属于 CI/CD。
 - 登录资料保存在 Git 忽略的 `work/jenkins/local-access.md`，流水线使用 Jenkins Credentials；不将密码、私钥或真实环境文件提交或归档。不查询 ECS 账单或卡券。
 
-当前统一入口为 `Jenkinsfile.ecs-monolith`，在本地 `doorhandle-local-ci` 节点执行控制步骤；旧 `Jenkinsfile` 的 Windows 本地测试流程及原 ECS 常驻 agent 方案已替换。启用项目任务前须确认统一入口及配套 CI 脚本已提交推送到任务的 SCM 分支；配置操作与最终状态以 CI/CD 文档和回执为准，不把配置完成视为真实测试已通过。ECS 云端启停不属于流水线待开发功能。数据库重构和迁移尚未验收，不启用生产发布或旧库演练；机器环境门禁 `DOORHANDLE_COMPACT_RELEASE_READY` / `DOORHANDLE_COMPACT_REHEARSAL_READY` 默认不设置，不得仅修改 Jenkins 页面参数绕过。
+历史 ECS 入口为 `Jenkinsfile.ecs-monolith`，在本地 `doorhandle-local-ci` 节点执行控制步骤；旧 `Jenkinsfile` 的 Windows 本地测试流程及原 ECS 常驻 agent 方案已替换。若另行启用历史项目任务，须核对 SCM、流水线和实际回执。旧流程的生产与旧库演练门禁 `DOORHANDLE_COMPACT_RELEASE_READY` / `DOORHANDLE_COMPACT_REHEARSAL_READY` 默认关闭。个人服务器通过本机隔离迁移入口收集独立回执。

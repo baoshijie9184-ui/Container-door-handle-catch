@@ -17,8 +17,8 @@
 ## 开发环境与构建
 
 - Windows 本地仅编辑、编译和打包，可编译测试源码但不运行测试或启动业务。Java 从仓库根目录使用 `mvn -DskipTests=true clean package`。
-- 实验室 Ubuntu 按 [配置方案](配置方案.md) 复用同一个 `java-cloud` 工作区。先确认实际 SSH 连通性和主机密钥，再同步固定版本；开发阶段先不用 Jenkins，不占用主机已有 Redis。
-- 镜像构建和挂载遵循 [单体 Docker 部署](docker-monolith-deployment.md)：从项目根目录使用 `compose.monolith.yml`，按需叠加 [Compose 配置](../../deploy/compose/)。不同验收环境使用各自的项目名、数据卷和私有配置。
+- 本轮在用户自己的 Ubuntu 上直接使用 `java-cloud` 和服务器 Docker，按 [单机部署方案](服务器单机部署方案.md) 构建和部署。数据迁移用项目专属 MySQL，业务 Redis 也使用项目独立容器。
+- 服务器拓扑、环境隔离和发布顺序见 [服务器单机 Docker 部署方案](服务器单机部署方案.md)。镜像构建和挂载见 [单体 Docker 部署](docker-monolith-deployment.md)，从项目根目录使用 `compose.monolith.yml` 并按需叠加 [Compose 配置](../../deploy/compose/)。
 - 显式配置数据库地址、账号及密码，不回退本机 root 连接。宿主机的 `DOORHANDLE_ENV_FILE` 与容器内 Java 的 `DOORHANDLE_JAVA_ENV_FILE` 不是同一个入口。私有文件不写入 Git。
 
 ## 切表和恢复
@@ -27,7 +27,7 @@
 
 ## ECS 统一验收与发布
 
-现行 Jenkins 路径下，单元/集成测试全部在 ECS 执行。实验室目前只作为直接开发目标；正式统一验收若改用实验室，先按 [配置方案](配置方案.md) 确认准入和执行入口，不绕过原 ECS 身份检查。
+本节记录历史 ECS Jenkins 路径。用户自己的 Ubuntu 使用 [个人服务器隔离迁移](../database/compact-migration-orchestration.md#个人-ubuntu-上的隔离迁移)。
 
 1. 整合代码、前后端接线、迁移、夹具、取消和恢复后，再做跳测试构建。提交推送前核对 SCM 触发；同一固定提交只安排一轮完整验收。
 2. ECS 路径复用本地 Jenkins `http://127.0.0.1:8080/` 和 `doorhandle-local-ci`，只使用 [Jenkinsfile.ecs-monolith](../../Jenkinsfile.ecs-monolith)。核对远端 `java-cloud` 与 `TRUSTED_COMMIT` 一致。流水线通过 SSH/SCP 调度既有 ECS；[验证脚本](../../script/jenkins/verify-ecs.py) 用 `DOORHANDLE_ECS_INSTANCE_ID`、`DOORHANDLE_ECS_MACHINE_ID` 核验实例和机器身份。目标为 `Status=Stopped`、`StoppedMode=StopCharging` 或身份不匹配时停止，不启动实例、不转为 Windows 测试。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observe, migrate, or revalidate the complete legacy source on the admitted ECS.
+"""Restore, observe, migrate, or revalidate the complete legacy source.
 
 The source is never mutated. A partially created candidate is retained after any
 failure or unknown result. The CLI neither activates applications nor starts or
@@ -16,10 +16,10 @@ import sys
 import uuid
 import compact_clock_policy as clocks
 
-from compact_migration_runtime import (ROOT, Mysql, WORKBENCH_SOURCES, compiled_target_parts,
+from compact_migration_runtime import (ROOT, LAB_SCOPE, DISPOSABLE_SCOPES, Mysql, WORKBENCH_SOURCES, compiled_target_parts,
     copy_plan, executable, fresh_output, freeze_evidence, install_relations,
-    load_config, metadata_snapshot, new_schema, private_json, render_copy, require,
-    restore_backup, schema_snapshot, sha_file, sha_json, utc_now, write_json,
+    identity_key, load_config, metadata_snapshot, new_schema, private_json, render_copy, require,
+    restore_backup, restore_snapshot, schema_snapshot, sha_file, sha_json, utc_now, write_json,
     backup_schema, validate_migration_receipt, admit_source_trigger_definers, literal)
 
 
@@ -39,7 +39,7 @@ def observed_source(mysql, config, identity, contract_sha, sources):
                          + literal(config['sourceSchema']) + ' AND referenced_table_schema IS NOT NULL AND BINARY referenced_table_schema<>BINARY '
                          + literal(config['sourceSchema']) + ';')['n'] == 0,
             'Source foreign keys reference an external schema absent from the complete migration/recovery contract')
-    if config['scope'] == 'ecs-disposable-migration':
+    if config['scope'] in DISPOSABLE_SCOPES:
         # EVENT is needed to see this catalog at all. A schema-limited production
         # migration instead receives the administrative catalog in freeze proof.
         grantee = "CONCAT(QUOTE(SUBSTRING_INDEX(CURRENT_USER(),'@',1)),'@',QUOTE(SUBSTRING_INDEX(CURRENT_USER(),'@',-1)))"
@@ -62,8 +62,17 @@ def observed_source(mysql, config, identity, contract_sha, sources):
         config['sourceCollations'][name] == detail['collation'] for name, detail in snapshot['tables'].items()),
         'Reviewed source collations do not match the entire actual source catalog')
     _, meta_sha = metadata_snapshot(mysql, config['sourceSchema'])
+    if config['scope'] == LAB_SCOPE:
+        _, restored, digest = private_json(config.get('labRestoreReceipt', ''))
+        require(digest == config.get('labRestoreReceiptSha256')
+                and restored.get('kind') == 'doorhandle-lab-source-restore' and restored.get('status') == 'VERIFIED'
+                and restored.get('lab') == identity and restored.get('sourceSchema') == config['sourceSchema']
+                and restored.get('serverUuid') == config['serverUuid']
+                and restored.get('sourceSnapshotSha256') == snapshot['snapshotSha256']
+                and restored.get('sourceMetadataSha256') == meta_sha,
+                'Current laboratory source differs from its pinned restore receipt')
     return {'schemaVersion': 1, 'kind': 'doorhandle-compact-source-observation', 'status': 'FROZEN_SOURCE_OBSERVED',
-            'ecs': identity, 'serverUuid': config['serverUuid'], 'sourceSchema': config['sourceSchema'],
+            identity_key(config['scope']): identity, 'serverUuid': config['serverUuid'], 'sourceSchema': config['sourceSchema'],
             'contractSha256': contract_sha, 'sourceSnapshotSha256': snapshot['snapshotSha256'],
             'sourceMetadataSha256': meta_sha, 'sourceTableCount': len(snapshot['tables']),
             'sourceSnapshot': snapshot, 'observedAtUtc': utc_now()}
@@ -105,7 +114,10 @@ def workbench(mysql, config, identity, output, *, source_snapshot_sha256=None):
     write_json(config_path, settings)
     command += ['--config', str(config_path), '--output', str(receipt_path)]
     env = {name: item for name, item in os.environ.items() if name in ('PATH', 'LANG', 'LC_ALL')}
-    env.update(DOORHANDLE_ECS_INSTANCE_ID=identity['instanceId'], DOORHANDLE_ECS_MACHINE_ID=identity['machineId'])
+    if config['scope'] == LAB_SCOPE:
+        env['DOORHANDLE_LAB_MACHINE_ID'] = identity['machineId']
+    else:
+        env.update(DOORHANDLE_ECS_INSTANCE_ID=identity['instanceId'], DOORHANDLE_ECS_MACHINE_ID=identity['machineId'])
     log_path = output / 'private/workbench.log'
     with log_path.open('xb') as log:
         os.chmod(log_path, 0o600)
@@ -134,10 +146,11 @@ def migrate(config, identity, config_sha, output, model, model_sha):
     server = mysql.admitted_server()
     freeze = freeze_evidence(config, identity)
     _, reviewed, reviewed_sha = private_json(config.get('reviewedSourceSnapshot', ''))
+    host_key = identity_key(config['scope'])
     require(reviewed_sha == config.get('reviewedSourceSnapshotSha256')
             and reviewed.get('kind') == 'doorhandle-compact-source-observation'
             and reviewed.get('status') == 'FROZEN_SOURCE_OBSERVED'
-            and reviewed.get('ecs') == identity and reviewed.get('sourceSchema') == config['sourceSchema']
+            and reviewed.get(host_key) == identity and reviewed.get('sourceSchema') == config['sourceSchema']
             and reviewed.get('serverUuid') == config['serverUuid'] and reviewed.get('contractSha256') == model_sha,
             'A reviewed complete source observation for this exact schema and server is required')
     # Bind provenance to the reviewed observation before any target DDL. The
@@ -148,14 +161,14 @@ def migrate(config, identity, config_sha, output, model, model_sha):
                 for step in plan if step['kind'] == 'sql'}
     attempt = uuid.uuid4().hex
     record = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration', 'status': 'IN_PROGRESS',
-              'attempt': attempt, 'ecs': identity, 'scope': config['scope'], 'startedAtUtc': utc_now(),
+              'attempt': attempt, host_key: identity, 'scope': config['scope'], 'startedAtUtc': utc_now(),
               'serverUuid': config['serverUuid'], 'sourceSchema': config['sourceSchema'], 'targetSchema': config['targetSchema'],
               'configSha256': config_sha, 'contractSha256': model_sha, 'sqlSha256': catalog['sqlSha256'],
               'copyPlanSha256': plan_sha, 'reviewedSourceObservationSha256': reviewed_sha,
               'freezeEvidenceSha256': freeze['sha256'], 'sourceTableCount': 131, 'targetTableCount': 29,
               'executedSteps': [], 'lifecycle': 'external-to-jenkins',
               'sourceClockPolicy': clocks.evidence(config['sourceOffsets'], config.get('legacyClockPolicy'))}
-    context = {name: record[name] for name in ('attempt', 'ecs', 'scope', 'serverUuid', 'sourceSchema', 'targetSchema',
+    context = {name: record[name] for name in ('attempt', host_key, 'scope', 'serverUuid', 'sourceSchema', 'targetSchema',
                                               'contractSha256', 'sqlSha256', 'copyPlanSha256')}
     try:
         with mysql.source_lock(config['sourceSchema'], model['sourceTables']) as lock:
@@ -251,7 +264,8 @@ def migrate(config, identity, config_sha, output, model, model_sha):
 
 def verify(config, identity, output, receipt_path, model, model_sha):
     _, catalog, _, _, _ = compiled_target_parts()
-    prior = validate_migration_receipt(receipt_path, {'ecs': identity, 'serverUuid': config['serverUuid'],
+    host_key = identity_key(config['scope'])
+    prior = validate_migration_receipt(receipt_path, {host_key: identity, 'serverUuid': config['serverUuid'],
         'sourceSchema': config['sourceSchema'], 'targetSchema': config['targetSchema'],
         'contractSha256': model_sha, 'sqlSha256': catalog['sqlSha256'], 'scope': config['scope']})
     if 'sourceClockPolicy' in prior:
@@ -270,7 +284,7 @@ def verify(config, identity, output, receipt_path, model, model_sha):
                 and freeze['sha256'] == prior['freezeEvidenceSha256'],
                 'Current frozen source/candidate differs from the migration receipt; no cutover is approved')
     result = {'schemaVersion': 1, 'kind': 'doorhandle-compact-cutover-readback', 'status': 'VERIFIED',
-              'migrationReceiptSha256': sha_file(receipt_path), 'attempt': prior['attempt'], 'ecs': identity,
+              'migrationReceiptSha256': sha_file(receipt_path), 'attempt': prior['attempt'], host_key: identity,
               'serverUuid': config['serverUuid'], 'sourceSchema': config['sourceSchema'], 'targetSchema': config['targetSchema'],
               'sourceSnapshotSha256': source['sourceSnapshotSha256'], 'targetSnapshotSha256': target['snapshotSha256'],
               'targetMetadataSha256': target_meta, 'freezeEvidenceSha256': freeze['sha256'], 'verifiedAtUtc': utc_now()}
@@ -278,18 +292,42 @@ def verify(config, identity, output, receipt_path, model, model_sha):
     return result
 
 
+def restore_lab_source(config, identity, output, manifest_path, manifest_sha, model):
+    require(config['scope'] == LAB_SCOPE and manifest_path is not None and manifest_sha,
+            'Source restore requires an explicit laboratory configuration and pinned backup manifest')
+    path, manifest, digest = private_json(manifest_path)
+    require(digest == manifest_sha and manifest.get('kind') == 'doorhandle-mysql-private-backup'
+            and manifest.get('purpose') == 'source' and manifest.get('migrationContext', {}).get('kind') == 'fixture-origin-copy'
+            and set(manifest['tables']) == set(model['sourceTables']) and not manifest['triggers'],
+            'Expected a complete pinned fixture-origin backup without source triggers')
+    mysql = Mysql(config, output)
+    mysql.admitted_server()
+    observed, metadata = restore_snapshot(mysql, path, manifest, config['sourceSchema'])
+    result = {'schemaVersion': 1, 'kind': 'doorhandle-lab-source-restore', 'status': 'VERIFIED',
+              'lab': identity, 'backupManifestSha256': digest, 'serverUuid': config['serverUuid'],
+              'sourceSchema': config['sourceSchema'], 'sourceSnapshotSha256': observed['snapshotSha256'],
+              'sourceMetadataSha256': metadata, 'tableCount': len(observed['tables']),
+              'rowCount': sum(table['rows'] for table in observed['tables'].values())}
+    write_json(output / 'lab-source-restore.json', result)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('observe', 'migrate', 'verify'), nargs='?', default='migrate')
+    parser.add_argument('mode', choices=('restore-source', 'observe', 'migrate', 'verify'), nargs='?', default='migrate')
     parser.add_argument('--config', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--receipt', type=Path)
+    parser.add_argument('--backup-manifest', type=Path)
+    parser.add_argument('--backup-manifest-sha256')
     args = parser.parse_args()
     try:
         config, identity, config_sha = load_config(args.config)
         output = fresh_output(args.output)
         model, model_sha = contract()
-        if args.mode == 'migrate':
+        if args.mode == 'restore-source':
+            result = restore_lab_source(config, identity, output, args.backup_manifest, args.backup_manifest_sha256, model)
+        elif args.mode == 'migrate':
             result = migrate(config, identity, config_sha, output, model, model_sha)
         elif args.mode == 'observe':
             mysql = Mysql(config, output); mysql.admitted_server()

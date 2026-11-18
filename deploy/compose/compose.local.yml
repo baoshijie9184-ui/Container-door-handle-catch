@@ -1,0 +1,53 @@
+# 个人 Ubuntu 使用已经完成迁移和读回验证的专属 MySQL。
+# 依次叠加在根 Compose、compose.cloud.yml 和 compose.detection.yml 之后。
+services:
+  mysql:
+    profiles: [managed-mysql]
+
+  backend:
+    image: ${LOCAL_BACKEND_IMAGE:?Set the local backend image ID}
+    depends_on:
+      mysql:
+        condition: service_healthy
+        required: false
+    networks:
+      doorhandle-network: {}
+      migrated-mysql: {}
+
+  detection-worker:
+    image: ${LOCAL_WORKER_IMAGE:?Set the local detection worker image ID}
+    depends_on:
+      mysql:
+        condition: service_healthy
+        required: false
+    environment:
+      DETECTION_RECEIPT_DB_HOST: ${LOCAL_MYSQL_HOST:?Set the verified local MySQL container DNS name}
+      DETECTION_RECEIPT_DB_PORT: ${LOCAL_MYSQL_PORT:?Set the verified local MySQL listener port}
+      DETECTION_RECEIPT_DB_USER: ${LOCAL_MYSQL_WORKER_USER:?Set the detection worker user}
+      DETECTION_RECEIPT_DB_PASSWORD: ${LOCAL_MYSQL_WORKER_PASSWORD:?Set the detection worker password}
+    networks:
+      doorhandle-network: {}
+      migrated-mysql: {}
+
+  nginx:
+    image: ${LOCAL_WEB_IMAGE:?Set the local web image ID}
+
+  mem0:
+    image: ${LOCAL_MEM0_IMAGE:?Set the local Mem0 image ID}
+
+  redis:
+    image: ${LOCAL_REDIS_IMAGE:?Set the local Redis image ID}
+
+  kafka-storage-init:
+    image: ${LOCAL_KAFKA_IMAGE:?Set the local Kafka image ID}
+
+  kafka:
+    image: ${LOCAL_KAFKA_IMAGE:?Set the local Kafka image ID}
+
+  kafka-init:
+    image: ${LOCAL_KAFKA_IMAGE:?Set the local Kafka image ID}
+
+networks:
+  migrated-mysql:
+    external: true
+    name: ${LOCAL_MYSQL_NETWORK:?Set the network recorded by the local migration}

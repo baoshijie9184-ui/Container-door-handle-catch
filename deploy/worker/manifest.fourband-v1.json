@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "format": "pth",
+  "modelFile": "best_stg1.pth",
+  "checkpointSha256": "1bf7c8c9e28815e403f5ed539891e2426fbba41cb2c59f0f107a4b787ab8badc",
+  "configSha256": "558eca3c8188185e89aed01b050284fcd12dc71dd7734685c83dd6cac0a7aeae",
+  "classNames": ["Normal", "Bent", "Deformed", "Rusty", "Missing", "Compromised"],
+  "sourceCategoryIds": [1, 2, 3, 4, 5, 6],
+  "encoder": "HybridEncoderNonAttention"
+}

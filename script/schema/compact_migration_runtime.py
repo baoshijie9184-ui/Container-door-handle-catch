@@ -1,4 +1,4 @@
-"""Shared, explicit ECS-only compact migration/restore primitives.
+"""Shared compact migration and restore primitives for admitted Linux targets.
 
 No environment fallback, cloud lifecycle operation, source mutation, constraint
 disabling, compatibility table, application startup, or automatic retry lives here.
@@ -32,6 +32,8 @@ IDENT = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 UUID = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z')
 SHA = re.compile(r'[a-f0-9]{64}\Z')
 WORKBENCH_SOURCES = {'agent_workbench_item', 'agent_workbench_request', 'agent_workbench_audit'}
+LAB_SCOPE = 'lab-disposable-migration'
+DISPOSABLE_SCOPES = frozenset({'ecs-disposable-migration', LAB_SCOPE})
 MAX_PRIVATE_JSON = 16 * 1024 * 1024
 MAX_DUMP_BYTES = 4 * 1024 * 1024 * 1024
 MAX_QUERY_BYTES = 64 * 1024 * 1024
@@ -46,6 +48,10 @@ KEYED_ROW_LINE = re.compile(rb'\{"keySha256":"([a-f0-9]{64})","rowSha256":"([a-f
 def require(ok, message):
     if not ok:
         raise ValueError(message)
+
+
+def identity_key(scope):
+    return 'lab' if scope == LAB_SCOPE else 'ecs'
 
 
 def utc_now():
@@ -210,18 +216,29 @@ def executable(path):
 
 
 def load_config(path):
-    identity = require_ecs_execution()
-    require(identity['instanceId'] == 'i-2zeieuov2aum486jm1ek', 'Compact migration is admitted only on the monolith ECS')
     admitted_path, config, digest = private_json(path)
     allowed = {'version', 'scope', 'instanceId', 'machineId', 'serverUuid', 'sourceSchema', 'targetSchema',
                'connection', 'client', 'sourceOffsets', 'sourceCollations', 'workbench', 'recoverySchemas',
                'reviewedSourceSnapshot', 'reviewedSourceSnapshotSha256', 'freezeEvidenceFile',
-               'freezeEvidenceSha256', 'dataDirectory', 'legacyClockPolicy'}
+               'freezeEvidenceSha256', 'dataDirectory', 'legacyClockPolicy',
+               'labRestoreReceipt', 'labRestoreReceiptSha256'}
     require(isinstance(config, dict) and not set(config) - allowed and type(config.get('version')) is int
             and config['version'] == 1, 'Unsupported migration configuration shape')
+    scope = config.get('scope')
+    require(scope in DISPOSABLE_SCOPES or scope == 'production-migration', 'Explicit migration scope required')
+    if scope == LAB_SCOPE:
+        require(sys.platform == 'linux' and os.getuid() != 0, 'Laboratory migration requires an unprivileged Linux operator')
+        machine_id = Path('/etc/machine-id').read_text(encoding='ascii').strip()
+        require(re.fullmatch(r'[a-f0-9]{32}', machine_id), 'Invalid actual laboratory machine identity')
+        identity = {'instanceId': 'lab-' + machine_id, 'machineId': machine_id, 'executionLocation': 'LOCAL_LINUX'}
+        require(config.get('client', {}).get('kind') == 'docker', 'Laboratory migration requires an owned Docker MySQL')
+    else:
+        require(not {'labRestoreReceipt', 'labRestoreReceiptSha256'} & set(config),
+                'Laboratory restore evidence is confined to the laboratory scope')
+        identity = require_ecs_execution()
+        require(identity['instanceId'] == 'i-2zeieuov2aum486jm1ek', 'Compact migration is admitted only on the monolith ECS')
     require(all(config.get(key) == identity[key] for key in ('instanceId', 'machineId')),
-            'Configuration and actual admitted ECS identity differ')
-    require(config.get('scope') in ('ecs-disposable-migration', 'production-migration'), 'Explicit migration scope required')
+            'Configuration and actual admitted host identity differ')
     require(isinstance(config.get('serverUuid'), str) and UUID.fullmatch(config['serverUuid']),
             'Previously reviewed MySQL UUID required')
     source = identifier(config.get('sourceSchema'))
@@ -237,7 +254,7 @@ def load_config(path):
     require(isinstance(connection['username'], str) and re.fullmatch(r'[a-z_][a-z0-9_]{0,31}', connection['username'])
             and isinstance(connection['password'], str) and connection['password']
             and '\x00' not in connection['password'], 'Explicit dedicated migration credentials required')
-    if config['scope'] == 'ecs-disposable-migration':
+    if scope in DISPOSABLE_SCOPES:
         require(connection['host'] == '127.0.0.1' and 1024 < connection['port'] <= 65535 and connection['port'] != 3306,
                 'Disposable migration must use its owned non-default loopback MySQL port')
         require(re.fullmatch(r'doorhandle_(?:migration|legacy|agent)_verify_[a-f0-9]{10}', source),
@@ -252,9 +269,17 @@ def load_config(path):
             and re.fullmatch(r'doorhandle_compact_restore_[a-f0-9]{10}', recovery['target'])
             and len({source, target, *recovery.values()}) == 4,
             'Two distinct new source/target recovery-proof schemas are required')
+    if scope == LAB_SCOPE:
+        token = target.rsplit('_', 1)[1]
+        require(source == 'doorhandle_migration_verify_' + token
+                and recovery == {'source': 'doorhandle_legacy_restore_' + token,
+                                 'target': 'doorhandle_compact_restore_' + token}
+                and connection['username'] == 'mig_' + token,
+                'Laboratory target, source, recovery schemas and migration account must belong to one attempt')
     require(isinstance(config.get('sourceOffsets'), dict) and isinstance(config.get('sourceCollations'), dict),
             'Explicit reviewed domain offsets and all source table collations required')
-    clocks.validate(config['sourceOffsets'], config.get('legacyClockPolicy'))
+    clocks.validate(config['sourceOffsets'], config.get('legacyClockPolicy'),
+                    expected_domains=clocks.DOMAINS if scope == LAB_SCOPE else None)
     config['_admittedConfigDirectory'] = str(admitted_path.parent)
     return config, identity, digest
 
@@ -273,7 +298,7 @@ class Mysql:
         connection = config['connection']
         def ini(value):
             return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t') + '"'
-        port = connection['port'] if self.kind == 'native' or config['scope'] == 'ecs-disposable-migration' else 3306
+        port = connection['port'] if self.kind == 'native' or config['scope'] in DISPOSABLE_SCOPES else 3306
         self.options = ('[client]\nprotocol=tcp\nhost=127.0.0.1\nport=' + str(port)
                         + '\nuser=' + ini(connection['username']) + '\npassword=' + ini(connection['password'])
                         + '\n[mysql]\nconnect-timeout=10\n').encode('utf8')
@@ -293,7 +318,7 @@ class Mysql:
             node = json.loads(result.stdout)[0]
             require(node.get('Id') == self.container and node.get('State', {}).get('Running') is True,
                     'The admitted owned MySQL container is not running')
-            if config['scope'] == 'ecs-disposable-migration':
+            if config['scope'] in DISPOSABLE_SCOPES:
                 bindings = node.get('NetworkSettings', {}).get('Ports', {}).get(str(connection['port']) + '/tcp') or []
                 require(len(bindings) == 1 and bindings[0].get('HostIp') == '127.0.0.1'
                         and bindings[0].get('HostPort') == str(connection['port']),
@@ -303,6 +328,13 @@ class Mysql:
                           and item.get('Type') == 'bind' and item.get('RW') is True]
                 require(len(mounts) == 1, 'Disposable MySQL requires an exact same-absolute-path owned data bind mount')
                 self.container_data_directory = mounts[0]['Destination'].rstrip('/') + '/'
+            if config['scope'] == LAB_SCOPE:
+                labels = node['Config'].get('Labels') or {}
+                require(labels.get('io.doorhandle.lab-migration') == config['targetSchema'].rsplit('_', 1)[1]
+                        and labels.get('io.doorhandle.lab-machine') == config['machineId']
+                        and node['HostConfig']['RestartPolicy']['Name'] == 'no'
+                        and len(node['NetworkSettings']['Networks']) == 1,
+                        'MySQL container does not belong to this laboratory attempt')
             if connection['host'] != '127.0.0.1':
                 addresses = {network.get('IPAddress') for network in node.get('NetworkSettings', {}).get('Networks', {}).values()}
                 require(config['scope'] == 'production-migration' and connection['port'] == 3306
@@ -378,7 +410,7 @@ class Mysql:
         value = self.single("SELECT JSON_OBJECT('serverUuid',@@server_uuid,'version',@@version,'serverPort',@@port,'foreignKeyChecks',@@foreign_key_checks,'currentUser',CURRENT_USER(),'dataDirectory',@@datadir);")
         require(value['serverUuid'] == self.config['serverUuid'] and value['version'].startswith('8.4.')
                 and value['foreignKeyChecks'] == 1, 'MySQL server, version or foreign-key enforcement differs')
-        if self.config['scope'] == 'ecs-disposable-migration':
+        if self.config['scope'] in DISPOSABLE_SCOPES:
             expected = self.container_data_directory if self.kind == 'docker' else self.config['dataDirectory'].rstrip('/') + '/'
             require(value['dataDirectory'].rstrip('/') + '/' == expected and value['serverPort'] == self.config['connection']['port'],
                     'Actual disposable MySQL storage or server port differs from the admitted fixture')
@@ -638,7 +670,7 @@ def metadata_snapshot(mysql, schema):
 
 
 def freeze_evidence(config, identity):
-    if config['scope'] == 'ecs-disposable-migration':
+    if config['scope'] in DISPOSABLE_SCOPES:
         require(not config.get('freezeEvidenceFile') and not config.get('freezeEvidenceSha256'),
                 'Disposable proof cannot impersonate a production writer-freeze proof')
         return {'scope': config['scope'], 'kind': 'DISPOSABLE_SOURCE_READ_LOCK', 'sha256': None}
@@ -962,9 +994,6 @@ def restore_backup(mysql, backup_file, restore_schema, output, evidence_file):
     evidence_file, evidence, evidence_sha = private_json(evidence_file)
     require(manifest.get('kind') == 'doorhandle-mysql-private-backup' and manifest.get('schemaVersion') == 1
             and manifest.get('serverUuid') == mysql.config['serverUuid'], 'Backup identity differs')
-    restoration_policy = snapshot_ddl_policy(manifest)
-    require(sha_json(snapshot_hash_payload(manifest)) == manifest['snapshotSha256'],
-            'Backup complete snapshot and its explicit DDL policy digest differ')
     require(evidence.get('kind') == 'doorhandle-compact-migration-evidence' and evidence.get('status') == 'COPY_VERIFIED',
             'Recovery must bind a completed, verified copy evidence file')
     require(manifest['migrationContext'] == evidence['migrationContext'], 'Backup belongs to another migration attempt')
@@ -973,6 +1002,27 @@ def restore_backup(mysql, backup_file, restore_schema, output, evidence_file):
             'Restore schema is not admitted for this exact recovery purpose')
     expected = evidence['sourceSnapshotSha256' if purpose == 'source' else 'targetSnapshotSha256']
     require(manifest['snapshotSha256'] == expected, 'Backup snapshot differs from the migration evidence')
+    observed, metadata_sha = restore_snapshot(mysql, backup_file, manifest, restore_schema)
+    result = {'schemaVersion': 1, 'kind': 'doorhandle-compact-recovery', 'status': 'VERIFIED',
+              'purpose': purpose, 'attempt': evidence['attempt'],
+              identity_key(mysql.config['scope']): evidence[identity_key(mysql.config['scope'])],
+              'serverUuid': evidence['serverUuid'], 'originalSchema': manifest['schema'], 'restoreSchema': restore_schema,
+              'sourceSchema': evidence['sourceSchema'], 'targetSchema': evidence['targetSchema'],
+              'migrationEvidenceSha256': evidence_sha, 'backupManifestSha256': backup_sha,
+              'contractSha256': evidence['contractSha256'], 'sqlSha256': evidence['sqlSha256'],
+              'copyPlanSha256': evidence['copyPlanSha256'], 'targetMetadataSha256': evidence['targetMetadataSha256'],
+              'expectedSnapshotSha256': expected, 'restoredSnapshotSha256': observed['snapshotSha256'],
+              'restoredMetadataSha256': metadata_sha, 'restoredTableCount': len(observed['tables']),
+              'restoredRowCount': sum(table['rows'] for table in observed['tables'].values()), 'finishedAtUtc': utc_now()}
+    output.mkdir(mode=0o700)
+    write_json(output / 'recovery-receipt.json', result)
+    return result
+
+
+def restore_snapshot(mysql, backup_file, manifest, restore_schema):
+    restoration_policy = snapshot_ddl_policy(manifest)
+    require(sha_json(snapshot_hash_payload(manifest)) == manifest['snapshotSha256'], 'Backup snapshot digest differs')
+    require(set(manifest['tables']) == set(manifest['createTables']), 'Backup DDL catalog differs')
     data_file = backup_file.parent / manifest['data']['file']
     require(data_file.name == 'data.sql' and data_file.resolve(strict=True) == data_file
             and data_file.is_file() and data_file.stat().st_size == manifest['data']['bytes']
@@ -1002,21 +1052,9 @@ def restore_backup(mysql, backup_file, restore_schema, output, evidence_file):
     # expected digest using a newer policy or alter their original receipt.
     observed = schema_snapshot(mysql, restore_schema, manifest['tables'], ddl_hash_policy=restoration_policy)
     _, metadata_sha = metadata_snapshot(mysql, restore_schema)
-    require(observed['snapshotSha256'] == expected and metadata_sha == manifest['metadataSha256'],
+    require(observed['snapshotSha256'] == manifest['snapshotSha256'] and metadata_sha == manifest['metadataSha256'],
             'The full restored rows, columns, DDL, indexes, triggers or high-water marks differ')
-    result = {'schemaVersion': 1, 'kind': 'doorhandle-compact-recovery', 'status': 'VERIFIED',
-              'purpose': purpose, 'attempt': evidence['attempt'], 'ecs': evidence['ecs'],
-              'serverUuid': evidence['serverUuid'], 'originalSchema': manifest['schema'], 'restoreSchema': restore_schema,
-              'sourceSchema': evidence['sourceSchema'], 'targetSchema': evidence['targetSchema'],
-              'migrationEvidenceSha256': evidence_sha, 'backupManifestSha256': backup_sha,
-              'contractSha256': evidence['contractSha256'], 'sqlSha256': evidence['sqlSha256'],
-              'copyPlanSha256': evidence['copyPlanSha256'], 'targetMetadataSha256': evidence['targetMetadataSha256'],
-              'expectedSnapshotSha256': expected, 'restoredSnapshotSha256': observed['snapshotSha256'],
-              'restoredMetadataSha256': metadata_sha, 'restoredTableCount': len(observed['tables']),
-              'restoredRowCount': sum(table['rows'] for table in observed['tables'].values()), 'finishedAtUtc': utc_now()}
-    output.mkdir(mode=0o700)
-    write_json(output / 'recovery-receipt.json', result)
-    return result
+    return observed, metadata_sha
 
 
 def receipt_member(parent, descriptor):
@@ -1040,14 +1078,20 @@ def validate_migration_receipt(path, expected_context=None):
             'Migration receipt is incomplete or does not prove the complete 131-to-29 migration')
     require(isinstance(value.get('attempt'), str) and re.fullmatch(r'[a-f0-9]{32}', value['attempt'])
             and isinstance(value.get('serverUuid'), str) and UUID.fullmatch(value['serverUuid'])
-            and value.get('scope') in ('ecs-disposable-migration', 'production-migration'),
+            and value.get('scope') in (*DISPOSABLE_SCOPES, 'production-migration'),
             'Migration attempt, server identity or scope is malformed')
+    host_key = identity_key(value['scope'])
+    if value['scope'] == LAB_SCOPE:
+        identity = value.get(host_key, {})
+        require('ecs' not in value and identity.get('executionLocation') == 'LOCAL_LINUX'
+                and re.fullmatch(r'[a-f0-9]{32}', identity.get('machineId', ''))
+                and identity.get('instanceId') == 'lab-' + identity['machineId'], 'Invalid laboratory evidence identity')
     for key in ('configSha256', 'contractSha256', 'sqlSha256', 'copyPlanSha256', 'reviewedSourceObservationSha256',
                 'sourceSnapshotSha256', 'sourceMetadataSha256', 'targetSnapshotSha256', 'targetMetadataSha256'):
         require(isinstance(value.get(key), str) and SHA.fullmatch(value[key]), 'A complete migration digest is missing: ' + key)
     require((value['scope'] == 'production-migration' and isinstance(value.get('freezeEvidenceSha256'), str)
              and SHA.fullmatch(value['freezeEvidenceSha256'])) or
-            (value['scope'] == 'ecs-disposable-migration' and value.get('freezeEvidenceSha256') is None),
+            (value['scope'] in DISPOSABLE_SCOPES and value.get('freezeEvidenceSha256') is None),
             'Production and disposable writer-freeze evidence cannot be interchanged')
     if expected_context:
         require(all(value.get(key) == actual for key, actual in expected_context.items()), 'Migration receipt context differs')
@@ -1056,7 +1100,7 @@ def validate_migration_receipt(path, expected_context=None):
     evidence = receipt_member(path.parent, value['evidence'])
     require(evidence.get('status') == 'COPY_VERIFIED' and evidence.get('kind') == 'doorhandle-compact-migration-evidence',
             'Copy evidence is not verified')
-    binding = ('attempt', 'ecs', 'scope', 'serverUuid', 'sourceSchema', 'targetSchema', 'contractSha256', 'sqlSha256',
+    binding = ('attempt', host_key, 'scope', 'serverUuid', 'sourceSchema', 'targetSchema', 'contractSha256', 'sqlSha256',
                'copyPlanSha256', 'sourceSnapshotSha256', 'sourceMetadataSha256', 'targetSnapshotSha256', 'targetMetadataSha256',
                'freezeEvidenceSha256', 'executedSteps', 'sourceSnapshot', 'targetSnapshot',
                'sourceTableCount', 'targetTableCount', 'foreignKeysValidated', 'sourceClockPolicy')
@@ -1073,7 +1117,7 @@ def validate_migration_receipt(path, expected_context=None):
         require(proof.get('kind') == 'doorhandle-compact-recovery' and proof.get('schemaVersion') == 1
                 and proof.get('status') == 'VERIFIED' and proof.get('purpose') == purpose
                 and proof.get('migrationEvidenceSha256') == value['evidence']['sha256']
-                and all(proof.get(key) == value.get(key) for key in ('attempt', 'ecs', 'serverUuid', 'sourceSchema', 'targetSchema',
+                and all(proof.get(key) == value.get(key) for key in ('attempt', host_key, 'serverUuid', 'sourceSchema', 'targetSchema',
                     'contractSha256', 'sqlSha256', 'copyPlanSha256', 'targetMetadataSha256')),
                 'Recovery proof is not bound to this migration')
         require(proof.get('expectedSnapshotSha256') == value['sourceSnapshotSha256' if purpose == 'source' else 'targetSnapshotSha256']

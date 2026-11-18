@@ -1,6 +1,6 @@
 # 131 张源表到 29 张业务表的整库迁移与恢复
 
-当前交付是迁移、恢复及验收入口源码。整库迁移、两份恢复和业务验收尚未完整通过，不能据此打开生产发布门禁。正式切换由 [部署协议](compact-deployment.md) 中的本地 Jenkins 流水线负责；本文件的 CLI 不切换应用连接、不启动应用、不管理 ECS 启停。
+当前个人服务器通过独立 Docker MySQL 执行数据恢复、迁移和读回。历史 ECS 切换由 [部署协议](compact-deployment.md) 管理。两种入口的主机与回执身份各自校验。
 
 ## 入口与范围
 
@@ -16,9 +16,24 @@
 
 SDK checkpoint 的原无符号 `id` 在已知偏移与 `UNRESOLVED` 两种分支都写入 `payload_json.legacyId`，以十进制字符串保存完整 `0..18446744073709551615` 范围；逐行核对不能只检查业务自然键或时钟 sidecar。既有新写仍使用 `{stateJson}`，读取兼容无 `legacyId` 的旧记录；导入后 CAS 更新保留已有原 ID，不改变 owner/session/state-key 查询键。目标 CHECK 与 Java reader 拒绝越界原 ID，双恢复继续按完整 payload 字节、全部列及源序列核对。
 
-## ECS、连接与私有配置
+## 个人 Ubuntu 上的隔离迁移
 
-所有命令只能在已启动的单体 ECS `i-2zeieuov2aum486jm1ek` 上运行，实际 IMDS 身份及 `/etc/machine-id` 都须与私有配置、执行环境匹配。本地仅编辑和构建。ECS 未就绪时直接失败，不转本地运行，不在这些脚本中启动或停止实例。
+使用当前用户已授权的本地 Docker socket、固定 MySQL 8.4 镜像 ID，以及本轮跳测试构建的后端镜像 ID。在仓库根目录执行 [本机迁移入口](../../script/schema/migrate_compact_lab.py)。备份清单和 `data.sql` 放在 `work/` 内的同一个私有目录。
+
+```bash
+python3 script/schema/migrate_compact_lab.py \
+  --backup-manifest "$source_manifest" --backup-manifest-sha256 "$source_manifest_sha256" \
+  --mysql-image "$mysql_image_id" --backend-image "$backend_image_id" \
+  --port 13309 --output "$PWD/work/local-migration-attempt"
+```
+
+脚本为本轮创建专属网络、回环端口、MySQL 容器和数据目录，从后端镜像提取同版本 Java 17 与 JAR 执行 Workbench 阶段。它先恢复并核对 131 表源，再冻结源快照并迁移到同一独立实例内的新 29 表库，执行两份恢复和最终读回。未提供 `--clock-settings` 时，受协议支持的历史时间保留原始值，对其余域要求备份和恢复后读回均证实相关输入表为空。已知非空的固定偏移域需要单独提供受审配置。
+
+成功时保留专属 MySQL 与 `migration/migration-receipt.json` 供后续使用；失败或收到取消信号时请求停止本轮 MySQL，保留数据和私有诊断。每轮使用新输出目录。该回执用于本机隔离候选，业务应用和入口在后续部署阶段接入。
+
+## 历史 ECS 入口、连接与私有配置
+
+本节的 ECS scope 要求已启动的单体 ECS `i-2zeieuov2aum486jm1ek`，实际 IMDS 身份及 `/etc/machine-id` 都须与私有配置、执行环境匹配。实例启停由操作者管理。
 
 私有 JSON 必须为本 checkout 的 `work` 内规范绝对路径、当前 Unix 用户所有且权限 0600。输出目录必须全新。配置没有环境变量中的数据库默认值，不读取旧本机连接。
 

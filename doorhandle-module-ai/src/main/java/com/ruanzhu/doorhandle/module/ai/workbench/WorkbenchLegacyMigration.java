@@ -255,14 +255,23 @@ public final class WorkbenchLegacyMigration {
     private static String qualified(String schema,String table){check(schema!=null&&schema.matches("[A-Za-z0-9_]{1,64}")&&TABLES.contains(table),"Explicit source identifiers required");return "`"+schema+"`.`"+table+"`";}
     private static void check(boolean value,String message){if(!value)throw new IllegalStateException(message);}
     private static void admit(Admission a){
-        check(a!=null&&"Linux".equals(System.getProperty("os.name")),"Workbench migration executes only on ECS");
-        check(a.instanceId()!=null&&a.instanceId().matches("i-[a-z0-9]+")&&a.machineId()!=null&&a.machineId().matches("[a-f0-9]{32}"),"Explicit ECS identities are required");
+        check(a!=null&&"Linux".equals(System.getProperty("os.name")),"Workbench migration requires an admitted Linux host");
+        check(a.instanceId()!=null&&a.machineId()!=null&&a.machineId().matches("[a-f0-9]{32}"),"Explicit host identities are required");
+        boolean local = a.instanceId().equals("lab-" + a.machineId());
+        check(local || a.instanceId().matches("i-[a-z0-9]+"), "Explicit execution identity is required");
         check(a.sourceOffset()!=null?a.unresolvedDomains().isEmpty()&&a.sourceSnapshotSha256()==null:a.unresolvedDomains().contains("workbench")&&a.sourceSnapshotSha256()!=null&&a.sourceSnapshotSha256().matches("[a-f0-9]{64}"),"Reviewed offset or explicit unresolved clock policy and snapshot required");
         check(a.sourceSchema()!=null&&a.sourceSchema().matches("[A-Za-z0-9_]{1,64}")&&a.targetSchema()!=null&&a.targetSchema().matches("[A-Za-z0-9_]{1,64}")&&!a.sourceSchema().equalsIgnoreCase(a.targetSchema()),"Distinct explicit source and target schemas required");
         check(a.serverUuid()!=null&&a.serverUuid().matches("[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")&&a.sourceCollations().keySet().equals(Set.copyOf(TABLES))&&a.sourceCollations().values().stream().allMatch(v->v.matches("utf8mb4_[a-z0-9_]+")),"Reviewed server UUID and all three source collations are required");
-        check(a.instanceId().equals(System.getenv("DOORHANDLE_ECS_INSTANCE_ID"))&&a.machineId().equals(System.getenv("DOORHANDLE_ECS_MACHINE_ID")),"Migration admission differs from the ECS execution contract");
         try{
             check(a.machineId().equals(Files.readString(Path.of("/etc/machine-id")).strip()),"Actual machine identity differs");
+            if(local){
+                var target = java.util.regex.Pattern.compile("doorhandle_compact_candidate_([a-f0-9]{10})").matcher(a.targetSchema());
+                check(a.machineId().equals(System.getenv("DOORHANDLE_LAB_MACHINE_ID")) && target.matches()
+                        && a.sourceSchema().equals("doorhandle_migration_verify_" + target.group(1)),
+                        "Migration admission differs from the laboratory execution contract");
+                return;
+            }
+            check(a.instanceId().equals(System.getenv("DOORHANDLE_ECS_INSTANCE_ID"))&&a.machineId().equals(System.getenv("DOORHANDLE_ECS_MACHINE_ID")),"Migration admission differs from the ECS execution contract");
             ProxySelector direct=new ProxySelector(){public List<Proxy> select(URI uri){return List.of(Proxy.NO_PROXY);}public void connectFailed(URI uri,SocketAddress address,java.io.IOException error){}};
             var client=HttpClient.newBuilder().proxy(direct).followRedirects(HttpClient.Redirect.NEVER).connectTimeout(Duration.ofSeconds(4)).build();
             var token=client.send(HttpRequest.newBuilder(URI.create("http://100.100.100.200/latest/api/token")).timeout(Duration.ofSeconds(4)).header("X-aliyun-ecs-metadata-token-ttl-seconds","60").PUT(HttpRequest.BodyPublishers.noBody()).build(),HttpResponse.BodyHandlers.ofString());

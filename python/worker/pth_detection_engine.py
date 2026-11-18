@@ -1,4 +1,4 @@
-"""Load the supplied WACGA PTH checkpoint directly, with its exact training source."""
+"""Load an admitted PTH checkpoint with its matching inference configuration."""
 import hashlib
 import io
 import json
@@ -11,6 +11,12 @@ import time
 import numpy as np
 from PIL import Image, ImageOps
 from detection_image import NAMES, annotate
+
+
+MODEL_CONFIGS = {
+    'HybridEncoderWACGAShrinkage': ('wacga_shrinkage_s3_inference.yml', 'CHECKPOINT_METADATA.json'),
+    'HybridEncoderNonAttention': ('fourband_v1_inference.yml', 'CHECKPOINT_METADATA.fourband-v1.json'),
+}
 
 
 def sha256(path):
@@ -27,27 +33,34 @@ class PthDetectionEngine:
         manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
         if manifest.get('schemaVersion')!=1 or manifest.get('format')!='pth' or manifest.get('classNames')!=NAMES:
             raise ValueError('Unexpected PTH model manifest')
+        encoder_name = manifest.get('encoder', 'HybridEncoderWACGAShrinkage')
+        if encoder_name not in MODEL_CONFIGS:
+            raise ValueError('Unsupported PTH encoder')
+        config_name, metadata_name = MODEL_CONFIGS[encoder_name]
         source=Path(source_dir or os.environ['DETECTION_SOURCE_DIR']).resolve()
         hashes=json.loads((source/'MANIFEST_SHA256.json').read_text(encoding='utf-8'))
         for name,digest in hashes.items():
             path=(source/name).resolve()
             if not path.is_relative_to(source) or sha256(path)!=digest:
                 raise ValueError('Training source checksum mismatch: '+name)
-        metadata=json.loads((source/'CHECKPOINT_METADATA.json').read_text(encoding='utf-8'))
+        metadata=json.loads((source/metadata_name).read_text(encoding='utf-8'))
         checkpoint=(manifest_path.parent/manifest['modelFile']).resolve()
         if not checkpoint.is_relative_to(manifest_path.parent):
             raise ValueError('Checkpoint must be in the manifest directory')
         self.sha256=sha256(checkpoint)
         if self.sha256!=manifest['checkpointSha256'] or self.sha256!=metadata['checkpoint_sha256']:
             raise ValueError('Checkpoint SHA-256 mismatch')
-        config=source/'configs/portable/wacga_shrinkage_s3_inference.yml'
+        config=source/'configs/portable'/config_name
         if sha256(config)!=manifest['configSha256']:
             raise ValueError('Inference config SHA-256 mismatch')
         sys.path.insert(0,str(source))
         import torch
         from torchvision import transforms as T
         from engine.core import YAMLConfig
-        from engine.deim.wacga_shrinkage import HybridEncoderWACGAShrinkage
+        if encoder_name == 'HybridEncoderNonAttention':
+            from engine.deim.nonattention_components import HybridEncoderNonAttention as Encoder
+        else:
+            from engine.deim.wacga_shrinkage import HybridEncoderWACGAShrinkage as Encoder
         self.torch=torch
         torch.set_num_threads(int(os.getenv('DETECTION_CPU_THREADS','2')))
         cfg=YAMLConfig(str(config))
@@ -55,8 +68,10 @@ class PthDetectionEngine:
             raise ValueError('Unexpected source class mapping')
         loaded=torch.load(checkpoint,map_location='cpu',weights_only=True)
         self.model=cfg.model.cpu().eval()
-        if not isinstance(self.model.encoder,HybridEncoderWACGAShrinkage):
-            raise ValueError('Expected the supplied WACGA shrinkage architecture')
+        if not isinstance(self.model.encoder, Encoder):
+            raise ValueError('Loaded architecture does not match the PTH manifest')
+        if encoder_name == 'HybridEncoderNonAttention' and self.model.encoder.component != 'fourband_down':
+            raise ValueError('Expected four-band downsampling')
         state=loaded['ema']['module']
         result=self.model.load_state_dict(state,strict=True)
         self.load_report={'strictLoad':True,'missingKeys':list(result.missing_keys),

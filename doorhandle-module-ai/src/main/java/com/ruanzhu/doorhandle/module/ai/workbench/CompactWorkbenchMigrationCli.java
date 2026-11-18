@@ -27,7 +27,7 @@ public final class CompactWorkbenchMigrationCli {
             throw new IllegalArgumentException("Explicit --config and fresh --output are required");
         }
         if (!"Linux".equals(System.getProperty("os.name"))) {
-            throw new SecurityException("Workbench migration executes only on ECS");
+            throw new SecurityException("Workbench migration requires an admitted Linux host");
         }
         Path work = Path.of("").toRealPath().resolve("work");
         Path config = Path.of(arguments[1]);
@@ -65,12 +65,27 @@ public final class CompactWorkbenchMigrationCli {
         }
         String host = connection.path("host").asText();
         String scope = input.path("scope").asText();
-        if ("ecs-disposable-migration".equals(scope)) {
+        boolean local = "lab-disposable-migration".equals(scope);
+        if ("ecs-disposable-migration".equals(scope) || local) {
             if (!"127.0.0.1".equals(host) || port <= 1024 || port == 3306) {
                 throw new SecurityException("Disposable migration requires its owned non-default loopback endpoint");
             }
         } else if (!"production-migration".equals(scope)) {
             throw new SecurityException("Explicit migration scope is required");
+        }
+        if (local) {
+            String source = input.path("sourceSchema").asText();
+            String target = input.path("targetSchema").asText();
+            String machineId = input.path("machineId").asText();
+            var token = java.util.regex.Pattern.compile("doorhandle_compact_candidate_([a-f0-9]{10})").matcher(target);
+            if (!token.matches() || !source.equals("doorhandle_migration_verify_" + token.group(1))
+                    || !connection.path("username").asText().equals("mig_" + token.group(1))
+                    || !input.path("instanceId").asText().equals("lab-" + machineId)
+                    || !"docker".equals(input.path("client").path("kind").asText())) {
+                throw new SecurityException("Laboratory Workbench migration requires the dedicated Docker attempt");
+            }
+        } else if (input.path("instanceId").asText().startsWith("lab-")) {
+            throw new SecurityException("Laboratory identity requires the laboratory migration scope");
         }
         if (!"127.0.0.1".equals(host)) {
             JsonNode client = input.path("client");
