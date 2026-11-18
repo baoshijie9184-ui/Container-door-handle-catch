@@ -1,6 +1,6 @@
 # 旧 Chroma RAG 的来源保全
 
-当前单体的向量运行方案为 [Qdrant + BGE-M3](middleware/semantic-vector-storage.md)。本页保留旧数据的识别与迁移要求；Chroma 不再是默认运行库，也不是 Qdrant 故障时的自动兜底。
+当前单体的向量运行方案为 [Qdrant + BGE-M3](agent/middleware/semantic-vector-storage.md)。本页保留旧数据的识别与迁移要求；Chroma 不再是默认运行库，也不是 Qdrant 故障时的自动兜底。
 
 旧系统集合通常为 `door_handle_assistant_knowledge`，tenant/database 为 `default_tenant` / `default_database`；使用 `doorhandle-local-hashing-v1`、256 维本地确定性向量。旧知识记录、原始文本、元数据、历史和向量都要保留在只读来源/归档中。
 
@@ -16,4 +16,4 @@
 
 新目标凭证是 `schemaVersion=2`、`kind=QDRANT_RAG_TARGET`，不是修改旧 Chroma 凭证的模型名。不同维度不能拼接，不同模型的 1024 维向量也不能直接混用。
 
-所有服务与测试在 ECS，由本地 Jenkins 编排；本地只编辑、编译、打包。生产启用仍须真实候选、恢复、业务与发布门槛全部满足。隔离 mock 集合只验证接入和授权行为，不构成 83 条真实数据已完成迁移的证据。
+现有旧数据迁移流程由 Jenkins 调度 ECS，不在 Windows 工作站上执行。实验室 Ubuntu 的直接开发不改变原迁移目标或身份校验。生产启用须完成真实候选、恢复和业务验收；隔离 mock 集合只验证接入和授权行为，不能作为 83 条真实数据已迁移的证据。

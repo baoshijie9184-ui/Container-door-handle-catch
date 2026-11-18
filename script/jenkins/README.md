@@ -1,10 +1,10 @@
 # 本机 Jenkins → 北京 ECS
 
-## 当前约定（2026-11-16）
+## 现有 ECS 流水线
 
-后续单体与微服务 CI/CD 统一使用现有本地 Jenkins 控制器 <http://127.0.0.1:8080/>，账号 `admin`，密码保存在 Git 忽略的 [项目私有登录文档](../../work/jenkins/local-access.md)。当前入口、启动命令和流程以 [本地 Jenkins CI/CD 约定](../../docs/本地Jenkins-CICD.md) 为准。服务已启动并通过浏览器以 `admin` 登录，本地独立节点和统一任务入口已配置；启用任务前须确认 CI 文件已推送到 SCM 分支，最终启用状态以配置回执为准，不据此宣称已完成项目测试或发布验收。
+现有 ECS 流程复用本地 Jenkins <http://127.0.0.1:8080/>，登录信息见 Git 忽略的 [项目私有登录文档](../../work/jenkins/local-access.md)。入口与操作见 [单体 ECS 验收与发布](../../docs/monolith/README.md#ecs-统一验收与发布)。启用任务前核对控制器、执行节点、CI 配置及 SCM 固定提交；历史登录和配置回执不能证明当前服务在线。
 
-本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins 始终运行；ECS 保持开启，由用户自行关闭；助手不在测试前后自动启停，也不安排验收后的关机任务。本轮自有临时资源仍须收尾并保全报告，不停止业务服务或 ECS。流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
+Windows 工作站只编辑、跳测试构建和运行 Jenkins 控制器。实验室 Ubuntu 直接开发阶段不用 Jenkins；现有 ECS 路径由 `doorhandle-local-ci` 按 `Jenkinsfile.ecs-monolith` 通过 SSH/SCP 调度已启动的 ECS，不新增常驻 ECS agent。ECS 不因测试结束而关闭，按[项目工作约定](../../AGENTS.md)处理。旧 `Jenkinsfile` 已退役；生产发布和旧库演练的机器门禁保持默认关闭。`start-existing.ps1` 默认端口为 8080。
 
 Python 测试工具需要新装依赖时，固定源码配方沿用 `deploy/compose/compose.cloud.yml` 的阿里云 HTTPS PyPI 镜像 `https://mirrors.aliyun.com/pypi/simple`。安装仍使用隔离 pip、固定版本、禁用缓存、原始 pip 下载摘要报告、`pip check` 和实际版本回读；不增加备用源或绕过 TLS 校验。2 GiB 总增长包络、磁盘保底、容器内存限制及 1,800 秒期限保持不变，真实安装和新增命令回归均由后续固定提交在 ECS 验证。
 
@@ -104,14 +104,14 @@ MySQL 组合验证的 `tmp/pytest` 不适用纯 source 合成目录删除规则�
 
 下方为历史环境、流水线及验收记录，其中 `18080` 构建链接保留原地址。本地运行测试、旧 `Jenkinsfile` 与轮询自动发布等旧指令均已失效，不得用于新构建；历史成功不代表当前源码或流水线已验收。
 
-2026-11-05 运行约定：本地仅编辑和构建，运行与测试全部在 ECS `172.29.146.74` 执行，结束后确认 `Stopped / StopCharging`。旧本机运行命令失效，当前入口见 [ECS 运行约定](../../docs/ECS-only-runtime.md)。
+2026-11-05 历史记录的测试后停机安排已被现行约定替代。当前只回收本轮临时验收资源，ECS 的启停由用户决定。
 
 
-2026-10-27 源码新增演练参数 `COMPATIBLE_RUNNER_IMAGE`、`REHEARSAL_MEMORY_EXTRACTION_MODEL`，与已有兼容 backend 一起传给隔离演练并核对回执。构建可选 `BUILD_NPM_REGISTRY`（默认 npm 官方源），只传给本次远端进程。按用户要求未运行任何流水线、测试或构建；生产开关仍关闭。参数用途和剩余发布条件见 [本轮续开发](../../docs/单体收尾续开发-20261027.md)。
+2026-10-27 源码新增演练参数 `COMPATIBLE_RUNNER_IMAGE`、`REHEARSAL_MEMORY_EXTRACTION_MODEL`，与已有兼容 backend 一起传给隔离演练并核对回执。构建可选 `BUILD_NPM_REGISTRY`（默认 npm 官方源），只传给本次远端进程。按用户要求未运行任何流水线、测试或构建；生产开关仍关闭。参数用途和剩余发布条件见 [本轮续开发](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E5%8D%95%E4%BD%93%E6%94%B6%E5%B0%BE%E7%BB%AD%E5%BC%80%E5%8F%91-20261027.md)。
 
-2026-10-22 源码新增固定 runner 升级与 V60 部署镜像保留，发布/回滚共享同一锁，记录独立尝试并保护当前/上一/过渡镜像。公开 Jenkins 产物只含筛选后的技术字段；私有恢复配置不得归档到公共产物。首次兼容基线及真实验收仍待完成，当前未运行，见 [运行器发布](../../docs/MCP运行器升级与部署镜像保留.md)。
+2026-10-22 源码新增固定 runner 升级与 V60 部署镜像保留，发布/回滚共享同一锁，记录独立尝试并保护当前/上一/过渡镜像。公开 Jenkins 产物只含筛选后的技术字段；私有恢复配置不得归档到公共产物。首次兼容基线及真实验收仍待完成，当前未运行，见 [运行器发布](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/MCP%E8%BF%90%E8%A1%8C%E5%99%A8%E5%8D%87%E7%BA%A7%E4%B8%8E%E9%83%A8%E7%BD%B2%E9%95%9C%E5%83%8F%E4%BF%9D%E7%95%99.md)。
 
-2026-10-22 新增 MCP 原生协议发布/回滚保护接线，包含新执行暂停值快照、持久格式下限与独立元数据回执；本轮没有运行 Jenkins、脚本或云端操作。第一次兼容基线与真实演练仍待完成，见 [实现与边界](../../docs/MCP原生协议发布与回滚保护.md)。
+2026-10-22 新增 MCP 原生协议发布/回滚保护接线，包含新执行暂停值快照、持久格式下限与独立元数据回执；本轮没有运行 Jenkins、脚本或云端操作。第一次兼容基线与真实演练仍待完成，见 [实现与边界](../../docs/agent/MCP原生协议发布与回滚保护.md)。
 
 复用已有 Windows Jenkins，不重新安装。`jenkins.war` 是启动包，`JENKINS_HOME` 保存任务、插件与凭据，里面的 `war/` 是解压缓存。不要用备份覆盖较新的任务目录。Jenkins JVM 按版本要求使用 JDK 21/25，项目 Maven 构建仍使用 JDK 17。
 
@@ -119,11 +119,11 @@ MySQL 组合验证的 `tmp/pytest` 不适用纯 source 合成目录删除规则�
 
 ## 历史流水线（已退役）
 
-2026-10-22 续开发分派兼容保护：发布前核对确认 JSON、稳定身份及 V54 数据格式，快照保留分派写入暂停状态；候选可显式选择已有的兼容旧镜像，不能用候选充当自己的回滚证据。新增代码未执行，首次兼容基线与真实验收仍待完成，见 [分派兼容回滚](../../docs/分派数据格式与兼容回滚.md)。
+2026-10-22 续开发分派兼容保护：发布前核对确认 JSON、稳定身份及 V54 数据格式，快照保留分派写入暂停状态；候选可显式选择已有的兼容旧镜像，不能用候选充当自己的回滚证据。新增代码未执行，首次兼容基线与真实验收仍待完成，见 [分派兼容回滚](../../docs/monolith/分派数据格式与兼容回滚.md)。
 
-2026-10-22 源码新增模型 Secret 策略式接入和独立加密备份证明，详见 [模型密钥与发布](../../docs/模型主密钥备份与发布接入.md)。当前按“先完整开发、不进行测试”要求未运行流水线，也没有修改线上 Jenkins 作业。新版 `Jenkinsfile` 默认仅 `verify`，`PRODUCTION_RELEASE_ENABLED=false`；SCM 轮询默认不发布，最终验收后显式开启发布/回滚。下方历史发布记录不代表本轮代码已验证。
+2026-10-22 源码新增模型 Secret 策略式接入和独立加密备份证明，详见 [模型密钥与发布](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E6%A8%A1%E5%9E%8B%E4%B8%BB%E5%AF%86%E9%92%A5%E5%A4%87%E4%BB%BD%E4%B8%8E%E5%8F%91%E5%B8%83%E6%8E%A5%E5%85%A5.md)。当前按“先完整开发、不进行测试”要求未运行流水线，也没有修改线上 Jenkins 作业。新版 `Jenkinsfile` 默认仅 `verify`，`PRODUCTION_RELEASE_ENABLED=false`；SCM 轮询默认不发布，最终验收后显式开启发布/回滚。下方历史发布记录不代表本轮代码已验证。
 
-2026-10-15 已将现有任务切换到 `*/java-cloud`。[第 8 次构建](http://127.0.0.1:18080/job/doorhandle-java/8/)完整发布成功，当前服务器版本为 `ci-8-0b4690a9c72e`；四账号业务查询、八项容器健康及原 100 张检测结果保留检查通过。分支切换、基础镜像缓存处理和验收边界见 [部署记录](../../docs/服务器演示部署记录.md)。
+2026-10-15 已将现有任务切换到 `*/java-cloud`。[第 8 次构建](http://127.0.0.1:18080/job/doorhandle-java/8/)完整发布成功，当前服务器版本为 `ci-8-0b4690a9c72e`；四账号业务查询、八项容器健康及原 100 张检测结果保留检查通过。分支切换、基础镜像缓存处理和验收边界见 [部署记录](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%BC%94%E7%A4%BA%E9%83%A8%E7%BD%B2%E8%AE%B0%E5%BD%95.md)。
 
 1. 从 Git 检出可信 `java-cloud` 分支，每 5 分钟轮询，无需向公网开放本机 Webhook。任务模板与现有任务配置 Git MessageExclusion，明确包含 `[skip ci]` 的提交不触发轮询构建，手动构建仍可执行。本分支从 `java` 签出；原 `java` 分支保留，切换本机编辑器分支不会改变 Jenkins 的 SCM 配置。
 2. 发布前校验 SSH、公钥、私有配置与 Docker，不可达即失败，不自动启动 ECS。
@@ -222,7 +222,7 @@ stunnel 为独立系统工具，采用 GPL-2.0-or-later 并有 OpenSSL 例外；
 
 ## 开源依据
 
-2026-10-18 运维补充：发布前自动生成一致性备份，失败时不替换应用；成功发布后受限保留旧应用镜像。备份会短暂停止单机服务写入，保留数据库和数据卷，并尝试恢复原服务。中断恢复、隔离演练、定时器及验证边界见 [单体备份恢复与运维检查](../../docs/单体备份恢复与运维检查.md)。本轮代码尚未云端验收，不将协议替身测试记为真实恢复。
+2026-10-18 运维补充：发布前自动生成一致性备份，失败时不替换应用；成功发布后受限保留旧应用镜像。备份会短暂停止单机服务写入，保留数据库和数据卷，并尝试恢复原服务。中断恢复、隔离演练、定时器及验证边界见 [单体备份恢复与运维检查](../../docs/monolith/单体备份恢复与运维检查.md)。本轮代码尚未云端验收，不将协议替身测试记为真实恢复。
 
 使用 Jenkins 官方能力与现有 Compose，没有复制第三方模板代码。Jenkins 采用 MIT 许可证，本项目许可证保持原样。
 
@@ -231,4 +231,4 @@ stunnel 为独立系统工具，采用 GPL-2.0-or-later 并有 OpenSSL 例外；
 - [控制器隔离](https://www.jenkins.io/doc/book/security/controller-isolation/)
 - [MIT 许可证](https://www.jenkins.io/license/)
 
-2026-10-18 回滚兼容保护：发布助手与 memory-compat.py 一同上传；支持故障应用回滚，但保留数据库健康门槛。state 记录实际桥接摘要、卷及只升不降的最低协议，Jenkins 构件记录是否保留桥接；被保留镜像加入清理保护。实际 Linux/Docker/ECS 演练尚未完成，见 [Mem0 跨版本回滚兼容保护](../../docs/Mem0跨版本回滚兼容保护.md)。
+2026-10-18 回滚兼容保护：发布助手与 memory-compat.py 一同上传；支持故障应用回滚，但保留数据库健康门槛。state 记录实际桥接摘要、卷及只升不降的最低协议，Jenkins 构件记录是否保留桥接；被保留镜像加入清理保护。实际 Linux/Docker/ECS 演练尚未完成，见 [Mem0 跨版本回滚兼容保护](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/Mem0%E8%B7%A8%E7%89%88%E6%9C%AC%E5%9B%9E%E6%BB%9A%E5%85%BC%E5%AE%B9%E4%BF%9D%E6%8A%A4.md)。

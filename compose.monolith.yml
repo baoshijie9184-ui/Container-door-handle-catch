@@ -1,6 +1,6 @@
 # 应用基础编排：Java 后端 + 托管 Vue/React 的 Nginx。
 # ECS 叠加 deploy/compose/ 下的中间件和检测配置。本文件作为首个 -f，保持相对路径以项目根目录为基准。
-# 中间件不放入 backend 镜像；服务关系见 docs/docker-monolith-deployment.md。
+# 中间件不放入 backend 镜像；服务关系见 docs/monolith/docker-monolith-deployment.md。
 name: doorhandlecatch-monolith
 
 services:

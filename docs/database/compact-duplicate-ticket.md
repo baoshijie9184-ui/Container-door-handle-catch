@@ -4,7 +4,7 @@
 
 `detection_duplicate_ticket` 保留专表。它有独立 `ticket_id`、两侧任务与证据、分派和审批状态，而通用流程表的 owner、请求去重、领取租约并不是这份业务实体的身份。现有生产 Mapper 已直接访问此表，因此保留同名表，既不改名为 workflow，也不创建兼容视图。
 
-依据是 [V15 原始 DDL](../../sql/mysql/migration-V15-detection-fingerprint-work-unit.sql)、[复查服务](../../doorhandle-module-detection/src/main/java/com/ruanzhu/doorhandle/module/detection/service/impl/DetectionDuplicateTicketServiceImpl.java) 和 [核心边界复审](review-core-boundaries.md)。现存表清单的行数为估计值，不能据此证明源表为空；当前线上 `SHOW CREATE TABLE`、排序规则及所有写入入口仍需在正式迁移前核验。
+依据是 [V15 原始 DDL](../../sql/mysql/migration-V15-detection-fingerprint-work-unit.sql)、[复查服务](../../doorhandle-module-detection/src/main/java/com/ruanzhu/doorhandle/module/detection/service/impl/DetectionDuplicateTicketServiceImpl.java) 和 [核心边界复审](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/database/review-core-boundaries.md)。现存表清单的行数为估计值，不能据此证明源表为空；当前线上 `SHOW CREATE TABLE`、排序规则及所有写入入口仍需在正式迁移前核验。
 
 ## 字段与独立边界
 

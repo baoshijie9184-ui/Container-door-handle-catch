@@ -17,6 +17,6 @@ npm run dev
 
 流式协议测试：`node --test src/aguiClient.test.js`。完整实施状态见 `../docs/agent-role-toolkit-progress.md`。
 
-业务卡片使用项目自定义事件 `doorhandle.business-cards.v1`，展示实际工具生成的任务、质检、工作统计和报告引用。卡片通过 `/api/agent/cards/resolve` 只读刷新当前登录账号的数据，不调用模型或写工具；Vite 已代理 `/api` 并允许读取与主站共用的卡片校验模块。两个入口共用数据库会话，页面刷新恢复保存的文字和卡片引用。实现与验收见 [Agent 业务卡片接入](../docs/Agent业务卡片接入.md)。
+业务卡片使用项目自定义事件 `doorhandle.business-cards.v1`，展示实际工具生成的任务、质检、工作统计和报告引用。卡片通过 `/api/agent/cards/resolve` 只读刷新当前登录账号的数据，不调用模型或写工具；Vite 已代理 `/api` 并允许读取与主站共用的卡片校验模块。两个入口共用数据库会话，页面刷新恢复保存的文字和卡片引用。实现与验收见 [Agent 业务卡片接入](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/Agent%E4%B8%9A%E5%8A%A1%E5%8D%A1%E7%89%87%E6%8E%A5%E5%85%A5.md)。
 
-会话选择、新建和刷新通过 `/api/chat-assistant/sessions`。`/agui/run` 只发送本轮问题，threadId 必须是本人数据库会话编号；可用 `?sessionId=编号` 打开指定会话。后端共用 RAG 和账号范围 Mem0 检索，保留私人数据隔离。详见 [会话历史与记忆统一](../docs/Agent会话历史与记忆统一.md)。
+会话选择、新建和刷新通过 `/api/chat-assistant/sessions`。`/agui/run` 只发送本轮问题，threadId 必须是本人数据库会话编号；可用 `?sessionId=编号` 打开指定会话。后端共用 RAG 和账号范围 Mem0 检索，保留私人数据隔离。详见 [会话历史与记忆统一](../docs/agent/Agent会话历史与记忆统一.md)。

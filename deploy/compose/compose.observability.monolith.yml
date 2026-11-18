@@ -1,4 +1,4 @@
-# 可选可观测叠加层；不是默认启动清单。版本来源见 docs/observability/monolith.md。
+# 可选可观测叠加层；不是默认启动清单。版本来源见 docs/monolith/observability/monolith.md。
 # 任意拉取/启动前先由 Jenkins 执行资源预检；不可把 profile 当作资源批准。
 x-obs-logging: &obs-logging
   driver: json-file

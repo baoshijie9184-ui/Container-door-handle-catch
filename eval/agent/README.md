@@ -2,7 +2,7 @@
 
 默认 `dataset-v2.json` 为当前 30 项必测数据集，新增八项报告工具规则。`dataset-v1.json` 保留第一版 22 项历史参考，不再作为默认入口；v1 报告不能直接作为 v2 比较基线。合成身份由 Java fixture 绑定，不存真实凭证，不把模型/用户输入当作授权身份。
 
-运行、评分规则、报告与边界见 [AgentScope Eval](../../docs/agentscope-eval.md)。入口：
+运行、评分规则、报告与边界见 [AgentScope Eval](../../docs/agent/agentscope-eval.md)。入口：
 
 ```powershell
 ./script/shell/run-agent-eval.ps1

@@ -1,16 +1,16 @@
 # 单机 AI 网关与隔离 Fetch
 
-2026-10-22 共享镜像续开发：V59 新增跨账号引用封存、执行镜像编号、法律资料独立归档和一次性删除；新增 `image_lifecycle.py`、主管卡片及默认关闭开关。候选环境仅观察，不删除生产 daemon 镜像。后端协议为 3，runner 镜像须包含生命周期声明；源码未运行，实际升级编排与统一验收仍待完成，见 [共享镜像回收](../../docs/固定Fetch共享镜像回收.md)。下方较早的待开发记录保留为历史。
+2026-10-22 共享镜像续开发：V59 新增跨账号引用封存、执行镜像编号、法律资料独立归档和一次性删除；新增 `image_lifecycle.py`、主管卡片及默认关闭开关。候选环境仅观察，不删除生产 daemon 镜像。后端协议为 3，runner 镜像须包含生命周期声明；源码未运行，实际升级编排与统一验收仍待完成，见 [共享镜像回收](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E5%9B%BA%E5%AE%9AFetch%E5%85%B1%E4%BA%AB%E9%95%9C%E5%83%8F%E5%9B%9E%E6%94%B6.md)。下方较早的待开发记录保留为历史。
 
-2026-10-22 兼容发布续开发：增加原生协议声明/卷绑定 pin 和 `AGENT_MCP_WRITES_ENABLED`，接入 Jenkins 激活及隔离演练，恢复暂停基线时保留实际开关。源码未运行或验收，第一次兼容基线与共享镜像回收仍待完成，见 [原生协议发布保护](../../docs/MCP原生协议发布与回滚保护.md)。
+2026-10-22 兼容发布续开发：增加原生协议声明/卷绑定 pin 和 `AGENT_MCP_WRITES_ENABLED`，接入 Jenkins 激活及隔离演练，恢复暂停基线时保留实际开关。源码未运行或验收，第一次兼容基线与共享镜像回收仍待完成，见 [原生协议发布保护](../../docs/agent/MCP原生协议发布与回滚保护.md)。
 
-2026-10-22 原生安装续开发：V58 新增 Linux 固定 pip 安装树监督与持久身份，安装握手接入执行账本，未核实退出继续保留额度。`AGENT_MCP_NATIVE_INSTALL_ENABLED` 默认关闭，依赖其他持久回执开关及更高的原生安装额度。尚未运行或验收，共享镜像删除及兼容恢复保护继续保留，见 [原生安装回执](../../docs/固定Fetch原生安装进程树回执.md)。
+2026-10-22 原生安装续开发：V58 新增 Linux 固定 pip 安装树监督与持久身份，安装握手接入执行账本，未核实退出继续保留额度。`AGENT_MCP_NATIVE_INSTALL_ENABLED` 默认关闭，依赖其他持久回执开关及更高的原生安装额度。尚未运行或验收，共享镜像删除及兼容恢复保护继续保留，见 [原生安装回执](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E5%9B%BA%E5%AE%9AFetch%E5%8E%9F%E7%94%9F%E5%AE%89%E8%A3%85%E8%BF%9B%E7%A8%8B%E6%A0%91%E5%9B%9E%E6%89%A7.md)。
 
-2026-10-22 进程证据续开发：最新回执及生命周期代码还需 V49。Linux 原生固定 Fetch 可选使用受控启动器；网关安装新增原 JVM/容器写入者重启核对。`AGENT_MCP_NATIVE_PROCESS_ENABLED` 与 `AGENT_MCP_INSTALL_RECONCILIATION_ENABLED` 均默认关闭，没有实际启用、迁移或测试，参见 [MCP 进程与安装证明](../../docs/MCP进程证明与安装重启核对.md)。
+2026-10-22 进程证据续开发：最新回执及生命周期代码还需 V49。Linux 原生固定 Fetch 可选使用受控启动器；网关安装新增原 JVM/容器写入者重启核对。`AGENT_MCP_NATIVE_PROCESS_ENABLED` 与 `AGENT_MCP_INSTALL_RECONCILIATION_ENABLED` 均默认关闭，没有实际启用、迁移或测试，参见 [MCP 进程与安装证明](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/MCP%E8%BF%9B%E7%A8%8B%E8%AF%81%E6%98%8E%E4%B8%8E%E5%AE%89%E8%A3%85%E9%87%8D%E5%90%AF%E6%A0%B8%E5%AF%B9.md)。
 
-2026-10-22 续开发：V48 增加固定 Fetch 安装快照、失败恢复、本人回退及无引用目录清理。`AGENT_MCP_LIFECYCLE_ENABLED` 默认关闭，依赖 V34/V47/V48、持久队列和网关回执。部署可通过 `MCP_FETCH_APPROVED_IMAGES` 保留已审核镜像供回退，新 runner 在执行前核对镜像标签；当前未编译、测试或部署。详见 [版本与存储生命周期](../../docs/固定Fetch版本与存储生命周期.md)。
+2026-10-22 续开发：V48 增加固定 Fetch 安装快照、失败恢复、本人回退及无引用目录清理。`AGENT_MCP_LIFECYCLE_ENABLED` 默认关闭，依赖 V34/V47/V48、持久队列和网关回执。部署可通过 `MCP_FETCH_APPROVED_IMAGES` 保留已审核镜像供回退，新 runner 在执行前核对镜像标签；当前未编译、测试或部署。详见 [版本与存储生命周期](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E5%9B%BA%E5%AE%9AFetch%E7%89%88%E6%9C%AC%E4%B8%8E%E5%AD%98%E5%82%A8%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F.md)。
 
-2026-10-22 开发状态：新增默认关闭的持久退出回执开关及 V47，runner 新增 `doorhandle-mcp-executions` 命名卷；旧版运行器没有 pool/回执接口，不能直接启用。当前未编译、测试、迁移或发布。部署、备份、回滚与 Stdio 剩余边界见 [固定 Fetch 执行回执与重启核对](../../docs/固定Fetch执行回执与重启核对.md)。
+2026-10-22 开发状态：新增默认关闭的持久退出回执开关及 V47，runner 新增 `doorhandle-mcp-executions` 命名卷；旧版运行器没有 pool/回执接口，不能直接启用。当前未编译、测试、迁移或发布。部署、备份、回滚与 Stdio 剩余边界见 [固定 Fetch 执行回执与重启核对](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E5%9B%BA%E5%AE%9AFetch%E6%89%A7%E8%A1%8C%E5%9B%9E%E6%89%A7%E4%B8%8E%E9%87%8D%E5%90%AF%E6%A0%B8%E5%AF%B9.md)。
 
 本配置用于 `java-cloud` 的同一台 Linux ECS，保留模块化单体。Nginx 处理登录、业务 API 和两套页面；Higress 仅在 Docker 内网接收模型及 MCP 请求。没有新增公网端口，也没有把数据库、检测服务改成微服务。
 
@@ -40,11 +40,11 @@ flowchart LR
 
 用户仍须登录自己的账号，在 MCP 页面确认固定版本与许可证，安装后主动启用。网关模式在本人 `users/{id}/mcp/fetch/installs/{uuid}` 保存 `gateway-registration.json` 和 `manifest.json`；运行包及完整许可集中保留在经过核对的只读镜像。旧 Stdio 安装或不同镜像的记录需要本人重新确认迁移，不能自动复用。
 
-2026-10-16 源码已增加安装取消：本人确认后事务撤销登记并审计，再尝试中断本进程后台任务；文件保留，迟到结果不能覆盖取消。网关远端执行不保证即时终止，仍受现有超时与回收限制。需要发布匹配前后端，当前未进行云端验收，见 [安装取消与队列回收](../../docs/MCP安装取消与队列回收.md)。
+2026-10-16 源码已增加安装取消：本人确认后事务撤销登记并审计，再尝试中断本进程后台任务；文件保留，迟到结果不能覆盖取消。网关远端执行不保证即时终止，仍受现有超时与回收限制。需要发布匹配前后端，当前未进行云端验收，见 [安装取消与队列回收](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/MCP%E5%AE%89%E8%A3%85%E5%8F%96%E6%B6%88%E4%B8%8E%E9%98%9F%E5%88%97%E5%9B%9E%E6%94%B6.md)。
 
-2026-10-16 后续源码增加固定 Fetch 安装登记移除：先停用，再由本人确认；同事务审计，保留账号文件和共享运行镜像，重新安装需新确认及编号。该操作不回收磁盘空间或承诺立即终止远端执行，未云端发布，见 [安装登记移除](../../docs/MCP安装登记移除.md)。
+2026-10-16 后续源码增加固定 Fetch 安装登记移除：先停用，再由本人确认；同事务审计，保留账号文件和共享运行镜像，重新安装需新确认及编号。该操作不回收磁盘空间或承诺立即终止远端执行，未云端发布，见 [安装登记移除](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/MCP%E5%AE%89%E8%A3%85%E7%99%BB%E8%AE%B0%E7%A7%BB%E9%99%A4.md)。
 
-2026-10-16 后续源码增加默认关闭的固定安装持久队列，需 V34。人工确认同事务入队，重启后只恢复仍有效的等待任务；已领取任务中断后不自动重复执行，过期后需重新确认。需统一各副本配置，尚未真实 MySQL/云端验收，见 [持久队列与重启恢复](../../docs/MCP安装持久队列与重启恢复.md)。
+2026-10-16 后续源码增加默认关闭的固定安装持久队列，需 V34。人工确认同事务入队，重启后只恢复仍有效的等待任务；已领取任务中断后不自动重复执行，过期后需重新确认。需统一各副本配置，尚未真实 MySQL/云端验收，见 [持久队列与重启恢复](../../docs/agent/MCP安装持久队列与重启恢复.md)。
 
 Java 对用户、运行、启用状态、版本和 URL 的现有检查保留。发往运行器的 HMAC-SHA256 凭证绑定账号 ID、安装 ID、install/execute 范围、随机调用编号和最长 60 秒有效期；模型不能传入身份、命令、镜像或挂载。Higress 对 MCP 路由额外检查服务密钥，运行器再验证签名；不接受浏览器的账号声明代替后端授权。
 

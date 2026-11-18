@@ -1,6 +1,6 @@
 # 公共持久化实现状态
 
-2026-11-06：当前为 29 表候选的源码实现阶段，尚未完成 ECS 建库、迁移和业务验收。旧版 `operation_job/operation_item/coordination_state` 方案已撤回，现行建表来源为 `sql/mysql/compact/baseline/`；边界依据见 [公共持久化评审](review-runtime-boundaries.md)。
+2026-11-06：当前为 29 表候选的源码实现阶段，尚未完成 ECS 建库、迁移和业务验收。旧版 `operation_job/operation_item/coordination_state` 方案已撤回，现行建表来源为 `sql/mysql/compact/baseline/`；边界依据见 [公共持久化评审](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/database/review-runtime-boundaries.md)。
 
 ## 已接入的公共机制
 
@@ -50,7 +50,7 @@
 
 [建表源码制品 08](../../work/schema-reduction-20261105/compact29-source-build-08/catalog.json) 包含 29 表和十个触发器，workflow/scheduled_plan/audit 的框架资源与 baseline 定义静态一致。报告复制作者重复生成结果一致；工作区原时钟修复与报告 76 列结构清单均经独立静态复核。实际 DDL、完整数据迁移与恢复仍无本轮运行结果。
 
-额度的运行协议和页面边界见 [LLM 模型管理与额度持久化](compact-llm-quota.md)，历史迁移见 [V64 迁移](compact-model-budget-migration.md)；真实双库夹具的变化见 [研究导出与记忆治理](../研究导出与记忆治理双库迁移验收-20261106.md)。原来的逐表归并登记已同步当前历史记录的实际目标位置，但它仍不能证明数据已迁移。
+额度的运行协议和页面边界见 [LLM 模型管理与额度持久化](compact-llm-quota.md)，历史迁移见 [V64 迁移](compact-model-budget-migration.md)；真实双库夹具的变化见 [研究导出与记忆治理](https://github.com/baoshijie9184-ui/Container-door-handle-catch/blob/d363b7dec2230a4a17f51877bf0bff1f74f1baeb/docs/%E7%A0%94%E7%A9%B6%E5%AF%BC%E5%87%BA%E4%B8%8E%E8%AE%B0%E5%BF%86%E6%B2%BB%E7%90%86%E5%8F%8C%E5%BA%93%E8%BF%81%E7%A7%BB%E9%AA%8C%E6%94%B6-20261106.md)。原来的逐表归并登记已同步当前历史记录的实际目标位置，但它仍不能证明数据已迁移。
 
 仍需完成上下文/MCP、工作台及检测创建/执行/身份治理等剩余旧表访问，完善未知用量的人工核对协议、完整初始化与复制编排，完成当前源库逐列及文件核对、业务并发与恢复验收。工作区、模型文件和人工确认新增源码已编译，仍须 ECS 验证，不能直接视为交付。整库交付前必须确认应用仅访问目标结构、实际表数不超过 30，并保存可用回滚证据。
 

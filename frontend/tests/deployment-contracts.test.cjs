@@ -74,7 +74,7 @@ const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/pr
   })
 
   test('deployment guide documents standalone Compose fallback', () => {
-    const guide = readProjectFile('docs', 'nginx-compose-deployment.md')
+    const guide = readProjectFile('docs', 'monolith', 'nginx-compose-deployment.md')
     assert.match(guide, /docker-compose --project-directory \. -f deploy\/compose\/compose\.nginx\.yml/)
   })
 }
@@ -125,7 +125,7 @@ const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/pr
 
   test('documents ECS execution and local editing and builds', () => {
     const readme = readProjectFile('README.md')
-    const guide = readProjectFile('docs', 'ECS-only-runtime.md')
+    const guide = readProjectFile('docs', 'monolith', 'README.md')
 
     assert.match(readme, /本地编辑与构建/)
     assert.match(readme, /mvn -DskipTests=true clean package/)
