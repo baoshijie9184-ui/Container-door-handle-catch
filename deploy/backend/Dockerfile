@@ -68,12 +68,12 @@ ENV JAVA_OPTS="-XX:InitialRAMPercentage=15 -XX:MaxRAMPercentage=60 -Djava.awt.he
 RUN mkdir -p /app/uploads /app/logs /app/.agentscope/workspace /app/script/shell /app/docs \
     && chown -R app:app /app
 COPY --from=build --chown=app:app /out/app.jar /app/app.jar
-COPY script/shell/install-local-fetch-mcp.py script/shell/download-linked-skill.py /app/script/shell/
-COPY script/shell/native-fetch-process.py /app/script/shell/native-fetch-process.py
-COPY script/shell/native-fetch-install.py /app/script/shell/native-fetch-install.py
-COPY README.md /app/README.md
-COPY LICENSE /app/LICENSE
-COPY docs/system-user-guide.md docs/chroma-rag-setup.md /app/docs/
+COPY --chmod=0644 script/shell/install-local-fetch-mcp.py script/shell/download-linked-skill.py /app/script/shell/
+COPY --chmod=0644 script/shell/native-fetch-process.py /app/script/shell/native-fetch-process.py
+COPY --chmod=0644 script/shell/native-fetch-install.py /app/script/shell/native-fetch-install.py
+COPY --chmod=0644 README.md /app/README.md
+COPY --chmod=0644 LICENSE /app/LICENSE
+COPY --chmod=0644 docs/system-user-guide.md docs/chroma-rag-setup.md /app/docs/
 COPY --chmod=0755 deploy/backend/entrypoint.sh /usr/local/bin/doorhandle-entrypoint
 USER app
 EXPOSE 8080
