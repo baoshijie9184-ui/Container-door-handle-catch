@@ -970,7 +970,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setPreviewImageKeysJson(writeJson(event.getPreviewKeys() != null ? event.getPreviewKeys() : Collections.emptyList()));
         task.setStatisticsJson(writeJson(event.getStatistics() != null ? event.getStatistics() : Collections.emptyMap()));
         applyDefectEvidence(task, event);
-        task.setErrorMessage(event.getErrorMessage());
+        task.setErrorMessage(fitErrorMessage(event.getErrorMessage()));
         task.setStartedAt(parseDateTime(event.getStartedAt(), task.getStartedAt()));
         task.setFinishedAt(parseFinishedAt(event.getFinishedAt()));
         task.setUpdatedAt(LocalDateTime.now());
@@ -1050,13 +1050,22 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         var before=systemChanges==null?null:systemChanges.before(task.getTaskId());
         task.setStatus("FAILED");
         task.setStage("FAILED");
-        task.setErrorMessage(errorMessage);
+        task.setErrorMessage(fitErrorMessage(errorMessage));
         task.setFinishedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         if(detectionTaskMapper.updateById(task)!=1)throw new IllegalStateException("检测失败状态未保存");
         saveIdentity(task);
         if(systemChanges!=null)systemChanges.record(before,com.ruanzhu.doorhandle.contracts.collaboration.SystemChangeAuditApi.Component.DETECTION_WORKER,
                 null,"SYSTEM_FAILED",task);
+    }
+
+    private static String fitErrorMessage(String message) {
+        // Keep the task summary within its VARCHAR(500) column without splitting a Unicode character.
+        int limit = 500;
+        if (message == null || message.codePointCount(0, message.length()) <= limit) {
+            return message;
+        }
+        return message.substring(0, message.offsetByCodePoints(0, limit));
     }
 
     public List<String> readJsonList(String json) {

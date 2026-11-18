@@ -237,4 +237,24 @@ class DetectionTaskEventTest {
         assertEquals("FAILED", task.getStatus());
         assertEquals("broker unavailable", task.getErrorMessage());
     }
+
+    @Test
+    void aLongWorkerErrorStillRecordsTheTerminalTaskState() {
+        DetectionTask task = new DetectionTask();
+        task.setId(1L);
+        task.setTaskId("det_long_worker_error");
+        task.setStatus("QUEUED");
+        task.setDispatchId("dispatch-1");
+        when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
+        String character = "\uD83D\uDEA2";
+        String errorMessage = character.repeat(500) + "异常详情";
+
+        fixture.service.applyFinishedEvent(DetectionTaskFinishedEvent.builder()
+                .taskId(task.getTaskId()).eventId("event-long-error").dispatchId("dispatch-1")
+                .status("FAILED").totalImages(1).successfulImages(0).failedImages(1)
+                .errorMessage(errorMessage).build());
+
+        assertEquals("FAILED", task.getStatus());
+        assertEquals(character.repeat(500), task.getErrorMessage());
+    }
 }
