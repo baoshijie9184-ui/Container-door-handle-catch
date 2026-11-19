@@ -7,14 +7,9 @@
         <p class="page-hero-text">
           {{ workspacePresentation.description }}
         </p>
-        <nav class="detection-flow-chips" aria-label="检测相关页面">
-          <router-link to="/upload"><AppIcon name="Upload" :size="14" />采集上传</router-link>
-          <router-link to="/inspection/workbench"><AppIcon name="Picture" :size="14" />模型检测</router-link>
-          <router-link to="/inspection/history"><AppIcon name="Collection" :size="14" />检测记录</router-link>
-          <router-link to="/quality/queue"><AppIcon name="CircleCheck" :size="14" />人工质检</router-link>
-        </nav>
       </div>
-      <div class="hero-side-note">
+      <router-link v-if="activeTab === 'history' || activeTab === 'workspace'" class="upload-route" to="/upload"><AppIcon name="Upload" :size="16" />采集上传</router-link>
+      <div v-else class="hero-side-note">
         <strong><AppIcon name="DocumentChecked" :size="16" />保留检测依据</strong>
         <span>模型结果供人工核对，放行、返工与报告审批按当前账号权限完成。</span>
       </div>
@@ -339,7 +334,7 @@
 
       <el-tab-pane name="history" label="检测记录">
         <el-card class="detection-card history-page-card" shadow="never">
-          <template #header><div class="card-title-row"><span><AppIcon name="Tickets" :size="18" />检测记录</span><el-tag type="info" effect="plain">{{ historyLoading ? '正在读取任务与结果' : historyError ? '本次读取未完成' : historyTotal!==null ? `共 ${historyTotal} 条` : historyLoaded ? '总数未提供' : '数量尚未读取' }}</el-tag><el-button size="small" :loading="historyLoading" @click="refreshHistory"><AppIcon name="Refresh" :size="15" />刷新已读范围</el-button></div></template>
+          <template #header><div class="card-title-row"><span><AppIcon name="Filter" :size="18" />筛选记录</span><el-tag type="info" effect="plain">{{ historyLoading ? '正在读取任务与结果' : historyError ? '本次读取未完成' : historyTotal!==null ? `共 ${historyTotal} 条` : historyLoaded ? '总数未提供' : '数量尚未读取' }}</el-tag><el-button size="small" :loading="historyLoading" @click="refreshHistory"><AppIcon name="Refresh" :size="15" />刷新已读范围</el-button></div></template>
           <p class="history-scope-note"><AppIcon name="Lock" :size="15" />{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测完成与人工复核、放行、报告审批分别记录。</p>
           <form class="history-query-form" @submit.prevent="onHistorySearch">
             <label for="history-keyword" class="history-query-keyword">任务、文件夹、工单或批次<el-input id="history-keyword" v-model="historySearchKeyword" clearable placeholder="输入编号或文件夹关键词"><template #prefix><AppIcon name="Search" :size="15" /></template></el-input></label>
@@ -398,7 +393,6 @@
             <template #empty>
               <CollectionEmptyState :loading="qualityQueueLoading || (!qualityQueueLoaded && !qualityQueueError)" :error="qualityQueueError" :filtered="activeQualityQueue !== 'ALL_ACTIONABLE'" empty-title="当前队列暂无待处理任务" empty-description="检测完成后可在待复核阶段查看；放行与报告审批分别处理。" @retry="loadQualityQueue()" @reset="switchQualityQueue('ALL_ACTIONABLE')" />
             </template>
-            <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" /></template></el-table-column>
             <el-table-column label="任务与来源" min-width="215"><template #default="{ row }"><div class="quality-queue-task"><button type="button" @click="openTraceDialog(row.taskId)">{{ row.taskId }}</button><span>工单 {{ row.workOrderNo || '未记录' }}</span><span>批次 {{ row.batchNo || '未记录' }}</span><small>设备 {{ row.deviceName || '未记录' }}</small></div></template></el-table-column>
             <el-table-column label="流转" min-width="130">
               <template #default="{ row }"><StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /></template>
@@ -422,18 +416,15 @@
               <template #default="{ row }"><div class="quality-queue-responsibility"><strong>{{ row.assignee || '未分派' }}</strong><span>{{ row.dueAt ? formatBusinessTime(row.dueAt) || '时间格式未知' : '未设置截止时间' }}</span><small v-if="row.dueAt">北京时间 UTC+8</small></div></template>
             </el-table-column>
             <el-table-column label="下一步" min-width="235"><template #default="{ row }"><QualityStageGuidance :task="row" /></template></el-table-column>
-            <el-table-column label="操作" width="330" fixed="right">
+            <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" /></template></el-table-column>
+            <el-table-column label="操作" width="176" fixed="right">
               <template #default="{ row }">
-                <TaskClaimButton :task="row" @claimed="loadQualityQueue(qualityQueuePage)" />
-                <TaskClaimCandidatesButton :task="row" @authorized="loadQualityQueue(qualityQueuePage)" />
-                <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
-                <el-button link size="small" type="info" :disabled="reportDownloading" @click="downloadTaskQualityReport(row.taskId)">任务摘要</el-button>
-                <el-tooltip v-if="userStore.role === 'SUPERVISOR'" :content="canAssignQualityTask(row) ? '选择责任人并确认分派' : qualityActionReason(row,'ASSIGN')" placement="top"><span><el-button link size="small" type="info" :disabled="!canAssignQualityTask(row)" @click="openAssignmentDialog(row)"><AppIcon name="User" :size="14" />分派</el-button></span></el-tooltip>
+                <div class="queue-primary-actions">
                 <el-button
                   v-if="canReviewTask(row)"
                   link
                   size="small"
-                  type="success"
+                  type="primary"
                   @click="openReviewDialog(row)"
                 >
                   复核
@@ -456,6 +447,17 @@
                 >
                   返工
                 </el-button>
+                <TaskClaimButton :task="row" @claimed="loadQualityQueue(qualityQueuePage)" />
+                <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
+                </div>
+                <details class="queue-more-actions">
+                  <summary>更多操作</summary>
+                  <div>
+                    <TaskClaimCandidatesButton :task="row" @authorized="loadQualityQueue(qualityQueuePage)" />
+                    <el-button link size="small" type="info" :disabled="reportDownloading" @click="downloadTaskQualityReport(row.taskId)">任务摘要</el-button>
+                    <el-tooltip v-if="userStore.role === 'SUPERVISOR'" :content="canAssignQualityTask(row) ? '选择责任人并确认分派' : qualityActionReason(row,'ASSIGN')" placement="top"><span><el-button link size="small" type="info" :disabled="!canAssignQualityTask(row)" @click="openAssignmentDialog(row)"><AppIcon name="User" :size="14" />分派</el-button></span></el-tooltip>
+                  </div>
+                </details>
               </template>
             </el-table-column>
           </el-table>
@@ -622,10 +624,12 @@
       <QualityTaskContext :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewEvidence.originals.length || reviewEvidence.annotations.length }">
       <EvidenceComparison v-if="reviewEvidence.originals.length || reviewEvidence.annotations.length" :task-id="reviewTask?.taskId" :originals="reviewEvidence.originals" :annotations="reviewEvidence.annotations" />
-      <p v-else class="quality-feedback-note"><AppIcon name="Picture" :size="16" />当前未读取到可对照图片，请先查看任务追溯并核对原始资料。</p>
+      <div v-else class="quality-feedback-note"><AppIcon name="Picture" :size="16" />复核表单尚无可对照图片。
+        <el-button link type="primary" :disabled="reviewSubmitting || !reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)">核对任务依据</el-button>
+      </div>
       <el-form :model="reviewForm" label-position="top" :disabled="reviewSubmitting||qualityActionAcknowledged.review||reviewTask?.mutationConflicted">
         <el-form-item label="复核结论">
-          <el-select v-model="reviewForm.reviewConclusion" style="width: 100%">
+          <el-select v-model="reviewForm.reviewConclusion" placeholder="请选择复核结论" style="width: 100%">
             <el-option label="确认缺陷" value="CONFIRMED_DEFECT" />
             <el-option label="误报" value="FALSE_POSITIVE" />
             <el-option label="正常放行" value="NORMAL_RELEASE" />
@@ -661,8 +665,8 @@
       <p v-if="!canReviewTask(reviewTask)" class="quality-feedback-note">{{ qualityActionReason(reviewTask,'REVIEW') }}</p>
       <template #footer>
         <el-button :disabled="reviewSubmitting||reviewTask?.mutationConflicted" @click="reviewDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
-        <el-button :disabled="reviewSubmitting||!reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)"><AppIcon name="Search" :size="15" />核对任务依据</el-button>
-        <el-button type="primary" :loading="reviewSubmitting" :disabled="qualityActionAcknowledged.review||reviewTask?.mutationConflicted||!canReviewTask(reviewTask)" @click="submitTaskReview"><AppIcon name="DocumentChecked" :size="15" />提交复核</el-button>
+        <el-button v-if="reviewEvidence.originals.length || reviewEvidence.annotations.length" :disabled="reviewSubmitting||!reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)"><AppIcon name="Search" :size="15" />核对任务依据</el-button>
+        <el-button type="primary" :loading="reviewSubmitting" :disabled="!reviewForm.reviewConclusion||qualityActionAcknowledged.review||reviewTask?.mutationConflicted||!canReviewTask(reviewTask)" @click="submitTaskReview"><AppIcon name="DocumentChecked" :size="15" />提交复核</el-button>
       </template>
     </el-dialog>
 
@@ -2003,6 +2007,10 @@ async function validateCollaborationAccess(){
 
 @media(prefers-reduced-motion:reduce) { .quality-queue-chip { transition:none; transform:none; } }
 
+.queue-primary-actions,.queue-more-actions > div { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; }
+.queue-primary-actions :deep(.el-button),.queue-more-actions :deep(.el-button) { margin:0; }
+.queue-more-actions summary { width:fit-content; min-height:25px; cursor:pointer; color:var(--app-text-secondary); }
+.queue-more-actions[open] > div { padding:5px 0; }
 .quality-queue-table {
   margin-top: 8px;
 }
@@ -2138,11 +2146,13 @@ async function validateCollaborationAccess(){
 
 .history-page-card .card-title-row > span:first-child { display:inline-flex; align-items:center; gap:8px; }
 .history-page-card .card-title-row > span:first-child .el-icon { color:var(--app-primary); }
+.upload-route { display:inline-flex; align-items:center; gap:7px; padding:8px 12px; border:1px solid var(--app-border-strong); border-radius:8px; background:var(--app-surface); color:var(--app-primary-deep); font-size:13px; }
+.upload-route:hover { border-color:var(--app-border-focus); }
 .history-scope-note { display:flex; align-items:flex-start; gap:7px; margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
 .history-scope-note > .el-icon { color:var(--app-primary); flex-shrink:0; margin-top:3px; }
-.history-query-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; align-items:end; margin-bottom:18px; }
+.history-query-form { display:grid; grid-template-columns:minmax(180px,1.6fr) repeat(3,minmax(100px,1fr)) auto; gap:10px; align-items:end; margin-bottom:14px; }
 .history-query-form > label { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-.history-query-keyword { grid-column:span 2; }
+@media(max-width:1180px) { .history-query-form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .history-query-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:32px; }
 .history-query-actions .el-button + .el-button { margin-left:0; }
 .history-applied-query { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }

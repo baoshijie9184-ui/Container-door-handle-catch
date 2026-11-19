@@ -50,7 +50,7 @@ export function useQualityTaskActions({
   }
 
   const reviewForm = reactive({
-    reviewConclusion: 'CONFIRMED_DEFECT',
+    reviewConclusion: '',
     severityLevel: 'MAJOR',
     confirmedDefectCount: 0,
     falsePositiveCount: 0,
@@ -133,7 +133,7 @@ export function useQualityTaskActions({
     if (!allowed(task, 'REVIEW', canReviewTask)) return
     resetFeedback('review')
     reviewTask.value = captureTaskMutation(task)
-    reviewForm.reviewConclusion = task.reviewConclusion || 'CONFIRMED_DEFECT'
+    reviewForm.reviewConclusion = task.reviewConclusion || ''
     reviewForm.severityLevel = task.severityLevel || 'MAJOR'
     reviewForm.confirmedDefectCount = task.confirmedDefectCount ?? 0
     reviewForm.falsePositiveCount = task.falsePositiveCount ?? 0
@@ -149,6 +149,10 @@ export function useQualityTaskActions({
     }
 
     if (!allowed(reviewTask.value, 'REVIEW', canReviewTask)) return
+    if (!reviewForm.reviewConclusion) {
+      ElMessage.warning('请选择复核结论')
+      return
+    }
     reviewSubmitting.value = true
     qualityActionErrors.review=''
     try {

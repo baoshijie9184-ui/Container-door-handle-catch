@@ -1,6 +1,6 @@
 <template>
   <article class="detection-history-card" :aria-label="`检测任务 ${task.taskId}`">
-    <header class="history-card-heading"><span class="history-card-symbol"><AppIcon name="Picture" :size="20" /></span><div><h3>{{ task.folderName || task.captureInfo?.imageFolderName || '检测任务' }}</h3><button type="button" class="history-task-link" @click="$emit('trace',task.taskId)">{{ task.taskId }}</button></div><StatusBadge domain="detection" :code="statusCode" />
+    <header class="history-card-heading"><span class="history-card-symbol"><AppIcon name="Picture" :size="20" /></span><div><h3>{{ recordTitle }}</h3><button type="button" class="history-task-link" @click="$emit('trace',task.taskId)">{{ task.taskId }}</button></div><StatusBadge domain="detection" :code="statusCode" />
       <el-button type="primary" class="history-browse" @click="$emit('browse-images',task.taskId)"><AppIcon name="Picture" :size="15" />浏览图片</el-button>
     </header>
     <div class="history-quality-states"><span>流转 <StatusBadge domain="flow" :code="task.flowStatus" /></span><span>复核 <StatusBadge domain="review" :code="task.reviewStatus" /></span><StatusBadge v-if="task.reviewConclusion" domain="reviewConclusion" :code="task.reviewConclusion" /></div>
@@ -30,6 +30,10 @@ import { beijingDateTime } from '@/utils/beijingTime'
 import { CATEGORY_LABELS } from '@/stores/taskStore'
 const props = defineProps({ task:{type:Object,required:true}, cached:Boolean, refreshing:Boolean, cacheBusy:Boolean, showHistory:Boolean, latestChange:Object })
 defineEmits(['trace','browse-images','refresh','remove-cache'])
+const recordTitle = computed(() => {
+  const folder = props.task.folderName?.replace(/^未提供\s*\/\s*(?=\S)/, '')
+  return props.task.captureInfo?.imageFolderName || folder || '检测任务'
+})
 const statusCode = computed(() => props.task.status ? String(props.task.status).toUpperCase() : ({uploading:'UPLOADING',uploaded:'UPLOADED',queued:'QUEUED',detecting:'DETECTING',failed:'FAILED',completed:'COMPLETED'}[props.task.stage] || 'UNKNOWN'))
 const count = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'
 const time = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'

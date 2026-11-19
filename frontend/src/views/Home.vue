@@ -15,15 +15,18 @@
         <h1>{{ canViewHistoricalSummary ? '企业质量工作台' : '我的检测工作台' }}</h1>
         <p>{{ canViewHistoricalSummary ? '部门检测、质检待办与历史登记数据' : '查看分配给我的任务，提交检测并核对图片' }}</p>
       </div>
-      <router-link class="assistant-link" to="/agent/chat"><AppIcon name="ChatDotRound" :size="17" />向 AI 助手提问</router-link>
+      <router-link class="model-link" to="/models"><AppIcon name="Cpu" :size="17" />查看检测模型</router-link>
     </header>
     <nav class="action-deck" aria-label="工作台快捷入口">
       <router-link class="focus-action" :to="canViewHistoricalSummary ? { path: '/quality/queue', query: { queue: 'PENDING_REVIEW' } } : '/inspection/workbench'">
-        <span class="focus-stat">
-          {{ canViewHistoricalSummary ? '待人工复核' : '已分配工作单元' }}
-          <span><strong>{{ formatNumber(canViewHistoricalSummary ? qualityWorkload?.pendingReviewCount : workUnitSummary?.counts?.ASSIGNED) }}</strong>{{ canViewHistoricalSummary ? '项' : '个' }}</span>
-        </span>
-        <span class="focus-cta">{{ canViewHistoricalSummary ? '进入复核队列' : '开始图像检测' }}<AppIcon name="ArrowRight" :size="16" /></span>
+        <template v-if="canViewHistoricalSummary">
+          <span class="focus-stat">待人工复核<span><strong>{{ formatNumber(qualityWorkload?.pendingReviewCount) }}</strong>项</span></span>
+          <span class="focus-cta">进入复核队列<AppIcon name="ArrowRight" :size="16" /></span>
+        </template>
+        <template v-else>
+          <span class="inspection-action"><AppIcon name="Search" :size="21" /><strong>开始图像检测</strong><AppIcon name="ArrowRight" :size="18" /></span>
+          <span class="assigned-count">已分配工作单元 · {{ formatNumber(workUnitSummary?.counts?.ASSIGNED) }} 个</span>
+        </template>
       </router-link>
       <router-link class="desk-link" to="/inspection/history">
         <span class="desk-link-top"><AppIcon name="Picture" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
@@ -1043,12 +1046,15 @@ useResourceChanges({refresh:()=>refreshAll()})
 .dashboard-hero { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .dashboard-hero h1 { margin:0; color:var(--app-text); font-size:clamp(27px,2.2vw,35px); font-weight:680; line-height:1.24; letter-spacing:-.04em; }
 .dashboard-hero p { margin:6px 0 0; color:var(--app-text-secondary); font-size:14px; line-height:1.6; }
-.assistant-link { display:inline-flex; flex:none; align-items:center; gap:8px; padding:8px 13px; border:1px solid var(--app-border-strong); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:13px; }
-.assistant-link:hover { color:var(--app-primary); border-color:var(--app-border-focus); }
+.model-link { display:inline-flex; flex:none; align-items:center; gap:8px; padding:8px 13px; border:1px solid var(--app-border-strong); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:13px; }
+.model-link:hover { color:var(--app-primary); border-color:var(--app-border-focus); }
 .action-deck { display:grid; grid-template-columns:minmax(0,1.6fr) repeat(2,minmax(0,1fr)); gap:14px; }
 .action-deck a { display:flex; flex-direction:column; min-width:0; min-height:143px; padding:18px 22px; border-radius:var(--app-radius-lg); text-decoration:none; }
 .focus-action { position:relative; isolation:isolate; overflow:hidden; align-items:flex-start; justify-content:space-between; gap:9px; background:var(--app-primary-deep); color:white; }
-.focus-action::before { content:''; position:absolute; z-index:-1; inset:0; background:linear-gradient(95deg,#132e51 11%,#163d69ef 42%,#204d7e55 100%),url('../assets/images/container-lock.webp') 73% 58% / cover; }
+.focus-action::before { content:''; position:absolute; z-index:-1; inset:0; background:linear-gradient(95deg,#132e51 11%,#163d69ef 42%,#204d7e55 100%),url('../assets/images/container-lock.webp') 73% 58% / cover; background-color:var(--app-primary-deep); background-blend-mode:normal,luminosity; }
+.inspection-action { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-block:auto; }
+.inspection-action strong { font-size:clamp(20px,2vw,27px); font-weight:650; }
+.assigned-count { color:white; font-size:13px; }
 .focus-stat { font-size:13px; font-weight:550; }
 .focus-stat > span { display:flex; align-items:baseline; gap:6px; font-size:12px; }
 .focus-stat strong { font-size:clamp(30px,2.7vw,42px); font-variant-numeric:tabular-nums; font-weight:650; letter-spacing:-.045em; line-height:1.25; }
@@ -1070,10 +1076,12 @@ useResourceChanges({refresh:()=>refreshAll()})
 @container dashboard (max-width:780px) { .dashboard-overview { grid-template-columns:minmax(0,1fr); } }
 @container dashboard (max-width:560px) {
   .dashboard-hero { align-items:flex-start; flex-wrap:wrap; gap:8px; }
-  .assistant-link { min-height:32px; }
+  .model-link { min-height:32px; }
   .action-deck { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
   .action-deck a { min-height:112px; padding:14px; }
   .action-deck .focus-action { grid-column:1/-1; flex-direction:row; align-items:center; min-height:90px; }
+  .inspection-action { gap:6px; }
+  .action-deck .focus-action:has(.inspection-action) { align-items:flex-start; flex-direction:column; }
   .desk-link strong { font-size:16px; margin-top:9px; }
 }
 .queue-empty { display:flex; align-items:flex-start; gap:12px; padding:19px 16px; border-radius:9px; background:var(--app-primary-light); color:var(--app-primary-deep); }

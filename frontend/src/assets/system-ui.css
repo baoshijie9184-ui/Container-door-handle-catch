@@ -187,10 +187,6 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .image-detection-container .workspace-tabs > .el-tabs__header .el-tabs__item { font-weight: 550; }
 #app .image-detection-container :is(.task-item, .history-record-card) { border-radius: 12px; box-shadow: none; }
 #app .image-detection-container .task-topline { flex-wrap: wrap; gap: 8px; }
-#app .image-detection-container .detection-flow-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
-#app .image-detection-container .detection-flow-chips a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 12px; color: var(--app-text-secondary); border-radius: 6px; background: #edf2f8; }
-#app .image-detection-container .detection-flow-chips a:hover { color: var(--app-primary); background: var(--app-primary-soft); }
-#app .image-detection-container .detection-flow-chips a.router-link-active { color: var(--app-primary); background: #e5eeff; }
 #app .image-detection-container .quality-metric-card { box-shadow: none; }
 .quality-review-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
 .quality-review-layout.has-evidence { grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); }

@@ -209,7 +209,7 @@
       />
       <el-form :model="reviewForm" label-width="110px">
         <el-form-item label="复核结论">
-          <el-select v-model="reviewForm.reviewConclusion" style="width: 100%">
+          <el-select v-model="reviewForm.reviewConclusion" placeholder="请选择复核结论" style="width: 100%">
             <el-option label="确认缺陷" value="CONFIRMED_DEFECT" />
             <el-option label="误报" value="FALSE_POSITIVE" />
             <el-option label="正常放行" value="NORMAL_RELEASE" />
@@ -242,7 +242,7 @@
       </el-form>
       <template #footer>
         <el-button @click="reviewDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="reviewSubmitting" @click="submitTaskReview">提交复核</el-button>
+        <el-button type="primary" :loading="reviewSubmitting" :disabled="!reviewForm.reviewConclusion" @click="submitTaskReview">提交复核</el-button>
       </template>
     </el-dialog>
 
