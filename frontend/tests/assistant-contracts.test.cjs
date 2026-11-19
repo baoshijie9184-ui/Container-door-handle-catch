@@ -106,7 +106,10 @@ test('tests\\chat-confirm-action-guard-contract.test.cjs', () => {
   })
 
   test('assistant session sidebar receives the responsive compact setting', () => {
-    assert.match(drawerSource, /<ChatSidebar\s+:compact="compactSidebar"\s*\/>/)
+    assert.match(drawerSource, /<ChatSidebar\s+:compact="compactSidebar">/)
+    assert.match(drawerSource, /<header v-if="fullScreen" class="chat-header">/)
+    assert.match(drawerSource, /<template v-if="!fullScreen" #footer=/)
+    assert.match(sidebarSource, /<slot name="footer" :collapsed="collapsed" \/>/)
     assert.match(sidebarSource, /defineProps\(\{[\s\S]*compact:/)
     assert.match(sidebarSource, /const collapsed = ref\(props\.compact\)/)
     assert.match(sidebarSource, /watch\(\(\) => props\.compact/)
