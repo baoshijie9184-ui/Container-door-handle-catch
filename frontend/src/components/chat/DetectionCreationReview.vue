@@ -14,7 +14,7 @@
         <div><dt>核对内容一致</dt><dd>{{ row.checkStatus ? transferCount(row.verified) + ' 张' : '尚未核对' }}</dd></div>
       </dl>
       <div v-if="row.checkStatus" class="transfer-check-line"><StatusBadge domain="transferCheck" :code="row.checkStatus" /><span>已检查 {{ transferCount(row.checked) }} / {{ transferCount(row.images) }} 张</span></div>
-      <p v-if="row.checkStatus">最近核对 {{ formatTime(row.checkedAt) }} UTC+8</p>
+      <p v-if="row.checkStatus">最近核对 {{ formatTime(row.checkedAt) }}</p>
       <p class="transfer-next-step">{{ transferNextStep(row, verified) }}</p>
       <p v-if="busy.has(row.commandId)" class="transfer-read-note" role="status">{{ operationNames[busy.get(row.commandId).action] }}已提交，正在等待原回执；不会重复发送。</p>
       <a v-if="row.status === 'QUEUED'" class="transfer-task-link" :href="cardRoute('TASKS', row.taskId)" target="_blank" rel="noopener noreferrer">查看检测任务<AppIcon name="TopRight" :size="14" /></a>

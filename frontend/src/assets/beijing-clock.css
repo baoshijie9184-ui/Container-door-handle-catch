@@ -1,0 +1,3 @@
+.beijing-clock { display:inline-flex; flex-wrap:wrap; align-items:baseline; gap:0 6px; font-size:12px; line-height:1.45; color:var(--app-text-secondary,#596579); font-variant-numeric:tabular-nums; }
+.beijing-clock b { white-space:nowrap; font-weight:550; }
+@media(max-width:900px) { .beijing-clock { flex-direction:column; } .beijing-clock span { font-size:11px; } }

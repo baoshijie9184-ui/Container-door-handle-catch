@@ -3,7 +3,7 @@ import { beijingDateTime } from './beijingTime.js'
 // Read only the existing immutable assignment proposal, never the current task.
 const fields = [
   ['qualityStation', '质检站点'], ['assignee', '责任人'],
-  ['assigneeUserId', '责任人 ID'], ['dueAt', '截止时间 · UTC+8'],
+  ['assigneeUserId', '责任人 ID'], ['dueAt', '截止时间'],
   ['assignmentRemark', '分派备注']
 ]
 function value(source, key, proposed) {

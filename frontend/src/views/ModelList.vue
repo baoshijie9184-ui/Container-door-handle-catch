@@ -34,7 +34,7 @@
       <div class="default-model-meta">
         <StatusBadge domain="model" :code="defaultModel.status" />
         <span>使用次数 {{ modelUsage(defaultModel.usageCount) }}</span>
-        <span>最近使用 {{ formatDateTime(defaultModel.lastUsedAt) }} · UTC+8</span>
+        <span>最近使用 {{ formatDateTime(defaultModel.lastUsedAt) }}</span>
       </div>
     </section>
 
@@ -80,7 +80,7 @@
 
     <section class="table-panel">
       <div class="collection-heading"><h2><AppIcon name="Collection" :size="18" />模型记录</h2><span>{{ loading ? '正在读取…' : listError ? '本次读取失败' : total==null?'总数尚未核对':`匹配 ${total} 条` }}</span></div>
-      <p class="management-applied-query">已查询范围：{{ appliedDescription }}。本页统计不代表全部模型统计，时间 UTC+8。</p>
+      <p class="management-applied-query">已查询范围：{{ appliedDescription }}。本页统计不代表全部模型统计。</p>
       <p v-if="filtersDirty" class="management-query-note" role="status">筛选已改，点击查询更新结果。</p>
       <el-button v-if="listError && modelList.length" class="management-retry" :loading="loading" @click="retryModelList"><AppIcon name="Refresh" :size="14" />重读上次请求</el-button>
       <el-alert v-if="listError && modelList.length" :title="listError + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
@@ -90,8 +90,8 @@
           <CollectionEmptyState :loading="loading" :error="listError" :filtered="listLoaded ? Object.keys(appliedFilters).length>0 : !!hasSearch" empty-title="暂无检测模型" :empty-description="isSupervisor?'可使用上方上传入口登记模型，发布后供检测任务选择。':'当前账号可查看已登记模型，需要新增时请联系主管。'" @retry="retryModelList" @reset="resetSearch" />
         </template>
         <el-table-column label="模型与版本" min-width="230"><template #default="{row}"><div class="model-record-cell"><strong>{{ row.modelName||'模型名称未记录' }}</strong><small>版本 {{ row.version||'未记录' }} · ID {{ row.modelId }}</small><span v-if="modelDefault(row.isDefault)==='是'" class="model-default-marker"><AppIcon name="CircleCheck" :size="13" />默认模型</span></div></template></el-table-column>
-        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.modelId)]" :revision="resourceVersion(row,{model:true})" resource-type="DETECTION_MODEL" :resource-id="row.modelId" domain="DETECTION_MODEL" /></template></el-table-column>
-        <el-table-column label="训练资料" min-width="210"><template #default="{row}"><div class="model-record-cell"><strong>{{ modelTrainingImages(row.trainingImageCount) }}</strong><small>完成 {{ modelTime(row.trainingCompletedAt) }} · UTC+8</small></div></template></el-table-column>
+        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.modelId)]" :revision="resourceVersion(row,{model:true})" resource-type="DETECTION_MODEL" :resource-id="row.modelId" domain="DETECTION_MODEL" /></template></el-table-column>
+        <el-table-column label="训练资料" min-width="210"><template #default="{row}"><div class="model-record-cell"><strong>{{ modelTrainingImages(row.trainingImageCount) }}</strong><small>完成 {{ modelTime(row.trainingCompletedAt) }}</small></div></template></el-table-column>
         <el-table-column label="漏检率 / 速度" min-width="180"><template #default="{row}"><div class="model-record-cell"><strong>整图未检出 {{ modelNoDetection(row).value }}</strong><small>{{ modelNoDetection(row).description }}</small><small>实测 {{ modelFps(row.inferenceFps) }}</small></div></template></el-table-column>
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
@@ -194,7 +194,7 @@
             </template>
             <el-table-column prop="operationType" label="操作类型" width="120" />
             <el-table-column prop="operator" label="操作人" width="120" />
-            <el-table-column label="操作时间（UTC+8）" min-width="185">
+            <el-table-column label="操作时间" min-width="185">
               <template #default="{ row }">
                 <el-tooltip v-if="row.clockStatus === 'UNRESOLVED' && !row.operationTime" :content="row.sourceWallTimes?.operation_time ? '原时间 '+row.sourceWallTimes.operation_time+'（时区未确认）' : '原记录没有时间'" placement="top">
                   <el-tag size="small" type="info">历史时区未确认</el-tag>
@@ -214,8 +214,8 @@
         <el-form-item label="训练图片数量（原始训练集，不含重复增强）">
           <el-input-number v-model="evaluationForm.trainingImageCount" :min="1" :max="2147483647" :precision="0" aria-label="训练图片数量" style="width:100%" />
         </el-form-item>
-        <el-form-item label="训练完成日期时间（UTC+8）">
-          <el-date-picker v-model="evaluationForm.trainingCompletedAt" type="datetime" format="YYYY-MM-DD HH:mm:ss" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择实际训练完成时间" aria-label="训练完成日期时间 UTC+8" style="width:100%" />
+        <el-form-item label="训练完成日期时间">
+          <el-date-picker v-model="evaluationForm.trainingCompletedAt" type="datetime" format="YYYY-MM-DD HH:mm:ss" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择实际训练完成时间" aria-label="训练完成日期时间" style="width:100%" />
         </el-form-item>
         <el-form-item label="评估数据集（注明 val / test）">
           <el-input v-model="evaluationForm.evaluationDataset" aria-label="例如 door-handle-test" placeholder="例如 door-handle-test" />

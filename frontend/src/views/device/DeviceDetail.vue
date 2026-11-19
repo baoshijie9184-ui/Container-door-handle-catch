@@ -48,7 +48,7 @@
         </div>
         <div>
           <div class="stats-bar-value">{{ device.lastMaintenanceDate ? formatDate(device.lastMaintenanceDate) : '暂无记录' }}</div>
-          <div class="stats-bar-label">最后维护时间 · UTC+8</div>
+          <div class="stats-bar-label">最后维护时间</div>
         </div>
       </div>
     </section>
@@ -58,7 +58,7 @@
         <div class="panel-header">
           <div>
             <h3 class="app-panel-title">基本信息</h3>
-            <p class="app-panel-subtitle">设备登记信息与 UTC+8 时间，不代表实时在线状态</p>
+            <p class="app-panel-subtitle">设备登记信息，不代表实时在线状态</p>
           </div>
         </div>
       </template>
@@ -70,8 +70,8 @@
         <div><dt>业务登记状态</dt><dd><StatusBadge domain="device" :code="device.status" :label="getStatusName(device.status)" /></dd></div>
         <div><dt>设备型号</dt><dd>{{ device.modelName || '未记录' }}</dd></div>
         <div><dt>序列号</dt><dd>{{ device.serialNumber || '未记录' }}</dd></div>
-        <div><dt>创建时间 · UTC+8</dt><dd>{{ formatDate(device.createdTime) }}</dd></div>
-        <div><dt>更新时间 · UTC+8</dt><dd>{{ formatDate(device.updatedTime) }}</dd></div>
+        <div><dt>创建时间</dt><dd>{{ formatDate(device.createdTime) }}</dd></div>
+        <div><dt>更新时间</dt><dd>{{ formatDate(device.updatedTime) }}</dd></div>
       </dl>
     </el-card>
 

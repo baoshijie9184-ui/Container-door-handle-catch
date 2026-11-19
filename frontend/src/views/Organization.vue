@@ -47,7 +47,7 @@
           <template #empty><CollectionEmptyState :loading="loading" :error="accountError||error" :filtered="!!appliedKeyword" empty-title="暂无可查看账号" empty-description="这里只显示当前账号有权限查看的关联记录。" @retry="retryLoad" @reset="resetSearch" /></template>
           <el-table-column label="登录账号" min-width="175"><template #default="{row}"><div class="organization-account-cell"><strong>{{ row.username||'账号名称未记录' }}</strong><small>{{ roleLabel(row.role) }} · ID {{ row.userId }}</small></div></template></el-table-column>
           <el-table-column label="员工关联" min-width="200"><template #default="{ row }"><div class="organization-account-cell"><strong>{{ employeeLabel(row) }}</strong><small>关联版本 {{ row.bindingVersion??'未记录' }}</small></div></template></el-table-column>
-          <el-table-column v-if="userStore.capabilities?.changeHistory" label="关联最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="bindingChanges[String(row.userId)]" :revision="row.bindingVersion" resource-type="ACCOUNT_BINDING" :resource-id="row.userId" domain="ORGANIZATION" /></template></el-table-column>
+          <el-table-column v-if="userStore.capabilities?.changeHistory" label="关联最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="bindingChanges[String(row.userId)]" :revision="row.bindingVersion" resource-type="ACCOUNT_BINDING" :resource-id="row.userId" domain="ORGANIZATION" /></template></el-table-column>
           <el-table-column label="部门" min-width="140"><template #default="{ row }">{{ departmentLabel(row) }}</template></el-table-column>
           <el-table-column label="员工状态" min-width="110"><template #default="{ row }"><StatusBadge v-if="row.employeeStatus" domain="employee" :code="row.employeeStatus" :label="statusLabel(row.employeeStatus)" /><span v-else class="muted">{{ row.employeeId==null?'未关联':'状态未记录' }}</span></template></el-table-column>
           <el-table-column label="操作" min-width="220"><template #default="{ row }">
@@ -86,14 +86,14 @@
       <template #footer><el-button :disabled="saving" @click="departmentDialog = false"><AppIcon name="Close" :size="16" />关闭</el-button><el-button v-if="departmentUncertain" @click="departmentDialog=false;refresh()">关闭并核对部门</el-button><el-button v-else type="primary" :disabled="loading||!!error||!!departmentReadError||!departmentName.trim()" :loading="saving" @click="createDepartment">创建部门</el-button></template>
     </el-dialog>
     <el-dialog class="organization-dialog" append-to-body v-model="auditDialog" title="账号关联变更记录" width="min(720px, 94vw)">
-      <div class="organization-audit-heading"><p class="muted">{{ auditUsername }} · 最近最多 50 条变更{{ auditLoaded?'，已加载 '+auditRows.length+' 条':'' }} · UTC+8</p><el-button :loading="auditLoading" @click="openAudit({username:auditUsername,userId:auditUserId})"><AppIcon name="Refresh" :size="15" />重新读取</el-button></div>
+      <div class="organization-audit-heading"><p class="muted">{{ auditUsername }} · 最近最多 50 条变更{{ auditLoaded?'，已加载 '+auditRows.length+' 条':'' }}</p><el-button :loading="auditLoading" @click="openAudit({username:auditUsername,userId:auditUserId})"><AppIcon name="Refresh" :size="15" />重新读取</el-button></div>
       <el-table :scrollbar-tabindex="0" role="region" aria-label="组织操作记录" :data="auditRows" v-loading="auditLoading">
         <template #empty><CollectionEmptyState :loading="auditLoading" :error="auditError" empty-title="暂无关联变更" empty-description="当前账号尚无已登记的员工关联变更记录。" @retry="openAudit({ username: auditUsername, userId: auditUserId })" /></template>
         <el-table-column label="操作" min-width="110"><template #default="{ row }"><StatusBadge domain="organizationBinding" :code="row.action" /></template></el-table-column>
         <el-table-column prop="actorUsername" label="操作账号" min-width="130" />
         <el-table-column label="员工 ID 变更" min-width="150"><template #default="{ row }">{{ row.beforeEmployeeId ?? '无' }} → {{ row.afterEmployeeId ?? '无' }}</template></el-table-column>
         <el-table-column label="版本" min-width="85"><template #default="{row}">{{ row.bindingVersion??'未记录' }}</template></el-table-column>
-        <el-table-column label="时间（UTC+8）" min-width="190"><template #default="{row}">{{ formatTime(row.createdAt) }}</template></el-table-column>
+        <el-table-column label="时间" min-width="190"><template #default="{row}">{{ formatTime(row.createdAt) }}</template></el-table-column>
       </el-table>
       <ResourceChangeHistory v-if="auditUserId" resource-type="ACCOUNT_BINDING" :resource-id="auditUserId" domain="ORGANIZATION" compact />
     </el-dialog>

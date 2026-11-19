@@ -1,7 +1,7 @@
 <template>
   <section class="task-trace-timeline" :aria-labelledby="headingId">
     <h4 :id="headingId"><AppIcon name="Clock" :size="17" />已记录的流程节点<span>{{ groups ? '本次返回 '+count.toLocaleString('zh-CN')+' 个' : '数量未返回' }}</span></h4>
-    <p class="trace-timeline-note">由当前任务资料汇成，不等于完整审计历史。时间按 UTC+8 展示，任务处理与报告审批分别核对。</p>
+    <p class="trace-timeline-note">由当前任务资料汇成，不等于完整审计历史。任务处理与报告审批分别核对。</p>
     <section v-for="group in groups || []" :key="group.key" class="trace-timeline-group" :aria-label="group.label" :data-unknown="group.key==='undated'">
       <h5>{{ group.label }}<span>{{ group.rows.length }} 个</span></h5>
       <p v-if="group.key==='undated'" class="trace-timeline-note">以下节点无法确定在流程中的时间位置，保持本次返回顺序。</p>

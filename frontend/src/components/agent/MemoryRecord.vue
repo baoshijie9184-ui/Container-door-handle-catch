@@ -4,12 +4,12 @@
     <template v-if="longText"><p class="memory-record-excerpt"><span>正文摘录</span>{{ excerpt }}<template v-if="excerpt.length<content.length">…</template></p><details class="memory-record-body"><summary>阅读完整正文</summary><pre tabindex="0" aria-label="此条记忆的完整正文">{{ content }}</pre></details></template>
     <p v-else class="memory-content">{{ content || '本次未返回记忆正文' }}</p>
     <details class="memory-record-source"><summary><AppIcon name="Document" :size="15" />来源与保存资料</summary>
-      <dl><dt>记忆编号</dt><dd>{{ item.id || '未记录' }}</dd><dt>来源会话</dt><dd>{{ item.sourceSessionId || '未记录来源会话' }}</dd><dt>创建时间 · UTC+8</dt><dd>{{ memoryTime(item.createdAt) }}</dd><dt>更新时间 · UTC+8</dt><dd>{{ memoryTime(item.updatedAt) }}</dd><dt>治理版本</dt><dd>{{ revision ?? '未记录' }}</dd><dt>正文校验摘要</dt><dd>{{ item.digest || '未记录' }}</dd><dt>到期自动删除</dt><dd>{{ item.lifecycle?.autoDelete === true ? '已登记启用' : item.lifecycle?.autoDelete === false ? '未启用' : '设置未读取' }}</dd></dl>
+      <dl><dt>记忆编号</dt><dd>{{ item.id || '未记录' }}</dd><dt>来源会话</dt><dd>{{ item.sourceSessionId || '未记录来源会话' }}</dd><dt>创建时间</dt><dd>{{ memoryTime(item.createdAt) }}</dd><dt>更新时间</dt><dd>{{ memoryTime(item.updatedAt) }}</dd><dt>治理版本</dt><dd>{{ revision ?? '未记录' }}</dd><dt>正文校验摘要</dt><dd>{{ item.digest || '未记录' }}</dd><dt>到期自动删除</dt><dd>{{ item.lifecycle?.autoDelete === true ? '已登记启用' : item.lifecycle?.autoDelete === false ? '未启用' : '设置未读取' }}</dd></dl>
       <router-link v-if="sourceSession && !disabled" :to="{path:'/agent/chat',query:{sessionId:sourceSession}}" class="memory-source-session"><AppIcon name="ChatDotRound" :size="15" />打开本人来源会话</router-link>
       <p v-else-if="sourceSession" class="memory-source-note">当前有操作或资料读取，请结束后打开来源会话。</p>
       <p class="memory-source-note">这里只展示已返回的保存资料。来源会话需重新核对当前账号权限；记忆摘要不证明原会话仍存在。</p>
     </details>
-    <footer><span>{{ item.updatedAt ? '更新 '+memoryTime(item.updatedAt)+' · UTC+8' : item.createdAt ? '创建 '+memoryTime(item.createdAt)+' · UTC+8' : '保存时间未记录' }}</span>
+    <footer><span>{{ item.updatedAt ? '更新 '+memoryTime(item.updatedAt) : item.createdAt ? '创建 '+memoryTime(item.createdAt) : '保存时间未记录' }}</span>
       <div class="memory-actions"><el-button :disabled="disabled" @click="$emit('similar',item)"><AppIcon name="Search" :size="15" />查找相似</el-button><el-button :disabled="disabled" @click="$emit('policy',item)"><AppIcon name="Clock" :size="15" />有效期与停用</el-button><el-button :disabled="disabled" @click="$emit('edit',item)"><AppIcon name="Edit" :size="15" />编辑记忆</el-button><el-button type="danger" plain :disabled="disabled" @click="$emit('remove',item)"><AppIcon name="Delete" :size="15" />删除记忆</el-button></div>
     </footer>
   </article>
@@ -27,7 +27,7 @@ const longText=computed(()=>content.value.length>600||content.value.split(/\r?\n
 const excerpt=computed(()=>Array.from(content.value.split(/\r?\n/).slice(0,4).join('\n')).slice(0,260).join(''))
 const revision=computed(()=>knownCount(props.item.lifecycle?.revision))
 const sourceSession=computed(()=>typeof props.item.sourceSessionId==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(props.item.sourceSessionId)?props.item.sourceSessionId:'')
-const expiryText=computed(()=>!props.item.lifecycle?'有效期设置未读取':props.item.lifecycle.expiresAt?'有效期 '+memoryTime(props.item.lifecycle.expiresAt)+' · UTC+8':'未设置到期时间')
+const expiryText=computed(()=>!props.item.lifecycle?'有效期设置未读取':props.item.lifecycle.expiresAt?'有效期 '+memoryTime(props.item.lifecycle.expiresAt):'未设置到期时间')
 </script>
 <style scoped>
 .memory-record{min-width:0;overflow-wrap:anywhere}

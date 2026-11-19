@@ -46,7 +46,7 @@
           <p v-if="model.hasPersonalQuota === false">{{ nativeBudgets ? '尚未额外设置单模型 token 限额。厂家的员工限额在上方查看。' : '尚未设置个人额度，继续保留原有模型使用权限；此处个人额度计数不代表历史模型总用量。' }}</p>
           <p v-else-if="model.hasPersonalQuota === true && model.totalTokens === null">未设个人额度上限，无需申请追加个人额度。</p>
           <p v-if="quotaNumber(model.availableTokens) !== null && Number(model.availableTokens) < 0">实际消耗超过可用额度，已完整计入用量；追加额度后仍需满足调用所需的预留量。</p>
-          <p v-if="model.hasPersonalQuota === true">个人额度到期时间 {{ model.expiresAt === null ? '未设置' : utcDisplay(model.expiresAt) }} · 北京时间</p>
+          <p v-if="model.hasPersonalQuota === true">个人额度到期时间 {{ model.expiresAt === null ? '未设置' : utcDisplay(model.expiresAt) }}</p>
           <div class="operation-actions"><el-button type="primary" plain :disabled="busy || modelsLoading || !!modelsError || !canApplyForQuota(model)" @click="openApply(model)">申请追加额度</el-button><router-link v-if="user.capabilities?.changeHistory && model.quotaId" :to="resourceHistoryLink('LLM_PERSONAL_QUOTA',model.quotaId,'MODEL_BUDGET')">个人额度修改记录</router-link></div>
           </template>
         </article>
@@ -65,7 +65,7 @@
           <p v-if="listScope === 'team'" class="operation-muted">申请人账号编号 {{ application.applicantUserId ?? '未记录' }}</p>
           <p class="llm-reason">{{ application.reason || '申请说明未记录' }}</p>
           <p v-if="application.decisionReason" class="llm-reason">审批说明：{{ application.decisionReason }}</p>
-          <p class="operation-muted">提交 {{ utcDisplay(application.createdAt) }}<template v-if="application.finishedAt"> · 处理 {{ utcDisplay(application.finishedAt) }}</template> · 北京时间</p>
+          <p class="operation-muted">提交 {{ utcDisplay(application.createdAt) }}<template v-if="application.finishedAt"> · 处理 {{ utcDisplay(application.finishedAt) }}</template></p>
           <ResourceMutationSummary v-if="user.capabilities?.changeHistory" :latest="applicationChanges[application.id]" :revision="application.version" resource-type="LLM_QUOTA_APPLICATION" :resource-id="application.id" domain="LLM_QUOTA_APPLICATION" />
           <div v-if="application.status === 'PENDING'" class="operation-actions">
             <template v-if="listScope === 'team' && supervisor">

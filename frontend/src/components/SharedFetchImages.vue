@@ -16,7 +16,7 @@
           <dl class="references"><div v-for="(value,key) in item.references || {}" :key="key"><dt>{{ referenceLabel(key) }}</dt><dd>{{ typeof value==='number'?value:'未知' }}</dd></div></dl>
           <p v-if="item.archiveSha256" class="legal"><el-icon><CircleCheck /></el-icon>许可证归档摘要 <code>{{ item.archiveSha256 }}</code></p>
           <p v-if="item.state!=='ACTIVE'&&item.state!=='REMOVED'">已封存新引用 结果未核实前保留记录 不自动重试删除</p>
-          <footer><time v-if="item.updatedAt">{{ beijingDateTime(item.updatedAt) }} UTC+8</time><div class="actions"><el-button v-if="item.canRequestCleanup" type="primary" :disabled="busy" @click="act(item,'cleanup')"><el-icon><Delete /></el-icon>回收无引用镜像</el-button><el-button v-if="!['ACTIVE','REMOVED'].includes(item.state)" :disabled="busy" @click="act(item,'reconcile')"><el-icon><Search /></el-icon>只读核对结果</el-button></div></footer>
+          <footer><time v-if="item.updatedAt">{{ beijingDateTime(item.updatedAt) }}</time><div class="actions"><el-button v-if="item.canRequestCleanup" type="primary" :disabled="busy" @click="act(item,'cleanup')"><el-icon><Delete /></el-icon>回收无引用镜像</el-button><el-button v-if="!['ACTIVE','REMOVED'].includes(item.state)" :disabled="busy" @click="act(item,'reconcile')"><el-icon><Search /></el-icon>只读核对结果</el-button></div></footer>
         </article>
       </TransitionGroup>
       <el-empty v-if="!state.items?.length" description="尚无可显示的共享镜像" />

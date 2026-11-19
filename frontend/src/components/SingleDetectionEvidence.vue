@@ -10,18 +10,19 @@
           <span v-if="!loaded.has(image.stamp)" class="single-evidence-loading">正在读取图片</span>
           <span v-else class="single-evidence-zoom"><AppIcon name="Expand" :size="14" />放大核对</span>
         </button>
-        <div v-else class="single-evidence-unavailable"><AppIcon :name="image.url ? 'Warning' : 'Picture'" :size="23" /><strong>{{ image.url ? '图片暂不可读取' : '没有可用预览地址' }}</strong><p>{{ image.url ? '可重新读取当前图片，或从任务追溯核对原始资料。' : '请从任务追溯核对图片资料，不根据空预览推断没有检测结果。' }}</p><button v-if="image.url" type="button" @click="retryImage(image)"><AppIcon name="Refresh" :size="14" />重新读取图片</button></div>
+        <div v-else class="single-evidence-unavailable"><AppIcon :name="image.url ? 'Warning' : 'Picture'" :size="23" /><strong><OssPreviewFailure v-if="image.url" :src="image.url" /><template v-else>没有可用预览地址</template></strong><p>{{ image.url ? '可重新读取当前图片，或从任务追溯核对原始资料。' : '请从任务追溯核对图片资料，不根据空预览推断没有检测结果。' }}</p><button v-if="image.url" type="button" @click="retryImage(image)"><AppIcon name="Refresh" :size="14" />重新读取图片</button></div>
       </figure>
     </div>
     <p class="single-evidence-file"><AppIcon name="Document" :size="14" /><span>{{ fileName || '提交文件名未记录' }}</span></p>
     <el-dialog v-model="zoomOpen" class="single-evidence-dialog" append-to-body :title="zoomImage?.label || '图片核对'" width="min(1100px, 94vw)" @closed="clearClosedImage">
-      <template v-if="zoomImage"><p class="single-evidence-dialog-note">{{ zoomImage.source }} · {{ fileName || '文件名未记录' }}</p><div class="single-evidence-large"><img v-if="!zoomFailed" :key="zoomAttempt" :data-preview-attempt="zoomAttempt" :src="zoomImage.url" :alt="zoomImage.label+' '+fileName" @error="markZoomFailed"/><p v-else role="alert">图片暂不可读取，可重新读取当前图片，或关闭后核对任务追溯。</p></div></template>
+      <template v-if="zoomImage"><p class="single-evidence-dialog-note">{{ zoomImage.source }} · {{ fileName || '文件名未记录' }}</p><div class="single-evidence-large"><img v-if="!zoomFailed" :key="zoomAttempt" :data-preview-attempt="zoomAttempt" :src="zoomImage.url" :alt="zoomImage.label+' '+fileName" @error="markZoomFailed"/><p v-else role="alert"><OssPreviewFailure :src="zoomImage.url" /></p></div></template>
       <template #footer><el-button v-if="zoomFailed" @click="zoomFailed=false;zoomAttempt++"><AppIcon name="Refresh" :size="15" />重新读取图片</el-button><el-button @click="zoomOpen=false"><AppIcon name="Close" :size="15" />关闭图片</el-button></template>
     </el-dialog>
   </section>
 </template>
 
 <script setup>
+import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import { computed, ref, watch } from 'vue'
 import { evidencePreviewUrl } from '../utils/evidencePresentation'
 const props=defineProps({taskId:String,fileName:String,originalUrl:String,annotationUrl:String,localPreview:String,categoryLabel:String,categoryTone:String,confidenceLabel:String})

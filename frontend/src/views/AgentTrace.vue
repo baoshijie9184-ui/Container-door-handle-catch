@@ -10,7 +10,7 @@
 
     <button v-if="historyOpen" class="trace-history-mask" type="button" aria-label="关闭运行列表" @click="closeHistory"></button>
     <aside id="trace-run-history" class="trace-history" aria-label="运行历史">
-      <header class="trace-history-heading"><div><h3>运行历史</h3><span>本人记录 · UTC+8</span></div><button v-if="historyOpen" class="trace-icon-button trace-history-close" type="button" aria-label="关闭运行列表" title="关闭运行列表" @click="closeHistory"><el-icon aria-hidden="true"><Close /></el-icon></button></header>
+      <header class="trace-history-heading"><div><h3>运行历史</h3><span>本人记录</span></div><button v-if="historyOpen" class="trace-icon-button trace-history-close" type="button" aria-label="关闭运行列表" title="关闭运行列表" @click="closeHistory"><el-icon aria-hidden="true"><Close /></el-icon></button></header>
       <el-select v-model="sessionId" aria-label="筛选会话" placeholder="选择会话" :disabled="allRuns || initializing" @change="changeScope">
         <el-option v-for="session in store.sessions" :key="session.sessionId" :label="session.title || '新对话'" :value="session.sessionId" />
       </el-select>
@@ -49,7 +49,7 @@
             <div><span>已加载完成事件的 Token</span><strong>{{ formatCount(tokenTotal) }}</strong><small>{{ formatCount(summary.usageRecords) }} / {{ formatCount(summary.completedModels) }} 条含用量</small><small v-if="summary.completedModels">输入 {{ formatCount(summary.inputTokens) }} / 输出 {{ formatCount(summary.outputTokens) }}</small></div>
           </div>
           <p class="trace-note">用量仅来自当前已加载的模型完成事件，任一完成事件缺少对应值时该项合计显示未知；未记录的候选消耗及供应商内部重试不计入，不能作为账单。</p>
-          <p class="trace-note">{{ traceTime(journalEnabled ? state.selectedRun?.startedAt : store.executionTrace?.updatedAt) }}<template v-if="state.selectedRun?.endedAt"> → {{ traceTime(state.selectedRun.endedAt) }}</template> · UTC+8<span v-if="summary.denied"> · {{ formatCount(summary.denied) }} 次角色核验拒绝</span></p>
+          <p class="trace-note">{{ traceTime(journalEnabled ? state.selectedRun?.startedAt : store.executionTrace?.updatedAt) }}<template v-if="state.selectedRun?.endedAt"> → {{ traceTime(state.selectedRun.endedAt) }}</template><span v-if="summary.denied"> · {{ formatCount(summary.denied) }} 次角色核验拒绝</span></p>
         </div>
         <div class="trace-view-tabs" role="group" aria-label="追溯视图">
           <button v-for="tab in tabs" :key="tab.value" type="button" :aria-pressed="activeTab===tab.value" :class="{ active: activeTab===tab.value }" @click="activeTab=tab.value"><el-icon><component :is="tab.icon" /></el-icon>{{ tab.label }}</button>

@@ -91,7 +91,7 @@ export function DetectionCreationReview({ sessionId, base = '', refreshKey, onCh
     {rows.map(row => <article key={row.commandId} className="transfer-record" data-status={row.status} aria-busy={busy.has(row.commandId)}>
       <header className="transfer-record-heading"><div><small>检测任务</small><strong>{row.taskId}</strong></div><StatusBadge domain="detectionCreation" code={row.status}/></header>
       <dl className="transfer-metrics"><div><dt>目标图片清单</dt><dd>{row.manifestAvailable ? transferCount(row.images) + ' 张' : '清单不完整'}</dd></div><div><dt>存储已记录</dt><dd>{transferCount(row.acknowledged)} 张</dd></div><div><dt>核对内容一致</dt><dd>{row.checkStatus ? transferCount(row.verified) + ' 张' : '尚未核对'}</dd></div></dl>
-      {row.checkStatus && <><div className="transfer-check-line"><StatusBadge domain="transferCheck" code={row.checkStatus}/><span>已检查 {transferCount(row.checked)} / {transferCount(row.images)} 张</span></div><p>最近核对 {formatTime(row.checkedAt)} UTC+8</p></>}
+      {row.checkStatus && <><div className="transfer-check-line"><StatusBadge domain="transferCheck" code={row.checkStatus}/><span>已检查 {transferCount(row.checked)} / {transferCount(row.images)} 张</span></div><p>最近核对 {formatTime(row.checkedAt)}</p></>}
       <p className="transfer-next-step">{transferNextStep(row, verified)}</p>
       {busy.has(row.commandId) && <p className="transfer-read-note" role="status">{operationNames[busy.get(row.commandId).action]}已提交，正在等待原回执；不会重复发送。</p>}
       {row.status === 'QUEUED' && <a className="transfer-task-link" href={(base || globalThis.location?.origin || '') + cardRoute('TASKS', row.taskId)} target="_blank" rel="noopener noreferrer">查看检测任务<ArrowUpRight size={14} aria-hidden="true"/></a>}

@@ -62,7 +62,7 @@ export function SessionHistory({ sessions, selectedId, disabled, currentTaskActi
     <div className="session-history" aria-busy={loading}>
       {groups.map(group => <section className="session-history-group" key={group.key} aria-label={group.label}><h2>{group.label}</h2>
         {group.sessions.map(session => <div className={`session-history-row ${session.sessionId === selectedId ? 'is-current' : ''}`} key={session.sessionId}>
-          <button type="button" className={`session-item ${session.sessionId === selectedId ? 'selected' : ''}`} aria-current={session.sessionId === selectedId ? 'page' : undefined} disabled={disabled} title={(session.title || '新对话') + '\n' + sessionTimestampLabel(session) + '（UTC+8）'} onClick={() => onSelect(session.sessionId)}>
+          <button type="button" className={`session-item ${session.sessionId === selectedId ? 'selected' : ''}`} aria-current={session.sessionId === selectedId ? 'page' : undefined} disabled={disabled} title={(session.title || '新对话') + '\n' + sessionTimestampLabel(session)} onClick={() => onSelect(session.sessionId)}>
             {session.sourceSessionId ? <GitBranch size={15} aria-hidden="true"/> : <MessageSquare size={15} aria-hidden="true"/>}<span className="session-item-copy"><span className="session-item-title">{session.title || '新对话'}</span>{sessionPreview(session) && <span className="session-item-preview">{sessionPreview(session)}</span>}<span className="session-item-meta">{sessionMetadata(session, now)}</span></span>{session.pinned === true && <Pin size={12} aria-label="已置顶"/>}
           </button>
           <Dropdown trigger={['click']} menu={{ items: [

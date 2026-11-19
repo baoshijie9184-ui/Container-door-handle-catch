@@ -260,7 +260,7 @@ class DetectionTaskTraceTest {
         task.setFinishedAt(LocalDateTime.of(2026, 6, 10, 10, 8));
 
         when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
-        when(fixture.ossStorageService.isConfigured()).thenReturn(true);
+        when(fixture.ossStorageService.isPreviewConfigured()).thenReturn(true);
 
         java.util.Map<String, Object> report = fixture.service.getQualityReport("det_report");
 
@@ -332,7 +332,7 @@ class DetectionTaskTraceTest {
         task.setReviewedAt(LocalDateTime.of(2026, 6, 10, 9, 20));
 
         when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
-        when(fixture.ossStorageService.isConfigured()).thenReturn(true);
+        when(fixture.ossStorageService.isPreviewConfigured()).thenReturn(true);
 
         DetectionTaskTraceResponse response = fixture.service.getTaskTrace("det_trace");
 

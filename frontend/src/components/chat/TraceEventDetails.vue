@@ -31,7 +31,7 @@ const groups = computed(() => {
   return [
     { id:'execution', label:'执行位置与耗时', icon:'Connection', fields:[
       field('事件类型', event.type), field('Agent', p.agent), field('工具', p.tool),
-      field('记录时间 · UTC+8', traceTime(event.occurredAt)), field('运行后时间', traceDuration(p.elapsedMs)),
+      field('记录时间', traceTime(event.occurredAt)), field('运行后时间', traceDuration(p.elapsedMs)),
       field('此事件记录耗时', traceDuration(p.durationMs)), ...optional([['结果', p.result]])
     ] },
     { id:'model', label:'模型与用量记录', icon:'Cpu', fields:hasModel ? [

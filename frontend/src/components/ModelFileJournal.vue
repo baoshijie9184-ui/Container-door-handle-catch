@@ -25,7 +25,7 @@
               <el-table-column label="模型编号" min-width="100"><template #default="{row}">{{ row.modelId ?? '未确认' }}</template></el-table-column>
               <el-table-column label="记录长度" min-width="120"><template #default="{row}">{{ knownCount(row.bytes)==null ? '未知' : knownCount(row.bytes).toLocaleString('zh-CN') + ' B' }}</template></el-table-column>
               <el-table-column prop="sha256" label="SHA-256" min-width="270" />
-              <el-table-column label="更新时间 · UTC+8" min-width="185"><template #default="{row}">{{ formatFileTime(row.updatedAt) }}</template></el-table-column>
+              <el-table-column label="更新时间" min-width="185"><template #default="{row}">{{ formatFileTime(row.updatedAt) }}</template></el-table-column>
             </el-table>
             <p class="model-files-note">预留状态可能包含未完成、部分写入或回执丢失，不能解释为没有文件。文件就绪不等于模型已登记。</p>
           </el-tab-pane>
@@ -37,7 +37,7 @@
               <el-table-column prop="requestId" label="请求编号" min-width="230" />
               <el-table-column prop="retentionId" label="保留记录编号" min-width="230" />
               <el-table-column label="记录长度" min-width="120"><template #default="{row}">{{ knownCount(row.bytes)==null ? '未知' : knownCount(row.bytes).toLocaleString('zh-CN') + ' B' }}</template></el-table-column>
-              <el-table-column label="更新时间 · UTC+8" min-width="185"><template #default="{row}">{{ formatFileTime(row.updatedAt) }}</template></el-table-column>
+              <el-table-column label="更新时间" min-width="185"><template #default="{row}">{{ formatFileTime(row.updatedAt) }}</template></el-table-column>
             </el-table>
             <p class="model-files-note">旧文件缺少已登记摘要时显示“旧文件待核对”。保留记录不是文件仍然存在或已成功回收的证明。</p>
           </el-tab-pane>

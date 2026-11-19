@@ -20,7 +20,7 @@
           <div class="managed-form-section-heading"><AppIcon name="Operation" :size="19" /><div><h2 id="device-state-heading">状态与维护</h2><p>以下为设备业务登记，不作为实时在线或现场可用证明。</p></div></div>
           <div class="device-form-grid">
             <el-form-item label="设备状态" prop="status"><el-select v-model="form.status" popper-class="business-select-popper" placeholder="选择业务状态"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
-            <el-form-item label="最后维护时间（UTC+8）" prop="lastMaintenanceDate"><el-date-picker v-model="form.lastMaintenanceDate" popper-class="business-date-popper" type="datetime" placeholder="选择实际维护时间" value-format="YYYY-MM-DDTHH:mm:ss" /><p class="managed-field-help">仅更新维护时间登记，不自动生成维护工单。</p></el-form-item>
+            <el-form-item label="最后维护时间" prop="lastMaintenanceDate"><el-date-picker v-model="form.lastMaintenanceDate" popper-class="business-date-popper" type="datetime" placeholder="选择实际维护时间" value-format="YYYY-MM-DDTHH:mm:ss" /><p class="managed-field-help">仅更新维护时间登记，不自动生成维护工单。</p></el-form-item>
           </div>
         </section>
       </el-form>

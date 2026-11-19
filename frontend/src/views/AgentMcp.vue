@@ -35,7 +35,7 @@
             <p>安装编号 {{ item.installationId }} · {{ item.transport }}</p><p v-if="item.imageId">运行镜像 <code>{{ item.imageId }}</code></p>
             <p v-if="!item.writerExitVerified&&item.state!=='REMOVED'">安装执行退出尚未核实 文件继续保留</p>
             <p v-if="item.writerEvidenceCode" role="status">{{ writerEvidenceLabel(item.writerEvidenceCode) }}</p>
-            <div class="execution-footer"><time>{{ beijingDateTime(item.updatedAt) }} UTC+8</time><div class="actions">
+            <div class="execution-footer"><time>{{ beijingDateTime(item.updatedAt) }}</time><div class="actions">
               <el-button v-if="state.lifecycle.writerReconciliationSupported&&!item.writerExitVerified&&['NEEDS_REVIEW','READY'].includes(item.state)" :disabled="busy" @click="versionAction(item,'reconcile-writer')">核对安装执行退出</el-button>
               <el-button v-if="item.retainedForRollback&&!item.current&&item.state==='READY'" :disabled="busy||state.status==='INSTALLING'" @click="versionAction(item,'rollback')">回退到此版本</el-button>
               <el-button v-if="item.retainedForRollback&&!item.current" :disabled="busy||state.status==='INSTALLING'" @click="versionAction(item,'release-retention')">不再保留回退</el-button>
@@ -53,7 +53,7 @@
             <div class="execution-heading"><strong>{{ item.purpose==='INSTALL_PROBE'?'安装连接检查':item.purpose==='PROBE'?'连接检查':['CALL','FETCH'].includes(item.purpose)?'网页抓取':'已登记执行' }}</strong><StatusBadge domain="mcpExecution" :code="item.state" /></div>
             <p class="execution-id">执行编号 {{ item.executionId }} · {{ item.transport || state.executionReceipts.transport }}</p>
             <div class="execution-evidence"><span :class="{'confirmed':item.exitVerified===true}"><el-icon><CircleCheck v-if="item.exitVerified===true"/><Clock v-else/></el-icon>{{ item.exitVerified===true?'已确认退出':item.exitVerified===false?'退出尚未确认':'退出证明未记录' }}</span><span :class="{'confirmed':item.cleanupConfirmed===true}"><el-icon><CircleCheck v-if="item.cleanupConfirmed===true"/><Clock v-else/></el-icon>{{ item.cleanupConfirmed===true?'已确认清理':item.cleanupConfirmed===false?'清理尚未确认':'清理回执未记录' }}</span></div>
-            <div class="execution-footer"><time>{{ beijingDateTime(item.updatedAt) }} UTC+8</time><el-button v-if="!item.cleanupConfirmed" :disabled="busy" @click="reconcile(item)">{{ ['OPENING','RUNNING'].includes(item.state)?'终止并核对':'核对退出与清理' }}</el-button></div>
+            <div class="execution-footer"><time>{{ beijingDateTime(item.updatedAt) }}</time><el-button v-if="!item.cleanupConfirmed" :disabled="busy" @click="reconcile(item)">{{ ['OPENING','RUNNING'].includes(item.state)?'终止并核对':'核对退出与清理' }}</el-button></div>
           </article>
         </TransitionGroup>
       </section>

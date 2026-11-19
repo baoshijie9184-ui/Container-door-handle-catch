@@ -9,6 +9,7 @@ import com.aliyun.oss.model.PutObjectRequest;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.infra.config.properties.OssProperties;
 import com.ruanzhu.doorhandle.module.infra.service.OssStorageService;
+import com.ruanzhu.doorhandle.module.infra.service.OssPreviewStorage;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,6 +27,7 @@ import java.util.Date;
 public class OssStorageServiceImpl implements OssStorageService {
 
     private final OssProperties ossProperties;
+    private final OssPreviewStorage previews;
     private OSS ossClient;
     private OSS approvedWriteClient;
 
@@ -48,15 +50,10 @@ public class OssStorageServiceImpl implements OssStorageService {
 
     @Override
     public URL generateGetUrl(String objectKey, Duration duration) {
-        ensureConfigured();
-        GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(
-                ossProperties.getBucketName(),
-                objectKey,
-                HttpMethod.GET
-        );
-        request.setExpiration(new Date(System.currentTimeMillis() + duration.toMillis()));
-        return getClient().generatePresignedUrl(request);
+        return previews.sign(objectKey, duration);
     }
+
+    @Override public boolean isPreviewConfigured() { return previews.configured(); }
 
     @Override
     public String getBucketName() {
@@ -92,8 +89,8 @@ public class OssStorageServiceImpl implements OssStorageService {
         getClient().putObject(request);
     }
     @Override public byte[] readObject(String objectKey,long maxBytes){
-        ensureConfigured();if(objectKey==null||objectKey.isBlank()||objectKey.length()>1024||objectKey.chars().anyMatch(Character::isISOControl)||maxBytes<1||maxBytes>26214400)throw new IllegalArgumentException("对象读取范围无效");
-        try(var object=getClient().getObject(ossProperties.getBucketName(),objectKey)){
+        if(objectKey==null||objectKey.isBlank()||objectKey.length()>1024||objectKey.chars().anyMatch(Character::isISOControl)||maxBytes<1||maxBytes>26214400)throw new IllegalArgumentException("对象读取范围无效");
+        try(var object=previews.open(objectKey,false)){
             if(object.getObjectMetadata().getContentLength()<1||object.getObjectMetadata().getContentLength()>maxBytes){object.forcedClose();throw new BusinessException("图片大小超出读取限制");}
             byte[] bytes=object.getObjectContent().readNBytes(Math.toIntExact(maxBytes+1));
             if(bytes.length<1||bytes.length>maxBytes||bytes.length!=object.getObjectMetadata().getContentLength())throw new BusinessException("图片长度无法核对");return bytes;

@@ -28,7 +28,7 @@
         <div :class="{ 'has-issues': report.issueCount > 0 }"><dt>存在差异的关联</dt><dd>{{ countText(report.issueCount) }}</dd></div>
       </dl>
       <dl class="snapshot-metadata">
-        <div><dt>观察时间 UTC+8</dt><dd>{{ formatTime(report.startedAt) }} 至 {{ formatTime(report.finishedAt) }}</dd></div>
+        <div><dt>观察时间</dt><dd>{{ formatTime(report.startedAt) }} 至 {{ formatTime(report.finishedAt) }}</dd></div>
         <div><dt>执行账号</dt><dd>{{ report.actorName || '名称未记录' }} · ID {{ report.actorUserId ?? '未记录' }}</dd></div>
         <div><dt>控制版本</dt><dd>{{ report.controlRevision ?? '未记录' }}</dd></div>
         <div class="request-metadata"><dt>请求编号</dt><dd><code>{{ report.requestId }}</code></dd></div>
@@ -52,7 +52,7 @@
     <div class="report-table"><el-table :data="history" :aria-busy="historyBusy">
       <template #empty><CollectionEmptyState :loading="historyBusy" :error="historyError" :empty-title="enabled ? '暂无已保存的观察' : '当前未启用核对摘要'" :empty-description="enabled ? '生成一次核对摘要后，可在这里回看当时的差异。' : '已有原请求编号仍可在上方查询，不会自动生成或重试。'" @retry="loadHistory(true)" /></template>
       <el-table-column prop="requestId" label="请求编号" min-width="250" />
-      <el-table-column label="时间 UTC+8" min-width="180"><template #default="{ row }">{{ formatTime(row.finishedAt) }}</template></el-table-column>
+      <el-table-column label="时间" min-width="180"><template #default="{ row }">{{ formatTime(row.finishedAt) }}</template></el-table-column>
       <el-table-column label="任务" width="100"><template #default="{ row }">{{ countText(row.taskCount) }}</template></el-table-column>
       <el-table-column label="差异关联" width="110"><template #default="{ row }"><span :class="{ 'issue-count': row.issueCount > 0 }">{{ countText(row.issueCount) }}</span></template></el-table-column>
       <el-table-column label="明细" width="80"><template #default="{ row }"><el-button link type="primary" :disabled="statusBusy || creating" :aria-label="`查看核对摘要 ${row.requestId}`" @click="show(row.requestId)">查看</el-button></template></el-table-column>

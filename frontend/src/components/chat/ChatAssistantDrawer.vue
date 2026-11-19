@@ -50,6 +50,7 @@
                 <h3 class="chat-header-title">{{ chatStore.sessionTitle }}</h3>
               </div>
             </div>
+            <BeijingClock v-if="fullScreen" />
             <div class="chat-header-actions" @keydown.esc.capture="dismissHeaderMenu">
               <button v-if="fullScreen" ref="contextToggleRef" type="button" class="chat-header-btn context-toggle" :aria-label="contextOpen?'收起工作面板':'展开工作面板'" :title="contextOpen?'收起工作面板':'展开工作面板'" :aria-expanded="contextOpen" aria-controls="chat-workspace-context" @click="contextOpen=!contextOpen"><el-icon aria-hidden="true"><Operation /></el-icon></button>
               <div class="chat-header-secondary-actions">
@@ -134,6 +135,7 @@
 </template>
 
 <script setup>
+import BeijingClock from '@/components/BeijingClock.vue'
 import { accountSession } from '../../utils/accountContext'
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElDrawer } from 'element-plus'

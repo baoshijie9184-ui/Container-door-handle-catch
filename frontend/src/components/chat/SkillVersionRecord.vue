@@ -11,7 +11,7 @@
         <details v-for="(text,path) in licenses" :key="path" class="skill-license"><summary>{{ path }} · 许可证与版权原文</summary><pre tabindex="0" :aria-label="path+' 许可证原文'">{{ text }}</pre></details>
         <p v-if="!Object.keys(licenses).length">本记录未返回许可证原文，不据此推断已核验许可。</p>
       </template>
-      <template v-else><dl><dt>来源类型</dt><dd>{{ evidence.sourceType==='RUN'?'本人授权运行':evidence.sourceType||'未记录' }}</dd><dt>成功工具记录</dt><dd>{{ Array.isArray(evidence.tools)?evidence.tools.join('、')||'无已记录工具':'未记录' }}</dd><dt>完成时间 · UTC+8</dt><dd>{{ time(evidence.completedAt) }}</dd></dl></template>
+      <template v-else><dl><dt>来源类型</dt><dd>{{ evidence.sourceType==='RUN'?'本人授权运行':evidence.sourceType||'未记录' }}</dd><dt>成功工具记录</dt><dd>{{ Array.isArray(evidence.tools)?evidence.tools.join('、')||'无已记录工具':'未记录' }}</dd><dt>完成时间</dt><dd>{{ time(evidence.completedAt) }}</dd></dl></template>
       <router-link v-if="version.sourceRunId" :to="{path:'/agent/trace',query:{runId:version.sourceRunId}}" class="skill-source-trace"><AppIcon name="Connection" :size="14" />查看本人来源轨迹</router-link>
     </details>
     <div v-if="version.reviewReason" class="skill-version-review"><strong>审核意见</strong><p>{{ version.reviewReason }}</p></div>

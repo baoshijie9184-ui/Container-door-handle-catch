@@ -60,6 +60,7 @@
 
         <RealtimeStatus />
         <div class="header-actions">
+          <BeijingClock />
           <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
           <router-link v-if="!isAgentChatRoute" to="/agent/chat" class="assistant-entry-link" aria-label="AI 工作助手">
             <el-icon aria-hidden="true"><ChatDotRound /></el-icon><span>AI 工作助手</span>
@@ -88,6 +89,7 @@
 </template>
 
 <script setup>
+import BeijingClock from '@/components/BeijingClock.vue'
 import RealtimeStatus from '../components/RealtimeStatus.vue'
 import {SYSTEM_NAME,SYSTEM_SHORT_NAME} from '@/utils/systemBrand'
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'

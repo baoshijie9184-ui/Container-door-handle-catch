@@ -2000,7 +2000,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     }
 
     private String signUrl(String objectKey) {
-        if (!StringUtils.hasText(objectKey) || !ossStorageService.isConfigured()) {
+        if (!StringUtils.hasText(objectKey) || !ossStorageService.isPreviewConfigured()) {
             return null;
         }
         return "/api/oss/preview?key=" + URLEncoder.encode(objectKey, StandardCharsets.UTF_8);

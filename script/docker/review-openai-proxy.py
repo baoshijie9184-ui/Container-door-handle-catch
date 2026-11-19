@@ -1,7 +1,8 @@
-"""HTTP CONNECT for api.openai.com:443 on the private review bridge. TLS stays end-to-end."""
+"""HTTP CONNECT for the approved OpenAI and optional OSS bucket hosts on the private review bridge. TLS stays end-to-end."""
 import asyncio
 import ipaddress
 import os
+import re
 
 TARGET = b"api.openai.com:443"
 HEADER_LIMIT = 8192
@@ -19,6 +20,12 @@ async def serve():
     network = ipaddress.IPv4Network(os.environ["REVIEW_BRIDGE_SUBNET"])
     if not network.is_private or address not in network or address.is_loopback:
         raise ValueError("Expected a private review bridge")
+    targets = {TARGET}
+    bucket_host = os.environ.get("REVIEW_OSS_PREVIEW_HOST", "")
+    if bucket_host:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.oss-[a-z0-9-]+\.aliyuncs\.com", bucket_host):
+            raise ValueError("Expected an exact OSS bucket hostname")
+        targets.add((bucket_host + ":443").encode("ascii"))
     capacity = asyncio.Semaphore(24)
 
     async def handle(client, downstream):
@@ -31,13 +38,14 @@ async def serve():
             async with capacity:
                 headers = await asyncio.wait_for(client.readuntil(b"\r\n\r\n"), 8)
                 first = headers.split(b"\r\n", 1)[0].split()
-                if len(first) != 3 or first[:2] != [b"CONNECT", TARGET] or first[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
+                if len(first) != 3 or first[0] != b"CONNECT" or first[1] not in targets or first[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
                     downstream.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                     await downstream.drain()
                     return
+                target = first[1]
                 reader, upstream = await asyncio.wait_for(
                     asyncio.open_connection("127.0.0.1", int(os.environ["REVIEW_HOST_PROXY_PORT"]), limit=HEADER_LIMIT), 8)
-                upstream.write(b"CONNECT " + TARGET + b" HTTP/1.1\r\nHost: " + TARGET + b"\r\n\r\n")
+                upstream.write(b"CONNECT " + target + b" HTTP/1.1\r\nHost: " + target + b"\r\n\r\n")
                 await upstream.drain()
                 reply = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 12)
                 if reply.split(b"\r\n", 1)[0].split()[1:2] != [b"200"]:

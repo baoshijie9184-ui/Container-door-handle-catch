@@ -1,3 +1,5 @@
+import { beijingDateTime as formatClock, subscribeClock } from '../../frontend/src/utils/beijingTime';
+import '../../frontend/src/assets/beijing-clock.css';
 import { AccountBoundary } from './AccountBoundary';
 import { accountFetch as fetch } from '../../frontend/src/utils/accountFetch';
 import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE,AGENT_WORKSPACE_NAME} from '../../frontend/src/utils/systemBrand';
@@ -53,6 +55,12 @@ const CONVERSATION_CONTROLS = new URL('/api/agent/conversations',new URL(API,win
 const BusinessCardBubble = ({ data }) => <AgentResultCards {...data} />;
 const WorkbenchMessageBubble = ({ data }) => <WorkbenchMessage {...data} />;
 const SkillInstallLinkBubble=({data})=><p style={{whiteSpace:'pre-wrap'}}>{data.before}<a href={data.href}>{data.label}</a>{data.after}</p>;
+
+function BeijingClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => subscribeClock(setNow), []);
+  return <time className="beijing-clock" dateTime={now.toISOString()}><span>北京时间</span><b>{formatClock(now)}</b></time>;
+}
 
 function App() {
   const reducedMotion=useReducedMotion();
@@ -332,6 +340,7 @@ function App() {
         <header className="agent-header">
           <Button ref={sidebarToggleRef} type="text" aria-label={sidebarOpen?'收起会话列表':'展开会话列表'} title={sidebarOpen?'收起会话列表':'展开会话列表'} aria-expanded={sidebarOpen} aria-controls="agent-sessions" icon={<PanelLeft size={18} aria-hidden="true" />} onClick={()=>setSidebarOpen(!sidebarOpen)} />
           <div className="conversation-heading"><h1>{activeSession?.title||'智能对话助手'}</h1><span>{catalog?.role === 'SUPERVISOR' ? '主管工作助手' : catalog ? '员工工作助手' : '检测与质检工作助手'}</span></div>
+          {window.self === window.top && <BeijingClock />}
           {catalog && <span className="capability-tag"><StatusBadge domain="agentMode" code={catalog.mode}/></span>}
           {controlState.enabled&&<Button type="text" aria-label="任务操作" title="任务操作" icon={<List size={17} aria-hidden="true"/>} onClick={()=>controlsRef.current?.openOptions()}/>}
           <Button ref={infoToggleRef} className="info-toggle" type="text" aria-label={infoOpen?'收起助手信息':'查看助手信息'} title={infoOpen?'收起助手信息':'查看助手信息'} aria-expanded={infoOpen} aria-controls="agent-info" icon={<PanelRight size={18} aria-hidden="true" />} onClick={()=>setInfoOpen(!infoOpen)} />

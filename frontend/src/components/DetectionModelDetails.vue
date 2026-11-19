@@ -22,7 +22,7 @@
       <p class="model-detail-note">AP50、AP75 应分别核对原始评测报告，不能由 AP 推算。</p>
       <dl class="model-detail-metrics model-fact-metrics"><div><dt>整图未检出率（漏检率）</dt><dd>{{ emptyImages.value }}</dd></div><div><dt>实测速度 FPS</dt><dd>{{ modelFps(model.inferenceFps) }}</dd></div></dl>
       <p class="model-detail-note">{{ emptyImages.description }}。未检出表示没有任何类别目标通过本次阈值，Normal 检出也算检出；失败图片不计入分母，不等同有真实标注的漏检判定。</p>
-      <dl class="model-detail-facts"><dt>训练图片数量</dt><dd>{{ modelTrainingImages(model.trainingImageCount) }}</dd><dt>训练完成日期 · UTC+8</dt><dd>{{ modelTime(model.trainingCompletedAt) }}</dd></dl>
+      <dl class="model-detail-facts"><dt>训练图片数量</dt><dd>{{ modelTrainingImages(model.trainingImageCount) }}</dd><dt>训练完成日期</dt><dd>{{ modelTime(model.trainingCompletedAt) }}</dd></dl>
       <details v-if="legacyMetrics.length" class="model-storage-details"><summary><AppIcon name="Document" :size="15" />其他历史指标<AppIcon class="model-storage-chevron" name="ArrowDown" :size="13" /></summary><p class="model-detail-note">保留已有登记，不作为当前模型的主评估指标。</p><dl class="model-detail-metrics"><div v-for="[key,label] in legacyMetrics" :key="key"><dt>{{ label }}</dt><dd>{{ modelMetricNumber(model[key])==null ? '待核对' : modelMetric(model[key]) }}</dd></div></dl></details>
       <dl class="model-detail-facts"><dt>评估数据集</dt><dd>{{ model.evaluationDataset || '未记录' }}</dd><dt>登记的平均耗时</dt><dd>{{ modelMilliseconds(model.avgInferenceMs) }}</dd><dt>资料状态</dt><dd><StatusBadge domain="modelEvaluation" :code="model.mlopsStatus" /></dd></dl>
       <div v-if="model.compatibilityNote" class="model-compatibility-note"><h5><AppIcon name="Connection" :size="15" />测试环境与兼容性说明</h5><div :key="model.compatibilityNote" class="model-detail-copy" :class="{'is-long':longText(model.compatibilityNote)}" :tabindex="longText(model.compatibilityNote) ? 0 : undefined" :role="longText(model.compatibilityNote) ? 'region' : undefined" :aria-label="longText(model.compatibilityNote) ? '兼容性完整说明，可使用方向键滚动' : undefined"><p>{{ model.compatibilityNote }}</p></div><p v-if="longText(model.compatibilityNote)" class="model-detail-reading-hint"><AppIcon name="Rank" :size="13" />完整兼容性说明可在上方区域内滚动阅读</p></div>
@@ -30,7 +30,7 @@
 
     <section class="model-detail-group">
       <h4><AppIcon name="Operation" :size="17" />登记策略与使用</h4>
-      <dl class="model-detail-facts"><dt>默认模型</dt><dd>{{ modelDefault(model.isDefault) }}</dd><dt>部署策略</dt><dd>{{ modelStrategy(model) }}</dd><dt>使用次数</dt><dd>{{ modelUsage(model.usageCount) }}</dd><dt>最近使用 · UTC+8</dt><dd>{{ modelTime(model.lastUsedAt) }}</dd></dl>
+      <dl class="model-detail-facts"><dt>默认模型</dt><dd>{{ modelDefault(model.isDefault) }}</dd><dt>部署策略</dt><dd>{{ modelStrategy(model) }}</dd><dt>使用次数</dt><dd>{{ modelUsage(model.usageCount) }}</dd><dt>最近使用</dt><dd>{{ modelTime(model.lastUsedAt) }}</dd></dl>
       <p class="model-detail-note">策略为登记资料，不是实际灰度比例、A/B 测试结果或服务器部署回执。</p>
     </section>
 
@@ -38,7 +38,7 @@
       <h4><AppIcon name="DocumentCopy" :size="17" />版本说明</h4>
       <div :key="model.updateDescription" class="model-detail-copy" :class="{'is-long':longText(model.updateDescription)}" :tabindex="longText(model.updateDescription) ? 0 : undefined" :role="longText(model.updateDescription) ? 'region' : undefined" :aria-label="longText(model.updateDescription) ? '版本完整说明，可使用方向键滚动' : undefined"><p>{{ model.updateDescription || '未记录更新说明。' }}</p></div>
       <p v-if="longText(model.updateDescription)" class="model-detail-reading-hint"><AppIcon name="Rank" :size="13" />完整版本说明可在上方区域内滚动阅读</p>
-      <dl class="model-detail-facts"><dt>上传人</dt><dd>{{ model.creator || '未记录' }}</dd><dt>上传时间 · UTC+8</dt><dd>{{ modelTime(model.uploadTime) }}</dd><dt>发布时间 · UTC+8</dt><dd>{{ modelTime(model.publishedAt) }}</dd></dl>
+      <dl class="model-detail-facts"><dt>上传人</dt><dd>{{ model.creator || '未记录' }}</dd><dt>上传时间</dt><dd>{{ modelTime(model.uploadTime) }}</dd><dt>发布时间</dt><dd>{{ modelTime(model.publishedAt) }}</dd></dl>
     </section>
 
     <details class="model-storage-details"><summary><AppIcon name="Document" :size="15" />存储登记与策略字段<AppIcon class="model-storage-chevron" name="ArrowDown" :size="13" /></summary><dl class="model-detail-facts"><dt>模型路径登记</dt><dd>{{ model.modelPath || '未记录' }}</dd><dt>策略代码</dt><dd>{{ model.deploymentStrategy || '未记录' }}</dd><dt>灰度比例</dt><dd>{{ model.canaryPercent==null ? '未记录' : model.canaryPercent+'%' }}</dd><dt>A/B 分组</dt><dd>{{ model.abGroup || '未记录' }}</dd><dt>回滚来源</dt><dd>{{ model.rollbackFromModelId ?? '未记录' }}</dd></dl><p class="model-detail-note">路径与策略字段仅供对照登记资料，不在此访问文件或重新核对实际部署。</p></details>

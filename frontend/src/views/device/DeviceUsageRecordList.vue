@@ -18,13 +18,13 @@
         <div class="usage-filter-field"><label for="usage-status">使用状态</label><el-select id="usage-status" v-model="filters.status" placeholder="使用状态" clearable>
           <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
         </el-select></div>
-        <div class="usage-filter-field usage-time-field"><span>使用开始时间范围 · UTC+8</span><el-date-picker
+        <div class="usage-filter-field usage-time-field"><span>使用开始时间范围</span><el-date-picker
           v-model="filters.startTimeRange"
           type="datetimerange"
           range-separator="至"
           start-placeholder="开始时间"
           end-placeholder="结束时间"
-          aria-label="使用开始时间范围，UTC+8"
+          aria-label="使用开始时间范围"
           value-format="YYYY-MM-DD HH:mm:ss"
           class="date-range-picker"
         /></div>
@@ -39,7 +39,7 @@
     </section>
 
     <section class="table-panel">
-      <div class="collection-heading"><h2><AppIcon name="Clock" :size="18" />使用记录</h2><span>{{ loading ? '正在读取…' : listError ? '本次读取失败' : total==null?'总数尚未核对':`匹配 ${total} 条` }} · 时间 UTC+8</span></div>
+      <div class="collection-heading"><h2><AppIcon name="Clock" :size="18" />使用记录</h2><span>{{ loading ? '正在读取…' : listError ? '本次读取失败' : total==null?'总数尚未核对':`匹配 ${total} 条` }}</span></div>
       <p class="management-applied-query">已查询范围：{{ appliedDescription }}</p>
       <el-alert v-if="listError && records.length" :title="listError + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
       <el-button v-if="listError && records.length" class="management-retry" :loading="loading" @click="retryRecords"><AppIcon name="Refresh" :size="14" />重读上次请求</el-button>
@@ -50,8 +50,8 @@
         </template>
         <el-table-column label="设备资料" min-width="185"><template #default="{row}"><div class="usage-cell"><strong>{{ row.deviceCode||'设备编号未记录' }}</strong><small>{{ getDeviceTypeName(row.deviceType)||'类型未记录' }} · {{ row.modelName||'型号未记录' }}</small></div></template></el-table-column>
         <el-table-column label="使用人" min-width="140"><template #default="{row}"><div class="usage-cell"><strong>{{ row.employeeName||'姓名未记录' }}</strong><small>{{ row.employeeNumber||'员工编号未记录' }}</small></div></template></el-table-column>
-        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="usageChanges[String(row.id)]" :revision="row.version" resource-type="DEVICE_USAGE" :resource-id="row.id" domain="DEVICE_USAGE" /></template></el-table-column>
-        <el-table-column label="使用时间 · UTC+8" min-width="235"><template #default="{row}"><div class="usage-cell"><strong>开始 {{ formatDateTime(row.startTime) }}</strong><small>结束 {{ row.endTime ? formatDateTime(row.endTime) : ['IN_USE','使用中'].includes(row.status) ? '使用中，尚无结束时间' : '未记录' }}</small></div></template></el-table-column>
+        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="usageChanges[String(row.id)]" :revision="row.version" resource-type="DEVICE_USAGE" :resource-id="row.id" domain="DEVICE_USAGE" /></template></el-table-column>
+        <el-table-column label="使用时间" min-width="235"><template #default="{row}"><div class="usage-cell"><strong>开始 {{ formatDateTime(row.startTime) }}</strong><small>结束 {{ row.endTime ? formatDateTime(row.endTime) : ['IN_USE','使用中'].includes(row.status) ? '使用中，尚无结束时间' : '未记录' }}</small></div></template></el-table-column>
         <el-table-column label="使用状态" width="110">
           <template #default="{ row }">
             <StatusBadge domain="usage" :code="row.status" :label="getStatusLabel(row.status)" />
@@ -94,7 +94,7 @@
             <el-option v-for="e in employeeOptions" :key="e.id" :label="`${e.name || '姓名未记录'} (${e.employeeNumber || '员工编号未记录'})`" :value="resourceId(e.id)" />
           </el-select>
         </el-form-item>
-        <el-form-item label="开始时间（UTC+8）" prop="startTime">
+        <el-form-item label="开始时间" prop="startTime">
           <el-date-picker v-model="createForm.startTime" type="datetime" aria-label="选择开始时间" placeholder="选择开始时间" style="width:100%" value-format="YYYY-MM-DDTHH:mm:ss" />
         </el-form-item>
         <el-form-item label="备注">
@@ -103,7 +103,7 @@
       </el-form>
       <Transition name="usage-review"><section v-if="createProposal" ref="proposalRef" tabindex="-1" class="usage-create-review" aria-label="核对使用登记及设备关系变化">
         <h3><AppIcon name="DocumentChecked" :size="18" />核对登记与设备变更</h3>
-        <dl class="usage-detail-facts"><dt>目标设备</dt><dd>{{ createProposal.deviceLabel }}<small>ID {{ createProposal.payload.deviceId }}</small></dd><dt>登记使用员工</dt><dd>{{ createProposal.employeeLabel }}<small>ID {{ createProposal.payload.employeeId }}</small></dd><dt>当前设备使用员工</dt><dd>{{ createProposal.ownerLabel }}</dd><dt>当前设备状态</dt><dd><StatusBadge domain="device" :code="createProposal.deviceStatus" /></dd><dt>实际开始时间 · UTC+8</dt><dd>{{ formatDateTime(createProposal.payload.startTime) }}</dd><dt>备注</dt><dd>{{ createProposal.payload.remarks || '未填写' }}</dd></dl>
+        <dl class="usage-detail-facts"><dt>目标设备</dt><dd>{{ createProposal.deviceLabel }}<small>ID {{ createProposal.payload.deviceId }}</small></dd><dt>登记使用员工</dt><dd>{{ createProposal.employeeLabel }}<small>ID {{ createProposal.payload.employeeId }}</small></dd><dt>当前设备使用员工</dt><dd>{{ createProposal.ownerLabel }}</dd><dt>当前设备状态</dt><dd><StatusBadge domain="device" :code="createProposal.deviceStatus" /></dd><dt>实际开始时间</dt><dd>{{ formatDateTime(createProposal.payload.startTime) }}</dd><dt>备注</dt><dd>{{ createProposal.payload.remarks || '未填写' }}</dd></dl>
         <el-alert :type="createProposal.reassign ? 'warning' : 'info'" :title="createProposal.reassign ? '保存将更换设备登记的当前使用员工，并将设备状态改为使用中；不会为原员工自动登记归还。' : '保存将设备状态更新为使用中，并登记所选员工；不是检测任务提交或在线确认。'" show-icon :closable="false" />
       </section></Transition>
       <p v-if="createLoading" role="status" class="usage-form-note">{{ createPhase==='SENDING' ? '正在等待保存回执，请勿重复提交' : '正在验证输入并核对当前设备与人员资料，尚未发送保存' }}</p>
@@ -183,7 +183,7 @@ const hasFilters=computed(()=>{
 const appliedDescription=computed(()=>{
   if(!appliedQuery.value)return '尚未完成读取'
   const query=appliedQuery.value.filters
-  return [query.deviceId?`设备 ID ${query.deviceId}`:'',query.deviceCode?`设备编号 ${query.deviceCode}`:'',query.employeeName?`员工姓名 ${query.employeeName}`:'',query.employeeNumber?`员工编号 ${query.employeeNumber}`:'',query.status?getStatusLabel(query.status):'',query.startTimeRange.length===2?`${query.startTimeRange[0]} 至 ${query.startTimeRange[1]}（UTC+8）`:''].filter(Boolean).join(' · ') || '当前账号可访问的全部使用记录'
+  return [query.deviceId?`设备 ID ${query.deviceId}`:'',query.deviceCode?`设备编号 ${query.deviceCode}`:'',query.employeeName?`员工姓名 ${query.employeeName}`:'',query.employeeNumber?`员工编号 ${query.employeeNumber}`:'',query.status?getStatusLabel(query.status):'',query.startTimeRange.length===2?`${query.startTimeRange[0]} 至 ${query.startTimeRange[1]}`:''].filter(Boolean).join(' · ') || '当前账号可访问的全部使用记录'
 })
 function clearList(){records.value=[];total.value=null;detailVisible.value=false;selectedRecord.value=null}
 async function fetchRecords(query){
@@ -225,7 +225,7 @@ const backToDeviceList=()=>router.push({name:'devices'})
 function openDetails(row){if(!records.value.some(item=>resourceId(item.id)===resourceId(row?.id)))return;selectedRecord.value=Object.freeze({...row});detailVisible.value=true}
 const detailFacts=computed(()=>{
   const row=selectedRecord.value || {}
-  return [['设备 ID',row.deviceId],['设备类型',getDeviceTypeName(row.deviceType)],['设备型号',row.modelName],['设备序列号',row.serialNumber],['员工姓名',row.employeeName],['员工编号',row.employeeNumber],['员工 ID',row.employeeId],['联系方式',row.contact],['开始时间 · UTC+8',formatDateTime(row.startTime)],['结束时间 · UTC+8',row.endTime?formatDateTime(row.endTime):['IN_USE','使用中'].includes(row.status)?'使用中，尚无结束时间':'未记录'],['备注',row.remarks],['登记时间 · UTC+8',formatDateTime(row.createdTime)],['更新时间 · UTC+8',formatDateTime(row.updatedTime)]].map(([label,value])=>({label,value:value==null || value===''?'未记录':value}))
+  return [['设备 ID',row.deviceId],['设备类型',getDeviceTypeName(row.deviceType)],['设备型号',row.modelName],['设备序列号',row.serialNumber],['员工姓名',row.employeeName],['员工编号',row.employeeNumber],['员工 ID',row.employeeId],['联系方式',row.contact],['开始时间',formatDateTime(row.startTime)],['结束时间',row.endTime?formatDateTime(row.endTime):['IN_USE','使用中'].includes(row.status)?'使用中，尚无结束时间':'未记录'],['备注',row.remarks],['登记时间',formatDateTime(row.createdTime)],['更新时间',formatDateTime(row.updatedTime)]].map(([label,value])=>({label,value:value==null || value===''?'未记录':value}))
 })
 
 const dialogVisible=ref(false),createPhase=ref('IDLE'),createFormRef=ref(null),proposalRef=ref(null)

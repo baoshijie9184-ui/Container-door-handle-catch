@@ -53,7 +53,7 @@ export function operationHistoryRows(records, kind) {
     return {
       key: identity + ':' + occurrence, complete, action, outcome,
       actionLabel,
-      timeLabel: time ? time + ' · UTC+8' : rawTime ? '时间格式待核对' : '时间未记录',
+      timeLabel: time || (rawTime ? '时间格式待核对' : '时间未记录'),
       version: version != null && version > 0 ? version : null,
       fields, reason: text(row.reason), traceRunId: runPattern.test(runId) ? runId : '',
       note: kind === 'mcp' ? mcpNotes[action + ':' + outcome] || '' : ''

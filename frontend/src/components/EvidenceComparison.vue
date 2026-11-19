@@ -15,19 +15,20 @@
       <figure v-for="side in sideViews" :key="side.key">
         <figcaption><strong>{{ side.label }}</strong><a v-if="side.url" :href="side.url" :aria-label="'在新标签页打开'+side.label+'：'+(current.name || '名称未记录')" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">新标签页打开<AppIcon name="TopRight" :size="13" /></a></figcaption>
         <button v-if="side.url && !side.failed" type="button" class="comparison-image-button" :aria-label="'放大'+side.label+'：'+(current.name || '名称未记录')" @click="openZoom(side)"><img :key="side.url" :src="side.url" :alt="side.label+' '+(current.name || '名称未记录')" loading="lazy" decoding="async" @load="markLoaded(side.key,$event.currentTarget.getAttribute('src'))" @error="markFailed(side.key, $event.currentTarget.getAttribute('src'))"/><span :role="side.loaded ? undefined : 'status'"><AppIcon :name="side.loaded ? 'Search' : 'Connection'" :size="14" />{{ side.loaded ? '放大核对' : '正在读取图片' }}</span></button>
-        <div v-else class="comparison-image-empty" :data-state="side.file ? 'unavailable' : 'missing'"><AppIcon :name="side.file ? 'Warning' : 'Picture'" :size="25" /><strong>{{ side.emptyTitle }}</strong><p>{{ side.emptyDescription }}</p><el-button v-if="side.url" size="small" :aria-label="'重新读取'+side.label" @click="retryImage(side)"><AppIcon name="Refresh" :size="14" />重新读取图片</el-button></div>
+        <div v-else class="comparison-image-empty" :data-state="side.file ? 'unavailable' : 'missing'"><AppIcon :name="side.file ? 'Warning' : 'Picture'" :size="25" /><strong><OssPreviewFailure v-if="side.failed" :src="side.url" :fallback="side.emptyTitle" /><template v-else>{{ side.emptyTitle }}</template></strong><p v-if="!side.failed || !side.url">{{ side.emptyDescription }}</p><el-button v-if="side.url" size="small" :aria-label="'重新读取'+side.label" @click="retryImage(side)"><AppIcon name="Refresh" :size="14" />重新读取图片</el-button></div>
         <p class="comparison-filename">{{ side.file?.imageName || '名称未记录' }}</p>
       </figure>
     </div>
     <el-dialog v-model="zoomOpen" :title="zoomTitle" width="min(1100px, 96vw)" append-to-body class="evidence-zoom-dialog" @opened="zoomPager?.focus()">
       <p class="comparison-zoom-note"><AppIcon name="Picture" :size="16" />图片仅供核对，人工复核结论及放行状态请查看对应业务记录。</p>
-      <div v-if="!zoomUrl" class="comparison-image-empty"><strong>当前图片没有可打开的{{ zoomSideLabel }}</strong></div><div v-else-if="zoomError" class="comparison-image-empty" data-state="unavailable" role="alert"><AppIcon name="Warning" :size="26" /><strong>图片暂不可读取</strong><p>可通过下方原预览地址核对，或关闭后重新读取任务详情。</p></div><img v-else :key="zoomUrl" :src="zoomUrl" :alt="zoomTitle" class="comparison-zoom-image" @error="zoomError = $event.currentTarget.getAttribute('src') === zoomUrl"/>
+      <div v-if="!zoomUrl" class="comparison-image-empty"><strong>当前图片没有可打开的{{ zoomSideLabel }}</strong></div><div v-else-if="zoomError" class="comparison-image-empty" data-state="unavailable" role="alert"><AppIcon name="Warning" :size="26" /><strong><OssPreviewFailure :src="zoomUrl" /></strong></div><img v-else :key="zoomUrl" :src="zoomUrl" :alt="zoomTitle" class="comparison-zoom-image" @error="zoomError = $event.currentTarget.getAttribute('src') === zoomUrl"/>
       <template #footer><div class="comparison-zoom-actions"><ImageListNavigation v-if="current" ref="zoomPager" :index="currentIndex" :total="pairs.length" @select="selectIndex" /><a v-if="zoomUrl" :href="zoomUrl" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">在新标签页打开原预览<AppIcon name="TopRight" :size="14" /></a><el-button @click="zoomOpen = false">关闭图片</el-button></div></template>
     </el-dialog>
   </section>
 </template>
 
 <script setup>
+import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import { computed, getCurrentInstance, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import ImageListNavigation from './ImageListNavigation.vue'

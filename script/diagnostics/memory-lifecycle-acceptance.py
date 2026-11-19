@@ -43,7 +43,7 @@ with sync_playwright() as p:
     dialog.get_by_role('button',name='取消',exact=True).click();expect(dialog).not_to_be_visible();assert not writes;checks.append('opening and canceling controls never saves')
     page.get_by_role('button',name='有效期与停用',exact=True).click();dialog.locator('.el-select__wrapper').click();page.get_by_role('option',name='停用错误或重复记忆',exact=True).click()
     dialog.get_by_text('到期后自动删除这条记忆',exact=True).click();expect(dialog.get_by_role('checkbox',name='到期后自动删除这条记忆')).to_be_checked();expect(dialog.get_by_role('button',name='预览设置')).to_be_disabled();checks.append('automatic cleanup cannot be confirmed without an expiry')
-    expiry=dialog.get_by_role('textbox',name='记忆有效期 北京时间') if dialog.get_by_role('textbox',name='记忆有效期 北京时间').count() else dialog.locator('input[type="datetime-local"]')
+    expiry=dialog.get_by_role('textbox',name='记忆有效期') if dialog.get_by_role('textbox',name='记忆有效期').count() else dialog.locator('input[type="datetime-local"]')
     expiry.fill('2026-11-18T12:30');dialog.get_by_role('button',name='预览设置').click();expect(dialog).to_contain_text('无法在此恢复');assert not writes
     dialog.get_by_role('button',name='确认设置').focus();page.keyboard.press('Enter');expect(dialog).not_to_be_visible();expect(page.locator('.memory-lifecycle-status')).to_contain_text('已停用')
     assert len(writes)==1 and writes[0]['body']['expiresAt']=='2026-11-18T12:30:00+08:00';checks.append('preview then explicit keyboard confirmation saves the UTC+8 expiry and original version')

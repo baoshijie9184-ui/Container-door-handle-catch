@@ -9,7 +9,7 @@
         <div class="business-desc">{{ payload.description || '已为你整理相关业务入口。' }}</div>
       </div>
     </div>
-    <p class="business-snapshot-note"><AppIcon name="Clock" :size="15" /><span>消息中的业务快照 · {{ historicalTime(message.createdAt) }}（UTC+8）<br/>以下内容保留当时回答，当前数据和可用操作请进入业务页面重新核对。</span></p>
+    <p class="business-snapshot-note"><AppIcon name="Clock" :size="15" /><span>消息中的业务快照 · {{ historicalTime(message.createdAt) }}<br/>以下内容保留当时回答，当前数据和可用操作请进入业务页面重新核对。</span></p>
 
     <template v-if="isQualityQueue || isBatchTrace || isWorkOrderTrace || isDefectGallery || isAgentHealth">
       <div v-if="sources.length" class="source-strip">
@@ -50,7 +50,7 @@
         <div class="agent-health-status" :class="`status-${String(payload.status || 'UNKNOWN').toLowerCase()}`">
           <span class="status-dot"></span>
           <strong>{{ payload.status || 'UNKNOWN' }}</strong>
-          <span>快照记录更新 {{ historicalTime(payload.health?.lastUpdatedAt) }} · UTC+8</span>
+          <span>快照记录更新 {{ historicalTime(payload.health?.lastUpdatedAt) }}</span>
         </div>
         <div class="trace-context">
           <span>最近退出 {{ payload.health?.lastExitReason || 'UNKNOWN' }}</span>

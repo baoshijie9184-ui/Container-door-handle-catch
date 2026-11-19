@@ -5,7 +5,7 @@
     <p v-if="historyError" role="alert" class="review-error">{{ historyError }}</p>
     <p v-else-if="historyLoading&&!records.length" role="status">正在读取最近分析…</p>
     <p v-else-if="!records.length">暂无已读取的分析记录 读取历史不会再次调用模型</p>
-    <div v-for="entry in records" :key="entry.id" class="review-history-row"><span>{{ memoryTime(entry.createdAt) }}<template v-if="entry.createdAt"> UTC+8</template></span><StatusBadge domain="memoryReview" :code="entry.status" :label="status(entry.status)" /><el-button size="small" @click="openHistory(entry.id)"><AppIcon name="Search" :size="15" />查看对比</el-button></div>
+    <div v-for="entry in records" :key="entry.id" class="review-history-row"><span>{{ memoryTime(entry.createdAt) }}</span><StatusBadge domain="memoryReview" :code="entry.status" :label="status(entry.status)" /><el-button size="small" @click="openHistory(entry.id)"><AppIcon name="Search" :size="15" />查看对比</el-button></div>
     <el-dialog v-model="visible" title="相似记忆审阅" width="min(960px, calc(100vw - 32px))" class="memory-review-dialog" append-to-body :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" :before-close="close">
       <p v-if="error" role="alert" class="review-error">{{ error }}</p>
       <template v-if="!review">

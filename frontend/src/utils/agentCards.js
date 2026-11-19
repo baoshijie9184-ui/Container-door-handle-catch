@@ -80,7 +80,7 @@ export function modelOperationDetails(item) {
   const evaluation = item?.evaluation || {}, rollout = item?.rollout || {}, usage = item?.usage || {}
   return [
     { label: '训练图片数量', value: operationNumber(item,'trainingImageCount',evaluation.trainingImageCount,2147483647,value=>value.toLocaleString('zh-CN')+' 张',true,1) },
-    { label: '训练完成日期 · UTC+8', value: operationDate(evaluation.trainingCompletedAt) },
+    { label: '训练完成日期', value: operationDate(evaluation.trainingCompletedAt) },
     { label: '未检出 / 成功评估', value: modelNoDetection(evaluation).description },
     { label: '评估数据集', value: operationText(evaluation.dataset) },
     { label: '登记平均耗时', value: operationNumber(item, 'avgInferenceMs', evaluation.avgInferenceMs, 2147483647, value => value + ' ms', true) },
@@ -91,8 +91,8 @@ export function modelOperationDetails(item) {
     { label: 'A/B 分组', value: operationText(rollout.abGroup) },
     { label: '回滚来源模型', value: operationNumber(item, 'rollbackFromModelId', rollout.rollbackFromModelId, 2147483647, value => '#' + value, true, 1) },
     { label: '登记使用次数', value: operationNumber(item, 'usageCount', usage.count, 2147483647, String, true) },
-    { label: '最近登记使用 · UTC+8', value: operationDate(usage.lastUsedAt) },
-    { label: '登记发布时间 · UTC+8', value: operationDate(usage.publishedAt) },
+    { label: '最近登记使用', value: operationDate(usage.lastUsedAt) },
+    { label: '登记发布时间', value: operationDate(usage.publishedAt) },
   ]
 }
 const alertStatusLabels = { OPEN: '待处理', ACKNOWLEDGED: '已确认', RESOLVED: '已登记解决' }

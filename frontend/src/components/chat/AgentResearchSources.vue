@@ -34,7 +34,7 @@
           <a v-if="source.href" :href="source.href" :aria-label="'在新窗口打开来源 '+(index+1)+' 的记录地址'" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开记录地址 <el-icon aria-hidden="true"><TopRight /></el-icon></a>
           <p v-else class="research-note">请求地址已脱敏，不能据此还原完整请求。</p>
           <pre class="research-excerpt" tabindex="0" :aria-label="'来源 '+(index+1)+' 的网页片段，按源码文本展示'">{{ source.excerpt }}</pre>
-          <p class="research-note">抓取 {{ time(source.fetchedAt) }} · 可查看至 {{ time(source.expiresAt) }} · UTC+8</p>
+          <p class="research-note">抓取 {{ time(source.fetchedAt) }} · 可查看至 {{ time(source.expiresAt) }}</p>
           <details class="research-metadata"><summary>核对片段范围与记录编号</summary><dl><dt>工具调用</dt><dd>{{ source.callId }}</dd><dt>片段范围</dt><dd>起点 {{ source.startIndex }} · 请求上限 {{ source.maxLength }} · 返回文本 {{ source.textChars }} 个 UTF-16 单元</dd><dt>来源编号</dt><dd>{{ source.sourceId }}</dd><dt>返回文本 SHA256</dt><dd>{{ source.contentSha256 }}</dd></dl></details>
           <p class="research-note">{{ citedSources.has(source.sourceId) ? '回答含此来源的标记，引用是否支持结论仍需核对。' : '回答未标记引用此来源。' }} 未采集重定向最终地址、网页发布时间或完整网页快照。</p>
           <el-button size="small" :disabled="!recordedCalls.includes(source.callId)" @click="emit('inspect-call',source.callId)">查看抓取调用</el-button>

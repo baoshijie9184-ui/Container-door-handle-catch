@@ -1,7 +1,7 @@
 <template>
   <section v-if="task" class="quality-task-context" aria-label="当前质检任务">
     <header><span class="quality-context-icon"><AppIcon :name="operationIcon" :size="20" /></span><div><small>当前任务</small><strong>{{ task.taskId || '任务编号未记录' }}</strong></div><StatusBadge domain="flow" :code="value('flowStatus')" /></header>
-    <dl><div><dt>责任人</dt><dd>{{ value('assignee') || '未记录责任人' }}</dd></div><div><dt>截止时间 · UTC+8</dt><dd>{{ deadline }}</dd></div><div><dt>人工复核</dt><dd><StatusBadge domain="review" :code="value('reviewStatus')" /></dd></div><div><dt>已记录的确认缺陷数</dt><dd>{{ confirmedDefects }}</dd></div></dl>
+    <dl><div><dt>责任人</dt><dd>{{ value('assignee') || '未记录责任人' }}</dd></div><div><dt>截止时间</dt><dd>{{ deadline }}</dd></div><div><dt>人工复核</dt><dd><StatusBadge domain="review" :code="value('reviewStatus')" /></dd></div><div><dt>已记录的确认缺陷数</dt><dd>{{ confirmedDefects }}</dd></div></dl>
     <p>{{ operationNote }}</p>
   </section>
 </template>

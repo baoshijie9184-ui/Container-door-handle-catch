@@ -8,7 +8,7 @@
       <label v-if="supervisor">操作账号 ID<el-input v-model="filters.actorUserId" maxlength="20" clearable /></label>
       <label v-if="supervisor">操作时角色<el-select v-model="filters.actorRole" clearable><el-option label="主管" value="SUPERVISOR"/><el-option label="检测人员" value="INSPECTOR"/></el-select></label>
       <label>操作<el-input v-model="filters.action" maxlength="48" clearable placeholder="例如 UPDATE" /></label>
-      <label>开始时间（北京时间）<input v-model="filters.from" type="datetime-local" /></label><label>结束时间（北京时间）<input v-model="filters.to" type="datetime-local" /></label>
+      <label>开始时间<input v-model="filters.from" type="datetime-local" /></label><label>结束时间<input v-model="filters.to" type="datetime-local" /></label>
       <div class="change-filter-actions"><el-button type="primary" native-type="submit" :loading="loading">查询</el-button><el-button @click="reset">重置</el-button></div>
     </form>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" show-icon />

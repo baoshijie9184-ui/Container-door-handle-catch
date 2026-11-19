@@ -30,25 +30,25 @@
       <p v-if="lifecycleError" class="memory-error" role="alert">{{ lifecycleError }}</p>
       <p v-else-if="loading&&!lifecycleHistory.length">正在读取清理记录…</p>
       <p v-else-if="!lifecycleHistory.length">尚无已读取的有效期与清理记录</p>
-      <article v-for="entry in lifecycleHistory" :key="entry.memoryId" class="memory-history-entry"><div class="memory-item-status"><StatusBadge domain="memoryLifecycle" :code="memoryLifecycleCode(entry,clock)" /><StatusBadge domain="memoryCleanup" :code="entry.cleanupState" /></div><small class="memory-record-id">记忆 {{ entry.memoryId }}</small><p v-if="entry.expiresAt">{{ memoryTime(entry.expiresAt) }} UTC+8 到期</p><el-button v-if="entry.cleanupState==='NEEDS_REVIEW'" size="small" :disabled="busy||loading" @click="verifyCleanup(entry)"><AppIcon name="Search" :size="15" />核对清理结果</el-button></article>
+      <article v-for="entry in lifecycleHistory" :key="entry.memoryId" class="memory-history-entry"><div class="memory-item-status"><StatusBadge domain="memoryLifecycle" :code="memoryLifecycleCode(entry,clock)" /><StatusBadge domain="memoryCleanup" :code="entry.cleanupState" /></div><small class="memory-record-id">记忆 {{ entry.memoryId }}</small><p v-if="entry.expiresAt">{{ memoryTime(entry.expiresAt) }} 到期</p><el-button v-if="entry.cleanupState==='NEEDS_REVIEW'" size="small" :disabled="busy||loading" @click="verifyCleanup(entry)"><AppIcon name="Search" :size="15" />核对清理结果</el-button></article>
       <p v-if="cleanupMessage" role="status">{{ cleanupMessage }}</p><p>到期后停止供助手检索 只有勾选自动清理并确认才会删除这条记忆 聊天与历史记录继续保留</p>
     </details>
     <details class="memory-audit">
       <summary><AppIcon name="DocumentChecked" :size="16" />本人最近操作记录</summary>
       <p v-if="auditError" class="memory-error" role="alert">{{ auditError }}</p>
       <p v-else-if="loading&&!audit.length">正在读取操作记录…</p><p v-else-if="!audit.length">暂无已读取的操作记录</p>
-      <div v-for="record in audit" :key="record.id" class="memory-audit-entry"><div><strong>{{ action(record.action) }}</strong><small>{{ record.clockStatus==='UNRESOLVED'&&!record.createdAt?'历史时区未确认':memoryTime(record.createdAt) }}<template v-if="record.createdAt"> UTC+8</template></small></div><StatusBadge domain="memoryAudit" :code="record.outcome" /><el-button v-if="record.action==='AUTOSAVE'&&record.requestId&&['DISPATCHED','UNKNOWN'].includes(record.outcome)" size="small" :disabled="busy||loading||record.clockStatus==='UNRESOLVED'" @click="verifyExtraction(record)"><AppIcon name="Search" :size="15" />核对提炼结果</el-button></div>
+      <div v-for="record in audit" :key="record.id" class="memory-audit-entry"><div><strong>{{ action(record.action) }}</strong><small>{{ record.clockStatus==='UNRESOLVED'&&!record.createdAt?'历史时区未确认':memoryTime(record.createdAt) }}</small></div><StatusBadge domain="memoryAudit" :code="record.outcome" /><el-button v-if="record.action==='AUTOSAVE'&&record.requestId&&['DISPATCHED','UNKNOWN'].includes(record.outcome)" size="small" :disabled="busy||loading||record.clockStatus==='UNRESOLVED'" @click="verifyExtraction(record)"><AppIcon name="Search" :size="15" />核对提炼结果</el-button></div>
       <p v-if="receiptMessage" role="status">{{ receiptMessage }}</p><p>核对只读取原提炼回执 不会重新执行保存 操作记录不保存记忆正文</p>
     </details>
     <el-dialog v-model="policy.visible" title="记忆有效期与停用" class="memory-policy-dialog" width="min(640px, calc(100vw - 32px))" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="closeEditor">
       <p class="memory-original" tabindex="0" aria-label="设置有效期的记忆完整原文">{{ policy.item?.memory }}</p>
       <template v-if="!policy.preview">
         <label class="memory-policy-field">检索状态<el-select v-model="policy.state" aria-label="记忆检索状态" :disabled="busy"><el-option label="正常使用" value="ACTIVE"/><el-option label="停用错误或重复记忆" value="EXCLUDED"/></el-select></label>
-        <label class="memory-policy-field">有效期 北京时间<input v-model="policy.expiry" type="datetime-local" aria-label="记忆有效期 北京时间" :disabled="busy"/></label><p>留空表示长期保留 停用与过期的记忆不会进入后续检索 已进入上下文的内容无法撤回</p>
+        <label class="memory-policy-field">有效期<input v-model="policy.expiry" type="datetime-local" aria-label="记忆有效期" :disabled="busy"/></label><p>留空表示长期保留 停用与过期的记忆不会进入后续检索 已进入上下文的内容无法撤回</p>
         <el-checkbox v-model="policy.autoDelete" :disabled="busy">到期后自动删除这条记忆</el-checkbox><p>需要有效期并再次确认 不选择时仅停止检索 以后仍可延长有效期或手动删除</p>
       </template>
-      <div v-else class="memory-policy-preview"><p>检索状态 {{ policy.state==='ACTIVE'?'正常使用':'停用' }}</p><p>有效期 {{ policy.expiry?policy.expiry.replace('T',' ')+' 北京时间':'长期保留' }}</p><p>{{ policy.autoDelete?'到期后自动删除这条记忆 删除后无法在此恢复 聊天与历史记录继续保留':'到期不自动删除 仍可在个人记忆页管理' }}</p></div>
-      <p v-if="policy.error" class="memory-error" role="alert">{{ policy.error }}</p><p v-if="!validPolicy&&!policy.needsReload">有效期须为未来十年内的北京时间 自动删除需要有效期</p>
+      <div v-else class="memory-policy-preview"><p>检索状态 {{ policy.state==='ACTIVE'?'正常使用':'停用' }}</p><p>有效期 {{ policy.expiry?policy.expiry.replace('T',' '):'长期保留' }}</p><p>{{ policy.autoDelete?'到期后自动删除这条记忆 删除后无法在此恢复 聊天与历史记录继续保留':'到期不自动删除 仍可在个人记忆页管理' }}</p></div>
+      <p v-if="policy.error" class="memory-error" role="alert">{{ policy.error }}</p><p v-if="!validPolicy&&!policy.needsReload">有效期须在未来十年内 自动删除需要有效期</p>
       <template #footer><div class="memory-editor-buttons"><el-button :disabled="busy" @click="policy.visible=false"><AppIcon name="Close" :size="16" />取消</el-button><el-button v-if="policy.needsReload" :loading="busy" @click="reloadPolicy">重新读取当前版本</el-button><template v-else><el-button v-if="policy.preview" :disabled="busy" @click="policy.preview=false">返回修改</el-button><el-button v-if="!policy.preview" type="primary" :disabled="busy||!validPolicy" @click="policy.preview=true">预览设置</el-button><el-button v-else type="primary" :loading="busy" :disabled="!validPolicy" @click="savePolicy">确认设置</el-button></template></div></template>
     </el-dialog>
     <el-dialog v-model="editor.visible" title="编辑长期记忆" class="memory-edit-dialog" width="min(640px, calc(100vw - 32px))" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="closeEditor">

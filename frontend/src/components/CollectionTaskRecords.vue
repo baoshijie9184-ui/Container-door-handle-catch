@@ -13,7 +13,7 @@
               <StatusBadge domain="detection" :code="item.record.status" />
               <router-link class="collection-record-open" :aria-label="'查看任务 ' + item.record.taskId + ' 的检测记录'" :to="{path:'/inspection/history',query:{keyword:item.record.taskId}}"><AppIcon name="Search" :size="15" />查看检测记录</router-link>
             </header>
-            <p class="collection-record-created">创建时间 {{ time(item.record.createdAt) }}<span v-if="hasTime(item.record.createdAt)"> · UTC+8</span></p>
+            <p class="collection-record-created">创建时间 {{ time(item.record.createdAt) }}</p>
             <dl class="collection-record-facts">
               <div><dt>采集日期</dt><dd>{{ text(item.record.captureDate) || '未记录' }}</dd></div>
               <div><dt>地区</dt><dd>{{ text(item.record.region) || '未记录' }}</dd></div>
@@ -39,7 +39,6 @@ const query = ref('')
 const trimmedQuery = computed(() => query.value.trim().toLocaleLowerCase('zh-CN'))
 const text = value => typeof value === 'string' ? value.trim() : ''
 const time = value => text(value) ? beijingDateTime(value) || '时间格式待核对' : '未记录'
-const hasTime = value => text(value) && !!beijingDateTime(value)
 const count = value => { const number = knownCount(value); return number == null ? '数量未记录' : number.toLocaleString('zh-CN') + ' 张' }
 const visible = computed(() => {
   const occurrences = new Map()

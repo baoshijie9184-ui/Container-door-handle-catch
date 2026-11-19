@@ -32,11 +32,11 @@ const groups=computed(()=>{
       ['账号 ID',row.actor_user_id],['资源编号',row.resource_id],['资源版本',row.resource_version],['交付修订',row.revision],['HTTP 状态',row.http_status]
     ])},
     {id:'transfer',label:'服务端写出记录',icon:'Document',fields:fields([
-      ['写调用记录下界',deliveryBytes(row)],['预计内容大小',deliveryExpectedBytes(row)],['创建时间 · UTC+8',auditTime(row.created_at)],['更新时间 · UTC+8',auditTime(row.updated_at)]
+      ['写调用记录下界',deliveryBytes(row)],['预计内容大小',deliveryExpectedBytes(row)],['创建时间',auditTime(row.created_at)],['更新时间',auditTime(row.updated_at)]
     ])}
   ] : [
     {id:'resource',label:'登记与资源',icon:'Document',fields:fields([
-      ['账号 ID',row.actor_user_id],['资源编号',row.resource_id],['资源版本',row.resource_version],['记录时间 · UTC+8',auditTime(row.created_at)]
+      ['账号 ID',row.actor_user_id],['资源编号',row.resource_id],['资源版本',row.resource_version],['记录时间',auditTime(row.created_at)]
     ])},
     {id:'action',label:'动作信息',icon:'Operation',fields:fields([
       ['业务域代码',row.domain],['动作代码',row.action]

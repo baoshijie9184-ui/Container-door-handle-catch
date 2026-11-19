@@ -6,7 +6,7 @@
   <p v-if="view.error" class="task-progress-error" role="alert"><AppIcon name="Warning" :size="15" /><span>已记录的异常：{{ view.error }}</span></p>
   <p v-else-if="view.code==='RESULT_RECORDED'" class="task-progress-message"><AppIcon name="Search" :size="14" /><span>本机只保存了结束阶段，未保存完整检测状态。请重新读取任务追溯核对结果。</span></p>
   <p v-else-if="view.message || view.code==='PARTIAL_FAILED'" class="task-progress-message"><AppIcon :name="view.code==='PARTIAL_FAILED'?'Warning':'Clock'" :size="14" /><span>{{ view.code==='PARTIAL_FAILED' ? '检测部分失败，请打开结果与追溯核对。' : view.message }}</span></p>
-  <p class="task-progress-time"><AppIcon name="Clock" :size="14" />最近更新 {{ updatedAt }} · UTC+8</p>
+  <p class="task-progress-time"><AppIcon name="Clock" :size="14" />最近更新 {{ updatedAt }}</p>
  </section>
 </template>
 <script setup>

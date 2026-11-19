@@ -9,7 +9,7 @@
     <p v-else-if="!loading && !error && !actions.length" class="empty-note">暂无操作提议 提议保存后仍需明确确认</p>
     <article v-for="action in actions" :key="action.actionId" class="action-card" :data-operation="action.operation" :data-status="action.status" :aria-busy="busy.has(action.actionId)">
       <header><strong><AppIcon name="Lock" :size="16" />{{ action.operation === 'CREATE_DETECTION' ? '创建检测任务' : action.operation === 'RETRY_DETECTION' ? '重新检测任务' : '分配质检任务' }}</strong><StatusBadge domain="confirmation" :code="action.status" :label="['RETRY_DETECTION', 'CREATE_DETECTION'].includes(action.operation) && action.status === 'SUCCEEDED' ? '已提交检测' : labels[action.status]" /></header>
-      <p class="action-review-meta">业务操作确认 · 提议 V{{ action.version }}<span v-if="action.status === 'PENDING'"> · 有效至 {{ beijingDateTime(action.expiresAt ?? null) || '时间未记录' }} UTC+8</span></p>
+      <p class="action-review-meta">业务操作确认 · 提议 V{{ action.version }}<span v-if="action.status === 'PENDING'"> · 有效至 {{ beijingDateTime(action.expiresAt ?? null) || '时间未记录' }}</span></p>
       <p v-if="action.status === 'PENDING'" class="action-impact"><AppIcon name="Warning" :size="16" /><span>{{ action.creation ? '确认将复制本卡片的已授权图片并创建检测任务。' : action.operation === 'RETRY_DETECTION' ? '确认将提交新的检测，并重置当前检测结果与复核处置。' : '确认将修改下方任务的质检分配信息。' }}请核对本卡片参数，计划批准或普通回答不代替此处确认。</span></p>
       <DetectionProposalImages v-if="action.retry" :task-id="action.retry.taskId" :count="action.retry.imageCount" :proposal-version="action.version" :refresh-key="generation" />
       <template v-if="action.creation">

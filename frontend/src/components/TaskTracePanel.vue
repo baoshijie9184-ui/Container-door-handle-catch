@@ -8,7 +8,7 @@
       <nav ref="navigation" class="task-trace-navigation" aria-label="任务详情分区"><button v-for="section in sections" :key="section.key" type="button" @click="go(section.key)"><AppIcon :name="section.icon" :size="15" />{{ section.label }}</button></nav>
       <section :ref="node => targets.overview = node" tabindex="-1" aria-label="任务概览">
         <QualityStageGuidance :task="detail" />
-        <dl class="task-trace-responsibility"><div><dt>记录责任人</dt><dd>{{ detail.assignee || '未记录责任人' }}</dd></div><div><dt>质检截止 · UTC+8</dt><dd>{{ time(detail.dueAt) }}</dd></div><div><dt>分派时间 · UTC+8</dt><dd>{{ time(detail.assignedAt) }}</dd></div></dl>
+        <dl class="task-trace-responsibility"><div><dt>记录责任人</dt><dd>{{ detail.assignee || '未记录责任人' }}</dd></div><div><dt>质检截止</dt><dd>{{ time(detail.dueAt) }}</dd></div><div><dt>分派时间</dt><dd>{{ time(detail.assignedAt) }}</dd></div></dl>
         <p v-if="detail.version!=null" class="task-trace-version">已读资料版本 V{{ detail.version }}</p>
         <p v-if="Number.isSafeInteger(detail.assignmentRevision) && detail.assignmentRevision >= 0" class="task-trace-version">已读分派版本 V{{ detail.assignmentRevision }}</p>
         <p v-if="detail.assignmentRemark" class="task-trace-assignment-note"><strong>分派说明</strong>{{ detail.assignmentRemark }}</p>

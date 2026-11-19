@@ -6,7 +6,7 @@
    <p class="task-result-note">以下为本次已返回的结果快照。检测、人工复核、任务放行与报告审批分别记录，最新资料请重新读取追溯。</p>
    <dl class="task-result-counts"><div><dt>图片总数</dt><dd>{{ count(result.totalImages) }}</dd></div><div><dt>检测成功图片</dt><dd>{{ count(result.successfulImages) }}</dd></div><div><dt>检测失败图片</dt><dd>{{ count(result.failedImages) }}</dd></div></dl>
    <NoDetectionSummary :result="result" />
-   <dl class="task-result-responsibility"><div><dt>责任人</dt><dd>{{ result.assignee || '未记录' }}</dd></div><div><dt>质检截止 · UTC+8</dt><dd>{{ time(result.dueAt) }}</dd></div><div><dt>人工复核</dt><dd><StatusBadge domain="review" :code="result.reviewStatus" /></dd></div><div><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="result.reviewConclusion" /></dd></div></dl>
+   <dl class="task-result-responsibility"><div><dt>责任人</dt><dd>{{ result.assignee || '未记录' }}</dd></div><div><dt>质检截止</dt><dd>{{ time(result.dueAt) }}</dd></div><div><dt>人工复核</dt><dd><StatusBadge domain="review" :code="result.reviewStatus" /></dd></div><div><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="result.reviewConclusion" /></dd></div></dl>
    <p v-if="result.errorMessage" class="task-result-mismatch">结果记录的异常：{{ result.errorMessage }}</p>
    <EvidenceComparison :task-id="taskId" :originals="originals" :annotations="previews" />
    <details class="task-result-disclosure"><summary>任务资料、复核与处置记录</summary><p class="task-result-note">仅展示当前结果已有字段，未返回的模型设置和资料保持未记录。</p><TaskTraceDetails :detail="detail" /></details>

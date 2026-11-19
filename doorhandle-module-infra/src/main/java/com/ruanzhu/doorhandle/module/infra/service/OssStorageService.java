@@ -14,6 +14,7 @@ public interface OssStorageService {
     String normalizeBasePrefix();
 
     boolean isConfigured();
+    default boolean isPreviewConfigured() { return isConfigured(); }
 
     /** 使用 OSS SDK 直接上传文件内容，利用 SDK 内置的连接池和重试机制 */
     void putObject(String objectKey, InputStream content, long contentLength, String contentType);

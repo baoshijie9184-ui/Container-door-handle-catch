@@ -1,5 +1,5 @@
 <template>
-  <section class="page-shell operations-page"><PageHero icon="DocumentChecked" title="操作审计" description="时间均为北京时间（UTC+8）。"><template #actions><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" />刷新已查业务范围</el-button></template></PageHero>
+  <section class="page-shell operations-page"><PageHero icon="DocumentChecked" title="操作审计"><template #actions><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" />刷新已查业务范围</el-button></template></PageHero>
     <ResourceChangeHistory />
     <section class="toolbar-panel app-panel audit-filters" aria-label="筛选业务操作"><form class="audit-filter-form" @submit.prevent="search"><label for="audit-domain">业务域<el-select id="audit-domain" v-model="domain" filterable allow-create default-first-option clearable placeholder="选择业务域，留空查询全部"><el-option v-for="item in auditDomainOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></label><div class="management-filter-actions"><el-button type="primary" native-type="submit" :loading="loading"><AppIcon name="Search" :size="16" />查询</el-button><el-button @click="resetDomain"><AppIcon name="Refresh" :size="16" />重置</el-button></div></form><el-alert v-if="filterError" :title="filterError" type="warning" show-icon :closable="false" /></section>
     <p v-if="filtersDirty" class="audit-query-note" role="status">查询条件已修改，下方业务记录仍为“{{ appliedDomain ? auditDomainLabel(appliedDomain) : '全部业务域' }}”；点击查询后更新。</p>
@@ -13,7 +13,7 @@
         <el-table-column label="业务与动作" min-width="200"><template #default="{row}"><div class="audit-cell"><strong>{{ auditDomainLabel(row.domain) }}</strong><small>{{ row.action||'动作未记录' }}</small></div></template></el-table-column>
         <el-table-column label="资源" min-width="195"><template #default="{row}"><div class="audit-cell"><strong>{{ row.resource_id||'资源未记录' }}</strong><small>版本 {{ row.resource_version??'未知' }} · {{ auditScopeLabel(row.scope) }}</small></div></template></el-table-column>
         <el-table-column label="账号 ID" width="100"><template #default="{row}">{{ row.actor_user_id??'未记录' }}</template></el-table-column>
-        <el-table-column label="记录结果" min-width="140"><template #default="{row}"><StatusBadge domain="audit" :code="row.result" /></template></el-table-column><el-table-column label="时间（UTC+8）" min-width="180"><template #default="{row}">{{ formatTime(row.created_at) }}</template></el-table-column>
+        <el-table-column label="记录结果" min-width="140"><template #default="{row}"><StatusBadge domain="audit" :code="row.result" /></template></el-table-column><el-table-column label="时间" min-width="180"><template #default="{row}">{{ formatTime(row.created_at) }}</template></el-table-column>
         <el-table-column label="详情" width="88"><template #default="{row}"><el-button text type="primary" :aria-label="'查看审计 '+row.id" @click="openRecord(row,false)"><AppIcon name="Search" :size="14" />查看</el-button></template></el-table-column>
       </el-table>
     </div>
@@ -29,7 +29,7 @@
         <el-table-column label="交付状态" min-width="180"><template #default="{row}"><StatusBadge domain="delivery" :code="row.state" /></template></el-table-column>
         <el-table-column label="服务端写出下界" min-width="145"><template #default="{row}">{{ deliveryBytes(row) }}</template></el-table-column>
         <el-table-column label="HTTP 状态" width="105"><template #default="{row}">{{ row.http_status??'未知' }}</template></el-table-column>
-        <el-table-column label="更新时间（UTC+8）" min-width="185"><template #default="{row}">{{ formatTime(row.updated_at) }}</template></el-table-column>
+        <el-table-column label="更新时间" min-width="185"><template #default="{row}">{{ formatTime(row.updated_at) }}</template></el-table-column>
         <el-table-column label="详情" width="88"><template #default="{row}"><el-button text type="primary" :aria-label="'查看文件响应 '+row.delivery_id" @click="openRecord(row,true)"><AppIcon name="Search" :size="14" />查看</el-button></template></el-table-column>
       </el-table></div>
       <el-button v-if="deliveries.length && deliveryMore" :loading="deliveryLoading" @click="loadDeliveries(true)">加载更早交付</el-button>

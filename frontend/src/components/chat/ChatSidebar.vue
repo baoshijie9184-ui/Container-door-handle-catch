@@ -133,7 +133,7 @@
                   @dragend="handleDragEnd"
                 >
                   <div class="session-item-main">
-                    <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
+                    <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess)" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
                     <span class="session-title">
                       <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
                       {{ sess.title || '新对话' }}
@@ -274,7 +274,7 @@
                 @dragend="handleDragEnd"
               >
                 <div class="session-item-main">
-                  <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
+                  <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess)" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
                   <span class="session-title">
                     <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
                     {{ sess.title || '新对话' }}
@@ -385,7 +385,7 @@
             :class="{ active: sess.sessionId === store.sessionId }"
           >
             <div class="session-item-main">
-              <button type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)">
+              <button type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess)" @click="handleSwitchSession(sess.sessionId)">
               <span class="session-title">
                 <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
                 {{ sess.title || '新对话' }}

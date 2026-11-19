@@ -159,11 +159,11 @@
                 <template #prefix><el-icon><Search /></el-icon></template>
               </el-input>
               </label>
-              <label class="workbench-task-filter" for="workbench-task-date"><span>最近更新日期 · UTC+8</span>
+              <label class="workbench-task-filter" for="workbench-task-date"><span>最近更新日期</span>
               <el-date-picker
                 id="workbench-task-date"
                 v-model="taskFilterDate"
-                aria-label="按 UTC+8 最近更新日期筛选当前任务清单" placeholder="选择更新日期"
+                aria-label="按最近更新日期筛选当前任务清单" placeholder="选择更新日期"
                 size="small"
                 class="task-date-picker"
                 value-format="YYYY-MM-DD"
@@ -304,7 +304,7 @@
                 <Transition name="task-detail">
                 <div v-if="selectedTaskId === task.taskId" :id="'workbench-task-detail-'+task.taskId" class="task-item-detail">
                   <details v-if="taskExecutionLogs(task).length" class="task-log-block">
-                    <summary class="task-log-head">最近动态 · 本机记录 · UTC+8</summary>
+                    <summary class="task-log-head">最近动态 · 本机记录</summary>
                     <p class="task-log-note">本机记录；旧记录可能缺少日期。</p>
                     <ol class="task-log-list">
                       <li v-for="log in taskExecutionLogs(task)" :key="log.key" class="task-log-item">
@@ -406,10 +406,10 @@
               </template>
             </el-table-column>
             <el-table-column label="责任与截止" min-width="180">
-              <template #default="{ row }"><div class="quality-queue-responsibility"><strong>{{ row.assignee || '未分派' }}</strong><span>{{ row.dueAt ? formatBusinessTime(row.dueAt) || '时间格式未知' : '未设置截止时间' }}</span><small v-if="row.dueAt">北京时间 UTC+8</small></div></template>
+              <template #default="{ row }"><div class="quality-queue-responsibility"><strong>{{ row.assignee || '未分派' }}</strong><span>{{ row.dueAt ? formatBusinessTime(row.dueAt) || '时间格式未知' : '未设置截止时间' }}</span></div></template>
             </el-table-column>
             <el-table-column label="下一步" min-width="235"><template #default="{ row }"><QualityStageGuidance :task="row" /></template></el-table-column>
-            <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" /></template></el-table-column>
+            <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" /></template></el-table-column>
             <el-table-column label="操作" width="176" fixed="right">
               <template #default="{ row }">
                 <div class="queue-primary-actions">
@@ -508,7 +508,7 @@
           <div v-else v-loading="defectGalleryLoading" class="defect-gallery-grid">
             <article v-for="task in defectGalleryRecords" :key="task.taskId" class="defect-evidence-card" :aria-label="'缺陷任务 '+task.taskId">
               <div class="defect-card-image">
-                <button v-if="resolveDefectPreview(task)" class="defect-preview-button" type="button" :aria-label="'查看任务 '+task.taskId+' 的图片对照'" @click="openTraceDialog(task.taskId)"><el-image :src="resolveDefectPreview(task)" :alt="'任务 '+task.taskId+' 证据预览'" fit="contain" loading="lazy"><template #error><div class="defect-preview-empty"><AppIcon name="Warning" :size="23" /><span>图片暂不可读取，可进入详情核对</span></div></template></el-image><span class="defect-preview-caption"><AppIcon name="Search" :size="14" />查看图片对照</span></button>
+                <button v-if="resolveDefectPreview(task)" class="defect-preview-button" type="button" :aria-label="'查看任务 '+task.taskId+' 的图片对照'" @click="openTraceDialog(task.taskId)"><el-image :src="resolveDefectPreview(task)" :alt="'任务 '+task.taskId+' 证据预览'" fit="contain" loading="lazy"><template #error><div class="defect-preview-empty"><AppIcon name="Warning" :size="23" /><OssPreviewFailure :src="resolveDefectPreview(task)" /></div></template></el-image><span class="defect-preview-caption"><AppIcon name="Search" :size="14" />查看图片对照</span></button>
                 <div v-else class="preview-empty"><AppIcon name="Picture" :size="24" /><span>本次未读取到可用预览</span></div>
               </div>
               <div class="defect-card-body">
@@ -521,10 +521,10 @@
                 <section class="defect-card-section" aria-label="人工复核记录">
                   <h4><AppIcon name="Search" :size="15" />人工复核<StatusBadge domain="review" :code="task.reviewStatus" :label="task.reviewStatus ? reviewStatusText(task.reviewStatus) : '复核状态未记录'" /></h4>
                   <dl v-if="task.reviewStatus==='REVIEWED'" class="defect-card-facts"><div class="defect-fact-wide"><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="task.reviewConclusion" /></dd></div><div><dt>人工确认缺陷</dt><dd>{{ traceCount(task.confirmedDefectCount) }} 个</dd></div><div><dt>误报反馈</dt><dd>{{ traceCount(task.falsePositiveCount) }} 个</dd></div><div class="defect-fact-wide"><dt>人工评定等级</dt><dd><StatusBadge domain="severity" :code="task.severityLevel" /></dd></div></dl>
-                  <p v-if="task.reviewStatus==='REVIEWED'" class="defect-card-note">复核时间：{{ task.reviewedAt ? displayBusinessTime(task.reviewedAt)+' UTC+8' : '未记录' }}</p>
+                  <p v-if="task.reviewStatus==='REVIEWED'" class="defect-card-note">复核时间：{{ task.reviewedAt ? displayBusinessTime(task.reviewedAt) : '未记录' }}</p>
                   <p v-else class="defect-card-note">{{ ['PENDING','REVIEWING'].includes(task.reviewStatus) ? '等待人工复核完成，检测记录不代替人工结论。' : '当前复核状态及结论请在追溯详情中核对。' }}</p>
                 </section>
-                <dl class="defect-card-responsibility"><div><dt>责任人</dt><dd>{{ task.assignee || '未记录' }}</dd></div><div><dt>截止（UTC+8）</dt><dd>{{ task.dueAt ? displayBusinessTime(task.dueAt) : '未记录' }}</dd></div></dl>
+                <dl class="defect-card-responsibility"><div><dt>责任人</dt><dd>{{ task.assignee || '未记录' }}</dd></div><div><dt>截止</dt><dd>{{ task.dueAt ? displayBusinessTime(task.dueAt) : '未记录' }}</dd></div></dl>
                 <details class="defect-card-disclosure"><summary>任务来源<AppIcon name="ArrowDown" :size="13" /></summary><dl class="defect-card-facts"><div class="defect-fact-wide"><dt>采集设备</dt><dd>{{ task.deviceName || '未记录' }}</dd></div><div class="defect-fact-wide"><dt>批次编号</dt><dd>{{ task.batchNo || '未记录' }}</dd></div><div class="defect-fact-wide"><dt>工单编号</dt><dd>{{ task.workOrderNo || '未记录' }}</dd></div></dl></details>
                 <details v-if="Array.isArray(task.defectEvidence) && task.defectEvidence.length" class="defect-card-disclosure"><summary>本次返回证据 {{ task.defectEvidence.length.toLocaleString('zh-CN') }} 条<AppIcon name="ArrowDown" :size="13" /></summary><p class="defect-card-note">前 {{ Math.min(task.defectEvidence.length,3) }} 条模型记录，待人工核对。</p><ol class="defect-evidence-excerpts"><li v-for="(evidence,evidenceIndex) in task.defectEvidence.slice(0,3)" :key="evidenceIndex"><strong>{{ evidence.imageName || '图片名称未记录' }}</strong><span>{{ evidence.defectType ? getCategoryText(evidence.defectType) : '类型未记录' }} · 模型置信度 {{ formatEvidenceConfidence(evidence.confidence) }}</span></li></ol></details>
                 <QualityStageGuidance :task="task" />
@@ -672,13 +672,13 @@
         <el-form-item label="责任人">
           <QualityAssigneePicker v-model="assignmentForm.assignee" v-model:user-id="assignmentForm.assigneeUserId" v-model:revision="assignmentForm.assigneeRevision" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment||assignmentTask?.mutationConflicted" />
         </el-form-item>
-        <el-form-item label="截止时间 · UTC+8">
+        <el-form-item label="截止时间">
           <el-date-picker
             v-model="assignmentForm.dueAt"
             type="datetime"
             value-format="YYYY-MM-DD HH:mm:ss"
             format="YYYY-MM-DD HH:mm"
-            aria-label="选择质检截止时间，北京时间 UTC+8" placeholder="选择质检截止时间（UTC+8）"
+            aria-label="选择质检截止时间" placeholder="选择质检截止时间"
             style="width: 100%"
           />
         </el-form-item>
@@ -791,6 +791,7 @@
 </template>
 
 <script setup>
+import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import CollaborationRefreshNotice from '../components/CollaborationRefreshNotice.vue'
 import TaskClaimButton from '../components/TaskClaimButton.vue'
 import TaskClaimCandidatesButton from '../components/TaskClaimCandidatesButton.vue'

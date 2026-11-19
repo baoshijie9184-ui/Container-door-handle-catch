@@ -16,9 +16,26 @@ export function relativeBeijingTime(value,now=Date.now()){
  return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',...(diff<0?{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}:{})}).format(date);
 }
 export function businessTimestamp(value){return businessDate(value)?.getTime()??0}
+const dateTimeFormatter = new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'})
 export function beijingDateTime(value=new Date()){
  const date=businessDate(value);if(!date)return '';
- const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(date).map(part=>[part.type,part.value]));
+ const parts=Object.fromEntries(dateTimeFormatter.formatToParts(date).map(part=>[part.type,part.value]));
  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 export function beijingExportStamp(value=new Date()){const text=beijingDateTime(value);return text?text.replace(/[-:]/g,'').replace(' ','-'):''}
+
+export function subscribeClock(update) {
+  let timer
+  function tick() {
+    clearTimeout(timer)
+    const now = new Date()
+    update(now)
+    timer = setTimeout(tick, 1000 - now.getMilliseconds())
+  }
+  document.addEventListener('visibilitychange', tick)
+  tick()
+  return () => {
+    clearTimeout(timer)
+    document.removeEventListener('visibilitychange', tick)
+  }
+}

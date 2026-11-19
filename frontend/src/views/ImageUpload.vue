@@ -219,7 +219,7 @@
             <el-option label="失败" value="FAILED" />
           </el-select>
           </label>
-          <label class="upload-history-filter" for="upload-history-date"><span>最近更新日期（UTC+8）</span>
+          <label class="upload-history-filter" for="upload-history-date"><span>最近更新日期</span>
           <el-date-picker
             id="upload-history-date"
             v-model="filterDate"
@@ -293,7 +293,7 @@
                 {{ taskStore.taskStatusDetail(task).text }}
               </span>
               <span class="history-item-time">
-                最近更新（UTC+8）：
+                最近更新：
                 <el-icon style="margin-right: 2px; font-size: 11px;"><Calendar /></el-icon>
                 {{ formatUploadTime(task.updatedAt || task.createdAt) }}
               </span>

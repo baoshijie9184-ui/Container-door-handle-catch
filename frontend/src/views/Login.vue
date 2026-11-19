@@ -1,5 +1,6 @@
 <template>
   <div class="login-page">
+    <BeijingClock class="login-clock" />
     <section class="login-showcase" aria-label="系统介绍">
       <a class="login-brand" href="#/login" :title="SYSTEM_NAME" :aria-label="SYSTEM_NAME">
         <img src="/favicon.svg" width="40" height="40" alt="" />
@@ -31,7 +32,7 @@
         </el-form>
         <p class="login-card-footer"><AppIcon name="Lock" :size="14" />账号权限与操作记录随登录身份生效</p>
       </div>
-      <span class="login-timezone"><AppIcon name="Clock" :size="14" />北京时间 · UTC+8</span>
+
     </section>
     <el-dialog v-model="showForgotDialog" title="找回密码" width="min(440px, 94vw)" class="login-password-help">
       <div class="password-help-heading"><AppIcon name="Key" :size="21" /><strong>联系企业主管或系统管理员</strong></div>
@@ -42,6 +43,7 @@
 </template>
 
 <script setup>
+import BeijingClock from '@/components/BeijingClock.vue'
 import {SYSTEM_NAME, SYSTEM_SHORT_NAME, SYSTEM_TAGLINE} from '@/utils/systemBrand'
 import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue'
 import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
@@ -141,9 +143,12 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
+.login-clock { grid-column:1/-1; justify-self:end; align-items:center; }
 .login-page {
+  grid-template-rows:auto 1fr;
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(380px, 1fr);
+  row-gap:6px;
   min-height: 100vh;
   min-height: 100dvh;
   padding: clamp(12px, 1.45vw, 24px);
@@ -182,24 +187,21 @@ const handleLogin = async () => {
 .login-page :is(button,a,input):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .login-button { width: 100%; height: 48px; border-radius: 9px; font-weight: 600; }
 .login-button :deep(> span) { width: 100%; justify-content: space-between; }
-.login-card-footer, .login-timezone { display: flex; align-items: center; gap: 7px; color: var(--app-text-muted); font-size: 12px; line-height: 1.8; }
+.login-card-footer { display: flex; align-items: center; gap: 7px; color: var(--app-text-muted); font-size: 12px; line-height: 1.8; }
 .login-card-footer { margin-top: 22px; justify-content: center; }
 .login-card-footer > .el-icon { flex-shrink:0; }
-.login-timezone { position: absolute; bottom: 24px; font-size:12px; color:var(--app-text-secondary); }
 .password-help { color: var(--app-text-secondary); line-height: 1.8; }
 @keyframes login-reveal { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (max-width: 800px) {
-  .login-page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; padding: 10px; }
+  .login-page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; padding: 10px; }
   .login-showcase { padding:16px 20px; background:white; border:0; border-bottom:1px solid var(--app-border); border-radius:0; }
   .login-showcase::before { display:none; }
   .showcase-inner { display: none; }
   .login-panel { padding: 30px 16px 20px; }
   .login-card-desc { margin-bottom: 22px; }
-  .login-timezone { position: static; margin-top: 32px; }
 }
 @media (max-height: 630px) and (min-width: 801px) {
   .login-panel { padding-block: 26px; }
-  .login-timezone { position: static; margin-top: 20px; }
 }
 @media(prefers-reduced-motion: reduce) { .login-card { animation: none; } }
 </style>

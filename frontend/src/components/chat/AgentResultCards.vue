@@ -13,7 +13,7 @@
         <article v-for="(card, index) in views" :key="index + ':' + card.tool" class="result-card" :aria-busy="loading">
           <header><span class="result-card-symbol"><AppIcon :name="cardIcon(card)" :size="19" /></span><div class="result-card-heading"><strong>{{ cardTitle(card) }}</strong><small>{{ cardScope(card.scope) || '访问范围未返回' }}</small></div><StatusBadge domain="cardRead" :code="card.status" /></header>
           <template v-if="card.type === 'METRICS'">
-            <p class="card-period">按任务创建时间 · {{ formatDate(card.from) }} 至 {{ formatDate(card.to) }} · UTC+8</p>
+            <p class="card-period">按任务创建时间 · {{ formatDate(card.from) }} 至 {{ formatDate(card.to) }}</p>
             <div class="card-metrics"><div v-for="(label, key) in metricLabels" :key="key"><strong>{{ cardCount(card.metrics?.[key]) }}</strong><span>{{ label }}</span></div></div>
           </template>
           <template v-else-if="card.type === 'TASKS'">
@@ -44,7 +44,7 @@
               <div class="card-alert-heading"><strong>{{ alert.alertCode || '告警 ' + alert.alertId }}</strong><StatusBadge domain="deviceAlert" :code="alert.status" :label="alertStatus(alert.status)" /></div>
               <div class="card-alert-classification"><span>{{ alertType(alert.type) }}</span><StatusBadge domain="deviceAlertLevel" :code="alert.level" :label="alertLevel(alert.level)" /></div>
               <p>设备 {{ alert.deviceCode || '未记录' }}</p>
-              <dl class="card-record-facts"><dt>发生 · UTC+8</dt><dd>{{ formatDate(alert.createdAt) }}</dd><dt>记录更新 · UTC+8</dt><dd>{{ formatDate(alert.updatedAt) }}</dd></dl>
+              <dl class="card-record-facts"><dt>发生</dt><dd>{{ formatDate(alert.createdAt) }}</dd><dt>记录更新</dt><dd>{{ formatDate(alert.updatedAt) }}</dd></dl>
               <details class="card-alert-identity"><summary>核对告警编号与类型代码<AppIcon class="card-alert-chevron" name="ArrowDown" :size="13" /></summary><dl class="card-record-facts"><dt>告警 ID</dt><dd>{{ alert.alertId }}</dd><dt>设备 ID</dt><dd>{{ alert.deviceId || '未记录' }}</dd><dt>类型代码</dt><dd>{{ alert.type || '未记录' }}</dd></dl></details>
               <a v-if="cardRoute('DEVICES', alert.deviceId)" class="record-action" :href="cardRoute('DEVICES', alert.deviceId)">查看设备</a>
               <p v-else>设备关联已不可用</p>
@@ -74,7 +74,7 @@
           </template>
           <p v-if="card.type !== 'METRICS' && !card.items.length" class="card-empty"><AppIcon :name="card.status === 'OK' ? 'Files' : 'Warning'" :size="18" />{{ cardEmptyText(card) }}</p>
           <p v-if="card.message" class="card-note" :class="{ 'result-error': card.status !== 'OK' }">{{ card.message }}</p>
-          <footer>卡片读取时间 {{ formatDate(card.updatedAt) }} · UTC+8</footer>
+          <footer>卡片读取时间 {{ formatDate(card.updatedAt) }}</footer>
         </article>
       </TransitionGroup>
     </template>

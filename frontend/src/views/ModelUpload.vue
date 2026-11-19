@@ -74,7 +74,7 @@
             <span class="result-item-value">{{ lastUploadResult.creator || '--' }}</span>
           </div>
           <div class="result-item">
-            <span class="result-item-label">上传时间 · UTC+8</span>
+            <span class="result-item-label">上传时间</span>
             <span class="result-item-value">{{ formatDateTime(lastUploadResult.uploadTime) || '--' }}</span>
           </div>
           <div class="result-item">

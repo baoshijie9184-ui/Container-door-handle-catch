@@ -21,7 +21,7 @@
     </section>
     <section class="source-panel">
       <h3><AgentSectionIcon kind="skills" small />本人经验来源</h3>
-      <el-select v-model="sourceRunId" placeholder="选择本人已完成运行" aria-label="本人来源运行"><el-option v-for="run in runs" :key="run.runId" :value="run.runId" :label="skillTime(run.startedAt) + ' UTC+8 · ' + run.runId" /></el-select>
+      <el-select v-model="sourceRunId" placeholder="选择本人已完成运行" aria-label="本人来源运行"><el-option v-for="run in runs" :key="run.runId" :value="run.runId" :label="skillTime(run.startedAt) + ' · ' + run.runId" /></el-select>
       <el-button :disabled="!sourceRunId || busy" @click="capture">授权提炼此运行</el-button>
       <p>仅保存成功工具名和完成时间 不复制聊天正文或业务参数 授权后可让助手按明确要求提议私人技能草稿</p>
       <el-button type="primary" :disabled="!sources.length || busy" @click="newDraft">编写技能草稿</el-button>

@@ -20,7 +20,7 @@
   <template v-else>
    <article v-for="item in rows" :key="item.id" :data-kind="item.kind">
     <header><span class="wb-kind-icon"><AppIcon :name="workbenchKind(item.kind).icon" :size="18" /></span><strong>{{ workbenchTitle(item) }}</strong><StatusBadge :domain="item.kind==='CONTEXT'?'contextRecord':item.kind==='TASKS'?'checklistRecord':'task'" :code="item.kind==='CONTEXT'?contextStatusCode(item):item.status" :label="['CONTEXT','TASKS'].includes(item.kind)?undefined:workbenchInteractionStatus(item) || status[item.status]" /></header>
-    <p class="wb-record-meta">{{ workbenchKind(item.kind).label }} · 版本 {{ item.revision }}<span v-if="workbenchTime(item.updatedAt)"> · 更新于 {{ workbenchTime(item.updatedAt) }} UTC+8</span></p>
+    <p class="wb-record-meta">{{ workbenchKind(item.kind).label }} · 版本 {{ item.revision }}<span v-if="workbenchTime(item.updatedAt)"> · 更新于 {{ workbenchTime(item.updatedAt) }}</span></p>
     <p v-if="item.kind==='QUESTION'" class="wb-purpose"><AppIcon name="ChatDotRound" :size="14" />补充任务信息，回答不等于业务授权</p>
     <p v-if="item.kind==='PLAN'" class="wb-purpose"><AppIcon name="DocumentChecked" :size="14" />审阅执行范围，业务操作仍需单独确认</p>
     <a v-if="item.data.runId&&/^[a-f0-9-]{36}$/.test(item.data.runId)" :href="'/#/agent/trace?runId='+encodeURIComponent(item.data.runId)">查看本次执行轨迹</a>

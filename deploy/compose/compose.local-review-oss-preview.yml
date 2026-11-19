@@ -1,0 +1,8 @@
+# Read settings are supplied only to the review backend. The worker keeps its own storage.
+services:
+  backend:
+    env_file:
+      - ${REVIEW_OSS_PREVIEW_ENV:?Set the private preview connection file}
+    environment:
+      ALIYUN_OSS_PREVIEW_PROXYHOST: ${REVIEW_BRIDGE_GATEWAY:?Set the review bridge gateway}
+      ALIYUN_OSS_PREVIEW_PROXYPORT: ${REVIEW_OPENAI_RELAY_PORT:-17898}

@@ -43,7 +43,7 @@
     <div role="status" class="dashboard-refresh-note">
       <AppIcon name="Clock" :size="14" />
       <span v-if="refreshing">正在刷新…</span>
-      <span v-else-if="lastUpdated">最近更新 {{ lastUpdated }} UTC+8</span>
+      <span v-else-if="lastUpdated">最近更新 {{ lastUpdated }}</span>
       <span v-else>等待更新</span>
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`未更新：${failedSections.join('、')}。显示上次数据或“—”。`" />

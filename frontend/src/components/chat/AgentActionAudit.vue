@@ -8,7 +8,7 @@
         <p v-if="loading" class="action-audit-read-state" role="status">{{ records ? '正在读取，当前保留上次审计快照。' : '正在读取原操作的审计记录…' }}</p>
         <p v-if="error" class="action-audit-error" role="alert">{{ error }}</p>
         <template v-if="records">
-          <p class="action-audit-count">本次已读取 {{ records.length.toLocaleString('zh-CN') }} 条 · 时间均为 UTC+8</p>
+          <p class="action-audit-count">本次已读取 {{ records.length.toLocaleString('zh-CN') }} 条</p>
           <ol v-if="records.length" class="action-audit-events" tabindex="0" aria-label="操作审计记录，可滚动阅读">
             <li v-for="event in records" :key="event.id" :data-result="event.result">
               <div class="action-audit-event-heading"><strong>{{ actionAuditEvent(event.eventType) }}</strong><StatusBadge domain="confirmation" :code="event.result" :label="actionAuditResult(event.result, operation)" /></div>

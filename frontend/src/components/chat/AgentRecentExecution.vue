@@ -5,7 +5,7 @@
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
     <template v-else-if="loaded && trace && hasRecord">
       <div class="recent-execution-summary"><StatusBadge domain="task" :code="trace.status || 'UNKNOWN'" :label="traceStatus(trace.status)" /><span>{{ events.length }} 个已保存事件</span></div>
-      <p class="recent-execution-time">快照更新 {{ traceTime(trace.updatedAt) }} · UTC+8</p>
+      <p class="recent-execution-time">快照更新 {{ traceTime(trace.updatedAt) }}</p>
       <ol v-if="visibleEvents.length" class="recent-execution-events"><li v-for="event in visibleEvents" :key="event.sequence" :data-tone="eventTone(event.type)"><span class="recent-event-symbol"><AppIcon :name="eventIcon(event.type)" :size="15" /></span><div><strong>{{ eventTitle(event) }}</strong><span>{{ event.payload.tool || event.payload.agent || '运行事件' }}</span><small>距运行开始 {{ traceDuration(event.payload.elapsedMs) }}</small></div></li></ol>
       <p v-else class="recent-execution-note">本快照未保存事件明细，不能据此判断工具是否执行。</p>
       <details class="recent-execution-identifiers"><summary>运行标识与框架</summary><dl><div><dt>运行编号</dt><dd>{{ trace.runId || '未记录' }}</dd></div><div><dt>记录框架</dt><dd>{{ trace.framework || '未记录' }}</dd></div></dl></details>
