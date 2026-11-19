@@ -1,0 +1,32 @@
+# Apply after compose.monolith.yml, compose.cloud.yml and compose.detection.yml
+# using the separate review Compose project and its private runtime.env.
+services:
+  mysql:
+    image: ${LOCAL_MYSQL_IMAGE:?Set the pinned review MySQL image}
+    command: ["--skip-log-bin", "--event-scheduler=OFF", "--partial-revokes=ON", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--default-time-zone=+08:00"]
+  redis:
+    image: ${LOCAL_REDIS_IMAGE:?Set the pinned Redis image}
+  kafka-storage-init:
+    image: ${LOCAL_KAFKA_IMAGE:?Set the pinned Kafka image}
+  kafka:
+    image: ${LOCAL_KAFKA_IMAGE:?Set the pinned Kafka image}
+  kafka-init:
+    image: ${LOCAL_KAFKA_IMAGE:?Set the pinned Kafka image}
+  qdrant:
+    command: ["./entrypoint.sh", "--config-path", "/run/doorhandle-vector/server.yaml"]
+  mem0:
+    image: ${LOCAL_MEM0_IMAGE:?Set the pinned Mem0 image}
+  detection-worker:
+    image: ${LOCAL_WORKER_IMAGE:?Set the pinned worker image}
+  backend:
+    image: ${LOCAL_BACKEND_IMAGE:?Set the pinned task branch backend image}
+  nginx:
+    image: ${LOCAL_WEB_IMAGE:?Set the pinned task branch web image}
+    ports: !override
+      - "127.0.0.1:8081:80"
+    networks: [doorhandle-network, review-web]
+
+networks:
+  doorhandle-network:
+    internal: true
+  review-web: {}
