@@ -32,7 +32,7 @@ const matches=computed(()=>typeof props.result.taskId==='string' && props.result
 const count=value=>knownCount(value)?.toLocaleString('zh-CN') ?? '未知'
 const time=value=>value ? beijingDateTime(value)||'时间格式未知' : '未记录'
 const previews=computed(()=>(Array.isArray(props.result.previewImages)?props.result.previewImages:[]).filter(image=>image && typeof image==='object' && !Array.isArray(image)))
-const originals=computed(()=>previews.value.filter(image=>evidencePreviewUrl({previewUrl:image.originalUrl})).map(image=>({imageName:image.imageName,previewUrl:image.originalUrl})))
+const originals=computed(()=>previews.value.filter(image=>evidencePreviewUrl({previewUrl:image.originalUrl})).map(image=>({imageName:image.imageName,objectKey:image.originalKey,previewUrl:image.originalUrl})))
 const resultHref=computed(()=>evidencePreviewUrl({previewUrl:props.result.resultJsonUrl}))
 const detail=computed(()=>({...props.result,captureDate:props.result.captureInfo?.captureDate,region:props.result.captureInfo?.region,collector:props.result.captureInfo?.collector,deviceName:props.result.captureInfo?.deviceName,imageFolderName:props.result.captureInfo?.imageFolderName}))
 const hasHistoricalRate=computed(()=>Object.hasOwn(props.result.statistics||{},'missDetectionRate'))

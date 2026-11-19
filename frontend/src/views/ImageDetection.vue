@@ -515,7 +515,7 @@
       <QualityTaskContext :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
       <div v-if="reviewImages"><ModelMaintenanceSummary :summary="reviewImages.maintenance" />
-      <EvidenceComparison :task-id="reviewTask?.taskId" :maintenance="reviewImages.maintenance" :defects="reviewImages.defects" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
+      <EvidenceComparison edit-annotations :task-id="reviewTask?.taskId" :maintenance="reviewImages.maintenance" :defects="reviewImages.defects" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
       <div v-else class="quality-feedback-note" role="status"><AppIcon name="Picture" :size="16" />{{ reviewImageError || '正在读取本次任务的原图与标注图…' }}
         <el-button v-if="reviewImageError" link type="primary" @click="reviewImageAttempt++">重新读取图片</el-button>
       </div>
@@ -1218,7 +1218,7 @@ watch([()=>reviewDialogVisible.value ? reviewTask.value?.taskId : null, ()=>user
       const annotations=detail.previewImages || []
       const originals=detail.originalImages?.length ? detail.originalImages : annotations
         .filter(image=>image && typeof image.originalUrl==='string' && image.originalUrl)
-        .map(image=>({imageName:image.imageName,previewUrl:image.originalUrl}))
+        .map(image=>({imageName:image.imageName,objectKey:image.originalKey,previewUrl:image.originalUrl}))
       reviewImages.value={originals,annotations,maintenance:detail.modelMaintenance,defects:detail.defectEvidence}
     }catch{
       if(!controller.signal.aborted && accountSession.current(owner))reviewImageError.value='未能读取本次任务的图片。'

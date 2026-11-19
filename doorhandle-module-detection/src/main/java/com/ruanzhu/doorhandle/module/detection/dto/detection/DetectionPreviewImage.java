@@ -7,6 +7,7 @@ import lombok.Data;
 @Builder
 public class DetectionPreviewImage {
     private String imageName;
+    private String originalKey;
     private String originalUrl;
     private String annotatedUrl;
 }

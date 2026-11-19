@@ -273,6 +273,7 @@ CREATE TABLE detection_task (
     `result_json_oss_key` VARCHAR(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '结果 JSON OSS Key',
     `original_image_keys_json` LONGTEXT COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '原图对象 key 列表 JSON',
     `preview_image_keys_json` LONGTEXT COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '预览图对象 key 列表 JSON',
+    `review_annotations_json` JSON NULL,
     `statistics_json` LONGTEXT COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '统计结果 JSON',
     `defect_evidence_json` LONGTEXT COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '结构化缺陷证据 JSON，包含缺陷框/面积/置信度/位置/严重等级',
     `defect_count` INT NOT NULL DEFAULT 0 COMMENT '结构化缺陷数量',

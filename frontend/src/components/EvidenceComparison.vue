@@ -9,6 +9,10 @@
       <p class="comparison-selection">{{ current.label }}<span v-if="unpairedCount">{{ unpairedCount }} 张仅有原图或标注图</span></p>
       <ImageListNavigation ref="pager" :index="currentIndex" :total="pairs.length" @select="selectIndex" />
     </div>
+    <ImageAnnotationReview v-if="annotationKey" :key="taskId+'|'+annotationKey" :task-id="taskId" :source-key="annotationKey"
+      :file-name="current.name" :original-url="evidencePreviewUrl(current.original)" :allow-edit="editAnnotations"
+      @rendition="onRendition"/>
+    <div v-if="reviewed" class="annotation-controls"><button type="button" @click="showModel=!showModel">{{showModel?'查看人工标注':'对照模型标注'}}</button></div>
     <ul v-if="maintenanceRows.length" class="image-maintenance" aria-label="本图缺陷维修建议">
       <li v-for="row in maintenanceRows" :key="row.label">{{ row.label }} × {{ row.count }} · <strong>{{ row.action }}</strong></li>
     </ul>
@@ -31,13 +35,15 @@
 </template>
 
 <script setup>
+import ImageAnnotationReview from './ImageAnnotationReview.vue'
+import {annotationClasses} from '../utils/annotationGeometry'
 import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import { computed, getCurrentInstance, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import {imageMaintenance} from '../utils/modelMaintenance'
 import ImageListNavigation from './ImageListNavigation.vue'
 import { evidenceComparisonPairs, evidencePreviewUrl } from '../utils/evidencePresentation'
-const props = defineProps({ maintenance:Object, defects:Array, taskId: String, initialAnnotationUrl: { type: String, default: '' }, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
+const props = defineProps({ editAnnotations:Boolean, maintenance:Object, defects:Array, taskId: String, initialAnnotationUrl: { type: String, default: '' }, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
 const headingId = 'evidence-comparison-' + getCurrentInstance().uid
 const selection = ref(''), failed = ref(new Set()), loaded = ref(new Set()), zoomOpen = ref(false), zoomError = ref(false)
 const pager = ref(null), zoomPager = ref(null), zoomSide = ref('original')
@@ -47,13 +53,24 @@ const unpairedCount = computed(() => pairs.value.filter(pair => !pair.original |
 const options = computed(() => pairs.value.map(pair => ({ value: pair.key, label: pair.label })))
 const currentIndex = computed(() => Math.max(0, pairs.value.findIndex(pair => pair.key === selection.value)))
 const current = computed(() => pairs.value[currentIndex.value])
-const maintenanceRows=computed(()=>imageMaintenance(props.maintenance,props.defects,current.value))
+const annotationKey=computed(()=>props.taskId && !current.value?.ambiguous && current.value?.annotation && evidencePreviewUrl(current.value.original) && current.value.original?.objectKey)
+const reviewed=ref(null), showModel=ref(false)
+watch([annotationKey,()=>props.taskId],()=>{reviewed.value=null;showModel.value=false},{flush:'sync'})
+function onRendition(data){reviewed.value=data;showModel.value=false}
+const maintenanceRows=computed(()=>{
+  if(!reviewed.value || showModel.value)return imageMaintenance(props.maintenance,props.defects,current.value)
+  const counts=new Map()
+  for(const t of reviewed.value.edition.targets)counts.set(t.label,(counts.get(t.label)||0)+1)
+  return [...counts].map(([code,count])=>({label:annotationClasses[code][0],count,
+    action:props.maintenance?.groups?.find(g=>g.categories.some(c=>c.code===code))?.label || '待核对'}))
+})
 const selectIndex = index => { if (pairs.value[index]) selection.value = pairs.value[index].key }
-const imageUrl = side => evidencePreviewUrl(current.value?.[side])
+const imageUrl = side => side==='annotation' && reviewed.value && !showModel.value ? reviewed.value.url : evidencePreviewUrl(current.value?.[side])
+const sideLabel = side => side.key==='annotation' && reviewed.value ? (showModel.value?'模型标注图':'人工标注图') : side.label
 const sideViews = computed(() => sides.map(side => {
-  const file=current.value?.[side.key],url=evidencePreviewUrl(file)
+  const file=current.value?.[side.key],url=imageUrl(side.key)
   const unavailable=!!file && (!url || failed.value.has(side.key+':'+url))
-  return {...side,file,url,loaded:loaded.value.has(side.key+':'+url),failed:unavailable,emptyTitle:unavailable?'图片暂不可读取':current.value?.ambiguous?'未自动匹配':'暂无'+side.label,emptyDescription:unavailable?url?'可重新读取图片、在新标签页打开，或重新读取任务详情。':'已返回图片资料，但没有可使用的预览地址，请重新读取任务详情。':current.value?.ambiguous?'同名资料存在多份，请分别核对。':'当前任务没有返回对应图片资料。'}
+  return {...side,label:sideLabel(side),file,url,loaded:loaded.value.has(side.key+':'+url),failed:unavailable,emptyTitle:unavailable?'图片暂不可读取':current.value?.ambiguous?'未自动匹配':'暂无'+side.label,emptyDescription:unavailable?url?'可重新读取图片、在新标签页打开，或重新读取任务详情。':'已返回图片资料，但没有可使用的预览地址，请重新读取任务详情。':current.value?.ambiguous?'同名资料存在多份，请分别核对。':'当前任务没有返回对应图片资料。'}
 }))
 const markFailed = (side, source) => { failed.value = new Set([...failed.value, side + ':' + source]) }
 const markLoaded = (side, source) => { loaded.value = new Set([...loaded.value, side + ':' + source]) }
@@ -62,7 +79,7 @@ function retryImage(side) {
   const key=side.key+':'+side.url,nextFailed=new Set(failed.value),nextLoaded=new Set(loaded.value)
   nextFailed.delete(key);nextLoaded.delete(key);loaded.value=nextLoaded;failed.value=nextFailed
 }
-const zoomSideLabel = computed(() => sides.find(side => side.key === zoomSide.value).label)
+const zoomSideLabel = computed(() => sideLabel(sides.find(side => side.key === zoomSide.value)))
 const zoomUrl = computed(() => imageUrl(zoomSide.value))
 const zoomTitle = computed(() => zoomSideLabel.value + ' · ' + (current.value?.label || '名称未记录'))
 function openZoom(side) {

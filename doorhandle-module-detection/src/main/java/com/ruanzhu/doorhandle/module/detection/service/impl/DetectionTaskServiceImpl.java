@@ -374,7 +374,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         Map<String, String> originalByName = originalKeys.stream().collect(Collectors.toMap(
                 this::extractFileName,
                 key -> key,
-                (left, right) -> left,
+                (left, right) -> "",
                 LinkedHashMap::new
         ));
 
@@ -385,6 +385,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                     String originalKey = originalByName.get(imageName);
                     return DetectionPreviewImage.builder()
                             .imageName(imageName)
+                            .originalKey(originalKey)
                             .annotatedUrl(signUrl(key))
                             .originalUrl(signUrl(originalKey))
                             .build();
