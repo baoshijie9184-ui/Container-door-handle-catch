@@ -422,6 +422,7 @@
         <p v-if="projectBusy" class="chat-project-note" role="status">正在等待项目保存回执，请勿重复提交。</p><p v-if="projectError" class="chat-project-error" role="alert">{{ projectError }}</p>
         <template #footer><div class="chat-project-buttons"><el-button :disabled="projectBusy" @click="closeProjectModal">{{ projectUncertain ? '关闭后核对列表' : '取消' }}</el-button><el-button type="primary" native-type="submit" form="chat-project-form" :loading="projectBusy" :disabled="projectUncertain||!projectForm.name.trim()">{{ editingProject ? '保存项目' : '创建项目' }}</el-button></div></template>
       </el-dialog>
+    <slot name="footer" :collapsed="collapsed" />
   </aside>
 </template>
 

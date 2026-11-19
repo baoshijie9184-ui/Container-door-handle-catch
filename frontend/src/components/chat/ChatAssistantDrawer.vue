@@ -31,10 +31,19 @@
       </div>
       <!-- 侧边栏 + 主区域 -->
       <div class="chat-layout" :class="{ 'compact-history': compactSidebar }" ref="workspaceRef">
-        <ChatSidebar :compact="compactSidebar" />
+        <ChatSidebar :compact="compactSidebar">
+          <template v-if="!fullScreen" #footer="{ collapsed }">
+            <div class="drawer-sidebar-actions" :class="{ compact: collapsed }">
+              <ChatConversationMenu :tasks-enabled="controlState.enabled" :show-label="!collapsed" placement="top-start" @command="handleMenuCommand" />
+              <button type="button" class="drawer-sidebar-close" title="关闭助手" aria-label="关闭助手" @click="chatStore.close()">
+                <AppIcon name="Close" :size="16" /><span v-if="!collapsed">关闭助手</span>
+              </button>
+            </div>
+          </template>
+        </ChatSidebar>
         <div class="chat-main" @click="closeSidebarMenu">
           <!-- 头部 -->
-          <header class="chat-header">
+          <header v-if="fullScreen" class="chat-header">
             <div class="chat-header-main">
               <div class="chat-avatar ai">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -50,9 +59,9 @@
                 <h3 class="chat-header-title">{{ chatStore.sessionTitle }}</h3>
               </div>
             </div>
-            <BeijingClock v-if="fullScreen" />
-            <div class="chat-header-actions" @keydown.esc.capture="dismissHeaderMenu">
-              <button v-if="fullScreen" ref="contextToggleRef" type="button" class="chat-header-btn context-toggle" :aria-label="contextOpen?'收起工作面板':'展开工作面板'" :title="contextOpen?'收起工作面板':'展开工作面板'" :aria-expanded="contextOpen" aria-controls="chat-workspace-context" @click="contextOpen=!contextOpen"><el-icon aria-hidden="true"><Operation /></el-icon></button>
+            <BeijingClock />
+            <div class="chat-header-actions">
+              <button ref="contextToggleRef" type="button" class="chat-header-btn context-toggle" :aria-label="contextOpen?'收起工作面板':'展开工作面板'" :title="contextOpen?'收起工作面板':'展开工作面板'" :aria-expanded="contextOpen" aria-controls="chat-workspace-context" @click="contextOpen=!contextOpen"><el-icon aria-hidden="true"><Operation /></el-icon></button>
               <div class="chat-header-secondary-actions">
               <button v-if="controlState.enabled" type="button" class="chat-header-btn" title="任务操作" aria-label="任务操作" @click="conversationControlsRef?.openOptions()"><AppIcon name="List" :size="16" /></button>
               <a class="chat-header-btn" :href="'#/agent/trace?sessionId='+encodeURIComponent(chatStore.sessionId || '')" title="查看执行追溯" aria-label="查看执行追溯" @click="chatStore.close()">
@@ -75,22 +84,7 @@
                 </svg>
               </button>
               </div>
-              <el-dropdown ref="headerMenuRef" class="chat-header-more-actions" trigger="click" :teleported="false" @command="handleHeaderCommand">
-                <button ref="headerMenuButton" type="button" class="chat-header-btn" aria-label="更多对话操作" title="更多对话操作"><el-icon :size="17" aria-hidden="true"><MoreFilled /></el-icon></button>
-                <template #dropdown><el-dropdown-menu>
-                  <el-dropdown-item v-if="controlState.enabled" command="tasks"><AppIcon name="List" :size="15" />任务操作</el-dropdown-item>
-                  <el-dropdown-item command="trace"><AppIcon name="Connection" :size="15" />执行追溯</el-dropdown-item>
-                  <el-dropdown-item command="memory"><AppIcon name="Collection" :size="15" />个人记忆</el-dropdown-item>
-                  <el-dropdown-item command="diagnostics" :disabled="chatStore.diagnosticsLoading || !chatStore.sessionId"><AppIcon name="DataAnalysis" :size="15" />助手诊断</el-dropdown-item>
-                  <el-dropdown-item command="retry" :disabled="chatStore.loading"><AppIcon name="Refresh" :size="15" />重试最后一条消息</el-dropdown-item>
-                  <el-dropdown-item command="clear" class="chat-header-clear-item" divided :disabled="chatStore.loading"><AppIcon name="Delete" :size="15" />清空对话</el-dropdown-item>
-                </el-dropdown-menu></template>
-              </el-dropdown>
-              <button v-if="!fullScreen" class="chat-header-close" @click="chatStore.close()" title="关闭" aria-label="关闭助手">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
+              <ChatConversationMenu class="chat-header-more-actions" :tasks-enabled="controlState.enabled" @command="handleMenuCommand" />
             </div>
           </header>
 
@@ -147,9 +141,10 @@ import ChatMessageList from './ChatMessageList.vue'
 import AgentActionList from './AgentActionList.vue'
 import ChatQuestionNavigator from './ChatQuestionNavigator.vue'
 import ChatSidebar from './ChatSidebar.vue'
+import ChatConversationMenu from './ChatConversationMenu.vue'
 import AgentWorkspacePanel from './AgentWorkspacePanel.vue'
 import AgentDiagnostics from './AgentDiagnostics.vue'
-import { Operation, MoreFilled } from '@element-plus/icons-vue'
+import { Operation } from '@element-plus/icons-vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
 import { observeTranscriptLayout } from '@/utils/transcriptLayout'
 
@@ -167,15 +162,6 @@ const messageListRef = ref(null)
 const activeQuestionKey = ref('')
 const resizeTooltip = '拖拽或使用左右方向键调整面板宽度'
 const diagnosticsVisible = ref(false)
-const headerMenuRef = ref(null)
-const headerMenuButton = ref(null)
-function dismissHeaderMenu(event) {
-  if (headerMenuButton.value?.getAttribute('aria-expanded') !== 'true') return
-  event.preventDefault()
-  event.stopPropagation()
-  headerMenuRef.value?.handleClose()
-  headerMenuButton.value.focus({ preventScroll: true })
-}
 const workspaceRef=ref(null),contextToggleRef=ref(null),contextOpen=ref(false),workspaceWidth=ref(0)
 const contextDocked=computed(()=>workspaceWidth.value>=1000)
 watch(()=>controlState.value.run?.phase,phase=>{if(['WAITING_PLAN','WAITING_INPUT','AWAITING_RECOVERY'].includes(phase))contextOpen.value=true})
@@ -414,7 +400,7 @@ const openDiagnostics = async () => {
   await chatStore.loadDiagnostics()
 }
 
-const handleHeaderCommand = command => {
+const handleMenuCommand = command => {
   if (command === 'tasks') return conversationControlsRef.value?.openOptions()
   if (command === 'trace' || command === 'memory') {
     chatStore.close()
@@ -547,7 +533,7 @@ const handleDrawerChange = (value) => {
 @media (max-width: 768px) {
   .chat-workspace { border-radius: 12px; }
   .chat-header { padding: 12px 14px; gap: 8px; }
-  .chat-header-btn, .chat-header-close { min-width: 32px; min-height: 32px; }
+  .chat-header-btn { min-width: 32px; min-height: 32px; }
   .chat-heading p { display: none; }
   .chat-header-main { gap: 8px; overflow: hidden; }
   .chat-header-title { font-size: 13px; }
@@ -575,8 +561,7 @@ const handleDrawerChange = (value) => {
 .chat-header-secondary-actions { display:flex; align-items:center; gap:4px; }
 .chat-header-more-actions { display:none; }
 
-.chat-header-btn,
-.chat-header-close {
+.chat-header-btn {
   width: 28px;
   height: 28px;
   border: none;
@@ -591,8 +576,7 @@ const handleDrawerChange = (value) => {
   flex-shrink: 0;
 }
 
-.chat-header-btn:hover,
-.chat-header-close:hover {
+.chat-header-btn:hover {
   background: #e2e8f0;
   color: #334155;
 }
@@ -614,22 +598,35 @@ const handleDrawerChange = (value) => {
 
 /* The reading column changes width independently of the browser and the history pane. */
 .drawer-panel .chat-main { container: drawer-conversation / inline-size; }
-.drawer-panel .compact-history :deep(.chat-sidebar.collapsed) { width: 0; border: 0; z-index: 3; }
-.drawer-panel .compact-history :deep(.chat-sidebar.collapsed .sidebar-toggle) {
-  left: 14px; right: auto; top: 12px; width: 32px; height: 32px;
-  border-radius: 8px; box-shadow: none;
+.drawer-panel :deep(.chat-sidebar.collapsed) { width: 52px; }
+.drawer-panel :deep(.chat-sidebar.collapsed .sidebar-toggle) {
+  top: 10px; right: 4px; width: 32px; height: 32px;
+  border: 0; border-radius: 8px; background: transparent; box-shadow: none;
 }
-.drawer-panel .compact-history .chat-header { padding-left: 58px; }
+.drawer-panel :deep(.chat-sidebar.collapsed .sidebar-toggle:hover) { background: var(--app-primary-soft); }
+.drawer-sidebar-actions {
+  margin-top: auto; padding: 7px 10px; display: flex; flex: none; align-items: center;
+  justify-content: space-between; gap: 4px; border-top: 1px solid var(--app-border);
+}
+.drawer-sidebar-actions.compact { flex-direction: column; align-items: flex-end; padding: 8px 4px; }
+.drawer-sidebar-close, .drawer-sidebar-actions :deep(.chat-menu-button) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 32px; min-height: 32px; padding: 0 6px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--app-text-secondary); font: inherit; font-size: 12px; cursor: pointer;
+}
+.drawer-sidebar-close:hover, .drawer-sidebar-actions :deep(.chat-menu-button:hover) {
+  background: var(--app-primary-soft); color: var(--app-primary);
+}
+.drawer-sidebar-close:focus-visible, .drawer-panel :deep(.sidebar-toggle:focus-visible) {
+  outline: 2px solid var(--app-primary); outline-offset: -2px;
+}
+@media (max-width: 768px) {
+  .drawer-panel :deep(.chat-sidebar.collapsed) { width: 42px; }
+}
 .drawer-panel .resize-handle { left: 0; width: 12px; }
 .drawer-panel .resize-knob { width: 10px; height: 36px; border-radius: 5px; }
 
 @container drawer-conversation (max-width: 560px) {
-  .drawer-panel .chat-header { padding-block: 10px; padding-right: 12px; min-height: 56px; gap: 8px; }
-  .drawer-panel .chat-header-secondary-actions { display: none; }
-  .drawer-panel .chat-header-more-actions { display: inline-flex; }
-  .drawer-panel .chat-header-btn, .drawer-panel .chat-header-close { width: 32px; height: 32px; }
-  .drawer-panel .chat-header-main { flex: 1; overflow: hidden; }
-  .drawer-panel .chat-heading p { display: none; }
   .drawer-panel .chat-body { padding: 16px 14px 8px; }
   .drawer-panel :deep(.composer) { padding: 8px 12px 12px; }
   .drawer-panel :deep(.gpt-composer-input) {
