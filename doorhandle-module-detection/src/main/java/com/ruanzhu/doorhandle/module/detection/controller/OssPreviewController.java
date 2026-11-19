@@ -85,7 +85,7 @@ public class OssPreviewController {
 
     static String classify(String code, String message) {
         String detail = message == null ? "" : message.strip().toLowerCase(Locale.ROOT);
-        if (Set.of("InsufficientBalance", "AccountInArrears", "Arrearage").contains(code == null ? "" : code)
+        if (Set.of("KmsInDebt", "InsufficientBalance", "AccountInArrears", "Arrearage").contains(code == null ? "" : code)
                 || detail.matches("(?s)(?:your |the )?account (?:is in arrears|has (?:an )?overdue (?:payment|bill)|has insufficient balance)[.!]?(?: .*)?")
                 || detail.matches("(?:您的|该|当前)?(?:阿里云)?(?:账号|账户)(?:已欠费|余额不足)[。！]?.*"))
             return "BILLING_OVERDUE";

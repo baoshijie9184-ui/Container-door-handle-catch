@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class OssPreviewFailureTest {
     @Test void explicitOverduePaymentIsReported() {
         assertThat(OssPreviewController.classify("AccessDenied", "Your account is in arrears.")).isEqualTo("BILLING_OVERDUE");
+        assertThat(OssPreviewController.classify("KmsInDebt", "Forbidden by KMS")).isEqualTo("BILLING_OVERDUE");
         assertThat(OssPreviewController.classify("InsufficientBalance", "")).isEqualTo("BILLING_OVERDUE");
     }
 
