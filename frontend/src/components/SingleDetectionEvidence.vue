@@ -1,7 +1,8 @@
 <template>
   <section class="single-evidence" aria-label="本次单图检测图片与模型摘要">
-    <dl class="single-evidence-summary"><div><dt>模型返回类别</dt><dd><el-tag :type="categoryTone">{{ categoryLabel }}</el-tag></dd></div><div><dt>模型置信度</dt><dd>{{ confidenceLabel }}</dd></div></dl>
+    <dl class="single-evidence-summary"><div><dt>最高置信度目标</dt><dd><el-tag :type="categoryTone">{{ categoryLabel }}</el-tag></dd></div><div><dt>该目标的维修方式</dt><dd>{{ maintenanceFor(maintenance,categoryLabel)?.action || '待核对' }}</dd></div><div><dt>模型置信度</dt><dd>{{ confidenceLabel }}</dd></div></dl>
     <p class="single-evidence-note">类别与置信度来自本次返回摘要，不代表人工复核、任务放行或模型准确率。图片可放大核对。</p>
+    <ModelMaintenanceSummary v-if="maintenance?.groups?.some(group => group.categories.some(item => item.targetCount > 0 && item.label !== categoryLabel))" :summary="maintenance" />
     <div class="single-evidence-images">
       <figure v-for="image in images" :key="image.side">
         <figcaption><strong>{{ image.label }}</strong><span>{{ image.source }}</span></figcaption>
@@ -22,10 +23,12 @@
 </template>
 
 <script setup>
+import ModelMaintenanceSummary from './ModelMaintenanceSummary.vue'
+import {maintenanceFor} from '../utils/modelMaintenance'
 import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import { computed, ref, watch } from 'vue'
 import { evidencePreviewUrl } from '../utils/evidencePresentation'
-const props=defineProps({taskId:String,fileName:String,originalUrl:String,annotationUrl:String,localPreview:String,categoryLabel:String,categoryTone:String,confidenceLabel:String})
+const props=defineProps({maintenance:Object,taskId:String,fileName:String,originalUrl:String,annotationUrl:String,localPreview:String,categoryLabel:String,categoryTone:String,confidenceLabel:String})
 const failed=ref(new Set()),loaded=ref(new Set()),attempts=ref({})
 const zoomOpen=ref(false),zoomImage=ref(null),zoomFailed=ref(false),zoomAttempt=ref(0)
 const originalProvided=computed(()=>typeof props.originalUrl==='string' && !!props.originalUrl.trim())
@@ -48,7 +51,7 @@ watch(sourceScope,()=>{zoomOpen.value=false;zoomImage.value=null;failed.value=ne
 
 <style scoped>
 .single-evidence { min-width:0; }
-.single-evidence-summary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:14px 0; margin:0; border-bottom:1px solid var(--app-border); }
+.single-evidence-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(128px,100%),1fr)); gap:12px; padding:14px 0; margin:0; border-bottom:1px solid var(--app-border); }
 .single-evidence-summary > div { min-width:0; }
 .single-evidence-summary dt { font-size:12px; line-height:1.8; color:var(--app-text-secondary); }
 .single-evidence-summary dd { margin:7px 0 0; color:var(--app-text); font-size:19px; font-weight:600; overflow-wrap:anywhere; }

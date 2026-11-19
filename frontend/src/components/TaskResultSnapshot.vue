@@ -5,10 +5,11 @@
    <header><h4><AppIcon name="DocumentChecked" :size="17" />已读检测结果</h4><StatusBadge domain="detection" :code="result.status" /></header>
    <p class="task-result-note">以下为本次已返回的结果快照。检测、人工复核、任务放行与报告审批分别记录，最新资料请重新读取追溯。</p>
    <dl class="task-result-counts"><div><dt>图片总数</dt><dd>{{ count(result.totalImages) }}</dd></div><div><dt>检测成功图片</dt><dd>{{ count(result.successfulImages) }}</dd></div><div><dt>检测失败图片</dt><dd>{{ count(result.failedImages) }}</dd></div></dl>
+   <ModelMaintenanceSummary :summary="result.modelMaintenance" />
    <NoDetectionSummary :result="result" />
    <dl class="task-result-responsibility"><div><dt>责任人</dt><dd>{{ result.assignee || '未记录' }}</dd></div><div><dt>质检截止</dt><dd>{{ time(result.dueAt) }}</dd></div><div><dt>人工复核</dt><dd><StatusBadge domain="review" :code="result.reviewStatus" /></dd></div><div><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="result.reviewConclusion" /></dd></div></dl>
    <p v-if="result.errorMessage" class="task-result-mismatch">结果记录的异常：{{ result.errorMessage }}</p>
-   <EvidenceComparison :task-id="taskId" :originals="originals" :annotations="previews" />
+   <EvidenceComparison :task-id="taskId" :maintenance="result.modelMaintenance" :defects="result.defectEvidence" :originals="originals" :annotations="previews" />
    <details class="task-result-disclosure"><summary>任务资料、复核与处置记录</summary><p class="task-result-note">仅展示当前结果已有字段，未返回的模型设置和资料保持未记录。</p><TaskTraceDetails :detail="detail" /></details>
    <details v-if="statisticsRows.length" class="task-result-disclosure"><summary>已返回的分类与统计</summary><p class="task-result-note">分类计数以原统计字段为准，不推算人工确认缺陷。缺失值为未知，不补零。</p><dl class="task-result-statistics"><div v-for="row in statisticsRows" :key="row.key"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div></dl><p v-if="hasHistoricalRate" class="task-result-note">历史未检出统计的比例单位尚未统一，此处保留原值供核对，不作为模型漏检率或准确率。</p></details>
    <div class="task-result-actions"><el-button size="small" type="primary" plain @click="$emit('trace',taskId)"><AppIcon name="Search" :size="14" />重新读取任务追溯</el-button><a v-if="resultHref" :href="resultHref" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">查看结果 JSON<AppIcon name="TopRight" :size="13" /></a></div>
@@ -18,6 +19,7 @@
 <script setup>
 import NoDetectionSummary from './NoDetectionSummary.vue'
 import {computed} from 'vue'
+import ModelMaintenanceSummary from './ModelMaintenanceSummary.vue'
 import EvidenceComparison from './EvidenceComparison.vue'
 import TaskTraceDetails from './TaskTraceDetails.vue'
 import {knownCount} from '@/utils/countPresentation'

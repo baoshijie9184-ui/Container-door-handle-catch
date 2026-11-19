@@ -19,6 +19,7 @@ import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTraceEvent
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTraceImage;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTaskProgressResponse;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTaskResultResponse;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.ModelMaintenance;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTaskUploadedRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionUploadFileRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionUploadUrlItem;
@@ -1165,7 +1166,9 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         inspection.put("totalImages", defaultInt(task.getTotalImages()));
         inspection.put("successfulImages", defaultInt(task.getSuccessfulImages()));
         inspection.put("failedImages", defaultInt(task.getFailedImages()));
-        inspection.put("statistics", readJsonMap(task.getStatisticsJson()));
+        var statistics = readJsonMap(task.getStatisticsJson());
+        inspection.put("statistics", statistics);
+        inspection.put("modelMaintenance", ModelMaintenance.from(statistics));
         inspection.put("defectCount", defaultInt(task.getDefectCount()));
         inspection.put("primaryDefectType", task.getPrimaryDefectType());
         inspection.put("maxDefectSeverity", task.getMaxDefectSeverity());

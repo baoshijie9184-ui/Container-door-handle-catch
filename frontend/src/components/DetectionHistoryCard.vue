@@ -11,7 +11,7 @@
     <dl class="history-capture-fields"><div><dt>工单 / 批次</dt><dd><router-link v-if="task.workOrderNo" :to="{path:'/quality/work-order-trace',query:{workOrderNo:task.workOrderNo}}">{{ task.workOrderNo }}</router-link><span v-else>工单未记录</span><router-link v-if="task.batchNo" :to="{path:'/quality/batch-trace',query:{batchNo:task.batchNo}}">{{ task.batchNo }}</router-link><span v-else>批次未记录</span></dd></div><div><dt>采集人员 / 区域</dt><dd>{{ task.captureInfo?.collector || '人员未记录' }}<span>{{ task.captureInfo?.region || '区域未记录' }}</span></dd></div><div><dt>采集设备</dt><dd>{{ task.captureInfo?.deviceName || '未记录' }}</dd></div><div><dt>采集日期</dt><dd>{{ task.captureInfo?.captureDate || '未记录' }}</dd></div></dl>
     <p v-if="task.errorMessage" class="history-task-error" :data-failed="statusCode==='FAILED'"><AppIcon name="Warning" :size="15" /><span>任务记录的异常说明：{{ task.errorMessage }}</span></p>
     <div v-if="task.resultReadError" class="history-result-read-error" role="status"><AppIcon name="Warning" :size="16" /><div><strong>结果详情读取未完成</strong><p>{{ task.resultReadError }}；上方保留本次列表已返回的统计与检测状态。</p><el-button size="small" :disabled="refreshing" @click="$emit('refresh')"><AppIcon name="Refresh" :size="14" />重新读取列表与结果</el-button></div></div>
-    <div v-if="classCounts.length" class="history-class-counts"><span v-for="item in classCounts" :key="item.key">{{ item.label }}<strong>{{ item.count.toLocaleString('zh-CN') }}</strong></span></div>
+    <div v-if="classCounts.length" class="history-class-counts"><span v-for="item in classCounts" :key="item.key">{{ item.label }}<template v-if="item.action"> · {{ item.action }}</template><strong>{{ item.count.toLocaleString('zh-CN') }}</strong></span></div>
     <p v-else-if="task.result && !task.resultReadError" class="history-card-note">分类计数未提供或没有非零记录，仍需人工复核。</p>
     <div v-if="previews.length" class="history-image-previews"><button v-for="(image,index) in previews.slice(0,6)" :key="index" type="button" :aria-label="`打开任务图片对照：${image.imageName || '预览 '+(index+1)}`" @click="$emit('browse-images',task.taskId,image.annotatedUrl || image.previewUrl)"><el-image :src="previewUrl(image)" :alt="image.imageName || '检测结果预览'" loading="lazy" fit="contain"><template #error><span class="history-preview-failure"><AppIcon name="Warning" :size="18" /><OssPreviewFailure :src="previewUrl(image)" fallback="预览未读取" /></span></template></el-image><span>{{ image.imageName || `预览 ${index+1}` }}</span></button></div>
     <p v-if="previews.length>6" class="history-card-note">展示本次读取预览中的前 6 张，点击「浏览图片」查看完整清单。</p>
@@ -28,6 +28,7 @@ import ResourceMutationSummary from './ResourceMutationSummary.vue'
 import { computed } from 'vue'
 import { knownCount } from '@/utils/countPresentation'
 import { beijingDateTime } from '@/utils/beijingTime'
+import { maintenanceFor } from '@/utils/modelMaintenance'
 import { CATEGORY_LABELS } from '@/stores/taskStore'
 const props = defineProps({ task:{type:Object,required:true}, cached:Boolean, refreshing:Boolean, cacheBusy:Boolean, showHistory:Boolean, latestChange:Object })
 defineEmits(['trace','browse-images','refresh','remove-cache'])
@@ -47,7 +48,7 @@ const previews = computed(() => (Array.isArray(props.task.result?.previewImages)
 const resultHref = computed(() => safeHref(props.task.result?.resultJsonUrl))
 const classCounts = computed(() => {
   const counts=props.task.result?.statistics?.classCounts
-  return counts&&typeof counts==='object'&&!Array.isArray(counts)?Object.entries(counts).flatMap(([key,value])=>{const count=knownCount(value);return count!==null&&count>0?[{key,label:CATEGORY_LABELS[key] || key,count}]:[]}):[]
+  return counts&&typeof counts==='object'&&!Array.isArray(counts)?Object.entries(counts).flatMap(([key,value])=>{const count=knownCount(value);return count!==null&&count>0?[{key,label:CATEGORY_LABELS[key] || key,count,action:maintenanceFor(props.task.result?.modelMaintenance,key)?.action}]:[]}):[]
 })
 </script>
 

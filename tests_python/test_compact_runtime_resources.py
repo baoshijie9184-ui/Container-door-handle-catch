@@ -650,14 +650,14 @@ def test_worker_reuses_verified_torch_and_adds_only_missing_pymysql(tmp_path, in
         'fixedSourceRequirementsSha256': cutover.sha_file(source / 'deploy/worker/requirements.txt')}
     # The shared native resource algorithm counts actual RUN/COPY instructions.
     import re
-    assert len(re.findall(r'^\s*(?:RUN|COPY)\b', dockerfile, re.M | re.I)) == (1 if installed_pymysql else 2)
+    assert len(re.findall(r'^\s*(?:RUN|COPY)\b', dockerfile, re.M | re.I)) == (2 if installed_pymysql else 3)
     assert receipt['sourceCopyInstructions'] == 1
     original = (source / 'deploy/worker/Dockerfile').read_text()
     assert original[original.index('ENV '):original.index('COPY ')] in dockerfile
     assert original[original.index('USER app'): ] in dockerfile
     rootfs = context / 'rootfs'
     assert set(path.name for path in context.iterdir()) == {'Dockerfile', 'rootfs'}
-    for directory in (rootfs, rootfs / 'app', rootfs / 'app/licenses', rootfs / 'opt'):
+    for directory in (rootfs, rootfs / 'app', rootfs / 'app/licenses', rootfs / 'app/fonts', rootfs / 'opt'):
         assert directory.stat().st_mode & 0o777 == 0o755
     inputs = candidate.worker_source_files(source); inputs.pop('Dockerfile')
     inputs['BUILD_PROVENANCE.json'] = old / 'BUILD_PROVENANCE.json'
@@ -689,7 +689,7 @@ def test_worker_can_reuse_exact_current_requirements_after_compact_cutover_witho
         'legacyRequirementsSha256': cutover.sha_file(old / 'requirements.txt'),
         'fixedSourceRequirementsSha256': cutover.sha_file(source / 'deploy/worker/requirements.txt')}
     assert receipt['originalProvenanceSha256'] == cutover.sha_file(old / 'BUILD_PROVENANCE.json')
-    assert receipt['addedNoDeps'] == [] and 'RUN ' not in body and 'pip install' not in body
+    assert receipt['addedNoDeps'] == [] and 'RUN mkdir -p /var/lib/doorhandle/folder-results' in body and 'pip install' not in body
     assert body.count('COPY rootfs/ /\n') == 1
     assert receipt['verifiedExistingVersions'] == actual['versions'] == receipt['requiredVersions']
     assert (context / 'rootfs/app/requirements.txt').read_bytes() == (source / 'deploy/worker/requirements.txt').read_bytes()

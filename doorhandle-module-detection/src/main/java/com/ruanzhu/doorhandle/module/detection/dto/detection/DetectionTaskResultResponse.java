@@ -29,6 +29,8 @@ public class DetectionTaskResultResponse {
     private Integer successfulImages;
     private Integer failedImages;
     private Map<String, Object> statistics;
+    public ModelMaintenance getModelMaintenance() { return ModelMaintenance.from(statistics); }
+
     private List<Map<String, Object>> defectEvidence;
     private Integer defectCount;
     private String primaryDefectType;

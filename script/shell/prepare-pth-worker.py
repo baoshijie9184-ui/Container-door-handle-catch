@@ -84,6 +84,9 @@ def main():
         add_fourband_config(source, config, manifest, hashes)
     files=['kafka_detection_worker.py','kafka_event_models.py','kafka_settings.py','detection_worker_receipts.py','oss_result_uploader.py',
            'pth_detection_engine.py','detection_image.py','worker_health.py','tenant_detection_authority.py','tenant_execution_security.py']
+    (target/'fonts').mkdir(exist_ok=True)
+    for name in ('annotation-song.otf','OFL.txt'):
+        shutil.copyfile(root/'python/worker/fonts'/name,target/'fonts'/name)
     for name in files:shutil.copyfile(root/'python/worker'/name,target/name)
     shutil.copyfile(root/'python/shared/runtime_telemetry.py',target/'runtime_telemetry.py')
     shutil.copyfile(root/'LICENSE',target/'LICENSE')

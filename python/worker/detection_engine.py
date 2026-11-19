@@ -8,30 +8,16 @@
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
-import numpy as np
 from PIL import Image
-import cv2
+from detection_image import render_detections
 import os
 import sys
 import io
-import math
-from typing import List, Dict
 
 # --- 引擎和配置导入 ---
 SOURCE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(os.path.abspath(os.path.join(SOURCE_ROOT, '..', '..')))
 from engine.core import YAMLConfig
-
-# --- 绘图工具导入 ---
-try:
-    from plotting import Annotator, Colors, is_ascii
-    colors = Colors()
-except ImportError:
-    print("=" * 50)
-    print("严重错误: 无法导入 'plotting.py'。")
-    print("请确保 'plotting.py' 文件与 'detection_engine.py' 在同一个文件夹中。")
-    print("=" * 50)
-    sys.exit(1)
 
 # --- 全局变量 ---
 model = None
@@ -108,11 +94,7 @@ def ensure_model_loaded():
 
 
 def get_annotated_image_and_json(im_pil, labels, boxes, scores, thrh=0.4):
-    """使用 cv2 和 plotting.py 绘制标注，返回 (annotated_pil_image, json_results)"""
-    im = cv2.cvtColor(np.array(im_pil), cv2.COLOR_RGB2BGR)
-    lw = max(round(sum(im.shape) / 2 * 0.003), 2)
-    annotator = Annotator(im, line_width=lw, example=str(NAMES))
-
+    """Render the model output on the original-resolution image."""
     scr = scores[0].cpu()
     lab = labels[0].cpu()
     box = boxes[0].cpu()
@@ -124,7 +106,6 @@ def get_annotated_image_and_json(im_pil, labels, boxes, scores, thrh=0.4):
 
     detections = list(zip(scr, lab, box))
     sorted_detections = sorted(detections, key=lambda x: x[0], reverse=True)
-    drawn_labels_info = []
     results_json = []
 
     for score_tensor, class_id_tensor, box_tensor in sorted_detections:
@@ -136,46 +117,13 @@ def get_annotated_image_and_json(im_pil, labels, boxes, scores, thrh=0.4):
         box_coords = [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
 
         class_name = NAMES.get(class_id, f'Class {class_id}')
-        label_text = f"{class_name} {score:.2f}"
-        color = colors(class_id, bgr=True)
-
-        current_label_anchor = (box_coords[0], box_coords[1])
-        current_label_height = 0
-        if annotator.pil or not is_ascii(label_text):
-            try:
-                w_text, h_text = annotator.font.getsize(label_text)
-            except AttributeError:
-                (w_text, h_text), _ = cv2.getTextSize(label_text, 0, fontScale=annotator.sf, thickness=annotator.tf)
-            current_label_height = h_text + 1 + 1
-        else:
-            (w_text, h_text), _ = cv2.getTextSize(label_text, 0, fontScale=annotator.sf, thickness=annotator.tf)
-            current_label_height = h_text + 3 + 1
-
-        y_offset_pixels = 0
-        for drawn_anchor_x, drawn_anchor_y, prev_label_h in drawn_labels_info:
-            dist = math.dist(current_label_anchor, (drawn_anchor_x, drawn_anchor_y))
-            if dist < OVERLAP_THRESHOLD_PX:
-                y_offset_pixels += (prev_label_h + 2)
-
-        drawn_labels_info.append((*current_label_anchor, current_label_height))
-
-        try:
-            annotator.box_label(box_coords, label_text, color=color, y_offset_pixels=y_offset_pixels)
-        except TypeError:
-            print("警告: 'Annotator.box_label' 不支持 'y_offset_pixels'。将不使用重叠避免。")
-            annotator.box_label(box_coords, label_text, color=color)
-        except Exception as e:
-            print(f"Annotator 绘图时出错: {e}")
-
         results_json.append({
             "label": class_name,
             "score": score,
             "box": [float(c) for c in box_coords]
         })
 
-    result_im_cv2 = annotator.result()
-    annotated_pil_image = Image.fromarray(cv2.cvtColor(result_im_cv2, cv2.COLOR_BGR2RGB))
-    return annotated_pil_image, results_json
+    return render_detections(im_pil, results_json), results_json
 
 
 def run_detection_on_pil_image(im_pil: Image.Image, threshold: float = 0.4):

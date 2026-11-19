@@ -9,6 +9,9 @@
       <p class="comparison-selection">{{ current.label }}<span v-if="unpairedCount">{{ unpairedCount }} 张仅有原图或标注图</span></p>
       <ImageListNavigation ref="pager" :index="currentIndex" :total="pairs.length" @select="selectIndex" />
     </div>
+    <ul v-if="maintenanceRows.length" class="image-maintenance" aria-label="本图缺陷维修建议">
+      <li v-for="row in maintenanceRows" :key="row.label">{{ row.label }} × {{ row.count }} · <strong>{{ row.action }}</strong></li>
+    </ul>
     <p v-if="current?.ambiguous" class="comparison-note"><AppIcon name="Warning" :size="15" />同名文件不唯一，当前仅显示单份资料，请结合任务中的存储记录核对。</p>
     <p v-if="!pairs.length" class="comparison-note"><AppIcon name="Files" :size="16" />当前任务没有可对照的图片资料</p>
     <div v-else class="comparison-images">
@@ -31,9 +34,10 @@
 import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import { computed, getCurrentInstance, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
+import {imageMaintenance} from '../utils/modelMaintenance'
 import ImageListNavigation from './ImageListNavigation.vue'
 import { evidenceComparisonPairs, evidencePreviewUrl } from '../utils/evidencePresentation'
-const props = defineProps({ taskId: String, initialAnnotationUrl: { type: String, default: '' }, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
+const props = defineProps({ maintenance:Object, defects:Array, taskId: String, initialAnnotationUrl: { type: String, default: '' }, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
 const headingId = 'evidence-comparison-' + getCurrentInstance().uid
 const selection = ref(''), failed = ref(new Set()), loaded = ref(new Set()), zoomOpen = ref(false), zoomError = ref(false)
 const pager = ref(null), zoomPager = ref(null), zoomSide = ref('original')
@@ -43,6 +47,7 @@ const unpairedCount = computed(() => pairs.value.filter(pair => !pair.original |
 const options = computed(() => pairs.value.map(pair => ({ value: pair.key, label: pair.label })))
 const currentIndex = computed(() => Math.max(0, pairs.value.findIndex(pair => pair.key === selection.value)))
 const current = computed(() => pairs.value[currentIndex.value])
+const maintenanceRows=computed(()=>imageMaintenance(props.maintenance,props.defects,current.value))
 const selectIndex = index => { if (pairs.value[index]) selection.value = pairs.value[index].key }
 const imageUrl = side => evidencePreviewUrl(current.value?.[side])
 const sideViews = computed(() => sides.map(side => {
@@ -78,6 +83,7 @@ defineExpose({ focusNavigation: () => pager.value?.focus() })
 </script>
 
 <style scoped>
+.image-maintenance{display:flex;flex-wrap:wrap;gap:6px 14px;list-style:none;margin:8px 0 12px;padding:0;color:var(--app-text-secondary);font-size:13px}.image-maintenance strong{color:var(--app-text)}
 .evidence-comparison { min-width: 0; padding: 0 0 20px; margin-bottom: 20px; border: 0; border-bottom: 1px solid var(--app-border); border-radius: 0; background: white; }
 .evidence-comparison > header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
 .evidence-comparison h3 { display: flex; align-items: center; gap: 8px; font-size: 16px; color: var(--app-text); margin: 0; }

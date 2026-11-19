@@ -13,9 +13,10 @@
         <p v-if="Number.isSafeInteger(detail.assignmentRevision) && detail.assignmentRevision >= 0" class="task-trace-version">已读分派版本 V{{ detail.assignmentRevision }}</p>
         <p v-if="detail.assignmentRemark" class="task-trace-assignment-note"><strong>分派说明</strong>{{ detail.assignmentRemark }}</p>
         <dl class="task-trace-image-counts"><div><dt>记录图片总数</dt><dd>{{ count(detail.totalImages) }}</dd></div><div><dt>检测成功图片</dt><dd>{{ count(detail.successfulImages) }}</dd></div><div><dt>检测失败图片</dt><dd :data-error="detail.failedImages > 0">{{ count(detail.failedImages) }}</dd></div></dl>
+        <ModelMaintenanceSummary v-if="['COMPLETED','PARTIAL_FAILED'].includes(detail.status) || detail.statistics?.classCounts" :summary="detail.modelMaintenance" />
         <NoDetectionSummary :result="detail" />
       </section>
-      <section :ref="node => targets.images = node" tabindex="-1" aria-label="图片对照"><EvidenceComparison :task-id="detail.taskId" :originals="detail.originalImages || []" :annotations="detail.previewImages || []" /></section>
+      <section :ref="node => targets.images = node" tabindex="-1" aria-label="图片对照"><EvidenceComparison :task-id="detail.taskId" :maintenance="detail.modelMaintenance" :defects="detail.defectEvidence" :originals="detail.originalImages || []" :annotations="detail.previewImages || []" /></section>
       <section :ref="node => targets.records = node" tabindex="-1" aria-label="任务及人工处理资料"><TaskTraceDetails :detail="detail" /></section>
       <ResourceChangeHistory resource-type="DETECTION_TASK" :resource-id="detail.taskId" domain="DETECTION" compact />
       <section :ref="node => targets.timeline = node" tabindex="-1" aria-label="已记录流程节点"><TaskTraceTimeline :key="detail.taskId" :events="detail.timeline" /></section>
@@ -31,6 +32,7 @@ import { computed, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import CollectionEmptyState from './CollectionEmptyState.vue'
 import QualityStageGuidance from './QualityStageGuidance.vue'
+import ModelMaintenanceSummary from './ModelMaintenanceSummary.vue'
 import EvidenceComparison from './EvidenceComparison.vue'
 import TaskTraceDetails from './TaskTraceDetails.vue'
 import TaskTraceTimeline from './TaskTraceTimeline.vue'

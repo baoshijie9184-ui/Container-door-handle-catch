@@ -1,4 +1,5 @@
 """DEIM exported inference: named outputs, manifest-bound preprocessing and weights."""
+from detection_image import annotate
 import hashlib
 import io
 import json
@@ -7,7 +8,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageOps
 
 
 class OnnxDetectionEngine:
@@ -67,33 +68,7 @@ class OnnxDetectionEngine:
             # Training PostProcessor scales xyxy by [width,height,width,height].
             "orig_target_sizes": np.asarray([[width, height]], dtype=np.int64),
         })
-        if labels.ndim != 2 or labels.shape[0] != 1 or scores.shape != labels.shape or boxes.shape != (*labels.shape, 4):
-            raise ValueError("Malformed DEIM output shapes")
-        if not np.isfinite(boxes).all() or not np.isfinite(scores).all() or not np.isfinite(labels).all():
-            raise ValueError("Non-finite detection output")
-        if (labels < 0).any() or (labels >= len(self.names)).any() or (labels != labels.astype(np.int64)).any():
-            raise ValueError("Detection class index outside the manifest")
-        if (scores < 0).any() or (scores > 1).any():
-            raise ValueError("Detection scores outside probability range")
-        annotated = image.copy()
-        draw = ImageDraw.Draw(annotated)
-        colors = ["#1677ff", "#f59e0b", "#e85d04", "#a0522d", "#dc2626", "#7c3aed"]
-        results = []
-        for index in np.argsort(-scores[0], kind="stable"):
-            score = float(scores[0, index])
-            if score <= threshold:
-                continue
-            class_id = int(labels[0, index])
-            x0, y0, x1, y1 = map(float, boxes[0, index])
-            x0, x1 = sorted((max(0., min(width, x0)), max(0., min(width, x1))))
-            y0, y1 = sorted((max(0., min(height, y0)), max(0., min(height, y1))))
-            if x1 <= x0 or y1 <= y0:
-                continue
-            name = self.names[class_id]
-            draw.rectangle((x0, y0, x1, y1), outline=colors[class_id], width=max(2, round((width+height)/600)))
-            draw.text((x0, max(0, y0-13)), f"{name} {score:.2f}", fill=colors[class_id])
-            results.append({"label": name, "score": score, "box": [x0, y0, x1, y1]})
-        return annotated, results
+        return annotate(image, labels, boxes, scores, threshold)
 
     def detect_bytes(self, content, threshold):
         with Image.open(io.BytesIO(content)) as image:

@@ -39,6 +39,7 @@ const mapCompletedResult = (taskId, result, status) => {
     taskId,
     status,
     category: summary.category,
+    modelMaintenance: result.modelMaintenance,
     confidence: Number(summary.confidence),
     annotatedImagePath: preview.annotatedUrl,
     processedImagePath: preview.originalUrl || '',

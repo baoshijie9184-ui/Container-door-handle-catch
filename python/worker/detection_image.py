@@ -1,9 +1,74 @@
 """Shared image validation and annotation for native PyTorch inference."""
+from functools import lru_cache
+from pathlib import Path
 import math
 import numpy as np
-from PIL import ImageDraw
+from PIL import ImageDraw, ImageFont
 
 NAMES = ['Normal','Bent','Deformed','Rusty','Missing','Compromised']
+
+
+# Only the raster labels are translated. Structured model labels stay canonical.
+LABEL_STYLE = {
+    'Normal': ('正常', '#215895'), 'Bent': ('弯曲', '#854600'),
+    'Deformed': ('形变', '#a13016'), 'Rusty': ('锈蚀', '#633f25'),
+    'Missing': ('缺失', '#a91c42'), 'Compromised': ('结构损伤', '#65349a'),
+}
+FONT_FILE = Path(__file__).resolve().parent / 'fonts' / 'annotation-song.otf'
+
+
+@lru_cache(maxsize=48)
+def _song(size):
+    return ImageFont.truetype(str(FONT_FILE), size)
+
+
+def _overlap(rect, other):
+    return (max(0, min(rect[2], other[2]) - max(rect[0], other[0])) *
+            max(0, min(rect[3], other[3]) - max(rect[1], other[1])))
+
+
+def render_detections(image, detections):
+    output = image.convert('RGB').copy()
+    if not detections:
+        return output
+    draw = ImageDraw.Draw(output)
+    width, height = output.size
+    scale = min(width, height)
+    font_size = max(12, min(180, round(scale * .050)))
+    line = max(2, round(font_size * .105))
+    pad = max(2, round(font_size * .13))
+    labels = []
+    for target in detections:
+        word, color = LABEL_STYLE.get(target['label'], ('未知', '#394457'))
+        x0, y0, x1, y1 = target['box']
+        frame = (max(0,min(width-1,round(x0))), max(0,min(height-1,round(y0))),
+                 max(0,min(width-1,round(x1))), max(0,min(height-1,round(y1))))
+        draw.rectangle(frame, outline='white', width=line+2)
+        draw.rectangle(frame, outline=color, width=line)
+        labels.append((frame, f"{word} {target['score']:.0%}", color))
+
+    placed = []
+    for frame, text, color in labels:
+        x0, y0, x1, y1 = frame
+        font = _song(font_size)
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        if right-left+2*pad > width:
+            font = _song(max(1, int(font_size * max(1,width-2*pad) / max(1,right-left))))
+            left, top, right, bottom = draw.textbbox((0,0), text, font=font)
+        w, h = right-left+2*pad, bottom-top+2*pad
+        anchors = [(x0,y0-h), (x0,y1+1), (x1-w,y0-h), (x1-w,y1+1), (x0,y0), (x1-w,y1-h)]
+        for step in (2,3):
+            anchors.extend(((x0,y0-h*step),(x0,y1+1+h*(step-1))))
+        candidates = []
+        for x,y in anchors:
+            x, y = max(0,min(width-w,x)), max(0,min(height-h,y))
+            candidates.append((x,y,x+w,y+h))
+        rect = min(candidates, key=lambda r: (sum(_overlap(r,p) for p in placed), _overlap(r,frame)))
+        placed.append(rect)
+        x,y = rect[:2]
+        draw.rectangle((x,y,rect[2]-1,rect[3]-1),fill=color)
+        draw.text((x+pad-left,y+pad-top),text,font=font,fill='white')
+    return output
 
 
 def annotate(image, labels, boxes, scores, threshold):
@@ -18,8 +83,8 @@ def annotate(image, labels, boxes, scores, threshold):
         raise ValueError('Unexpected detection class index')
     if (scores<0).any() or (scores>1).any():
         raise ValueError('Invalid confidence probability')
-    image=image.copy();draw=ImageDraw.Draw(image);width,height=image.size
-    colors=['#1677ff','#d97706','#e85d04','#9a6324','#dc2626','#7c3aed'];results=[]
+    width,height=image.size
+    results=[]
     for index in np.argsort(-scores[0],kind='stable'):
         score=float(scores[0,index])
         if score<=threshold:
@@ -30,7 +95,5 @@ def annotate(image, labels, boxes, scores, threshold):
         if x1<=x0 or y1<=y0:
             continue
         name=NAMES[label]
-        draw.rectangle((x0,y0,x1,y1),outline=colors[label],width=max(2,round((width+height)/600)))
-        draw.text((x0,max(0,y0-13)),f'{name} {score:.2f}',fill=colors[label])
         results.append({'label':name,'score':score,'box':[x0,y0,x1,y1]})
-    return image,results
+    return render_detections(image, results), results

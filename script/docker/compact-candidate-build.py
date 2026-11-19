@@ -168,6 +168,8 @@ WORKER_PYTHON_FILES = ('kafka_detection_worker.py', 'kafka_event_models.py', 'ka
 
 def worker_source_files(source):
     return {'Dockerfile': source / 'deploy/worker/Dockerfile',
+        'fonts/annotation-song.otf': source / 'python/worker/fonts/annotation-song.otf',
+        'fonts/OFL.txt': source / 'python/worker/fonts/OFL.txt',
         'requirements.txt': source / 'deploy/worker/requirements.txt',
         'DINOv3-LICENSE.md': source / 'deploy/worker/licenses/DINOv3-LICENSE.md',
         'PyMySQL-LICENSE.txt': source / 'deploy/worker/licenses/PyMySQL-LICENSE.txt',
@@ -204,6 +206,7 @@ def worker_runtime_dockerfile(body, image, *, add_pymysql, telemetry_pins=(), ve
         'COPY requirements.txt /app/requirements.txt\n': ('COPY rootfs/ /\n' + supplement if telemetry_pins else supplement + 'COPY rootfs/ /\n'), install: '',
         'COPY ' + ' '.join(WORKER_PYTHON_FILES[:8]) + ' LICENSE /app/\n': '',
         'COPY ' + ' '.join(WORKER_PYTHON_FILES[8:]) + ' /app/\n': '',
+        'COPY fonts/ /app/fonts/\n': '',
         'COPY model-source/ /opt/model-source/\n': '',
         'COPY DINOv3-LICENSE.md BUILD_PROVENANCE.json /opt/model-source/\n': '',
         'COPY PyMySQL-LICENSE.txt /app/licenses/PyMySQL-LICENSE.txt\n': ''}
@@ -216,8 +219,9 @@ def worker_runtime_dockerfile(body, image, *, add_pymysql, telemetry_pins=(), ve
     statements = [line.strip().split(None, 1) for line in re.sub(r'\\\n[ \t]*', ' ', body).splitlines()
                   if line.strip() and not line.lstrip().startswith('#')]
     instructions = [line[0].upper() for line in statements]
-    if (set(instructions) - {'FROM', 'LABEL', 'WORKDIR', 'ENV', 'RUN', 'COPY', 'USER', 'HEALTHCHECK', 'CMD'}
-            or instructions.count('COPY') != 1 or instructions.count('RUN') != int(add_pymysql or bool(telemetry_pins))
+    folder_setup = 'RUN mkdir -p /var/lib/doorhandle/folder-results && chown app:app /var/lib/doorhandle/folder-results\n'
+    if (body.count(folder_setup) != 1 or set(instructions) - {'FROM', 'LABEL', 'WORKDIR', 'ENV', 'RUN', 'COPY', 'USER', 'HEALTHCHECK', 'CMD'}
+            or instructions.count('COPY') != 1 or instructions.count('RUN') != 1 + int(add_pymysql or bool(telemetry_pins))
             or instructions.count('FROM') != 1
             or [line[1] for line in statements if line[0].upper() == 'USER'] != ['root', 'app']
             or [line[1] for line in statements if line[0].upper() == 'WORKDIR'] != ['/app']
@@ -228,7 +232,7 @@ def worker_runtime_dockerfile(body, image, *, add_pymysql, telemetry_pins=(), ve
 
 def stage_worker_rootfs(source, context, old_context, common, cutover):
     rootfs = context / 'rootfs'
-    for directory in (rootfs, rootfs / 'app', rootfs / 'app/licenses', rootfs / 'opt'):
+    for directory in (rootfs, rootfs / 'app', rootfs / 'app/licenses', rootfs / 'app/fonts', rootfs / 'opt'):
         directory.mkdir(mode=0o755); os.chmod(directory, 0o755)
     model = cutover.canonical(old_context / 'model-source')
     common.require(model.is_dir(), 'Existing validated worker model sources are missing')
@@ -245,7 +249,7 @@ def stage_worker_rootfs(source, context, old_context, common, cutover):
     # Only the new directory entries are copied. Never chmod the linked model
     # files: their inodes still belong to the original retained source tree.
     shutil.copytree(model, rootfs / 'opt/model-source', copy_function=os.link)
-    destinations = {name: 'app/' + name for name in (*WORKER_PYTHON_FILES, 'requirements.txt', 'LICENSE')}
+    destinations = {name: 'app/' + name for name in (*WORKER_PYTHON_FILES, 'requirements.txt', 'LICENSE', 'fonts/annotation-song.otf', 'fonts/OFL.txt')}
     destinations.update({'DINOv3-LICENSE.md': 'opt/model-source/DINOv3-LICENSE.md',
         'BUILD_PROVENANCE.json': 'opt/model-source/BUILD_PROVENANCE.json',
         'PyMySQL-LICENSE.txt': 'app/licenses/PyMySQL-LICENSE.txt'})

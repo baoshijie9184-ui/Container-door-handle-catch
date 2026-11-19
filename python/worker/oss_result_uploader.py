@@ -9,7 +9,7 @@ class OssResultUploader:
 
     def upload_preview_image(self, key: str, image: Any) -> str:
         buffer = BytesIO()
-        image.save(buffer, format="JPEG")
+        image.save(buffer, format="JPEG", quality=92, subsampling=0)
         self.bucket.put_object(key, buffer.getvalue())
         return key
 

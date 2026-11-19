@@ -40,6 +40,10 @@ public class OssPreviewController {
         var file = root.resolve(relative).normalize();
         if (!file.startsWith(root) || !file.getFileName().toString().equals(relative.substring(relative.lastIndexOf('/')+1)))
             throw new com.ruanzhu.doorhandle.common.BusinessException(400,"结果文件名无效");
+        if (!key.endsWith("/detection_results.json")) {
+            var rendition = file.getParent().resolve(".annotations-song-v1").resolve(file.getFileName());
+            if (java.nio.file.Files.isRegularFile(rendition)) return rendition;
+        }
         return file;
     }
 

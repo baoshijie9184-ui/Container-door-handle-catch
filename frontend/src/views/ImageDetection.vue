@@ -117,7 +117,7 @@
                       <p v-if="singleStageCode === 'UNCONFIRMED'" id="single-result-reconcile-note" class="detection-input-note">连接或结果读取未完成不等于任务失败，请先<router-link to="/inspection/history">查看检测记录</router-link>。本页不会自动重新提交；选择新图片会开始新的提交。</p>
                       <div v-if="singleDetectionTaskId" class="single-task-links"><button type="button" @click="openTraceDialog(singleDetectionTaskId)"><AppIcon name="Search" :size="14" />核对本次任务</button><router-link :to="{path:'/quality/reports',query:{taskId:singleDetectionTaskId}}">报告与审批</router-link></div>
 
-                      <SingleDetectionEvidence v-if="detectionResult" :task-id="singleDetectionTaskId" :file-name="singleSubmission?.fileName || ''" :original-url="detectionResult.processedImagePath" :annotation-url="annotatedImageUrl" :local-preview="fileList[0]?.url || ''" :category-label="getCategoryText(detectionResult.category)" :category-tone="getCategoryType(detectionResult.category)" :confidence-label="formatConfidence(detectionResult.confidence)" />
+                      <SingleDetectionEvidence v-if="detectionResult" :maintenance="detectionResult.modelMaintenance" :task-id="singleDetectionTaskId" :file-name="singleSubmission?.fileName || ''" :original-url="detectionResult.processedImagePath" :annotation-url="annotatedImageUrl" :local-preview="fileList[0]?.url || ''" :category-label="getCategoryText(detectionResult.category)" :category-tone="getCategoryType(detectionResult.category)" :confidence-label="formatConfidence(detectionResult.confidence)" />
                       <template v-else-if="fileList[0]?.url">
                         <div class="single-result-image single-result-preview">
                           <img :src="fileList[0].url" alt="待检测图片预览" />
@@ -514,8 +514,8 @@
     <el-dialog v-model="reviewDialogVisible" class="quality-operation-dialog" title="人工复核" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
       <QualityTaskContext :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
-      <div v-if="reviewImages"><p v-if="reviewImages.counts" class="review-counts"><span v-for="(label,category) in CATEGORY_LABELS" :key="category">{{ label }} <b>{{ reviewImages.counts[category] ?? '—' }}</b></span></p>
-      <EvidenceComparison :task-id="reviewTask?.taskId" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
+      <div v-if="reviewImages"><ModelMaintenanceSummary :summary="reviewImages.maintenance" />
+      <EvidenceComparison :task-id="reviewTask?.taskId" :maintenance="reviewImages.maintenance" :defects="reviewImages.defects" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
       <div v-else class="quality-feedback-note" role="status"><AppIcon name="Picture" :size="16" />{{ reviewImageError || '正在读取本次任务的原图与标注图…' }}
         <el-button v-if="reviewImageError" link type="primary" @click="reviewImageAttempt++">重新读取图片</el-button>
       </div>
@@ -679,7 +679,7 @@
         <template v-else-if="traceDialogVisible">
           <p class="browser-task-id">任务 {{ traceDetail.taskId }}</p>
           <el-alert v-if="traceError" :title="traceError" type="warning" :closable="false" />
-          <EvidenceComparison ref="imageBrowser" :task-id="traceDetail.taskId" :originals="traceDetail.originalImages || []"
+          <EvidenceComparison ref="imageBrowser" :maintenance="traceDetail.modelMaintenance" :defects="traceDetail.defectEvidence" :task-id="traceDetail.taskId" :originals="traceDetail.originalImages || []"
                               :annotations="traceDetail.previewImages || []" :initial-annotation-url="initialAnnotationUrl" />
         </template>
       </template>
@@ -701,6 +701,7 @@ import { resourceHistoryLink } from '../utils/changeHistory'
 import { resourceVersion } from '../utils/mutationVersion'
 import {captureAccountRequest} from '@/api/request'
 import { accountSession } from '../utils/accountContext'
+import ModelMaintenanceSummary from '@/components/ModelMaintenanceSummary.vue'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import QualityStageGuidance from '@/components/QualityStageGuidance.vue'
 import QualityTaskContext from '@/components/QualityTaskContext.vue'
@@ -1218,7 +1219,7 @@ watch([()=>reviewDialogVisible.value ? reviewTask.value?.taskId : null, ()=>user
       const originals=detail.originalImages?.length ? detail.originalImages : annotations
         .filter(image=>image && typeof image.originalUrl==='string' && image.originalUrl)
         .map(image=>({imageName:image.imageName,previewUrl:image.originalUrl}))
-      reviewImages.value={originals,annotations,counts:detail.statistics?.classCounts}
+      reviewImages.value={originals,annotations,maintenance:detail.modelMaintenance,defects:detail.defectEvidence}
     }catch{
       if(!controller.signal.aborted && accountSession.current(owner))reviewImageError.value='未能读取本次任务的图片。'
     }
@@ -1395,7 +1396,6 @@ async function validateCollaborationAccess(){
 </script>
 
 <style scoped>
-.review-counts{display:flex;flex-wrap:wrap;gap:5px 12px;font-size:12px;color:var(--app-text-secondary)}
 .image-detection-container {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
