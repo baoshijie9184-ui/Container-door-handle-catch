@@ -123,7 +123,7 @@ const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/pr
     assert.match(frontendTest, /chromium\.launch\(headless=True\)/)
   })
 
-  test('documents ECS execution and local editing and builds', () => {
+  test('documents the personal Ubuntu route and safeguards for the historical ECS route', () => {
     const readme = readProjectFile('README.md')
     const guide = readProjectFile('docs', 'monolith', 'README.md')
 
@@ -131,7 +131,8 @@ const { projectRoot, readFrontendFile, readProjectFile } = require('./helpers/pr
     assert.match(readme, /mvn -DskipTests=true clean package/)
     assert.match(readme, /前端开发服务器和测试必须在 ECS 上启动/)
     assert.match(guide, /本地仅编辑、编译和打包/)
-    assert.match(guide, /单元\/集成测试全部在 ECS 执行/)
+    assert.match(guide, /历史 ECS Jenkins 路径/)
+    assert.match(guide, /用户自己的 Ubuntu 使用 \[个人服务器隔离迁移\]\(\.\.\/database\/compact-migration-orchestration\.md#/)
     assert.match(guide, /Status=Stopped/)
     assert.match(guide, /StoppedMode=StopCharging/)
   })
