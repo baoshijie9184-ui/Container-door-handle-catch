@@ -109,6 +109,9 @@ final class QuotaAccountStore {
 
     /** Only a RESERVED attempt may be released; STARTED/timeout/unknown never proves non-dispatch. */
     boolean cancelBeforeDispatch(long root, long attempt, long owner, String model) {
+        return release(root,attempt,owner,model,false);
+    }
+    boolean release(long root,long attempt,long owner,String model,boolean confirmedUnsent) {
         String state = lockOperation(root, attempt, owner, model);
         var reserved = reservations(root, attempt, owner, model);
         if (reserved.isEmpty()) throw new IllegalStateException("No reservation exists for cancellation");
@@ -123,7 +126,7 @@ final class QuotaAccountStore {
                 replay = true; continue;
             }
             if (replay) throw new IllegalStateException("Partially released account set");
-            if (!"RESERVED".equals(state)) throw new IllegalStateException("A possibly dispatched request cannot release its reservation");
+            if (!"RESERVED".equals(state) && !(confirmedUnsent && "STARTED".equals(state))) throw new IllegalStateException("A possibly dispatched request cannot release its reservation");
             long balance = Math.subtractExact(account.reserved(), entry.amount());
             if (balance < 0) throw new IllegalStateException("Reservation balance is inconsistent");
             updateCounters(account, balance, account.spent());

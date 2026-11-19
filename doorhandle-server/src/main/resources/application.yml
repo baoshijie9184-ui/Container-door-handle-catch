@@ -169,6 +169,7 @@ app:
     enabled: ${APP_KNOWLEDGE_ENABLED:false}
   model-budget:
     enabled: ${APP_MODEL_BUDGET_ENABLED:false}
+    provider-limits: ${APP_PROVIDER_LIMITS_ENABLED:false}
   quality-automation:
     enabled: ${APP_QUALITY_AUTOMATION_ENABLED:false}
     poll-ms: ${APP_QUALITY_AUTOMATION_POLL_MS:30000}

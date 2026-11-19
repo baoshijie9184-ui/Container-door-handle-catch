@@ -7,6 +7,7 @@
 | 要改什么 | 入口 |
 | --- | --- |
 | 角色、模型或路由 | [平台配置](agentscope-platform-config.md)；修改角色工具登记或模型路由，而不是在页面写死某个账号或供应商 |
+| 厂家与员工额度 | [预算、员工分配与调用结算](厂家与员工额度.md) |
 | 聊天、追溯、任务队列 | [Harness 布局](Agent前端Harness布局设计.md)、[会话与记忆](Agent会话历史与记忆统一.md)、[暂停与消息队列](Agent任务暂停与消息队列.md) |
 | 运行事件和上下文 | [运行日志](agentscope-run-journal.md)、[持久上下文与卸载](Agent持久上下文与受控卸载.md)；按同一账号、会话、运行及消息身份关联 |
 | RAG 和长期记忆 | 运行路径见 [Qdrant 向量存储](middleware/semantic-vector-storage.md)，用户范围与治理见 [个人长期记忆](个人长期记忆治理.md)；旧 Chroma 仅作为迁移来源 |

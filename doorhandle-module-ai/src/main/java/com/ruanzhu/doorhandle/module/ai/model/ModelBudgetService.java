@@ -40,6 +40,9 @@ public class ModelBudgetService {
     private final QuotaAccountStore accounts;
     private final TransactionTemplate completion;
     private AiCollaborationHistory collaborationHistory;
+    private ProviderBudgetService providerBudgets;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void setProviderBudgets(ProviderBudgetService service) { this.providerBudgets=service; }
     @org.springframework.beans.factory.annotation.Value("${collaboration.change-history.enabled:false}") private boolean requireHistory;
     @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}") private boolean requireCommands;
     @org.springframework.beans.factory.annotation.Autowired(required=false) public void collaborationHistory(AiCollaborationHistory history){this.collaborationHistory=history;}
@@ -218,6 +221,7 @@ public class ModelBudgetService {
             if(!"RESERVED".equals(attempt.status()))throw new ModelAttemptTrace.RecordingException();
             var reservation=accounts.reserve(root.id(),attempt.id(),actor.userId(),modelId,reservedTokens);
             if(!reservation.created())throw new ModelAttemptTrace.RecordingException();
+            if(providerBudgets!=null) providerBudgets.hold(root.id(),attempt.id(),actor,modelId,reservedTokens);
             // MODEL locking serializes a supervisor's new observation with this admission.
             var latest=observationRows(modelId,1,true);
             if(!latest.isEmpty()&&number(latest.get(0).get("remaining_tokens"))==0)
@@ -231,11 +235,16 @@ public class ModelBudgetService {
     /** A logout does not invalidate accounting. Commit failures are inside the recording-error boundary. */
     @Transactional(propagation=Propagation.NOT_SUPPORTED)
     public void finished(Ticket ticket,Map<String,Object> fields) {
-        try { completion.executeWithoutResult(status->complete(ticket,fields)); }
+        try { completion.executeWithoutResult(status->complete(ticket,fields,false)); }
         catch(RuntimeException failed) { throw new ModelAttemptTrace.RecordingException(); }
     }
 
-    private void complete(Ticket ticket,Map<String,Object> fields) {
+    @Transactional(propagation=Propagation.NOT_SUPPORTED)
+    public void cancelUnsent(Ticket ticket) {
+        try {completion.executeWithoutResult(status->complete(ticket,Map.of("modelId",ticket.modelId(),"status","CANCELLED"),true));}
+        catch(RuntimeException failed) {throw new ModelAttemptTrace.RecordingException();}
+    }
+    private void complete(Ticket ticket,Map<String,Object> fields,boolean confirmedUnsent) {
         Objects.requireNonNull(ticket);Objects.requireNonNull(fields);validate(ticket.modelId());
         if(!ticket.modelId().equals(fields.get("modelId")))throw new IllegalStateException("Provider report model changed");
         // Owner-before-workflow ordering matches admission and personal-account FK checks.
@@ -262,8 +271,15 @@ public class ModelBudgetService {
         if(!Set.of("STARTED","NEEDS_REVIEW").contains(attempt.status()))
             throw new IllegalStateException("Provider attempt was not dispatched");
         boolean settled="COMPLETED".equals(outcome)&&input!=null&&output!=null;
-        if(settled)accounts.settle(ticket.rootId(),ticket.attemptId(),ticket.owner(),ticket.modelId(),input,output,cached);
-        String state=settled?"COMPLETED":"NEEDS_REVIEW";
+        if(settled) {
+            accounts.settle(ticket.rootId(),ticket.attemptId(),ticket.owner(),ticket.modelId(),input,output,cached);
+            if(providerBudgets!=null) providerBudgets.settle(ticket.rootId(),ticket.attemptId(),ticket.owner(),input,output,cached);
+        }
+        if(confirmedUnsent) {
+            accounts.release(ticket.rootId(),ticket.attemptId(),ticket.owner(),ticket.modelId(),true);
+            if(providerBudgets!=null) providerBudgets.release(ticket.rootId(),ticket.attemptId(),ticket.owner());
+        }
+        String state=confirmedUnsent?"CANCELLED":settled?"COMPLETED":"NEEDS_REVIEW";
         var payload=workflows.payload(attempt,ModelBudgetWorkflow.AttemptV1.class);
         if(!state.equals(attempt.status()))attempt=workflows.transition(attempt,state,payload,attempt.runId(),null,null);
         if(jdbc.update("""

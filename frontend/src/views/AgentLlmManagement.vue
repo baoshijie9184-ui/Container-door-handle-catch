@@ -7,6 +7,8 @@
       </template>
     </PageHero>
 
+    <ProviderBudgetPanel :models="models" :supervisor="supervisor" @active="nativeBudgets = $event" />
+    <p v-if="nativeBudgets" class="operation-muted">下方申请用于追加单模型 token 限额。员工还须由主管分配上方对应的厂家或模型额度。</p>
     <el-alert v-if="quotaChanged" title="额度或申请资料可能已更新 当前未提交内容已保留" type="warning" :closable="false"><el-button text @click="refreshQuotaLatest">核对最新记录</el-button></el-alert>
     <section v-if="supervisor" class="operation-toolbar llm-admin" aria-label="主管管理入口">
       <span><AppIcon name="Operation" :size="16" />主管管理</span>
@@ -39,7 +41,7 @@
             <div><strong>{{ personalQuotaValue(model, 'reservedTokens') }}</strong><span>个人额度已预留</span></div>
             <div><strong>{{ personalQuotaValue(model, 'spentTokens') }}</strong><span>个人额度已使用</span></div>
           </div>
-          <p v-if="model.hasPersonalQuota === false">尚未设置个人额度，继续保留原有模型使用权限；此处个人额度计数不代表历史模型总用量。</p>
+          <p v-if="model.hasPersonalQuota === false">{{ nativeBudgets ? '尚未额外设置单模型 token 限额。厂家的员工限额在上方查看。' : '尚未设置个人额度，继续保留原有模型使用权限；此处个人额度计数不代表历史模型总用量。' }}</p>
           <p v-else-if="model.hasPersonalQuota === true && model.totalTokens === null">未设个人额度上限，无需申请追加个人额度。</p>
           <p v-if="quotaNumber(model.availableTokens) !== null && Number(model.availableTokens) < 0">实际消耗超过可用额度，已完整计入用量；追加额度后仍需满足调用所需的预留量。</p>
           <p v-if="model.hasPersonalQuota === true">个人额度到期时间 {{ model.expiresAt === null ? '未设置' : utcDisplay(model.expiresAt) }} · 北京时间</p>
@@ -118,6 +120,8 @@ import { operationData, operationError, utcDisplay } from '../utils/qualityOpera
 import { createUiRequestId } from '../utils/requestIdentity'
 import { canApplyForQuota, enterpriseQuotaBlock, personalQuotaValue, quotaApplicationLabels, quotaApplicationTones, quotaCount, quotaNumber, quotaStatus, readQuotaApplications, readQuotaModels } from '../utils/modelQuotaPresentation'
 import AppIcon from '../components/AppIcon.vue'
+import ProviderBudgetPanel from '../components/ProviderBudgetPanel.vue'
+const nativeBudgets = ref(false)
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import '../assets/quality-operations.css'
 

@@ -97,12 +97,14 @@ final class ManagedAgentModel implements Model {
                             if("openai".equals(candidate.provider()))
                                 io.agentscope.extensions.model.openaiofficial.OpenAIResponsesIoBridge.validateBudgetRequest(
                                         messages,tools,plan.options(),candidate.model().getModelName());
-                            ticket.set(budget.started(identity,requestId,usageId,candidate.id(),plan.tokens(),plan.basis()));
+                            var admitted=budget.started(identity,requestId,usageId,candidate.id(),plan.tokens(),plan.basis());
                             attemptOptions=plan.options();
-                            if(terminal.get()) {
-                                // Cancellation can race a blocking admission commit. Do not invoke a new provider afterward.
-                                budget.finished(ticket.get(),usageFields(candidate,index,started,firstContentMs.get(),null,"CANCELLED"));
-                                return Flux.empty();
+                            synchronized(ticket) {
+                                if(terminal.get()) {
+                                    budget.cancelUnsent(admitted);
+                                    return Flux.empty();
+                                }
+                                ticket.set(admitted);
                             }
                         }
                         telemetry.set(ProviderAttemptTelemetry.start(candidate.id(),candidate.provider(),candidate.model()));
@@ -138,7 +140,9 @@ final class ManagedAgentModel implements Model {
                         Integer status = ModelFailureClassifier.status(error);
                         if (status != null && status >= 100 && status <= 599) failed.put("httpStatus", status);
                         trace.event("MODEL_ATTEMPT_ERROR", failed);
-                        if (circuitEnabled && reason != ModelFailureClassifier.Failure.OTHER) candidate.circuit().failure(permit, reason);
+                        // A local account limit does not measure provider availability for other employees.
+                        if (circuitEnabled && !(error instanceof ModelBudgetService.Exhausted) && reason != ModelFailureClassifier.Failure.OTHER)
+                            candidate.circuit().failure(permit, reason);
                         if (emitted.get() || reason == ModelFailureClassifier.Failure.OTHER || index + 1 >= candidates.size()) return Flux.error(error);
                         log.warn("切换备用模型：from={}, to={}, reason={}, status={}", candidate.id(), candidates.get(index + 1).id(),
                                 reason, ModelFailureClassifier.status(error));
@@ -151,8 +155,14 @@ final class ManagedAgentModel implements Model {
                     .doFinally(signal -> {
                         if(signal==SignalType.CANCEL&&telemetry.get()!=null)telemetry.get().cancelled();
                         try {
-                            if (signal == SignalType.CANCEL && terminal.compareAndSet(false, true)) {
-                                recordUsage(ticket.get(),usageTrace,usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"CANCELLED"));
+                            boolean cancelled;
+                            ModelBudgetService.Ticket active;
+                            synchronized(ticket) {
+                                cancelled=signal==SignalType.CANCEL && terminal.compareAndSet(false,true);
+                                active=ticket.get();
+                            }
+                            if (cancelled) {
+                                recordUsage(active,usageTrace,usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"CANCELLED"));
                                 trace.event("MODEL_ATTEMPT_CANCELLED", completedFields(candidate, index, started, firstContentMs.get()));
                             }
                         } catch (ModelAttemptTrace.RecordingException ignored) {

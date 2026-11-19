@@ -25,7 +25,7 @@ final class ModelBudgetWorkflow {
                 .with(new WorkflowProtocol<>(WorkflowKind.LLM_PROVIDER_ATTEMPT, 1, AttemptV1.class,
                         Set.of("RESERVED"), Set.of("COMPLETED", "FAILED", "CANCELLED"),
                         Map.of("RESERVED", Set.of("STARTED", "CANCELLED"),
-                                "STARTED", Set.of("COMPLETED", "NEEDS_REVIEW"),
+                                "STARTED", Set.of("COMPLETED", "CANCELLED", "NEEDS_REVIEW"),
                                 "NEEDS_REVIEW", Set.of("COMPLETED", "FAILED", "CANCELLED")), value -> {
                             model(value.modelId()); text(value.reservationBasis(), 64);
                             if (value.reservedTokens() <= 0) throw new IllegalArgumentException("Invalid token reservation");
