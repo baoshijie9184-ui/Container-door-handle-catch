@@ -51,7 +51,7 @@
                 <p>检测与质检工作助手</p>
               </div>
             </div>
-            <div class="chat-header-actions">
+            <div class="chat-header-actions" @keydown.esc.capture="dismissHeaderMenu">
               <button v-if="fullScreen" ref="contextToggleRef" type="button" class="chat-header-btn context-toggle" :aria-label="contextOpen?'收起工作面板':'展开工作面板'" :title="contextOpen?'收起工作面板':'展开工作面板'" :aria-expanded="contextOpen" aria-controls="chat-workspace-context" @click="contextOpen=!contextOpen"><el-icon aria-hidden="true"><Operation /></el-icon></button>
               <div class="chat-header-secondary-actions">
               <button v-if="controlState.enabled" type="button" class="chat-header-btn" title="任务操作" aria-label="任务操作" @click="conversationControlsRef?.openOptions()"><AppIcon name="List" :size="16" /></button>
@@ -75,8 +75,8 @@
                 </svg>
               </button>
               </div>
-              <el-dropdown class="chat-header-more-actions" trigger="click" @command="handleHeaderCommand">
-                <button type="button" class="chat-header-btn" aria-label="更多对话操作" title="更多对话操作"><el-icon :size="17" aria-hidden="true"><MoreFilled /></el-icon></button>
+              <el-dropdown ref="headerMenuRef" class="chat-header-more-actions" trigger="click" :teleported="false" @command="handleHeaderCommand">
+                <button ref="headerMenuButton" type="button" class="chat-header-btn" aria-label="更多对话操作" title="更多对话操作"><el-icon :size="17" aria-hidden="true"><MoreFilled /></el-icon></button>
                 <template #dropdown><el-dropdown-menu>
                   <el-dropdown-item v-if="controlState.enabled" command="tasks"><AppIcon name="List" :size="15" />任务操作</el-dropdown-item>
                   <el-dropdown-item command="trace"><AppIcon name="Connection" :size="15" />执行追溯</el-dropdown-item>
@@ -166,6 +166,15 @@ const messageListRef = ref(null)
 const activeQuestionKey = ref('')
 const resizeTooltip = '拖拽或使用左右方向键调整面板宽度'
 const diagnosticsVisible = ref(false)
+const headerMenuRef = ref(null)
+const headerMenuButton = ref(null)
+function dismissHeaderMenu(event) {
+  if (headerMenuButton.value?.getAttribute('aria-expanded') !== 'true') return
+  event.preventDefault()
+  event.stopPropagation()
+  headerMenuRef.value?.handleClose()
+  headerMenuButton.value.focus({ preventScroll: true })
+}
 const workspaceRef=ref(null),contextToggleRef=ref(null),contextOpen=ref(false),workspaceWidth=ref(0)
 const contextDocked=computed(()=>workspaceWidth.value>=1000)
 watch(()=>controlState.value.run?.phase,phase=>{if(['WAITING_PLAN','WAITING_INPUT','AWAITING_RECOVERY'].includes(phase))contextOpen.value=true})

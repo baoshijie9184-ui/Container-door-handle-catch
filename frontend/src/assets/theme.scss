@@ -751,4 +751,4 @@ select {
 }
 
 /* The assistant drawer owns its padding; embedded conversations use the page grid. */
-.assistant-drawer .el-drawer__body { padding: 0; overflow: visible; }
+.assistant-drawer .el-drawer__body { min-height: 0; padding: 0; overflow: hidden; }
