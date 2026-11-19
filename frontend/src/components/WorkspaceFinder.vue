@@ -1,6 +1,6 @@
 <template>
   <el-dialog v-model="visible" title="查找功能" class="workspace-finder-dialog" width="min(540px, calc(100% - 24px))" top="min(12vh, 100px)"
-    append-to-body destroy-on-close @open-auto-focus="focusSearch" @opened="focusSearch">
+    append-to-body destroy-on-close @open-auto-focus="focusSearch">
     <div class="workspace-finder">
       <label class="finder-input"><AppIcon name="Search" /><input ref="input" v-model="query" aria-label="搜索功能"
         placeholder="输入要做的事，例如「看图」或「查人」" type="search" autocomplete="off"
@@ -45,7 +45,9 @@ function openFirst(event){
 }
 function shortcut(event){
   if(!(event.ctrlKey||event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase()!=='k')return
-  if(document.querySelector('dialog[open]') || Array.from(document.querySelectorAll('[role="dialog"]')).some(el=>el.getClientRects().length) && !visible.value)return
+  const otherDialog = Array.from(document.querySelectorAll('dialog[open], [role="dialog"]'))
+    .some(el => !el.closest('.workspace-finder-dialog') && el.getClientRects().length)
+  if(otherDialog)return
   event.preventDefault()
   if(visible.value)focusSearch()
   else open()
@@ -64,6 +66,7 @@ defineExpose({open})
 .finder-input {display:flex;align-items:center;gap:10px;padding:0 13px;background:var(--app-surface-muted);border:1px solid var(--app-border);border-radius:8px;color:var(--app-primary)}
 .finder-input:focus-within {outline:2px solid var(--app-primary);outline-offset:1px}
 .finder-input input {border:0;outline:none;background:transparent;flex:1;min-width:0;height:44px;font:inherit;font-size:16px;color:var(--app-text)}
+.workspace-finder-dialog .finder-input input:focus-visible {outline:none;box-shadow:none}
 .finder-results {overflow-y:auto;overscroll-behavior:contain;max-height:min(52dvh,480px);margin-top:12px;padding:2px 4px}
 .finder-results h3 {color:var(--app-text-muted);font-size:12px;font-weight:600;margin:13px 7px 5px}
 .finder-results a {display:flex;align-items:center;gap:12px;min-height:40px;padding:5px 8px;border-radius:6px;color:var(--app-text);text-decoration:none;font-size:14px}

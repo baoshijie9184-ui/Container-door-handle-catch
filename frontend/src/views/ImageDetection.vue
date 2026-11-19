@@ -432,7 +432,7 @@
               </template>
             </el-table-column>
             <el-table-column label="质检状态" min-width="128"><template #default="{ row }"><div class="queue-facts">
-              <StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /><span>复核 · {{ reviewStatusText(row.reviewStatus) }}</span>
+              <StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /><span v-if="reviewStatusText(row.reviewStatus)!==flowStatusText(row.flowStatus)">复核 · {{ reviewStatusText(row.reviewStatus) }}</span>
             </div></template></el-table-column>
             <el-table-column label="缺陷" min-width="100"><template #default="{ row }"><div class="queue-facts">
               <strong>{{ traceCount(row.defectCount) }}</strong><span>{{ severityText(row.severityLevel || row.maxDefectSeverity) }}</span>
@@ -513,10 +513,10 @@
 
     <el-dialog v-model="reviewDialogVisible" class="quality-operation-dialog" title="人工复核" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
       <QualityTaskContext :task="reviewTask" operation="review" />
-      <div class="quality-review-layout" :class="{ 'has-evidence': reviewEvidence.originals.length || reviewEvidence.annotations.length }">
-      <EvidenceComparison v-if="reviewEvidence.originals.length || reviewEvidence.annotations.length" :task-id="reviewTask?.taskId" :originals="reviewEvidence.originals" :annotations="reviewEvidence.annotations" />
-      <div v-else class="quality-feedback-note"><AppIcon name="Picture" :size="16" />复核表单尚无可对照图片。
-        <el-button link type="primary" :disabled="reviewSubmitting || !reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)">核对任务依据</el-button>
+      <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
+      <EvidenceComparison v-if="reviewImages" :task-id="reviewTask?.taskId" :originals="reviewImages.originals" :annotations="reviewImages.annotations" />
+      <div v-else class="quality-feedback-note" role="status"><AppIcon name="Picture" :size="16" />{{ reviewImageError || '正在读取本次任务的原图与标注图…' }}
+        <el-button v-if="reviewImageError" link type="primary" @click="reviewImageAttempt++">重新读取图片</el-button>
       </div>
       <el-form :model="reviewForm" label-position="top" :disabled="reviewSubmitting||qualityActionAcknowledged.review||reviewTask?.mutationConflicted">
         <el-form-item label="复核结论">
@@ -556,7 +556,7 @@
       <p v-if="!canReviewTask(reviewTask)" class="quality-feedback-note">{{ qualityActionReason(reviewTask,'REVIEW') }}</p>
       <template #footer>
         <el-button :disabled="reviewSubmitting||reviewTask?.mutationConflicted" @click="reviewDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
-        <el-button v-if="reviewEvidence.originals.length || reviewEvidence.annotations.length" :disabled="reviewSubmitting||!reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)"><AppIcon name="Search" :size="15" />核对任务依据</el-button>
+        <el-button :disabled="reviewSubmitting||!reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)"><AppIcon name="Search" :size="15" />核对任务依据</el-button>
         <el-button type="primary" :loading="reviewSubmitting" :disabled="!reviewForm.reviewConclusion||qualityActionAcknowledged.review||reviewTask?.mutationConflicted||!canReviewTask(reviewTask)" @click="submitTaskReview"><AppIcon name="DocumentChecked" :size="15" />提交复核</el-button>
       </template>
     </el-dialog>
@@ -1193,18 +1193,34 @@ const {
   refreshQualityQueue: refreshQualityQueueIfVisible,
 })
 
-const reviewEvidence = computed(() => {
-  const task = reviewTask.value
-  const previews = task?.previewImages || task?.result?.previewImages || []
-  const originals = task?.originalImages || task?.result?.originalImages || []
-  const annotations = Array.isArray(previews) ? previews.filter(image => image && typeof image === 'object') : []
-  return {
-    annotations,
-    originals: Array.isArray(originals) && originals.length ? originals : annotations
-      .filter(image => typeof image.originalUrl === 'string' && image.originalUrl)
-      .map(image => ({ imageName: image.imageName, previewUrl: image.originalUrl }))
-  }
-})
+function traceData(response,taskId) {
+  const detail = response.data?.data
+  return response.data?.code===200 && detail?.taskId===taskId &&
+    ['timeline','originalImages','previewImages'].every(key=>detail[key]==null || Array.isArray(detail[key])) ? detail : null
+}
+
+const reviewImages=ref(null), reviewImageError=ref(''), reviewImageAttempt=ref(0)
+watch([()=>reviewDialogVisible.value ? reviewTask.value?.taskId : null, ()=>userStore.accountContext, reviewImageAttempt],
+  async ([taskId],previous,onCleanup) => {
+    reviewImages.value=null
+    reviewImageError.value=''
+    if(!taskId)return
+    const controller=new AbortController(), owner=accountSession.stamp()
+    onCleanup(()=>controller.abort())
+    try{
+      const response=await fetchDetectionTaskTrace(taskId,{signal:controller.signal})
+      if(controller.signal.aborted || !accountSession.current(owner))return
+      const detail=traceData(response,taskId)
+      if(!detail)throw Error('图片清单读取失败')
+      const annotations=detail.previewImages || []
+      const originals=detail.originalImages?.length ? detail.originalImages : annotations
+        .filter(image=>image && typeof image.originalUrl==='string' && image.originalUrl)
+        .map(image=>({imageName:image.imageName,previewUrl:image.originalUrl}))
+      reviewImages.value={originals,annotations}
+    }catch{
+      if(!controller.signal.aborted && accountSession.current(owner))reviewImageError.value='未能读取本次任务的图片。'
+    }
+  }, {flush:'sync'})
 
 function openTraceDialog(taskId) {
   browsingImages.value = false
@@ -1226,8 +1242,8 @@ const readTrace = async (taskId) => {
   try {
     const response = await fetchDetectionTaskTrace(taskId, { signal: controller.signal })
     if (generation !== traceGeneration) return
-    const detail = response.data?.data
-    if (response.data?.code === 200 && detail && typeof detail === 'object' && !Array.isArray(detail) && detail.taskId === taskId && ['timeline','originalImages','previewImages'].every(key => detail[key] == null || Array.isArray(detail[key]))) {
+    const detail = traceData(response,taskId)
+    if (detail) {
       traceDetail.value = detail
       if (!sameTask) {
         await nextTick()

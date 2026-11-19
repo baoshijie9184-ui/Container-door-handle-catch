@@ -3,7 +3,7 @@
     ref="launcherRef"
     type="button"
     class="launcher-btn"
-    :class="{ 'is-dragging': isDragging }"
+    :class="{ 'is-dragging': isDragging, 'is-docked': posX===null, 'is-compact': compact }"
     :style="btnStyle"
     @mousedown="onMouseDown"
     @touchstart.passive="onTouchStart"
@@ -21,6 +21,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 
+defineProps({compact:Boolean})
 const emit = defineEmits(['open'])
 
 const STORAGE_KEY = 'chatLauncherPos'
@@ -114,7 +115,8 @@ const onTouchMove = (e) => {
 const moveDrag = (clientX, clientY) => {
   const dx = clientX - startX
   const dy = clientY - startY
-  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true
+  if (!hasMoved && Math.abs(dx) <= 3 && Math.abs(dy) <= 3) return
+  hasMoved = true
 
   let newX = startPosX + dx
   let newY = startPosY + dy
@@ -194,6 +196,11 @@ onUnmounted(() => {
   touch-action: none;
 }
 
+.launcher-btn.is-docked {
+  position:static;flex:0 0 auto;align-self:stretch;margin: auto 2px 0;justify-content:flex-start;box-shadow:none;z-index:auto
+}
+.launcher-btn.is-compact {justify-content:center;padding-inline:4px}
+.launcher-btn.is-compact .launcher-text {display:none}
 .launcher-btn:hover {
   background:var(--app-surface);
   border-color:var(--app-border-focus);

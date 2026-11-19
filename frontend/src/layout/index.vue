@@ -34,10 +34,12 @@
       </button>
       <WorkspaceNavigation :groups="visibleNavGroups" :home-group="userStore.role === 'SUPERVISOR' ? 'quality' : 'inspection'" :active="activeMenu" :collapsed="collapsed" />
 
+      <ChatAssistantLauncher v-if="!isMobile" :compact="collapsed" @open="handleOpenAssistant" />
     </aside>
 
     <el-drawer v-model="mobileNavVisible" title="工作空间导航" direction="ltr" size="min(310px, 88vw)" class="mobile-system-navigation">
       <div class="mobile-nav-scope"><AppIcon name="User" />{{ accountPresentation.role }} · {{ accountPresentation.scope }}</div>
+      <button type="button" class="sidebar-finder drawer-assistant" @click="mobileNavVisible=false;handleOpenAssistant()"><AppIcon name="ChatDotRound" />打开侧边助手</button>
       <WorkspaceNavigation id="mobile-system-menu" :groups="visibleNavGroups" :home-group="userStore.role === 'SUPERVISOR' ? 'quality' : 'inspection'" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
     </el-drawer>
 
@@ -89,7 +91,6 @@
     </div>
 
     <WorkspaceFinder ref="finder" :groups="visibleNavGroups" :role="userStore.role" />
-    <ChatAssistantLauncher v-if="!isAgentSection" @open="handleOpenAssistant" />
     <ChatAssistantDrawer v-if="!isAgentChatRoute" />
   </div>
 </template>
@@ -148,6 +149,10 @@ const toggleNavigation = () => {
   else collapsed.value = !collapsed.value
 }
 watch(() => route.fullPath, () => { mobileNavVisible.value = false })
+// Each business destination starts with its title, actions and search controls.
+watch(() => route.path, () => {
+  document.getElementById('main-content')?.scrollTo({top:0,left:0,behavior:'instant'})
+}, {flush:'post'})
 const showBackTop = ref(false)
 const isAgentChatRoute = computed(() => route.path === '/agent/chat')
 const isAgentSection = computed(() => route.path.startsWith('/agent/'))
