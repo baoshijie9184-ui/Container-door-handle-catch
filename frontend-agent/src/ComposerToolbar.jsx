@@ -2,6 +2,7 @@ import React,{forwardRef,useEffect,useImperativeHandle,useRef,useState} from 're
 import {Plus,FileText,Image as ImageIcon,ChartNoAxesCombined,X,ShieldCheck,MessageSquareText,Square,ArrowUp,WifiOff,TriangleAlert} from 'lucide-react';
 import {ComposerResources,modelLabel,selectedModelMissing} from '../../frontend/src/utils/composerResources.js';
 import {composerAttachment,composerDefaultModel,composerUploadHint,composerModelTitle} from '../../frontend/src/utils/composerPresentation';
+import {canGuide} from '../../frontend/src/utils/conversationControl.js';
 import '../../frontend/src/assets/composer-presentation.css';
 export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,onUpload,run,streaming=false,draft='',onDraft,onSend,onStop,disabled},ref){
  const [state,setState]=useState({ready:false,files:[],models:[],modelId:'',busy:false,error:''});const input=useRef(null),client=useRef(null);
@@ -15,6 +16,7 @@ export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,
  return <div className="composer-resources">
   {!!state.files.length&&<div className="composer-attachments" role="list" aria-label="本条消息的附件引用">{state.files.map(file=>{const meta=composerAttachment(file),Icon=meta.icon==='Picture'?ImageIcon:meta.icon==='DataAnalysis'?ChartNoAxesCombined:FileText;return <div className="composer-attachment" role="listitem" key={file.id}><span className="composer-file-icon"><Icon size={18} aria-hidden="true"/></span><span className="composer-file-copy"><strong title={file.name}>{file.name}</strong><small>{meta.type} · {meta.size}</small></span><button type="button" disabled={state.busy||disabled} aria-label={'取消本条消息的附件引用 '+file.name} title="仅取消本次引用，不删除会话文件" onClick={()=>client.current.remove(file.id)}><X size={13} aria-hidden="true"/></button></div>})}</div>}
   {!!state.files.length&&<p className="composer-attachment-note">发送时引用这些会话文件，取消引用不会删除文件</p>}
+  {canGuide(run)&&<div className="composer-guidance"><button type="button" disabled={disabled||state.busy||(!draft.trim()&&!state.files.length)} title="把补充要求发给当前 Agent" onClick={()=>onSend(draft,run.runId)}>引导当前任务</button></div>}
   <div className="composer-resource-toolbar">
    <input type="file" hidden multiple ref={input} accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" onChange={upload}/>
    <button type="button" aria-label="添加附件" title={composerUploadHint(state,disabled)} disabled={!state.filesEnabled||state.busy||disabled} onClick={()=>input.current.click()}><Plus size={19} aria-hidden="true"/></button>

@@ -367,14 +367,14 @@ watch(() => chatStore.visible, (val) => {
   if (val) scrollToBottom()
 })
 
-const handleSend = async (content) => {
+const handleSend = async (content, guideRunId) => {
   const account=accountSession.stamp()
   const currentSession=chatStore.sessionId
   await conversationControlsRef.value?.ready()
   accountSession.assert(account)
   if(chatStore.sessionId!==currentSession)return
   returnToLatest()
-  if(controlState.value.enabled){const session=chatStore.sessionId;try{await conversationControlsRef.value.submit(content)}catch{if(chatStore.sessionId===session)composerRef.value?.restoreDraft(content)}return}
+  if(controlState.value.enabled || guideRunId){const session=chatStore.sessionId;try{if(guideRunId)await conversationControlsRef.value.guide(content,guideRunId);else await conversationControlsRef.value.submit(content)}catch{if(chatStore.sessionId===session)composerRef.value?.restoreDraft(content)}return}
   await chatStore.sendMessage(content)
   scrollToBottom()
 }

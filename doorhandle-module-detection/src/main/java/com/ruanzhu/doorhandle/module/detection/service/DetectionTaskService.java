@@ -37,9 +37,6 @@ public interface DetectionTaskService {
 
     Map<String, Object> listQualityQueue(String queue, int page, int size);
 
-    Map<String, Object> listDefectGallery(String defectType, String severityLevel, String deviceName,
-                                          String batchNo, Integer modelId, int page, int size);
-
     Map<String, Object> getBatchTraceReport(String batchNo);
 
     Map<String, Object> getWorkOrderTraceReport(String workOrderNo);

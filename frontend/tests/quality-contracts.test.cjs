@@ -20,24 +20,20 @@ test('tests\\quality-records-contract.test.cjs', () => {
   for (const exportName of [
     'normalizeQualityQueueRecord',
     'buildTraceEvidenceRows',
-    'resolveDefectPreview',
     'formatEvidenceConfidence',
     'formatPercentValue'
   ]) {
     assert.match(recordsSource, new RegExp(`export const ${exportName}`))
     if (exportName !== 'formatPercentValue') {
-      assert.match(imageDetectionSource + evidenceSource + resultSource, new RegExp(exportName))
+      assert.match(imageDetectionSource + evidenceSource + resultSource + readFrontendFile('src', 'composables', 'useQualityQueue.js'), new RegExp(exportName))
     }
   }
 
   assert.match(recordsSource, /captureInfo/)
-  assert.match(recordsSource, /annotatedUrl/)
-  assert.match(recordsSource, /previewUrl/)
   assert.match(recordsSource, /原图/)
   assert.match(recordsSource, /标注图/)
 
   assert.doesNotMatch(imageDetectionSource, /const normalizeQualityQueueRecord =/)
-  assert.doesNotMatch(imageDetectionSource, /const resolveDefectPreview =/)
   assert.doesNotMatch(imageDetectionSource, /const formatEvidenceConfidence =/)
   assert.doesNotMatch(imageDetectionSource, /const formatPercentValue =/)
 
@@ -168,7 +164,6 @@ test('tests\\use-quality-task-actions-contract.test.cjs', () => {
   const composableSource = readFrontendFile('src', 'composables', 'useQualityTaskActions.js')
   const qualityPages = [
     'QualityQueue.vue',
-    'DefectEvidenceGallery.vue',
     'WorkOrderTrace.vue',
     'BatchTrace.vue'
   ]
@@ -213,7 +208,6 @@ test('tests\\use-quality-task-actions-contract.test.cjs', () => {
     const source = readFrontendFile('src', 'views', 'quality', page)
     assert.match(source, /useQualityTaskActions\(\{/)
     assert.match(source, /refreshQualityQueue: refreshQualityQueueIfVisible/)
-    assert.match(source, /refreshDefectGallery: refreshDefectGalleryIfVisible/)
     assert.doesNotMatch(source, /assignDetectionQualityTask/)
     assert.doesNotMatch(source, /reviewDetectionTask/)
     assert.doesNotMatch(source, /disposeDetectionTask/)

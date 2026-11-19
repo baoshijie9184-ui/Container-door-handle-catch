@@ -49,7 +49,6 @@ test('tests\\single-image-preview-contract.test.cjs', () => {
     ['src', 'views', 'inspection', 'InspectionWorkbench.vue'],
     ['src', 'views', 'inspection', 'InspectionHistory.vue'],
     ['src', 'views', 'quality', 'QualityQueue.vue'],
-    ['src', 'views', 'quality', 'DefectEvidenceGallery.vue'],
     ['src', 'views', 'quality', 'WorkOrderTrace.vue'],
     ['src', 'views', 'quality', 'BatchTrace.vue']
   ]
@@ -100,43 +99,13 @@ test('tests\\single-image-preview-contract.test.cjs', () => {
   console.log('single image upload preview contract assertions passed')
 })
 
-test('tests\\use-defect-gallery-contract.test.cjs', () => {
-  const composableSource = readFrontendFile('src', 'composables', 'useDefectGallery.js')
-  const imageDetectionSource = readFrontendFile('src', 'views', 'ImageDetection.vue')
-
-  for (const name of [
-    'defectGalleryLoading',
-    'defectGalleryRecords',
-    'defectGalleryTotal',
-    'defectGalleryPage',
-    'defectGalleryPageSize',
-    'defectFilters',
-    'loadDefectGallery',
-    'searchDefectGallery',
-    'resetDefectGalleryFilters',
-    'onDefectGallerySizeChange'
-  ]) {
-    assert.match(composableSource, new RegExp(name))
-    assert.match(imageDetectionSource, new RegExp(name))
-  }
-
-  assert.match(composableSource, /fetchDefectGallery/)
-  assert.match(composableSource, /buildDefectGalleryParams/)
-  assert.match(composableSource, /defectType/)
-  assert.match(composableSource, /severityLevel/)
-  assert.match(composableSource, /deviceName/)
-  assert.match(composableSource, /batchNo/)
-  assert.match(composableSource, /modelId/)
-  assert.match(imageDetectionSource, /useDefectGallery\(\)/)
-
-  assert.doesNotMatch(imageDetectionSource, /fetchDefectGallery/)
-  assert.doesNotMatch(imageDetectionSource, /const defectGalleryLoading = ref/)
-  assert.doesNotMatch(imageDetectionSource, /const defectFilters = reactive/)
-  assert.doesNotMatch(imageDetectionSource, /const buildDefectGalleryParams =/)
-  assert.doesNotMatch(imageDetectionSource, /const loadDefectGallery = async/)
-  assert.doesNotMatch(imageDetectionSource, /const resetDefectGalleryFilters =/)
-
-  console.log('use defect gallery contract assertions passed')
+test('quality navigation and detection API expose task review and trace without the removed library', () => {
+  const router = readFrontendFile('src', 'router', 'index.js')
+  const api = readFrontendFile('src', 'api', 'detection.js')
+  assert.doesNotMatch(router, /quality\/evidence|defect-gallery/)
+  assert.doesNotMatch(api, /defect-gallery/)
+  assert.match(router, /quality\/queue/)
+  assert.match(api, /fetchDetectionTaskTrace/)
 })
 
 test('tests\\use-detection-history-contract.test.cjs', () => {

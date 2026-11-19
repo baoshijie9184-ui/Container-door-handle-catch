@@ -26,10 +26,6 @@ export const fetchQualityQueue = (queue, page = 1, size = 20) => request.get('/a
 
 export const fetchQualityReport = (taskId) => request.get(`/api/detection/tasks/${taskId}/quality-report`)
 
-export const fetchDefectGallery = (params = {}) => request.get('/api/detection/tasks/defect-gallery', {
-  params
-})
-
 export const fetchDetectionTaskTrace = (taskId, config = {}) => request.get(`/api/detection/tasks/${encodeURIComponent(taskId)}/trace`, config)
 
 export const fetchBatchTraceReport = (batchNo, config = {}) => request.get('/api/detection/tasks/batch-trace', {

@@ -205,19 +205,6 @@ button:not(:disabled):active { transform: scale(.985); }
 .trace-storage-details .trace-disclosure-chevron { margin-left: auto; color: var(--app-primary); transition: transform var(--app-transition-base); }
 .trace-storage-details[open] .trace-disclosure-chevron { transform: rotate(180deg); }
 .trace-storage-details > .trace-paths { padding-top: 14px; }
-#app .image-detection-container .defect-preview-button { position: relative; display: block; width: 100%; height: 100%; min-height: 180px; padding: 0; background: #f6f8fb; border: 0; cursor: pointer; }
-#app .image-detection-container .defect-preview-button .el-image { display: block; width: 100%; height: 100%; min-height: 180px; }
-#app .image-detection-container .defect-preview-button .el-image__inner { object-fit: contain; }
-#app .image-detection-container .defect-card-image { background: #f6f8fb; }
-#app .image-detection-container .defect-evidence-card { border-color: var(--app-border); border-radius: 12px; box-shadow: none; background: white; }
-#app .image-detection-container .defect-evidence-card:hover { box-shadow: none; transform: none; }
-#app .image-detection-container .defect-evidence-card:focus-within { border-color: #b6cdfa; }
-.defect-card-responsibility { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding-block: 10px; margin: 10px 0; border-block: 1px solid var(--app-border); font-size: 12px; }
-.defect-card-responsibility > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; }
-.defect-card-responsibility dt { color: var(--app-text-secondary); }
-.defect-card-responsibility dd { margin: 0; color: var(--app-text-secondary); overflow-wrap: anywhere; }
-.defect-preview-caption { display: inline-flex; align-items: center; gap: 5px; position: absolute; bottom: 10px; right: 10px; padding: 5px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: #ffffffef; color: var(--app-primary); font-size: 11px; }
-.defect-preview-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 18px; color: var(--app-text-muted); font-size: 12px; line-height: 1.8; }
 #app .not-found-page .nf-code { color: var(--app-primary); background: none; -webkit-text-fill-color: currentColor; font-size: clamp(72px, 12vw, 110px); }
 .mobile-system-navigation .el-drawer__header { margin-bottom: 14px; color: var(--app-text); font-size: 17px; font-weight: 650; }
 .mobile-system-navigation .el-drawer__body { padding: 0 14px 20px; }
@@ -245,11 +232,8 @@ button:not(:disabled):active { transform: scale(.985); }
 .quality-overview-grid [data-tone=danger] .quality-overview-icon { color:var(--app-danger); background:var(--app-danger-soft); }
 .quality-overview-note { margin:12px 0 0; font-size:12px; color:var(--app-text-muted); line-height:1.65; }
 #app .layout-content :is(.stats-bar-value, .profile-value, .detail-value, .identity-grid strong, .record-folder, .task-item-folder, .result-message) { overflow-wrap: anywhere; min-width: 0; }
-#app .layout-content :is(.task-item-main, .task-item-taskid, .record-header-left, .record-capture, .defect-card-body) { min-width: 0; }
 #app .layout-content :is(.taskid-value, .record-taskid, .oss-path-value, .result-message, .task-item-status, .identity-preview code) { overflow-wrap: anywhere; word-break: break-word; }
 #app .image-detection-container .task-item-main > .quality-guidance { margin-top: 12px; }
-#app .image-detection-container .defect-card-body > .quality-guidance { margin-top:14px; margin-bottom:0; }
-#app .image-detection-container .defect-card-image img { object-fit: contain; background: #f1f5f9; }
 #app .image-detection-container .trace-dialog-body .el-descriptions { margin-bottom: 16px; }
 #app .reports-page .detail-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 #app .reports-page .report-version { font-size: 12px; color: var(--app-text-muted); }
@@ -330,7 +314,7 @@ button:not(:disabled):active { transform: scale(.985); }
   #app .layout-content .stats-bar-item > div:last-child { min-width: 0; }
   #app .layout-content .stats-bar-value { font-size: 20px; }
   #app .image-detection-container .workspace-grid { grid-template-columns: minmax(0, 1fr); }
-  #app .image-detection-container :is(.input-grid, .capture-meta-grid, .defect-gallery-grid) { grid-template-columns: minmax(0, 1fr); }
+  #app .image-detection-container :is(.input-grid, .capture-meta-grid) { grid-template-columns: minmax(0, 1fr); }
   #app .image-detection-container :is(.task-item, .task-item-row1, .trace-section-title) { flex-wrap: wrap; }
   #app .image-detection-container .task-item-actions { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
   #app .identity-page .identity-overview { grid-template-columns: minmax(0, 1fr); }

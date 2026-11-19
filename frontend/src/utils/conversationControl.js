@@ -1,7 +1,10 @@
 import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
 
 export const controlPhaseLabels={IDLE:'空闲',RUNNING:'执行中',PAUSE_REQUESTED:'等待安全切点暂停',PAUSED:'已暂停',REMOTE_RUNNING:'其他实例执行中',WAITING_PLAN:'等待计划审阅',WAITING_INPUT:'等待补充信息',WAITING_CHILD:'后台专业任务执行中',AWAITING_RECOVERY:'等待核对与恢复'}
-export const inputStatusLabels={QUEUED:'待处理',STARTED:'已领取执行',APPLIED:'已交付安全切点',COMPLETED:'已完成',FAILED:'已停止或失败',CANCELLED:'已撤回',EXPIRED:'已过期'}
+export const inputStatusLabels={QUEUED:'待处理',STARTED:'已领取执行',APPLIED:'已送达当前 Agent',COMPLETED:'已完成',FAILED:'已停止或失败',CANCELLED:'已撤回',EXPIRED:'已过期'}
+export function canGuide(run) {
+ return !!run?.local && !!run.runId && ['RUNNING','PAUSE_REQUESTED','PAUSED'].includes(run.phase)
+}
 export function showConversationQueue(state){
  return state?.enabled===true && state.inputs?.some(item=>item.status==='QUEUED')
 }
@@ -79,7 +82,26 @@ export class ConversationControlClient{
  }
  change(item,content){if(item.clockStatus==='UNRESOLVED')throw Error('历史时区未确认，原消息需要核对');return this.write('/'+encodeURIComponent(this.session)+'/inputs/'+encodeURIComponent(item.id),{revision:item.revision,content})}
  setQueueEnabled(enabled){this.queueEnabled=enabled===true;try{globalThis.sessionStorage?.setItem('conversation-queue:'+this.session,this.queueEnabled?'on':'off')}catch{/* The current view still retains the choice. */}if(this.state)this.onState({enabled:this.enabled,...this.state,queueEnabled:this.queueEnabled,error:''})}
- steer(item){if(item.clockStatus==='UNRESOLVED')throw Error('历史时区未确认，原消息需要核对');const run=this.state?.run;if(!run?.runId||run.phase==='IDLE')throw Error('当前没有可引导的任务，请刷新核对');return this.write('/'+encodeURIComponent(this.session)+'/inputs/'+encodeURIComponent(item.id)+'/steer',{revision:item.revision,runId:run.runId})}
+ async guide(content,runId,item) {
+  if (!canGuide(this.state?.run) || this.state.run.runId!==runId) throw Error('当前没有可引导的任务，请核对后发送')
+  if (!content?.trim() || content.length>4000) throw Error('引导内容须在 1 至 4000 字之间')
+  const signature=JSON.stringify([this.session,'guide',runId,content])
+  if (!item && !this.uncertain.has(signature)) {
+   if (this.uncertain.size>=16) throw Error('请先核对先前的提交')
+   this.uncertain.set(signature,crypto.randomUUID())
+  }
+  const id=item?.id || this.uncertain.get(signature)
+  const result=await this.write('/'+encodeURIComponent(this.session)+'/guide',{
+   id,runId,content,entryPoint:this.entryPoint,...(item?{revision:item.revision}:{})
+  })
+  if (!item) this.uncertain.delete(signature)
+  return result
+ }
+ steer(item){
+  if(item.clockStatus==='UNRESOLVED')throw Error('历史时区未确认，原消息需要核对')
+  if(!canGuide(this.state?.run))throw Error('当前没有可引导的任务，请刷新核对')
+  return this.guide(item.content,this.state.run.runId,item)
+ }
  command(action){const run=this.state?.run;if(!run?.local||!run.runId)throw Error('当前实例无法控制此执行，请刷新核对');return this.write('/'+encodeURIComponent(this.session)+'/control',{runId:run.runId,action,revision:run.revision,confirmed:action==='cancel'})}
  close(){this.generation++;this.enabled=false;clearTimeout(this.timer);this.state=null}
 }

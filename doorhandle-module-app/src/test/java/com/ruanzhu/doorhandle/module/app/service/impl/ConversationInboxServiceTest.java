@@ -52,6 +52,27 @@ class ConversationInboxServiceTest {
     ConversationInboxService.OrderEntry order(ConversationInboxService.Item item) {
         return new ConversationInboxService.OrderEntry(item.id(),item.revision());
     }
+    @Test void directAndPromotedGuidanceAppendExactlyOnceAndCannotBeClaimedAsFutureTurns() {
+        active();
+        var delivered=new ArrayList<AgentSteeringInboxApi.Input>();
+        doAnswer(inv -> {
+            java.util.function.Supplier<AgentSteeringInboxApi.Input> commit=inv.getArgument(3);
+            delivered.add(commit.get());
+            return null;
+        }).when(control).guide(eq(alice),eq("s1"),eq("run-1"),any());
+        String fresh=UUID.randomUUID().toString();
+        inbox.guide(alice,"s1",fresh,"run-1","first",null,"CHAT");
+        inbox.guide(alice,"s1",fresh,"run-1","first",null,"CHAT");
+        var queued=enqueue("second");
+        assertThatThrownBy(() -> inbox.guide(alice,"s1",queued.id(),"run-1","second",queued.revision()+1,"AGUI")).hasMessageContaining("409");
+        inbox.guide(alice,"s1",queued.id(),"run-1","second",queued.revision(),"AGUI");
+        assertThat(delivered).containsExactly(new AgentSteeringInboxApi.Input(fresh,"first"),new AgentSteeringInboxApi.Input(queued.id(),"second"));
+        assertThat(status(fresh)).isEqualTo("APPLIED");
+        assertThat(status(queued.id())).isEqualTo("APPLIED");
+        assertThat(inbox.take(alice,"s1","run-1")).isEmpty();
+        verify(sessions,times(1)).appendUserMessage(any(),eq("s1"),eq("first"));
+        verify(sessions,times(1)).appendUserMessage(any(),eq("s1"),eq("second"));
+    }
     @Test void idleSubmitStartsImmediatelyAndOtherMessagesWaitInTheSavedOrder() throws Exception {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);

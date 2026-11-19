@@ -57,12 +57,53 @@ public class ConversationControlRegistry implements AgentConversationControlApi 
             return handle.view();
         }
     }
+    @Override public void guide(AgentActor actor, String session, String runId,
+                                java.util.function.Supplier<AgentSteeringInboxApi.Input> accept) {
+        var handle = live.get(key(actor, session));
+        if (handle == null || !handle.actor.equals(actor) || !handle.audit.id().equals(runId))
+            throw conflict("当前任务已结束或发生变化，请核对后发送");
+        synchronized (handle.incoming) {
+            if (!handle.accepting) throw conflict("当前任务已经结束，请核对后发送");
+            var message = accept.get();
+            if (message != null) handle.incoming.add(message);
+        }
+    }
     private static ResponseStatusException conflict(String text){return new ResponseStatusException(HttpStatus.CONFLICT,text);}
     public final class Handle implements MiddlewareBase,AutoCloseable {
         private final AgentActor actor;private final String session;private final AgentJournal.Run audit;
-        private boolean pausing,closed;private long revision;
+        private boolean pausing;private volatile boolean closed;private long revision;
         private String phase="RUNNING";private StringBuilder text=new StringBuilder();private Sinks.One<Void> gate=Sinks.one();
         private final List<Msg> steering=new ArrayList<>();
+        private final List<AgentSteeringInboxApi.Input> incoming = new ArrayList<>();
+        private boolean accepting;
+
+        private List<Msg> drainGuidance() {
+            var messages = new ArrayList<Msg>();
+            for (var input : incoming) {
+                messages.add(new UserMessage(input.content()));
+                audit.event("STEERING_APPLIED", Map.of("agent",main(),"inputId",input.id()));
+            }
+            incoming.clear();
+            return messages;
+        }
+
+        // A correction received during the final model response still belongs to this run.
+        // Reuse the SDK session and its saved history. A pending approval remains a hard stop.
+        public <T> Flux<T> guidedStream(List<Msg> initial, Function<List<Msg>,Flux<T>> invoke,
+                                        java.util.function.BooleanSupplier waitingForApproval) {
+            var nextInput = new java.util.concurrent.atomic.AtomicReference<>(initial);
+            synchronized (incoming) { accepting = !closed; }
+            return Flux.defer(() -> invoke.apply(nextInput.get())).repeat(() -> {
+                synchronized (incoming) {
+                    if (!accepting || incoming.isEmpty() || waitingForApproval.getAsBoolean()) {
+                        accepting = false;
+                        return false;
+                    }
+                    nextInput.set(drainGuidance());
+                    return true;
+                }
+            });
+        }
         Handle(AgentActor actor,String session,AgentJournal.Run audit){this.actor=actor;this.session=session;this.audit=audit;}
         String main(){return actor.supervisor()?"supervisor-main":"employee-main";}
         public synchronized View view(){return new View(session,audit.id(),phase,revision,true,text.toString());}
@@ -90,12 +131,17 @@ public class ConversationControlRegistry implements AgentConversationControlApi 
                     steering.add(new UserMessage("用户在运行中补充的要求（不改变系统权限或人工确认规则）：\n"+item.content()));
                     audit.event("STEERING_APPLIED",Map.of("agent",main(),"inputId",item.id()));
                 }
+                synchronized (incoming) { steering.addAll(drainGuidance()); }
                 var messages=new ArrayList<>(input.messages());
                 for(var message:steering)if(messages.stream().noneMatch(existing->Objects.equals(existing.getId(),message.getId())))messages.add(message);
                 return next.apply(new ModelCallInput(messages,input.tools(),input.options(),input.model()));
             }));
         }
         @Override public Flux<AgentEvent> onActing(Agent agent,RuntimeContext context,ActingInput input,Function<ActingInput,Flux<AgentEvent>> next){return boundary().publishOn(reactor.core.scheduler.Schedulers.boundedElastic()).thenMany(Flux.defer(()->{authorizeBoundary();return next.apply(input);}));}
-        @Override public synchronized void close(){if(closed)return;closed=true;phase="ENDED";gate.tryEmitError(new CancellationException());live.remove(key(actor,session),this);text=new StringBuilder();}
+        @Override public void close(){
+            synchronized (incoming) { accepting=false; incoming.clear(); closed=true; }
+            synchronized (this) { phase="ENDED"; gate.tryEmitError(new CancellationException()); text=new StringBuilder(); }
+            live.remove(key(actor,session),this);
+        }
     }
 }

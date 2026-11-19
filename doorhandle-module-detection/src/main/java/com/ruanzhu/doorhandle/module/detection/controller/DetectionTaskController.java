@@ -164,21 +164,6 @@ public class DetectionTaskController {
         return Result.success(detectionTaskService.listQualityQueue(queue, page, size));
     }
 
-    @GetMapping("/defect-gallery")
-    public Result<java.util.Map<String, Object>> listDefectGallery(
-            @RequestParam(required = false) String defectType,
-            @RequestParam(required = false) String severityLevel,
-            @RequestParam(required = false) String deviceName,
-            @RequestParam(required = false) String batchNo,
-            @RequestParam(required = false) Integer modelId,
-            @RequestParam(defaultValue = "1") @Min(value = 1, message = "页码不能小于 1") int page,
-            @RequestParam(defaultValue = "20") @Min(value = 1, message = "每页数量不能小于 1") @Max(value = 200, message = "每页数量不能超过 200") int size
-    ) {
-        return Result.success(detectionTaskService.listDefectGallery(
-                defectType, severityLevel, deviceName, batchNo, modelId, page, size
-        ));
-    }
-
     @GetMapping("/batch-trace")
     public Result<java.util.Map<String, Object>> getBatchTraceReport(
             @RequestParam @NotBlank(message = "批次号不能为空") String batchNo

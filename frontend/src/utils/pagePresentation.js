@@ -4,7 +4,6 @@ const sections = [
   ['/inspection', '检测工作台', 'Picture', '检测业务'],
   ['/quality/queue', '质检队列', 'CircleCheck', '质量管理'],
   ['/quality/reports', '报告与审批', 'Document', '质量管理'],
-  ['/quality/evidence', '缺陷证据库', 'Picture', '质量管理'],
   ['/quality/work-order-trace', '工单追溯', 'Connection', '质量管理'],
   ['/quality/batch-trace', '批次追溯', 'Connection', '质量管理'],
   ['/device-records', '设备使用记录', 'DocumentCopy', '产线资源'],
@@ -33,7 +32,6 @@ export const detectionPresentation = {
   workspace: { title: '检测工作台', icon: 'Picture', description: '选择图片与检测模型，查看任务进度和识别结果，完成后进入人工复核。' },
   history: { title: '检测记录', icon: 'DocumentCopy', description: '按时间、采集信息和任务状态查找结果，查看原图、标注与历史结论。' },
   quality: { title: '质检队列', icon: 'CircleCheck', description: '集中处理分派、复核和处置，核对责任人、截止时间及后续复检要求。' },
-  'defect-gallery': { title: '缺陷证据库', icon: 'Picture', description: '对照缺陷图片与检测依据，定位需要人工确认的问题。' },
   'work-order-trace': { title: '工单追溯', icon: 'Connection', description: '按工单串联检测结果、复核结论和处置记录。' },
   'batch-trace': { title: '批次追溯', icon: 'Connection', description: '按采集批次查看质量分布、检测记录和处理进度。' }
 }

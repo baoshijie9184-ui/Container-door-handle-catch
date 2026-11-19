@@ -493,7 +493,6 @@ import {
   detectSingleImage,
   fetchAvailableModels,
   fetchBatchTraceReport,
-  fetchDefectGallery,
   fetchDetectionTaskTrace,
   fetchQualityQueue,
   fetchQualityReport,
@@ -533,12 +532,11 @@ const reportDownloading = ref(false)
 const route = useRoute()
 const router = useRouter()
 const activeTab = ref('workspace')
-const validTabs = ['workspace', 'history', 'quality', 'defect-gallery', 'work-order-trace', 'batch-trace']
+const validTabs = ['workspace', 'history', 'quality', 'work-order-trace', 'batch-trace']
 const tabRouteMap = {
   workspace: '/inspection/workbench',
   history: '/inspection/history',
   quality: '/quality/queue',
-  'defect-gallery': '/quality/evidence',
   'work-order-trace': '/quality/work-order-trace',
   'batch-trace': '/quality/batch-trace'
 }
@@ -548,11 +546,6 @@ const qualityQueueRecords = ref([])
 const qualityQueueTotal = ref(0)
 const qualityQueuePage = ref(1)
 const qualityQueuePageSize = ref(10)
-const defectGalleryLoading = ref(false)
-const defectGalleryRecords = ref([])
-const defectGalleryTotal = ref(0)
-const defectGalleryPage = ref(1)
-const defectGalleryPageSize = ref(8)
 const workOrderTraceNo = ref('')
 const workOrderTraceLoading = ref(false)
 const workOrderTraceReport = ref(null)
@@ -566,13 +559,6 @@ const form = reactive({
   imageFile: null
 })
 
-const defectFilters = reactive({
-  defectType: '',
-  severityLevel: '',
-  deviceName: '',
-  batchNo: '',
-  modelId: null
-})
 
 const qualityQueues = [
   { label: '全部待处理', value: 'ALL_ACTIONABLE', hint: '复核/处置/异常' },
@@ -862,12 +848,6 @@ const refreshQualityQueueIfVisible = async () => {
   }
 }
 
-const refreshDefectGalleryIfVisible = async () => {
-  if (activeTab.value === 'defect-gallery') {
-    await loadDefectGallery(defectGalleryPage.value)
-  }
-}
-
 const {
   reviewDialogVisible,
   reviewSubmitting,
@@ -897,15 +877,11 @@ const {
   taskStore,
   fetchTaskResults,
   refreshQualityQueue: refreshQualityQueueIfVisible,
-  refreshDefectGallery: refreshDefectGalleryIfVisible
 })
 
 const handleTabChange = async (tabName) => {
   if (tabName === 'quality' && !qualityQueueRecords.value.length) {
     await loadQualityQueue(1)
-  }
-  if (tabName === 'defect-gallery' && !defectGalleryRecords.value.length) {
-    await loadDefectGallery(1)
   }
   if (tabName === 'work-order-trace' && !workOrderTraceReport.value && !workOrderTraceLoading.value) {
     workOrderTraceNo.value = workOrderTraceNo.value || businessWorkOrderNos[0]
@@ -928,79 +904,6 @@ const syncTabFromRoute = async () => {
     activeTab.value = routeTab
     await handleTabChange(routeTab)
   }
-}
-
-const buildDefectGalleryParams = (page = defectGalleryPage.value) => {
-  const targetPage = resolvePageNumber(page, defectGalleryPage.value)
-  const params = {
-    page: targetPage,
-    size: defectGalleryPageSize.value
-  }
-  if (defectFilters.defectType.trim()) params.defectType = defectFilters.defectType.trim()
-  if (defectFilters.severityLevel) params.severityLevel = defectFilters.severityLevel
-  if (defectFilters.deviceName.trim()) params.deviceName = defectFilters.deviceName.trim()
-  if (defectFilters.batchNo.trim()) params.batchNo = defectFilters.batchNo.trim()
-  if (defectFilters.modelId) params.modelId = defectFilters.modelId
-  return params
-}
-
-let collaborationGalleryQuery
-const loadDefectGallery = async (page = defectGalleryPage.value, savedFilters) => {
-  const targetPage = resolvePageNumber(page, defectGalleryPage.value)
-  defectGalleryLoading.value = true
-  try {
-    const applied=savedFilters || buildDefectGalleryParams(targetPage)
-    collaborationGalleryQuery={...applied}
-    const response = await fetchDefectGallery(applied)
-    if (response.data?.code === 200) {
-      const data = response.data.data || {}
-      defectGalleryRecords.value = data.records || []
-      defectGalleryTotal.value = Number(data.total || 0)
-      defectGalleryPage.value = targetPage
-    } else {
-      ElMessage.error(response.data?.message || '获取缺陷证据库失败')
-    }
-  } catch (error) {
-    console.error('获取缺陷证据库失败:', error)
-    ElMessage.error(error.response?.data?.message || '获取缺陷证据库失败')
-  } finally {
-    defectGalleryLoading.value = false
-  }
-}
-
-const searchDefectGallery = () => {
-  defectGalleryPage.value = 1
-  loadDefectGallery(1)
-}
-
-const resetDefectGalleryFilters = () => {
-  defectFilters.defectType = ''
-  defectFilters.severityLevel = ''
-  defectFilters.deviceName = ''
-  defectFilters.batchNo = ''
-  defectFilters.modelId = null
-  searchDefectGallery()
-}
-
-const onDefectGallerySizeChange = (size) => {
-  defectGalleryPageSize.value = size
-  defectGalleryPage.value = 1
-  loadDefectGallery(1)
-}
-
-const resolveDefectPreview = (task) => {
-  const preview = task.previewImages?.find(item => item.annotatedUrl || item.previewUrl)
-  if (preview) return preview.annotatedUrl || preview.previewUrl
-  const evidencePreviewKey = task.defectEvidence?.find(item => item.previewUrl || item.annotatedUrl)
-  if (evidencePreviewKey) return evidencePreviewKey.previewUrl || evidencePreviewKey.annotatedUrl
-  const original = task.originalImages?.find(item => item.previewUrl)
-  return original?.previewUrl || ''
-}
-
-const formatEvidenceConfidence = (value) => {
-  const number = Number(value)
-  if (Number.isNaN(number)) return '--'
-  return `${Math.round(number * 1000) / 10}%`
 }
 
 const getStatType = (key) => {
@@ -1803,104 +1706,6 @@ async function validateCollaborationAccess(){
   margin-top: 14px;
 }
 
-.defect-filter-bar {
-  display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) minmax(150px, 0.9fr) minmax(150px, 1fr) minmax(150px, 1fr) minmax(130px, 0.8fr) auto auto;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 16px;
-}
-
-.defect-gallery-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
-}
-
-.defect-evidence-card {
-  overflow: hidden;
-  border: 1px solid rgba(37, 99, 235, 0.10);
-  border-radius: 18px;
-  background:
-    linear-gradient(135deg, #ffffff, #f8fbff);
-  box-shadow: var(--app-shadow-sm);
-  transition: all var(--app-transition-fast);
-}
-
-.defect-evidence-card:hover {
-  border-color: rgba(37, 99, 235, 0.22);
-  box-shadow: var(--app-shadow-command);
-  transform: translateY(-2px);
-}
-
-.defect-card-image {
-  height: 190px;
-  background:
-    repeating-linear-gradient(45deg, rgba(37, 99, 235, 0.045) 0 1px, transparent 1px 14px),
-    linear-gradient(135deg, rgba(15, 23, 42, 0.05), rgba(37, 99, 235, 0.08)),
-    #f8fafc;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.defect-card-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.defect-card-body {
-  padding: 14px;
-}
-
-.defect-card-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.defect-card-title code {
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 800;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.defect-card-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.defect-card-meta span {
-  padding: 4px 7px;
-  border-radius: 999px;
-  background: var(--app-surface-blueprint);
-  color: #475569;
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.defect-evidence-list {
-  display: grid;
-  gap: 5px;
-  margin-top: 10px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.defect-card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
 .preview-grid {
   display: grid;
   gap: 16px;
@@ -2322,7 +2127,6 @@ async function validateCollaborationAccess(){
   .input-grid,
   .single-result-layout,
   .preview-images,
-  .defect-filter-bar,
   .batch-section-grid {
     grid-template-columns: 1fr;
   }
@@ -2334,13 +2138,8 @@ async function validateCollaborationAccess(){
 
 @media (max-width: 720px) {
   .batch-trace-search,
-  .defect-filter-bar,
   .batch-summary-band,
   .batch-quality-list {
-    grid-template-columns: 1fr;
-  }
-
-  .defect-gallery-grid {
     grid-template-columns: 1fr;
   }
 }

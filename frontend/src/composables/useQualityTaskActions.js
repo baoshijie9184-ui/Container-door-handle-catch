@@ -24,7 +24,6 @@ export function useQualityTaskActions({
   taskStore,
   fetchTaskResults,
   refreshQualityQueue = noop,
-  refreshDefectGallery = noop
 }) {
   const reviewDialogVisible = ref(false)
   const reviewSubmitting = ref(false)
@@ -168,7 +167,6 @@ export function useQualityTaskActions({
         const data = response.data.data
         await applyTaskProgressUpdate(reviewTask.value.taskId, data, '人工复核已完成')
         await refreshQualityQueue()
-        await refreshDefectGallery()
         reviewDialogVisible.value = false
         ElMessage.success('人工复核已提交')
       } else {

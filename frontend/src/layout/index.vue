@@ -183,7 +183,6 @@ const navGroups = [
       { path: '/quality/reports', label: '报告与审批', desc: '个人草稿与主管审批' },
       { path: '/quality/knowledge', label: '质检知识库', desc: '规范、版本与引用定位' },
       { path: '/quality/digests', label: '质检日报', desc: '定时统计与报告交付', supervisorOnly:true },
-      { path: '/quality/evidence', label: '缺陷证据库', desc: '缺陷图片证据链' },
       { path: '/quality/work-order-trace', label: '工单追溯', desc: '按工单回溯检测链路' },
       { path: '/quality/batch-trace', label: '批次追溯', desc: '按批次追溯质量结果' }
     ]
@@ -245,7 +244,6 @@ const activeMenu = computed(() => {
       workspace: '/inspection/workbench',
       history: '/inspection/history',
       quality: '/quality/queue',
-      'defect-gallery': '/quality/evidence',
       'work-order-trace': '/quality/work-order-trace',
       'batch-trace': '/quality/batch-trace'
     }

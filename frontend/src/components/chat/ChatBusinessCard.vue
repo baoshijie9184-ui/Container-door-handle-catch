@@ -11,7 +11,7 @@
     </div>
     <p class="business-snapshot-note"><AppIcon name="Clock" :size="15" /><span>消息中的业务快照 · {{ historicalTime(message.createdAt) }}<br/>以下内容保留当时回答，当前数据和可用操作请进入业务页面重新核对。</span></p>
 
-    <template v-if="isQualityQueue || isBatchTrace || isWorkOrderTrace || isDefectGallery || isAgentHealth">
+    <template v-if="isQualityQueue || isBatchTrace || isWorkOrderTrace || isAgentHealth">
       <div v-if="sources.length" class="source-strip">
         <span class="source-label">来源</span>
         <span v-for="source in sources" :key="`${source.type}-${source.detail}`" class="source-chip">
@@ -59,33 +59,6 @@
         <p class="agent-health-reason">
           最近守卫原因：{{ payload.health?.lastGuardReason || '暂无' }}
         </p>
-      </div>
-
-      <div v-else-if="isDefectGallery" class="defect-gallery-mini">
-        <div class="trace-context">
-          <span>类型 {{ payload.filters?.defectType || '全部' }}</span>
-          <span>等级 {{ payload.filters?.severityLevel || '全部' }}</span>
-          <span>设备 {{ payload.filters?.deviceName || '全部' }}</span>
-          <span>批次 {{ payload.filters?.batchNo || '全部' }}</span>
-        </div>
-        <div v-if="defectRecords.length" class="task-list">
-          <article v-for="task in defectRecords" :key="task.taskId" class="task-card">
-            <div class="task-main">
-              <a v-if="legacyTaskRoute(task.taskId)" class="task-id" :href="legacyTaskRoute(task.taskId)">{{ task.taskId }}</a><span v-else class="task-id">任务编号未记录或不可用</span>
-              <StatusBadge domain="severity" :code="task.maxDefectSeverity" />
-            </div>
-            <div class="task-meta">
-              <span>缺陷 {{ task.primaryDefectType || '未知' }}</span>
-              <span>设备 {{ task.deviceName || '未知' }}</span>
-              <span>批次 {{ task.batchNo || '未知' }}</span>
-            </div>
-            <div class="task-status">
-              <span>数量 {{ count(task.defectCount) }}</span>
-              <StatusBadge domain="review" :code="task.reviewStatus" />
-              <span>证据 {{ evidenceCount(task.defectEvidence) }}</span>
-            </div>
-          </article>
-        </div>
       </div>
 
       <div v-else-if="isBatchTrace || isWorkOrderTrace" class="batch-trace-mini">
@@ -214,16 +187,13 @@ const cards = computed(() => objectRows(payload.value.cards))
 const isQualityQueue = computed(() => payload.value.type === 'quality-queue')
 const isBatchTrace = computed(() => payload.value.type === 'batch-trace')
 const isWorkOrderTrace = computed(() => payload.value.type === 'work-order-trace')
-const isDefectGallery = computed(() => payload.value.type === 'defect-gallery')
 const isAgentHealth = computed(() => payload.value.type === 'agent-health')
 const metrics = computed(() => objectRows(payload.value.metrics))
 const tasks = computed(() => objectRows(payload.value.tasks))
 const sources = computed(() => objectRows(payload.value.sources))
 const batchRecords = computed(() => objectRows(payload.value.records).slice(0,5))
-const defectRecords = batchRecords
 const traceRouteText = computed(() => {
   if (isAgentHealth.value) return '查看健康详情'
-  if (isDefectGallery.value) return '进入缺陷证据库'
   if (isBatchTrace.value) return '进入批次追溯'
   if (isWorkOrderTrace.value) return '查看工单任务'
   return '进入质检队列'
@@ -243,7 +213,6 @@ const isRoute = (route) => {
 }
 const legacyTaskRoute=id=>typeof id==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(id)?'#/inspection/workbench?taskId='+encodeURIComponent(id):''
 const contextList = (value) => Array.isArray(value) ? value.filter(item=>typeof item==='string'&&item.trim()).slice(0,3) : []
-const evidenceCount = (value) => Array.isArray(value) ? value.length.toLocaleString('zh-CN') : '未记录'
 </script>
 
 <style scoped>
@@ -266,7 +235,7 @@ const evidenceCount = (value) => Array.isArray(value) ? value.length.toLocaleStr
 :is(.tone-amber,.tone-orange) .metric-value { color:var(--app-warning); }
 :is(.tone-red,.tone-rose) .metric-value { color:var(--app-danger); }
 .quality-actions,.example-list { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:12px; }
-.batch-trace-mini,.defect-gallery-mini,.agent-health-mini { display:grid; gap:10px; margin-top:18px; }
+.batch-trace-mini,.agent-health-mini { display:grid; gap:10px; margin-top:18px; }
 .agent-health-status { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:11px 12px; border-radius:7px; background:var(--app-bg); color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .agent-health-status strong { color:var(--app-text); font-size:12px; font-weight:550; }
 .status-dot { flex:0 0 7px; width:7px; height:7px; border-radius:50%; background:var(--app-text-muted); }

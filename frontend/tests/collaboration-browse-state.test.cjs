@@ -140,28 +140,6 @@ test('a denied metadata reread removes the old operation identity instead of kee
   } finally { delete globalThis[key] }
 })
 
-test('defect evidence refresh and paging retain the applied query until an explicit new search', async () => {
-  const key='__collaborationGalleryQueryFixture', calls=[]
-  const env={ref:value=>({value}),reactive:value=>value,computed:read=>({get value(){return read()}}),onBeforeUnmount:()=>{},
-    ElMessage:{error:()=>{}},knownCount:value=>Number.isSafeInteger(value)&&value>=0?value:null,
-    async fetchDefectGallery(params){calls.push({...params});return {data:{code:200,data:{records:[],total:0}}}}}
-  globalThis[key]=env
-  try {
-    const code=readFrontendFile('src','composables','useDefectGallery.js')
-      .replace("import { computed, reactive, ref, onBeforeUnmount } from 'vue'",`const {computed,reactive,ref,onBeforeUnmount}=globalThis[${JSON.stringify(key)}]`)
-      .replace("import { ElMessage } from 'element-plus'",`const {ElMessage}=globalThis[${JSON.stringify(key)}]`)
-      .replace("import { fetchDefectGallery } from '../api/detection'",`const {fetchDefectGallery}=globalThis[${JSON.stringify(key)}]`)
-      .replace("import { knownCount } from '../utils/countPresentation'",`const {knownCount}=globalThis[${JSON.stringify(key)}]`)
-    const {useDefectGallery}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'))
-    const state=useDefectGallery(); state.defectFilters.deviceName='已执行设备'
-    await state.searchDefectGallery()
-    state.defectFilters.deviceName='尚未查询设备'
-    await state.loadDefectGallery(2); await state.loadDefectGallery()
-    assert.deepEqual(calls.map(row=>[row.deviceName,row.page]),[['已执行设备',1],['已执行设备',2],['已执行设备',2]])
-    await state.searchDefectGallery()
-    assert.deepEqual([calls[3].deviceName,calls[3].page],['尚未查询设备',1])
-  } finally { delete globalThis[key] }
-})
 
 test('an update notice names an operator only when authorized history is newer than the open editor', async () => {
   const code=readFrontendFile('src','utils','changeHistory.js')

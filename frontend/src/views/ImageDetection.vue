@@ -470,96 +470,6 @@
         </el-card>
       </el-tab-pane>
 
-      <el-tab-pane name="defect-gallery" label="缺陷证据库">
-        <el-card class="detection-card defect-gallery-card" shadow="never">
-          <template #header>
-            <div class="card-title-row">
-              <span><AppIcon name="Picture" :size="18" />缺陷证据库</span>
-              <el-tag type="info" effect="plain">{{ defectGalleryLoading ? '读取中' : defectGalleryError ? '数量待核对' : defectGalleryTotal === null ? '数量尚未读取' : defectGalleryTotal+' 条缺陷任务' }}</el-tag>
-              <el-button size="small" :loading="defectGalleryLoading" @click="loadDefectGallery()">
-                <el-icon><Refresh /></el-icon>
-                刷新
-              </el-button>
-            </div>
-          </template>
-
-          <p class="defect-gallery-scope"><AppIcon name="Lock" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 每张卡片对应一个缺陷任务。检测证据条目与人工确认数量分别记录，预览图不代替人工复核。</p>
-          <form class="defect-filter-bar" @submit.prevent="searchDefectGallery">
-            <label for="defect-type-filter">主要缺陷类型<el-input id="defect-type-filter" v-model="defectFilters.defectType" placeholder="输入类别名，如 Rusty" clearable /></label>
-            <label for="defect-severity-filter">严重等级<el-select id="defect-severity-filter" v-model="defectFilters.severityLevel" placeholder="全部等级" clearable>
-              <el-option label="轻微 MINOR" value="MINOR" />
-              <el-option label="一般 MAJOR" value="MAJOR" />
-              <el-option label="严重 CRITICAL" value="CRITICAL" />
-            </el-select></label>
-            <label for="defect-device-filter">设备名称<el-input id="defect-device-filter" v-model="defectFilters.deviceName" placeholder="输入采集设备名称" clearable /></label>
-            <label for="defect-batch-filter">批次编号<el-input id="defect-batch-filter" v-model="defectFilters.batchNo" placeholder="输入批次编号" clearable /></label>
-            <label for="defect-model-filter">检测模型编号<el-input-number id="defect-model-filter" v-model="defectFilters.modelId" :min="1" :precision="0" placeholder="模型编号" controls-position="right" /></label>
-            <div class="defect-filter-actions"><el-button type="primary" native-type="submit" :loading="defectGalleryLoading">
-              <el-icon><Search /></el-icon>
-              查询
-            </el-button>
-            <el-button @click="resetDefectGalleryFilters"><AppIcon name="Refresh" :size="16" />重置</el-button></div>
-          </form>
-          <p v-if="defectFiltersDirty && defectGalleryRecords.length" class="defect-gallery-filter-note" role="status">筛选已改，点击查询更新结果。</p>
-
-          <el-alert v-if="defectGalleryError && defectGalleryRecords.length" :title="defectGalleryError + '；下方保留先前读取的记录，请刷新核对。'" type="error" show-icon :closable="false" />
-          <CollectionEmptyState v-if="!defectGalleryRecords.length" :loading="defectGalleryLoading" :error="defectGalleryError" :filtered="hasDefectFilters" empty-title="暂无缺陷证据" empty-description="检测后，可在这里查找缺陷任务，并通过追溯详情对照图片与人工结论。" @retry="loadDefectGallery()" @reset="resetDefectGalleryFilters" />
-
-          <div v-else v-loading="defectGalleryLoading" class="defect-gallery-grid">
-            <article v-for="task in defectGalleryRecords" :key="task.taskId" class="defect-evidence-card" :aria-label="'缺陷任务 '+task.taskId">
-              <div class="defect-card-image">
-                <button v-if="resolveDefectPreview(task)" class="defect-preview-button" type="button" :aria-label="'查看任务 '+task.taskId+' 的图片对照'" @click="openTraceDialog(task.taskId)"><el-image :src="resolveDefectPreview(task)" :alt="'任务 '+task.taskId+' 证据预览'" fit="contain" loading="lazy"><template #error><div class="defect-preview-empty"><AppIcon name="Warning" :size="23" /><OssPreviewFailure :src="resolveDefectPreview(task)" /></div></template></el-image><span class="defect-preview-caption"><AppIcon name="Search" :size="14" />查看图片对照</span></button>
-                <div v-else class="preview-empty"><AppIcon name="Picture" :size="24" /><span>本次未读取到可用预览</span></div>
-              </div>
-              <div class="defect-card-body">
-                <header class="defect-card-identity"><span>缺陷任务</span><button type="button" :aria-label="'查看缺陷任务 '+task.taskId" @click="openTraceDialog(task.taskId)">{{ task.taskId }}</button><StatusBadge domain="detection" :code="task.status" /></header>
-                <ResourceMutationSummary v-if="userStore.capabilities?.changeHistory" :latest="taskChanges[task.taskId]" :revision="task.version" resource-type="DETECTION_TASK" :resource-id="task.taskId" domain="DETECTION" />
-                <section class="defect-card-section" aria-label="检测记录">
-                  <h4><AppIcon name="Picture" :size="15" />检测记录</h4>
-                  <dl class="defect-card-facts"><div><dt>主要缺陷</dt><dd>{{ task.primaryDefectType ? getCategoryText(task.primaryDefectType) : '未记录' }}<small v-if="task.primaryDefectType && getCategoryText(task.primaryDefectType)!==task.primaryDefectType">{{ task.primaryDefectType }}</small></dd></div><div><dt>检测证据条目</dt><dd>{{ traceCount(task.defectCount) }} 条</dd></div><div class="defect-fact-wide"><dt>检测记录最高等级</dt><dd><StatusBadge domain="severity" :code="task.maxDefectSeverity" :label="task.maxDefectSeverity ? severityText(task.maxDefectSeverity) : '等级未记录'" /></dd></div></dl>
-                </section>
-                <section class="defect-card-section" aria-label="人工复核记录">
-                  <h4><AppIcon name="Search" :size="15" />人工复核<StatusBadge domain="review" :code="task.reviewStatus" :label="task.reviewStatus ? reviewStatusText(task.reviewStatus) : '复核状态未记录'" /></h4>
-                  <dl v-if="task.reviewStatus==='REVIEWED'" class="defect-card-facts"><div class="defect-fact-wide"><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="task.reviewConclusion" /></dd></div><div><dt>人工确认缺陷</dt><dd>{{ traceCount(task.confirmedDefectCount) }} 个</dd></div><div><dt>误报反馈</dt><dd>{{ traceCount(task.falsePositiveCount) }} 个</dd></div><div class="defect-fact-wide"><dt>人工评定等级</dt><dd><StatusBadge domain="severity" :code="task.severityLevel" /></dd></div></dl>
-                  <p v-if="task.reviewStatus==='REVIEWED'" class="defect-card-note">复核时间：{{ task.reviewedAt ? displayBusinessTime(task.reviewedAt) : '未记录' }}</p>
-                  <p v-else class="defect-card-note">{{ ['PENDING','REVIEWING'].includes(task.reviewStatus) ? '等待人工复核完成，检测记录不代替人工结论。' : '当前复核状态及结论请在追溯详情中核对。' }}</p>
-                </section>
-                <dl class="defect-card-responsibility"><div><dt>责任人</dt><dd>{{ task.assignee || '未记录' }}</dd></div><div><dt>截止</dt><dd>{{ task.dueAt ? displayBusinessTime(task.dueAt) : '未记录' }}</dd></div></dl>
-                <details class="defect-card-disclosure"><summary>任务来源<AppIcon name="ArrowDown" :size="13" /></summary><dl class="defect-card-facts"><div class="defect-fact-wide"><dt>采集设备</dt><dd>{{ task.deviceName || '未记录' }}</dd></div><div class="defect-fact-wide"><dt>批次编号</dt><dd>{{ task.batchNo || '未记录' }}</dd></div><div class="defect-fact-wide"><dt>工单编号</dt><dd>{{ task.workOrderNo || '未记录' }}</dd></div></dl></details>
-                <details v-if="Array.isArray(task.defectEvidence) && task.defectEvidence.length" class="defect-card-disclosure"><summary>本次返回证据 {{ task.defectEvidence.length.toLocaleString('zh-CN') }} 条<AppIcon name="ArrowDown" :size="13" /></summary><p class="defect-card-note">前 {{ Math.min(task.defectEvidence.length,3) }} 条模型记录，待人工核对。</p><ol class="defect-evidence-excerpts"><li v-for="(evidence,evidenceIndex) in task.defectEvidence.slice(0,3)" :key="evidenceIndex"><strong>{{ evidence.imageName || '图片名称未记录' }}</strong><span>{{ evidence.defectType ? getCategoryText(evidence.defectType) : '类型未记录' }} · 模型置信度 {{ formatEvidenceConfidence(evidence.confidence) }}</span></li></ol></details>
-                <QualityStageGuidance :task="task" />
-                <div class="defect-card-actions">
-                  <el-button size="small" type="primary" plain @click="openTraceDialog(task.taskId)"><AppIcon name="Search" :size="15" />追溯详情</el-button>
-                  <el-button size="small" plain :disabled="reportDownloading" @click="downloadTaskQualityReport(task.taskId)"><AppIcon name="Download" :size="15" />任务摘要</el-button>
-                  <el-tooltip :content="canReviewTask(task) ? '核对图片与结论后提交人工复核' : qualityActionReason(task,'REVIEW')" placement="top"><span :tabindex="canReviewTask(task) ? undefined : 0" :aria-label="canReviewTask(task) ? undefined : qualityActionReason(task,'REVIEW')"><el-button
-                    :disabled="!canReviewTask(task)"
-                    size="small"
-                    type="warning"
-                    plain
-                    @click="openReviewDialog(normalizeQualityQueueRecord(task))"
-                  >
-                    复核
-                  </el-button></span></el-tooltip>
-                </div>
-              </div>
-            </article>
-          </div>
-
-          <div v-if="defectGalleryTotal!==null" class="quality-pagination">
-            <el-pagination
-              v-model:current-page="defectGalleryPage"
-              v-model:page-size="defectGalleryPageSize"
-              :total="defectGalleryTotal"
-              :page-sizes="[8, 12, 24]"
-              :disabled="defectGalleryLoading || defectFiltersDirty || !!defectGalleryError"
-              layout="total, sizes, prev, pager, next"
-              @current-change="loadDefectGallery"
-              @size-change="onDefectGallerySizeChange"
-            />
-          </div>
-        </el-card>
-      </el-tab-pane>
-
       <el-tab-pane name="work-order-trace" label="工单追溯">
         <el-card class="detection-card batch-trace-card" shadow="never">
           <template #header>
@@ -840,14 +750,9 @@ import {
   severityTagType,
   severityText
 } from '../utils/qualityWorkflow'
-import {
-  formatEvidenceConfidence,
-  normalizeQualityQueueRecord,
-  resolveDefectPreview
-} from '../utils/qualityRecords'
+import { formatEvidenceConfidence } from '../utils/qualityRecords'
 import { useQualityTaskActions } from '../composables/useQualityTaskActions'
 import { useQualityQueue } from '../composables/useQualityQueue'
-import { useDefectGallery } from '../composables/useDefectGallery'
 import { useTraceReports } from '../composables/useTraceReports'
 import { useDetectionHistory } from '../composables/useDetectionHistory'
 import { useQualityReportDownloads } from '../composables/useQualityReportDownloads'
@@ -884,22 +789,6 @@ const {
   onQualityQueueSizeChange,
   forgetTasks:forgetQualityTasks
 } = useQualityQueue()
-const {
-  defectGalleryLoading,
-  defectGalleryError,
-  hasDefectFilters,
-  defectFiltersDirty,
-  defectGalleryRecords,
-  defectGalleryTotal,
-  defectGalleryPage,
-  defectGalleryPageSize,
-  defectFilters,
-  loadDefectGallery,
-  searchDefectGallery,
-  resetDefectGalleryFilters,
-  onDefectGallerySizeChange,
-  forgetTasks:forgetDefectTasks
-} = useDefectGallery()
 const {
   workOrderTraceNo,
   workOrderTraceLoading,
@@ -1017,12 +906,11 @@ watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || 
 const router = useRouter()
 const activeTab = ref('workspace')
 const workspacePresentation = computed(() => detectionPresentation[activeTab.value] || detectionPresentation.workspace)
-const validTabs = ['workspace', 'history', 'quality', 'defect-gallery', 'work-order-trace', 'batch-trace']
+const validTabs = ['workspace', 'history', 'quality', 'work-order-trace', 'batch-trace']
 const tabRouteMap = {
   workspace: '/inspection/workbench',
   history: '/inspection/history',
   quality: '/quality/queue',
-  'defect-gallery': '/quality/evidence',
   'work-order-trace': '/quality/work-order-trace',
   'batch-trace': '/quality/batch-trace'
 }
@@ -1076,19 +964,10 @@ const refreshQualityQueueIfVisible = async () => {
   }
 }
 
-const refreshDefectGalleryIfVisible = async () => {
-  if (activeTab.value === 'defect-gallery') {
-    await loadDefectGallery(defectGalleryPage.value)
-  }
-}
-
 const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
   const startingRoute = route.fullPath
   if (tabName === 'quality' && !qualityQueueRecords.value.length) {
     await loadQualityQueue(1)
-  }
-  if (tabName === 'defect-gallery' && !defectGalleryRecords.value.length) {
-    await loadDefectGallery(1)
   }
   if (tabName === 'work-order-trace' && !workOrderTraceReport.value && !workOrderTraceLoading.value) {
     if (await ensureDefaultWorkOrderNo()) await loadWorkOrderTraceReport()
@@ -1101,7 +980,7 @@ const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
     const { tab, ...query } = route.query
     if (tabName !== 'history') delete query.keyword
     if (tabName !== 'work-order-trace') delete query.workOrderNo
-    if (!['batch-trace','defect-gallery'].includes(tabName)) delete query.batchNo
+    if (tabName !== 'batch-trace') delete query.batchNo
     router.replace({ path: targetPath, query })
   }
 }
@@ -1324,7 +1203,6 @@ const {
   taskStore,
   fetchTaskResults,
   refreshQualityQueue: refreshQualityQueueIfVisible,
-  refreshDefectGallery: refreshDefectGalleryIfVisible
 })
 
 const reviewEvidence = computed(() => {
@@ -1402,11 +1280,6 @@ onMounted(async () => {
     activeTab.value = 'history'
     historySearchKeyword.value = String(queryKeyword)
   }
-  if (route.query.defectType) defectFilters.defectType = String(route.query.defectType)
-  if (route.query.severityLevel) defectFilters.severityLevel = String(route.query.severityLevel)
-  if (route.query.deviceName) defectFilters.deviceName = String(route.query.deviceName)
-  if (route.query.batchNo && activeTab.value === 'defect-gallery') defectFilters.batchNo = String(route.query.batchNo)
-  if (route.query.modelId) defectFilters.modelId = Number(route.query.modelId)
 
   fetchModels()
   await restoreFromSession()
@@ -1414,9 +1287,6 @@ onMounted(async () => {
   fetchHistoryWithFilters()
   if (activeTab.value === 'quality') {
     loadQualityQueue()
-  }
-  if (activeTab.value === 'defect-gallery') {
-    loadDefectGallery()
   }
 
   // 从上传页跳转过来时自动选中对应任务
@@ -1455,7 +1325,6 @@ async function refreshCollaborationView(){
   let updated=true
   if(activeTab.value==='history'){await refreshHistory();updated=!historyError.value}
   else if(activeTab.value==='quality'){await loadQualityQueue(qualityQueuePage.value);updated=!qualityQueueError.value}
-  else if(activeTab.value==='defect-gallery')updated=await loadDefectGallery(defectGalleryPage.value)
   else if(activeTab.value==='work-order-trace'&&workOrderTraceReport.value)await refreshWorkOrderTraceReport()
   else if(activeTab.value==='batch-trace'&&batchTraceReport.value)await refreshBatchTraceReport()
   else updated=await readWorkbenchTasks()
@@ -1469,7 +1338,7 @@ function discardInaccessibleTasks({requestedIds,missingIds,isCurrent}) {
   if(!ids.length||!accountSession.current(account)||!isCurrent())return
   taskReadVersion++;refreshingTasks.value=false
   pollingStore.invalidateTaskReads()
-  for(const forget of [forgetHistoryTasks,forgetQualityTasks,forgetDefectTasks,forgetTraceTasks]){
+  for(const forget of [forgetHistoryTasks,forgetQualityTasks,forgetTraceTasks]){
     if(!isCurrent()||!accountSession.current(account))return
     forget(ids)
   }
@@ -1477,7 +1346,7 @@ function discardInaccessibleTasks({requestedIds,missingIds,isCurrent}) {
 }
 const { latest:taskChanges } = useLatestChanges(computed(() => {
   const rows=activeTab.value==='history'?historyRecords.value:activeTab.value==='quality'?qualityQueueRecords.value
-    :activeTab.value==='defect-gallery'?defectGalleryRecords.value:activeTab.value==='work-order-trace'?(workOrderTraceReport.value?.records||[])
+    :activeTab.value==='work-order-trace'?(workOrderTraceReport.value?.records||[])
       :activeTab.value==='batch-trace'?(batchTraceReport.value?.records||[]):filteredTaskList.value.filter(task=>resourceVersion(task)!==null)
   return rows.map(task=>({taskId:task.taskId,version:task.version}))
 }), 'DETECTION_TASK', 'DETECTION', 'taskId', {onInaccessible:discardInaccessibleTasks})
@@ -2015,95 +1884,6 @@ async function validateCollaborationAccess(){
   margin-top: 14px;
 }
 
-.defect-filter-bar {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  align-items: end;
-  margin-bottom: 16px;
-}
-
-.defect-filter-bar > label { display:grid; gap:7px; min-width:0; font-size:12px; color:var(--app-text-secondary); line-height:1.8; }
-.defect-filter-bar :deep(.el-select),.defect-filter-bar :deep(.el-input-number) { width:100%; }
-.defect-filter-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:32px; }
-.defect-filter-actions .el-button + .el-button { margin-left:0; }
-.defect-gallery-scope { display:flex; align-items:flex-start; gap:7px; margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
-.defect-gallery-scope > .el-icon { color:var(--app-primary); flex-shrink:0; margin-top:3px; }
-.defect-gallery-filter-note { color:var(--app-text-secondary); font-size:12px; line-height:1.85; margin:0 0 16px; padding:10px 12px; background:var(--app-primary-soft); border-radius:7px; }
-.defect-card-image > .preview-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--app-text-secondary); font-size:12px; }
-.defect-gallery-card .card-title-row > span:first-child { display:inline-flex; align-items:center; gap:8px; }
-.defect-gallery-card .card-title-row > span:first-child .el-icon { color:var(--app-primary); }
-
-.defect-gallery-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
-}
-
-.defect-evidence-card {
-  overflow: hidden;
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  background: var(--app-surface);
-  box-shadow: none;
-  transition: border-color 180ms ease;
-}
-
-.defect-evidence-card:hover {
-  border-color: rgba(37, 99, 235, 0.22);
-  box-shadow: none;
-}
-
-.defect-card-image {
-  height: 190px;
-  background: var(--app-surface-muted);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.defect-card-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-.defect-card-body {
-  padding: 14px;
-}
-
-.defect-card-identity { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
-.defect-card-identity > span:not(.business-status) { color:var(--app-text-secondary); font-size:12px; }
-.defect-card-identity > button { flex:1 1 100%; min-width:0; padding:0; border:0; border-radius:3px; text-align:left; background:transparent; color:var(--app-primary); font:600 12px/1.8 Consolas,monospace; overflow-wrap:anywhere; cursor:pointer; }
-.defect-card-section { margin-top:14px; padding-top:14px; border-top:1px solid var(--app-border); min-width:0; }
-.defect-card-section h4 { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:0 0 10px; color:var(--app-text); font-size:13px; line-height:1.8; font-weight:600; }
-.defect-card-section h4 > .el-icon { color:var(--app-primary); flex-shrink:0; }
-.defect-card-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 14px; margin:10px 0; }
-.defect-card-facts > div { min-width:0; }
-.defect-card-facts .defect-fact-wide { grid-column:1/-1; }
-.defect-card-facts dt { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-.defect-card-facts dd { margin:4px 0 0; color:var(--app-text); font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
-.defect-card-facts dd > small { display:block; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-.defect-card-note { margin:10px 0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
-.defect-card-disclosure { margin:12px 0; }
-.defect-card-disclosure > summary { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:3px 0; color:var(--app-primary); font-size:12px; line-height:1.8; cursor:pointer; list-style:none; }
-.defect-card-disclosure > summary::-webkit-details-marker { display:none; }
-.defect-card-disclosure > summary > .el-icon { flex-shrink:0; transition:transform 180ms ease; }
-.defect-card-disclosure[open] > summary > .el-icon { transform:rotate(180deg); }
-.defect-evidence-excerpts { padding-left:18px; margin:10px 0; }
-.defect-evidence-excerpts > li { padding:6px 0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
-.defect-evidence-excerpts strong { display:block; color:var(--app-text); font-size:12px; font-weight:550; }
-.defect-evidence-excerpts span { display:block; }
-.defect-card-body :is(button,a,summary):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
-@media(prefers-reduced-motion:reduce) { .defect-evidence-card,.defect-card-disclosure > summary > .el-icon { transition:none; } }
-
-.defect-card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
 .single-result-image img {
   width: 100%;
   border-radius: 14px;
@@ -2191,22 +1971,15 @@ async function validateCollaborationAccess(){
 @media (max-width: 1080px) {
   .workspace-grid,
   .input-grid,
-  .single-detection-workspace,
-  .defect-filter-bar {
+  .single-detection-workspace {
     grid-template-columns: 1fr;
   }
 
-  .defect-filter-bar { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .single-detection-result { padding:20px 0 0; border-left:0; border-top:1px solid var(--app-border); }
 }
 
 @media (max-width: 720px) {
-  .batch-trace-search,
-  .defect-filter-bar {
-    grid-template-columns: 1fr;
-  }
-
-  .defect-gallery-grid {
+  .batch-trace-search {
     grid-template-columns: 1fr;
   }
 }

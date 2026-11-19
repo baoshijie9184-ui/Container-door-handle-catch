@@ -21,6 +21,16 @@ class ConversationControlControllerTest {
         var controlProvider=mock(ObjectProvider.class);when(controlProvider.getIfAvailable()).thenReturn(controls);when(controlProvider.getObject()).thenReturn(controls);
         mvc=MockMvcBuilders.standaloneSetup(new ConversationControlController(provider,controlProvider,sessions)).build();}
     @Test void capabilityReadIsPrivateAndNeverExecutesAnything()throws Exception{mvc.perform(get("/api/agent/conversations/capabilities").principal(auth())).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.enabled").value(true));verifyNoInteractions(inbox);}
+    @Test void directGuidanceRequiresActionHeaderAndSpecifiesTheTargetRun() throws Exception {
+        String path="/api/agent/conversations/s1/guide";
+        String body="""
+                {"id":"00000000-0000-0000-0000-000000000001","runId":"run-1","content":"调整要求"}
+                """;
+        mvc.perform(post(path).principal(auth()).contentType("application/json").content(body)).andExpect(status().isForbidden());
+        mvc.perform(post(path).principal(auth()).header("X-Agent-Action","conversation-control").contentType("application/json").content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.delivered").value(true));
+        verify(inbox).guide(new AgentActor(1L,"alice",AgentActor.Role.INSPECTOR),"s1","00000000-0000-0000-0000-000000000001","run-1","调整要求",null,"CHAT");
+    }
     @Test void promotionUsesTheExistingMessageVersionAndRunAndRequiresTheActionHeader()throws Exception{
         String path="/api/agent/conversations/s1/inputs/existing-message/steer",body="{\"runId\":\"run-1\",\"revision\":3}";
         mvc.perform(post(path).principal(auth()).contentType("application/json").content(body)).andExpect(status().isForbidden());verifyNoInteractions(inbox);

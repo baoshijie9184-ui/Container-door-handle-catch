@@ -182,7 +182,6 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
   const normalizedPages = [
     readFrontendFile('src', 'views', 'ImageDetection.vue'),
     readFrontendFile('src', 'views', 'quality', 'QualityQueue.vue'),
-    readFrontendFile('src', 'views', 'quality', 'DefectEvidenceGallery.vue'),
     readFrontendFile('src', 'views', 'quality', 'WorkOrderTrace.vue'),
     readFrontendFile('src', 'views', 'quality', 'BatchTrace.vue'),
     readFrontendFile('src', 'views', 'inspection', 'InspectionHistory.vue'),

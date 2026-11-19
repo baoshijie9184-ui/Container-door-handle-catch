@@ -8,7 +8,6 @@
    <el-button size="small" :icon="Refresh" :disabled="busy" @click="client.poll()">刷新</el-button>
   </div></div>
   <details class="control-help"><summary>执行说明</summary><p class="control-note">暂停在安全切点生效，当前调用可能继续完成；仅在服务进程存活期间继续。排队输入 15 分钟有效，失败不自动重试。</p></details>
-  <div class="conversation-delivery"><label for="conversation-delivery-mode">发送方式</label><select id="conversation-delivery-mode" v-model="mode"><option value="NEXT_TURN">自动发送</option><option value="NEXT_STEP">引导当前任务</option></select><span>{{ mode==='NEXT_STEP'?'下一推理切点交付；本轮已结束时转入下一轮':'空闲时直接发送，忙时排队' }}</span></div>
   <details v-if="receipts.length" class="control-help"><summary>最近交付记录</summary><p v-for="item in receipts" :key="item.id" class="control-receipt"><span>{{ item.mode==='NEXT_STEP'?'补充要求':'消息' }}</span><StatusBadge domain="queuedInput" :code="item.status" :label="inputStatusLabels[item.status]" /><small>{{ item.id.slice(0,8) }}</small></p></details>
   <p v-if="error||state.error" class="control-error" role="alert">{{ error||state.error }}</p>
   <p v-if="state.queueEnabled===false" class="queue-preference">消息排队已关闭，已有消息继续处理<button type="button" @click="client.setQueueEnabled(true)">开启排队</button></p>
@@ -30,7 +29,7 @@
     <p class="queue-content" :title="item.content">{{ item.content }}</p>
     <span v-if="item.clockStatus==='UNRESOLVED'" class="queue-steering-status">历史时区未确认 · 需核对</span>
     <span v-else-if="item.mode==='NEXT_STEP'" class="queue-steering-status">等待引导</span>
-    <button v-else type="button" class="queue-steer" :disabled="busy||!state.run?.runId" title="在当前任务的下一推理切点补充要求" @click="steer(item)"><el-icon aria-hidden="true"><Right /></el-icon>引导</button>
+    <button v-else type="button" class="queue-steer" :disabled="busy||!canGuide(state.run)" title="将这条消息发给当前 Agent" @click="steer(item)"><el-icon aria-hidden="true"><Right /></el-icon>引导</button>
     <button type="button" class="queue-icon-button" :aria-label="'撤回第 '+(index+1)+' 条待处理消息'" title="撤回消息" :disabled="busy||item.clockStatus==='UNRESOLVED'" @click="withdraw(item)"><el-icon aria-hidden="true"><Delete /></el-icon></button>
     <el-dropdown trigger="click" :disabled="busy||item.clockStatus==='UNRESOLVED'" @command="action=>rowAction(action,item)"><button type="button" class="queue-icon-button" aria-label="更多消息操作" title="更多消息操作" :disabled="busy||item.clockStatus==='UNRESOLVED'"><el-icon aria-hidden="true"><MoreFilled /></el-icon></button><template #dropdown><el-dropdown-menu><el-dropdown-item command="edit" :icon="Edit">编辑消息</el-dropdown-item><el-dropdown-item v-if="canSort(item)" command="up" :disabled="item.id===movable[0].id">上移</el-dropdown-item><el-dropdown-item v-if="canSort(item)" command="down" :disabled="item.id===movable.at(-1).id">下移</el-dropdown-item><el-dropdown-item command="close-queue" :icon="Close" :disabled="state.queueEnabled===false">关闭排队</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
    </li>
@@ -50,11 +49,11 @@
 import {ref,computed,watch,onBeforeUnmount} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import {VideoPause,VideoPlay,Refresh,Right,Delete,MoreFilled,Edit,Close} from '@element-plus/icons-vue'
-import {ConversationControlClient,controlPhaseLabels,inputStatusLabels,showConversationQueue,latestDeliveryNotice} from '@/utils/conversationControl'
+import {ConversationControlClient,canGuide,controlPhaseLabels,inputStatusLabels,showConversationQueue,latestDeliveryNotice} from '@/utils/conversationControl'
 import {queueSorting} from '@/utils/conversationQueueSort'
 import '@/assets/conversation-control.css'
 const props=defineProps({sessionId:String}),emit=defineEmits(['snapshot','refresh'])
-const state=ref({enabled:false,run:null,inputs:[]}),mode=ref('NEXT_TURN'),busy=ref(false),error=ref(''),editing=ref(false),editText=ref(''),editItem=ref(null)
+const state=ref({enabled:false,run:null,inputs:[]}),busy=ref(false),error=ref(''),editing=ref(false),editText=ref(''),editItem=ref(null)
 const optionsOpen=ref(false),showQueue=computed(()=>showConversationQueue(state.value))
 const client=new ConversationControlClient({base:(import.meta.env.VITE_API_URL||'').replace(/\/$/,'')+'/api/agent/conversations',onState:value=>{state.value=value;emit('snapshot',value)},onRefresh:session=>emit('refresh',session)})
 let ready=Promise.resolve()
@@ -79,5 +78,5 @@ function edit(item){error.value='';editItem.value=item;editText.value=item.conte
 async function saveEdit(){if(busy.value||editStale.value||!editText.value.trim())return;const generation=client.generation,item=editItem.value;try{await mutate(()=>client.change(item,editText.value));if(generation===client.generation&&editItem.value?.id===item.id)editing.value=false}catch{/* 保留草稿 */}}
 async function withdraw(item){try{await mutate(()=>client.change(item,null))}catch{/* 结果已显示，不重试 */}}
 async function steer(item){try{await mutate(()=>client.steer(item))}catch{/* 保留同一条消息，不重发 */}}
-defineExpose({ready:async()=>{await ready;return client.enabled},submit:content=>mutate(()=>client.submit(content,mode.value)),cancel:()=>command('cancel'),openOptions:()=>{if(state.value.enabled)optionsOpen.value=true}})
+defineExpose({ready:async()=>{await ready;return client.enabled},submit:content=>mutate(()=>client.submit(content)),guide:(content,runId)=>mutate(()=>client.guide(content,runId)),cancel:()=>command('cancel'),openOptions:()=>{if(state.value.enabled)optionsOpen.value=true}})
 </script>

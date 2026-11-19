@@ -175,6 +175,42 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
             audit(updated,"PROMOTED_NEXT_STEP");return item(updated);
         });
     }
+    public void guide(AgentActor actor, String session, String id, String runId, String content, Integer revision, String entryPoint) {
+        var current = owned(actor,session);
+        if (id==null || !id.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
+                || runId==null || runId.isBlank() || content==null || content.isBlank() || content.length()>4000
+                || !Set.of("CHAT","AGUI").contains(entryPoint)) throw fail(400,"引导消息或任务编号无效");
+        String digest = hash(content);
+        var existing = workflows.find(KIND,id).orElse(null);
+        if (alreadyGuided(existing,current,session,runId,digest)) return;
+        control.getObject().guide(current,session,runId,() -> tx.execute(status -> {
+            lock(current.userId());
+            var row = workflows.find(KIND,id).orElse(null);
+            if (alreadyGuided(row,current,session,runId,digest)) return null;
+            if (workflows.count(KIND,current.userId(),null,runId,Set.of("QUEUED","APPLIED"))>=6)
+                throw fail(429,"本轮引导已达上限");
+            if (revision==null) {
+                if (row!=null) throw fail(409,"消息编号已使用，请核对原提交");
+                var payload = new ConversationInputV1(current.username(),"NEXT_STEP","NEXT_STEP",entryPoint,content,digest);
+                row = workflows.create(new WorkflowDraft(id,KIND,"GLOBAL",id,hash("guide|"+id+"|"+runId+"|"+digest),
+                        current.userId(),current.userId(),null,"SESSION",session,null,session,runId,"QUEUED",now().plusMinutes(15),1,payload));
+            } else {
+                if (row==null || row.ownerUserId()!=current.userId() || !session.equals(row.sessionId()))
+                    throw fail(404,"消息不存在或无权限");
+                requireCurrentClock(row);
+                if (!"QUEUED".equals(row.status()) || !"NEXT_TURN".equals(body(row).mode()) || row.revision()!=revision
+                        || !digest.equals(body(row).contentSha256()) || !row.expiresAt().isAfter(now()))
+                    throw fail(409,"待发消息已变化，请刷新后重新选择");
+            }
+            sessions.appendUserMessage(new TenantContext(current.userId(),current.username()),session,content);
+            audit(workflows.transition(row,"APPLIED",body(row).withMode("NEXT_STEP").withContent("",digest),runId,null,row.expiresAt()),"GUIDED");
+            return new Input(id,content);
+        }));
+    }
+    private boolean alreadyGuided(WorkflowRecord row, AgentActor actor, String session, String runId, String digest) {
+        return row!=null && row.ownerUserId()==actor.userId() && session.equals(row.sessionId())
+                && runId.equals(row.runId()) && "APPLIED".equals(row.status()) && digest.equals(body(row).contentSha256());
+    }
     @Override public List<Input> take(AgentActor actor,String session,String runId){
         var current=owned(actor,session);
         return tx.execute(status->{lock(current.userId());var result=new ArrayList<Input>();

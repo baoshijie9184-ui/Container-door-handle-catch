@@ -561,48 +561,6 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     }
 
     @Override
-    public java.util.Map<String, Object> listDefectGallery(String defectType, String severityLevel, String deviceName,
-                                                           String batchNo, Integer modelId, int page, int size) {
-        com.baomidou.mybatisplus.core.metadata.IPage<DetectionTask> taskPage =
-                new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
-        LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<DetectionTask>()
-                .gt(DetectionTask::getDefectCount, 0)
-                .orderByDesc(DetectionTask::getCreatedAt);
-        applyOwnerFilter(wrapper);
-
-        if (StringUtils.hasText(defectType)) {
-            wrapper.eq(DetectionTask::getPrimaryDefectType, defectType.trim());
-        }
-        if (StringUtils.hasText(severityLevel)) {
-            wrapper.eq(DetectionTask::getMaxDefectSeverity, severityLevel.trim().toUpperCase(Locale.ROOT));
-        }
-        if (StringUtils.hasText(deviceName)) {
-            wrapper.like(DetectionTask::getDeviceName, deviceName.trim());
-        }
-        if (StringUtils.hasText(batchNo)) {
-            wrapper.eq(DetectionTask::getBatchNo, batchNo.trim());
-        }
-        if (modelId != null) {
-            wrapper.eq(DetectionTask::getModelId, modelId);
-        }
-
-        detectionTaskMapper.selectPage(taskPage, wrapper);
-        List<DetectionTaskTraceResponse> records = taskPage.getRecords().stream()
-                .map(this::buildTraceResponse)
-                .collect(Collectors.toList());
-
-        java.util.Map<String, Object> result = new LinkedHashMap<>();
-        result.put("records", records);
-        result.put("total", taskPage.getTotal());
-        result.put("defectType", defectType);
-        result.put("severityLevel", severityLevel);
-        result.put("deviceName", deviceName);
-        result.put("batchNo", batchNo);
-        result.put("modelId", modelId);
-        return result;
-    }
-
-    @Override
     public java.util.Map<String, Object> getBatchTraceReport(String batchNo) {
         if (!StringUtils.hasText(batchNo)) {
             throw new BusinessException("批次号不能为空");

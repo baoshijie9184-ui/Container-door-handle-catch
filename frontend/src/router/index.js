@@ -53,12 +53,6 @@ const routes = [
         meta: { title: '报告与审批', requiresAuth: true }
       },
       {
-        path: 'quality/evidence',
-        name: 'defectEvidence',
-        component: () => import('../views/ImageDetection.vue'),
-        meta: { title: '缺陷证据库', requiresAuth: true, detectionTab: 'defect-gallery' }
-      },
-      {
         path: 'quality/work-order-trace',
         name: 'workOrderTrace',
         component: () => import('../views/ImageDetection.vue'),
@@ -208,7 +202,6 @@ const detectionTabTitles = {
   workspace: '检测工作台',
   history: '检测记录',
   quality: '质检队列',
-  'defect-gallery': '缺陷证据库',
   'work-order-trace': '工单追溯',
   'batch-trace': '批次追溯'
 }

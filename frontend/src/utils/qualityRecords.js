@@ -29,14 +29,6 @@ export const buildTraceEvidenceRows = (detail) => {
   return [...originals, ...previews]
 }
 
-export const resolveDefectPreview = (task = {}) => {
-  for (const [list,keys] of [[task?.previewImages,['annotatedUrl','previewUrl']],[task?.defectEvidence,['previewUrl','annotatedUrl']],[task?.originalImages,['previewUrl']]]) {
-    if (!Array.isArray(list)) continue
-    for (const item of list) for (const key of keys) if (typeof item?.[key] === 'string' && item[key].trim()) return item[key]
-  }
-  return ''
-}
-
 export const formatEvidenceConfidence = (value) => {
   if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && !value.trim())) return '—'
   const number = Number(value)

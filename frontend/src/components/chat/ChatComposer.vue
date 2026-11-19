@@ -29,6 +29,10 @@
         @blur="menuDismissed=true"
         @keydown="handleKey"
       />
+      <div v-if="canGuide(run)" class="composer-guidance">
+        <button type="button" :disabled="loading || resources.busy || (!draft.trim() && !resources.files.length)"
+          title="把补充要求发给当前 Agent" @click="handleSend(run.runId)">引导当前任务</button>
+      </div>
       <div class="composer-toolbar">
         <input ref="fileInputRef" type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" @change="uploadFiles" />
         <button class="composer-add" type="button" aria-label="添加附件" :title="composerUploadHint(resources,loading)" :disabled="!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon aria-hidden="true"><Plus /></el-icon></button>
@@ -62,7 +66,7 @@
         class="composer-send"
         :class="{ active: draft.trim() && !loading }"
         :disabled="loading || resources.busy || (!draft.trim()&&!resources.files.length)"
-        @click="handleSend"
+        @click="handleSend()"
         title="发送" aria-label="发送消息"
       >
         <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -92,6 +96,7 @@ import { filterSkillCommands } from '@/utils/skillCommands'
 import {Plus,Document,Close,Lock} from '@element-plus/icons-vue'
 import {ComposerResources,modelLabel,selectedModelMissing} from '@/utils/composerResources'
 import {composerAttachment,composerDefaultModel,composerUploadHint,composerModelTitle} from '@/utils/composerPresentation'
+import {canGuide} from '@/utils/conversationControl'
 import '@/assets/composer-presentation.css'
 
 const props = defineProps({
@@ -181,10 +186,10 @@ const autoResize = () => {
 }
 watch(draft,autoResize,{flush:'post'})
 
-const handleSend = () => {
+const handleSend = (guideRunId) => {
   const value = resourceClient.content(draft.value)
   if (!value || props.loading||resources.value.busy) return
-  emit('send', value)
+  emit('send', value, guideRunId)
   resourceClient.clear()
   draft.value = ''
   nextTick(() => {

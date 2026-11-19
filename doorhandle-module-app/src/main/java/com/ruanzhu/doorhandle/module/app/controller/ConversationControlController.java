@@ -38,6 +38,14 @@ public class ConversationControlController {
     @GetMapping("/{session}/control") public Object view(Authentication auth,@PathVariable String session){var actor=actor(auth,session);var entries=inbox().list(actor,session);return Map.of("run",control.getObject().inspect(actor,session),"inputs",entries);}
     public record Enqueue(@NotBlank String id,@NotBlank String mode,@NotBlank @Size(max=8000) String content,String entryPoint,boolean startIfIdle,Boolean queueIfBusy){}
     @PostMapping("/{session}/inputs") public Object enqueue(Authentication auth,@PathVariable String session,@Valid @RequestBody Enqueue input,HttpServletRequest request){mutation(request);return inbox().submit(actor(auth,session),session,input.id(),input.mode(),input.content(),input.entryPoint()==null?"CHAT":input.entryPoint(),input.startIfIdle(),!Boolean.FALSE.equals(input.queueIfBusy()));}
+    public record Guidance(@NotBlank @Size(max=36) String id,@NotBlank @Size(max=128) String runId,
+                           @NotBlank @Size(max=4000) String content,@Min(0) Integer revision,String entryPoint) {}
+    @PostMapping("/{session}/guide")
+    public Map<String,Boolean> guide(Authentication auth,@PathVariable String session,@Valid @RequestBody Guidance input,HttpServletRequest request) {
+        mutation(request);
+        inbox().guide(actor(auth,session),session,input.id(),input.runId(),input.content(),input.revision(),input.entryPoint()==null?"CHAT":input.entryPoint());
+        return Map.of("delivered",true);
+    }
     public record Reorder(@NotNull @Size(min=2,max=16) List<@NotNull OrderEntry> order){}
     @PostMapping("/{session}/inputs/order") public Map<String,Boolean> reorder(Authentication auth,@PathVariable String session,@Valid @RequestBody Reorder input,HttpServletRequest request){
         mutation(request);

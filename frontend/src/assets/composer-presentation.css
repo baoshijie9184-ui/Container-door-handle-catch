@@ -30,3 +30,8 @@
 }
 @media(max-width:540px) { .composer-attachments .composer-attachment { flex-basis:220px; } }
 @media(prefers-reduced-motion:reduce) { .composer-attachments .composer-attachment > button { transition:none; } :is(.composer,.composer-resources) .model-selection-feedback button { transition:none; transform:none!important; } }
+
+.composer-guidance { display:flex; justify-content:flex-start; }
+.composer-guidance button { font:inherit; font-size:12px; padding:4px 10px; border-radius:8px; border:1px solid #c3d4ef; color:#205292; background:#f2f6ff; cursor:pointer; }
+.composer-guidance button:disabled { opacity:.55; cursor:default; }
+.composer-guidance button:focus-visible { outline:2px solid #2563eb; outline-offset:2px; }

@@ -8,7 +8,7 @@ const response=(body,ok=true,status=200)=>({ok,status,json:async()=>body})
 test('per-row steering promotes the same input and version without creating a second submission',async()=>{
  const {ConversationControlClient}=await utility;const posts=[]
  const client=new ConversationControlClient({fetcher:async(path,options)=>{if(options.method)posts.push({path,body:JSON.parse(options.body)});return response(snapshot())}});client.enabled=true;client.session='s1';client.state=snapshot()
- try{await client.steer({...snapshot().inputs[0],revision:2});assert.deepEqual(posts,[{path:'/api/agent/conversations/s1/inputs/'+id+'/steer',body:{revision:2,runId:'run-1'}}]);client.state.run.runId=null;assert.throws(()=>client.steer(snapshot().inputs[0]),/没有可引导/)}finally{client.close()}
+ try{await client.steer({...snapshot().inputs[0],revision:2});assert.deepEqual(posts,[{path:'/api/agent/conversations/s1/guide',body:{id,content:snapshot().inputs[0].content,revision:2,runId:'run-1',entryPoint:'CHAT'}}]);client.state.run.runId=null;assert.throws(()=>client.steer(snapshot().inputs[0]),/没有可引导/)}finally{client.close()}
 })
 
 test('closing queue prevents new ordinary queued sends and preserves existing rows and explicit steering',async()=>{
@@ -111,5 +111,25 @@ test('normal sends request immediate execution and order writes only carry messa
   assert.deepEqual(posts[1],['/api/agent/conversations/s1/inputs/order',{order:[{id:'C',revision:2},{id:'A',revision:0},{id:'B',revision:1}]}])
   assert.deepEqual(queueMove(rows,'A','C').map(row=>row.id),['B','C','A'])
   assert.equal(queueMove(rows,'A','gone'),null)
+ }finally{client.close()}
+})
+
+test('direct guidance targets the selected run even when ordinary queueing is off',async()=>{
+ const {ConversationControlClient}=await utility
+ const posts=[]
+ const client=new ConversationControlClient({entryPoint:'AGUI',fetcher:async(path,opts)=>{
+  if(opts.method){posts.push([path,JSON.parse(opts.body)]);if(posts.length===1)throw Error('connection lost')}
+  return response(snapshot())
+ }})
+ client.enabled=true;client.session='s1';client.state=snapshot();client.setQueueEnabled(false)
+ try{
+  await assert.rejects(()=>client.guide('调整要求','old-run'))
+  await assert.rejects(()=>client.guide('调整要求','run-1'))
+  await client.guide('调整要求','run-1')
+  assert.equal(posts.length,2)
+  assert.deepEqual(posts[0],posts[1])
+  assert.equal(posts[1][0],'/api/agent/conversations/s1/guide')
+  assert.equal(posts[1][1].entryPoint,'AGUI')
+  assert.equal(posts[1][1].runId,'run-1')
  }finally{client.close()}
 })

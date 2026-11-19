@@ -180,46 +180,6 @@ class DetectionTaskTraceTest {
     }
 
     @Test
-    void listDefectGalleryReturnsTraceableDefectRecords() {
-        DetectionTask task = new DetectionTask();
-        task.setTaskId("det_gallery");
-        task.setStatus("COMPLETED");
-        task.setFlowStatus("PENDING_REVIEW");
-        task.setBatchNo("BATCH-001");
-        task.setWorkOrderNo("WO-001");
-        task.setDeviceName("CAM-01");
-        task.setModelId(7);
-        task.setModelVersion("v2");
-        task.setDefectEvidenceJson("[{\"imageName\":\"img001.jpg\",\"defectType\":\"Rusty\",\"confidence\":0.92,\"area\":3600,\"positionRegion\":\"CENTER\",\"severityLevel\":\"MAJOR\"}]");
-        task.setDefectCount(1);
-        task.setPrimaryDefectType("Rusty");
-        task.setMaxDefectSeverity("MAJOR");
-        task.setCreatedAt(LocalDateTime.of(2026, 6, 10, 10, 0));
-
-        Mockito.doAnswer(invocation -> {
-            com.baomidou.mybatisplus.extension.plugins.pagination.Page<DetectionTask> page = invocation.getArgument(0);
-            page.setRecords(List.of(task));
-            page.setTotal(1);
-            return page;
-        }).when(fixture.detectionTaskMapper).selectPage(any(), any());
-
-        java.util.Map<String, Object> result = fixture.service.listDefectGallery(
-                "Rusty", "MAJOR", "CAM-01", "BATCH-001", 7, 1, 20
-        );
-
-        assertEquals(1L, result.get("total"));
-        assertEquals("Rusty", result.get("defectType"));
-        assertEquals("MAJOR", result.get("severityLevel"));
-        @SuppressWarnings("unchecked")
-        List<DetectionTaskTraceResponse> records = (List<DetectionTaskTraceResponse>) result.get("records");
-        assertEquals(1, records.size());
-        assertEquals("det_gallery", records.get(0).getTaskId());
-        assertEquals(1, records.get(0).getDefectCount());
-        assertEquals("Rusty", records.get(0).getPrimaryDefectType());
-        assertEquals(1, records.get(0).getDefectEvidence().size());
-    }
-
-    @Test
     void getQualityReportBuildsReportReadyTaskSnapshot() {
         DetectionTask task = new DetectionTask();
         task.setTaskId("det_report");

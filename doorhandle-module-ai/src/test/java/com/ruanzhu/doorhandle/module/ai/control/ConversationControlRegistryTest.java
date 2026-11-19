@@ -54,6 +54,25 @@ class ConversationControlRegistryTest {
         assertThat(requests).hasSize(2);for(var messages:requests){assertThat(messages.stream().filter(msg->msg.getTextContent()!=null&&msg.getTextContent().contains("FOCUS_ON_TESTS")).toList()).singleElement().satisfies(msg->assertThat(msg).isInstanceOf(UserMessage.class));}
         verify(audit).event(eq("STEERING_APPLIED"),eq(Map.of("agent","employee-main","inputId","input-one")));
     }
+    @Test void correctionDuringFinalReplyReachesTheSameAgentBeforeTheRunEnds() throws Exception {
+        var pending=Sinks.<ChatResponse>one();
+        var requests=new CopyOnWriteArrayList<List<Msg>>();
+        when(model.stream(anyList(),anyList(),any())).thenAnswer(inv -> {
+            requests.add(List.copyOf(inv.getArgument(0)));
+            return requests.size()==1 ? pending.asMono().flux() : Flux.just(answer("调整后"));
+        });
+        build(new Toolkit());
+        var options=io.agentscope.core.agent.StreamOptions.builder().eventTypes(io.agentscope.core.agent.EventType.ALL).build();
+        var result=handle.guidedStream(List.of(new UserMessage("最初要求")), input -> agent.stream(input,options), () -> false).collectList().toFuture();
+        await().atMost(Duration.ofSeconds(3)).until(() -> requests.size()==1);
+        controls.guide(alice,"s1","run-1",() -> new AgentSteeringInboxApi.Input("direct-1","补充要求"));
+        pending.tryEmitValue(answer("原回答"));
+        result.get(4,TimeUnit.SECONDS);
+        assertThat(requests).hasSize(2);
+        assertThat(requests.get(1)).filteredOn(msg -> "补充要求".equals(msg.getTextContent())).singleElement().isInstanceOf(UserMessage.class);
+        verify(audit).event("STEERING_APPLIED",Map.of("agent","employee-main","inputId","direct-1"));
+        assertThatThrownBy(() -> controls.guide(alice,"s1","run-1",() -> {throw new AssertionError();})).hasMessageContaining("409");
+    }
     @Test void oldRevisionCannotResumeAPauseOrDuplicateItsAudit(){
         controls.command(alice,"s1","run-1","pause",0);
         assertThatThrownBy(()->controls.command(alice,"s1","run-1","resume",0)).hasMessageContaining("409");verify(audit,times(1)).event(eq("PAUSE_REQUESTED"),anyMap());assertThat(handle.view().phase()).isEqualTo("PAUSE_REQUESTED");
