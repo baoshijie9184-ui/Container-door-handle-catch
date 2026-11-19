@@ -339,35 +339,90 @@ public class DashboardServiceImpl implements DashboardService {
         return result;
     }
 
+    // Task totals and threshold groups come from the same permission-filtered snapshot.
+    // Keep the legacy average for older API clients, separate from the image counts.
+    private static final String MODEL_STATS_SQL = """
+            WITH task_snapshots AS (
+                SELECT m.model_id AS modelId, CONCAT(m.model_name, ' ', m.version) AS modelName,
+                       NULLIF(TRIM(t.model_version), '') AS modelVersion, t.threshold,
+                       t.successful_images, t.failed_images, t.total_images,
+                       IF(JSON_VALID(t.statistics_json), t.statistics_json, '{}') AS stats
+                FROM detection_task t JOIN model_management m ON m.model_id = t.model_id
+                WHERE t.status IN ('COMPLETED','PARTIAL_FAILED') AND (%s)
+            ), parsed AS (
+                SELECT s.*, %s AS missed, %s AS reportedSuccess, %s AS reportedFailed, %s AS reportedTotal,
+                       CAST(JSON_UNQUOTE(JSON_EXTRACT(stats,'$.missDetectionRate')) AS DECIMAL(10,4)) AS legacyRate
+                FROM task_snapshots s
+                JOIN JSON_TABLE(s.stats, '$' COLUMNS (
+                    missText VARCHAR(64) PATH '$.noDetectionImages' DEFAULT '"invalid"' ON ERROR,
+                    successText VARCHAR(64) PATH '$.successfulImages' DEFAULT '"invalid"' ON ERROR,
+                    failedText VARCHAR(64) PATH '$.failedImages' DEFAULT '"invalid"' ON ERROR,
+                    totalText VARCHAR(64) PATH '$.totalImages' DEFAULT '"invalid"' ON ERROR
+                )) j ON TRUE
+            ), counts AS (
+                SELECT p.*, COALESCE(successful_images, reportedSuccess) AS succeeded,
+                       COALESCE(failed_images, reportedFailed) AS failed,
+                       COALESCE(total_images, reportedTotal) AS total
+                FROM parsed p
+            ), checked AS (
+                SELECT c.*, CASE
+                    WHEN missed < 0 OR succeeded < 0 OR failed < 0 OR total < 0
+                      OR reportedSuccess <> succeeded OR reportedFailed <> failed OR reportedTotal <> total
+                      OR missed > succeeded OR succeeded > total OR failed > total OR succeeded + failed <> total
+                      THEN 'INVALID'
+                    WHEN missed IS NULL OR succeeded IS NULL OR modelVersion IS NULL OR threshold IS NULL
+                      THEN 'MISSING'
+                    ELSE 'COUNTED' END AS countState
+                FROM counts c
+            ), bands AS (
+                SELECT modelId, modelName, modelVersion, threshold, COUNT(*) AS bandTasks,
+                       COALESCE(SUM(total_images),0) AS bandImages,
+                       SUM(legacyRate) AS legacySum, COUNT(legacyRate) AS legacyCount,
+                       SUM(countState = 'COUNTED') AS countedTasks, SUM(countState = 'INVALID') AS invalidTasks,
+                       SUM(IF(countState = 'COUNTED', missed, NULL)) AS missedImages,
+                       SUM(IF(countState = 'COUNTED', succeeded, NULL)) AS successfulImages
+                FROM checked GROUP BY modelId, modelName, modelVersion, threshold
+            )
+            SELECT bands.*, SUM(bandTasks) OVER model AS taskCount, SUM(bandImages) OVER model AS totalImages,
+                   COALESCE(SUM(legacySum) OVER model / NULLIF(SUM(legacyCount) OVER model,0),0) AS avgMissRate
+            FROM bands WINDOW model AS (PARTITION BY modelId)
+            ORDER BY taskCount DESC, modelId, modelVersion, threshold
+            """;
+
+    private static String imageCount(String column) {
+        // A malformed count must not silently become a genuine zero through MySQL coercion.
+        return "CASE WHEN " + column + " IS NULL THEN NULL WHEN " + column
+                + " REGEXP '^[0-9]{1,10}$' THEN CAST(" + column + " AS SIGNED) ELSE -1 END";
+    }
+
     @Override
     public List<Map<String, Object>> getModelStats() {
         var scope = accessPolicy.currentSqlScope("t.");
-        String sql = "SELECT " +
-                "m.model_id AS modelId, " +
-                "CONCAT(m.model_name, ' ', m.version) AS modelName, " +
-                "COUNT(t.id) AS taskCount, " +
-                "COALESCE(SUM(t.total_images), 0) AS totalImages, " +
-                "COALESCE(AVG(CAST(JSON_UNQUOTE(JSON_EXTRACT(t.statistics_json, '$.missDetectionRate')) AS DECIMAL(10,4))), 0) AS avgMissRate " +
-                "FROM model_management m " +
-                "LEFT JOIN detection_task t ON m.model_id = t.model_id AND t.status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate() + " " +
-                "GROUP BY m.model_id, m.model_name, m.version " +
-                "HAVING taskCount > 0 " +
-                "ORDER BY taskCount DESC";
-
-        List<Map<String, Object>> queryResult = scopedJdbc.queryForList(sql, scope.parameters());
-        List<Map<String, Object>> result = new ArrayList<>();
-
-        for (Map<String, Object> row : queryResult) {
-            Map<String, Object> item = new HashMap<>();
-            item.put("modelId", row.get("modelId"));
-            item.put("modelName", row.get("modelName"));
-            item.put("taskCount", row.get("taskCount") != null ? ((Number) row.get("taskCount")).intValue() : 0);
-            item.put("totalImages", row.get("totalImages") != null ? ((Number) row.get("totalImages")).longValue() : 0);
-            item.put("avgMissRate", row.get("avgMissRate") != null ? ((Number) row.get("avgMissRate")).doubleValue() : 0.0);
-            result.add(item);
+        String sql = MODEL_STATS_SQL.formatted(scope.predicate(), imageCount("missText"),
+                imageCount("successText"), imageCount("failedText"), imageCount("totalText"));
+        List<Map<String, Object>> models = new ArrayList<>();
+        Map<Integer, List<Map<String, Object>>> rates = new HashMap<>();
+        for (var row : scopedJdbc.queryForList(sql, scope.parameters())) {
+            int modelId = ((Number) row.get("modelId")).intValue();
+            var groups = rates.computeIfAbsent(modelId, key -> {
+                var model = new HashMap<String, Object>();
+                model.put("modelId", key);
+                model.put("modelName", row.get("modelName"));
+                model.put("taskCount", ((Number) row.get("taskCount")).intValue());
+                model.put("totalImages", ((Number) row.get("totalImages")).longValue());
+                model.put("avgMissRate", ((Number) row.get("avgMissRate")).doubleValue());
+                var thresholds = new ArrayList<Map<String, Object>>();
+                model.put("imageRateGroups", thresholds);
+                models.add(model);
+                return thresholds;
+            });
+            var group = new HashMap<String, Object>();
+            for (String field : List.of("modelVersion", "threshold", "bandTasks", "countedTasks", "invalidTasks", "missedImages", "successfulImages")) {
+                group.put(field, row.get(field));
+            }
+            groups.add(group);
         }
-
-        return result;
+        return models;
     }
 
     @Override

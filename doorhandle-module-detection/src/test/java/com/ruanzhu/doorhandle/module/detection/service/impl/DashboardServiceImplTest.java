@@ -10,6 +10,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -24,6 +25,33 @@ class DashboardServiceImplTest {
                 "alice", "n/a", List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"))));
     }
     @AfterEach void clear() { SecurityContextHolder.clearContext(); }
+
+    @Test
+    void keepsThresholdCountsOnOneModelCardWithinTheCurrentAccountScope() {
+        var jdbc = mock(NamedParameterJdbcTemplate.class);
+        var dashboard = new DashboardServiceImpl();
+        ReflectionTestUtils.setField(dashboard, "scopedJdbc", jdbc);
+        ReflectionTestUtils.setField(dashboard, "accessPolicy", new DetectionTaskAccessPolicy());
+        var low = new HashMap<String, Object>(Map.of("modelId", 7, "modelName", "WACGA", "taskCount", 4,
+                "totalImages", 35, "avgMissRate", 0.1, "threshold", 0.4, "missedImages", 0, "successfulImages", 20));
+        low.putAll(Map.of("modelVersion", "v1", "bandTasks", 3, "countedTasks", 2, "invalidTasks", 1));
+        var high = new HashMap<>(low);
+        high.putAll(Map.of("threshold", 0.6, "bandTasks", 1, "countedTasks", 0, "invalidTasks", 0));
+        high.put("missedImages", null);
+        high.put("successfulImages", null);
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("t.created_by = :scopeUsername"),
+                org.mockito.ArgumentMatchers.eq(Map.of("scopeUsername", "alice")))).thenReturn(List.of(low, high));
+
+        var cards = dashboard.getModelStats();
+        assertEquals(1, cards.size());
+        var card = cards.get(0);
+        assertEquals(4, card.get("taskCount"));
+        assertEquals(35L, card.get("totalImages"));
+        var groups = (List<?>) card.get("imageRateGroups");
+        assertEquals(2, groups.size());
+        assertEquals(0, ((Map<?, ?>) groups.get(0)).get("missedImages"));
+        assertEquals(null, ((Map<?, ?>) groups.get(1)).get("missedImages"));
+    }
 
     @Test
     void getQualityDispositionStatsSummarizesPendingAndDispositionActions() {

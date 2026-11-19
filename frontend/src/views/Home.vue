@@ -432,13 +432,13 @@
             <div v-if="getModelUsagePercent(item.taskCount) !== null" class="model-stat-bar" aria-hidden="true">
               <div class="model-stat-bar-fill" :style="{ width: getModelUsagePercent(item.taskCount) + '%' }"></div>
             </div>
+            <ModelImageMissRate :groups="item.imageRateGroups" :task-count="item.taskCount" />
           </div>
         </div>
         <details class="dashboard-source-note">
-          <summary><AppIcon name="Picture" :size="15" />图片漏检率</summary>
+          <summary><AppIcon name="Picture" :size="15" />图片漏检率计算说明</summary>
           <p>图片漏检率 = 未检出任何目标的图片数 ÷ 成功检测的图片数 × 100%。检测失败的图片排除在统计之外。<router-link to="/inspection/history">查看检测记录</router-link></p>
-          <p>以下是历史任务的原始均值，单位未统一，缺失值也可能显示为零。</p>
-          <dl><dt>总览原始均值</dt><dd>{{ rawStatistic(avgMissRate) }}</dd><template v-for="item in modelStats" :key="item.modelId"><dt>{{ item.modelName }}</dt><dd>{{ rawStatistic(item.avgMissRate) }}</dd></template></dl>
+          <p>同一版本、同一阈值的任务先合计张数，再计算百分比。只有旧比例的任务显示为未记录。</p>
         </details>
       </el-card>
     </section>
@@ -456,6 +456,7 @@ import { knownCount } from '@/utils/countPresentation'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ChartDataDetails from '@/components/ChartDataDetails.vue'
 import HistoricalDetectionOverview from '@/components/HistoricalDetectionOverview.vue'
+import ModelImageMissRate from '@/components/ModelImageMissRate.vue'
 import * as echarts from 'echarts'
 import {
   User, Monitor, Setting,
@@ -545,7 +546,6 @@ const historicalAccountScope = () => JSON.stringify([userStore.identity?.userId,
 watch(historicalAccountScope, () => { historicalSummary.value = null }, { flush: 'sync' })
 const totalEmployees = ref(null)
 const totalDevices = ref(null)
-const avgMissRate = ref(null)
 const detectionTimeRange = ref('month')
 const modelStats = ref([])
 const modelStatsLoading = ref(false)
@@ -703,7 +703,6 @@ async function fetchDashboardStats() {
     if (disposed) return
     totalDetections.value = knownCount(s.detectionCount)
     if (owner === historicalAccountScope()) historicalSummary.value = canViewHistoricalSummary.value && s.historicalSummary && typeof s.historicalSummary === 'object' && !Array.isArray(s.historicalSummary) ? s.historicalSummary : null
-    avgMissRate.value = s.avgMissRate
     if (totalDetections.value === null) markSectionFailed('总览')
   } catch { /* 保留旧值，统一显示失败提示。 */ }
 }
@@ -1034,13 +1033,6 @@ function ratio(numerator, denominator) {
   return (count / total * 100).toFixed(1)
 }
 
-function rawStatistic(value) {
-  if (typeof value !== 'number' && typeof value !== 'string') return '未知'
-  if (typeof value === 'string' && !value.trim()) return '未知'
-  const number = Number(value)
-  return Number.isFinite(number) && number >= 0 ? `${number}（原始值，单位未统一）` : '未知'
-}
-
 function getModelUsagePercent(taskCount) {
   if (!modelStats.value.length) return null
   const counts = modelStats.value.map(model => knownCount(model.taskCount))
@@ -1356,7 +1348,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 
 .model-stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
   gap: 16px;
 }
 
@@ -1648,8 +1640,6 @@ useResourceChanges({refresh:()=>refreshAll()})
 .dashboard-source-note summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--app-text); font-weight: 550; }
 .dashboard-source-note summary .app-icon { margin-right: 5px; vertical-align: middle; }
 .dashboard-source-note p { max-width: 80ch; }
-.dashboard-source-note dl { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr); gap: 8px 16px; max-width: 600px; }
-.dashboard-source-note :is(dt, dd) { margin: 0; overflow-wrap: anywhere; }
 .workflow-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
 .workflow-summary { padding: 20px; min-width: 0; }
 .workflow-summary h3 { font-size: 14px; margin: 0 0 6px; }
