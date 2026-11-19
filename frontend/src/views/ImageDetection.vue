@@ -5,57 +5,23 @@
       <div>
         <h1 class="page-hero-title">{{ workspacePresentation.title }}</h1>
       </div>
-      <router-link v-if="activeTab === 'history' || activeTab === 'workspace'" class="upload-route" to="/upload"><AppIcon name="Upload" :size="16" />采集上传</router-link>
+      <router-link v-if="activeTab === 'history' || activeTab === 'workspace'" class="upload-route" to="/upload"><AppIcon name="Upload" :size="16" />批量上传图片</router-link>
     </PageHero>
 
     <el-tabs v-model="activeTab" class="workspace-tabs" @tab-change="handleTabChange">
       <el-tab-pane name="workspace" label="检测工作台">
         <div class="workspace-grid">
           <el-card class="detection-card detection-input-card" shadow="never">
-            <template #header><h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />检测输入</h2></template>
+            <template #header><h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />单图检测</h2></template>
             <el-form label-position="top">
-              <div class="detection-settings">
-                <div>
-                  <el-form-item label="选择模型（可选）">
-                    <el-select
-                      v-model="form.modelId"
-                      aria-describedby="detection-model-choice-note"
-                      aria-label="选择检测模型，不选则由服务端选择" placeholder="不选则由服务端选择"
-                      :loading="modelsLoading" :disabled="loadingSingle"
-                      :no-data-text="modelsError ? '目录读取失败，请重新读取' : modelsLoading || !modelsLoaded ? '正在核对模型目录' : '目录没有返回模型，可由服务端选择'"
-                      clearable
-                    >
-                      <el-option
-                        v-for="model in modelList"
-                        :key="model.modelId"
-                        :value="model.modelId"
-                        :label="detectionModelOptionLabel(model)"
-                      >
-                        <span class="detection-model-option"><span>{{ detectionModelOptionLabel(model) }}</span><StatusBadge domain="model" :code="model.status" /></span>
-                      </el-option>
-                    </el-select>
-                  </el-form-item>
-                  <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
-                  <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
-                  <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '执行版本见任务记录。' : '留空将自动选择模型。' }}</p>
-                </div>
-                <div>
-                  <el-form-item label="置信度阈值">
-                    <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" :format-tooltip="value=>Math.round(value*100)+'%'" :format-value-text="value=>value.toFixed(2)+'，'+Math.round(value*100)+'%'" aria-label="本次检测置信度阈值，范围 0 至 1" aria-describedby="detection-threshold-note" />
-                    <div class="threshold-text"><span>本次提交阈值</span><output aria-label="当前置信度阈值">{{ form.threshold.toFixed(2) }}<small>（{{ Math.round(form.threshold * 100) }}%）</small></output></div>
-                    <p id="detection-threshold-note" class="detection-input-note">按模型分数筛选，仅对新提交生效。</p>
-                  </el-form-item>
-                </div>
-              </div>
-
               <div class="input-grid">
                 <div class="input-block">
-                  <div class="input-block-title">单图检测</div>
                   <div class="single-detection-workspace">
                     <div class="single-detection-controls">
                       <el-upload
                         v-model:file-list="fileList"
                         class="single-image-uploader"
+                        drag
                         :auto-upload="false"
                         :on-change="handleUploadChange"
                         :on-remove="handleRemove"
@@ -64,10 +30,7 @@
                         :limit="1"
                         :disabled="loadingSingle"
                       >
-                        <el-button type="primary" class="wide-button" :disabled="loadingSingle">
-                          <el-icon><Upload /></el-icon>
-                          选择单张图片
-                        </el-button>
+                        <span class="single-file-target"><AppIcon name="Upload" :size="24" /><strong>选择单张图片</strong><small>或拖入 JPG、PNG 图片</small></span>
                       </el-upload>
                       <div
                         v-if="form.imageFile"
@@ -77,8 +40,44 @@
                         <span>已选择文件</span>
                         <strong>{{ form.imageFile.name }}</strong>
                       </div>
+                      <details class="detection-parameters">
+                        <summary><AppIcon name="Operation" :size="16" /><strong>检测参数</strong><span>{{ form.modelId ? (selectedDetectionModel?.modelName || '模型 #'+form.modelId) : '自动选模型' }} · {{ Math.round(form.threshold * 100) }}%</span><AppIcon name="ArrowDown" :size="14" /></summary>
+                        <div class="detection-settings">
+                          <div>
+                            <el-form-item label="选择模型（可选）">
+                              <el-select
+                                v-model="form.modelId"
+                                aria-describedby="detection-model-choice-note"
+                                aria-label="选择检测模型，不选则由服务端选择" placeholder="不选则由服务端选择"
+                                :loading="modelsLoading" :disabled="loadingSingle"
+                                :no-data-text="modelsError ? '目录读取失败，请重新读取' : modelsLoading || !modelsLoaded ? '正在核对模型目录' : '目录没有返回模型，可由服务端选择'"
+                                clearable
+                              >
+                                <el-option
+                                  v-for="model in modelList"
+                                  :key="model.modelId"
+                                  :value="model.modelId"
+                                  :label="detectionModelOptionLabel(model)"
+                                >
+                                  <span class="detection-model-option"><span>{{ detectionModelOptionLabel(model) }}</span><StatusBadge domain="model" :code="model.status" /></span>
+                                </el-option>
+                              </el-select>
+                            </el-form-item>
+                            <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
+                            <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
+                            <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '执行版本见任务记录。' : '留空将自动选择模型。' }}</p>
+                          </div>
+                          <div>
+                            <el-form-item label="置信度阈值">
+                              <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" :format-tooltip="value=>Math.round(value*100)+'%'" :format-value-text="value=>value.toFixed(2)+'，'+Math.round(value*100)+'%'" aria-label="本次检测置信度阈值，范围 0 至 1" aria-describedby="detection-threshold-note" />
+                              <div class="threshold-text"><span>本次提交阈值</span><output aria-label="当前置信度阈值">{{ form.threshold.toFixed(2) }}<small>（{{ Math.round(form.threshold * 100) }}%）</small></output></div>
+                              <p id="detection-threshold-note" class="detection-input-note">按模型分数筛选，仅对新提交生效。</p>
+                            </el-form-item>
+                          </div>
+                        </div>
+                      </details>
                       <el-button
-                        type="default"
+                        type="primary"
                         class="wide-button secondary-action"
                         :disabled="!form.imageFile || singleStageCode === 'UNCONFIRMED'"
                         :aria-describedby="singleStageCode === 'UNCONFIRMED' ? 'single-result-reconcile-note' : undefined"
@@ -123,9 +122,9 @@
                         <div class="single-result-image single-result-preview">
                           <img :src="fileList[0].url" alt="待检测图片预览" />
                         </div>
-                        <p class="single-result-hint">{{ loadingSingle ? '当前图片正在处理，提交参数已锁定，请等待或核对任务记录。' : singleStageCode === 'UNCONFIRMED' ? '原图保留，先核对已有任务；不要根据预览推断检测已完成。' : '图片已选入，核对模型与阈值后开始检测' }}</p>
+                        <p class="single-result-hint">{{ loadingSingle ? '当前图片正在处理，提交参数已锁定，请等待或核对任务记录。' : singleStageCode === 'UNCONFIRMED' ? '原图保留，先核对已有任务；不要根据预览推断检测已完成。' : '图片已选好，可以开始检测' }}</p>
                       </template>
-                      <el-empty v-else description="请先选择图片并开始检测" :image-size="88" />
+                      <el-empty v-else description="请先选择图片并开始检测" :image-size="54" />
                     </section>
                   </div>
                 </div>
@@ -358,7 +357,7 @@
             </div>
           </template>
 
-          <p class="quality-queue-scope"><AppIcon name="User" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 仅显示所选阶段</p>
+          <p class="quality-queue-scope"><AppIcon name="User" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }}</p>
           <div class="quality-queue-tabs" role="group" aria-label="按质检处理阶段筛选">
             <button
               v-for="queue in qualityQueues"
@@ -366,11 +365,10 @@
               type="button"
               class="quality-queue-chip"
               :class="{ active: activeQualityQueue === queue.value }"
-              :aria-pressed="activeQualityQueue === queue.value"
+              :aria-pressed="activeQualityQueue === queue.value" :title="queue.hint"
               @click="switchQualityQueue(queue.value)"
             >
               <span>{{ queue.label }}</span>
-              <small>{{ queue.hint }}</small>
             </button>
           </div>
           <el-alert v-if="qualityQueueError && qualityQueueRecords.length" :title="qualityQueueError" type="warning" show-icon :closable="false" class="quality-queue-read-error" />
@@ -380,42 +378,20 @@
             v-loading="qualityQueueLoading"
             :data="qualityQueueRecords"
             size="small"
-            border
+            row-key="taskId"
             class="quality-queue-table"
           >
             <template #empty>
               <CollectionEmptyState :loading="qualityQueueLoading || (!qualityQueueLoaded && !qualityQueueError)" :error="qualityQueueError" :filtered="activeQualityQueue !== 'ALL_ACTIONABLE'" empty-title="当前队列暂无待处理任务" empty-description="检测完成后可在待复核阶段查看；放行与报告审批分别处理。" @retry="loadQualityQueue()" @reset="switchQualityQueue('ALL_ACTIONABLE')" />
             </template>
             <el-table-column label="任务与来源" min-width="215"><template #default="{ row }"><div class="quality-queue-task"><button type="button" @click="openTraceDialog(row.taskId)">{{ row.taskId }}</button><span>工单 {{ row.workOrderNo || '未记录' }}</span><span>批次 {{ row.batchNo || '未记录' }}</span><small>设备 {{ row.deviceName || '未记录' }}</small></div></template></el-table-column>
-            <el-table-column label="流转" min-width="130">
-              <template #default="{ row }"><StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /></template>
-            </el-table-column>
-            <el-table-column label="复核" min-width="115">
-              <template #default="{ row }">
-                <StatusBadge domain="review" :code="row.reviewStatus" :label="reviewStatusText(row.reviewStatus)" />
-              </template>
-            </el-table-column>
-            <el-table-column label="缺陷" width="90">
-              <template #default="{ row }">{{ traceCount(row.defectCount) }}</template>
-            </el-table-column>
-            <el-table-column label="等级" width="100">
-              <template #default="{ row }">
-                <el-tag :type="severityTagType(row.severityLevel || row.maxDefectSeverity)" effect="plain">
-                  {{ severityText(row.severityLevel || row.maxDefectSeverity) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="责任与截止" min-width="180">
-              <template #default="{ row }"><div class="quality-queue-responsibility"><strong>{{ row.assignee || '未分派' }}</strong><span>{{ row.dueAt ? formatBusinessTime(row.dueAt) || '时间格式未知' : '未设置截止时间' }}</span></div></template>
-            </el-table-column>
-            <el-table-column label="下一步" min-width="235"><template #default="{ row }"><QualityStageGuidance :task="row" /></template></el-table-column>
-            <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" /></template></el-table-column>
-            <el-table-column label="操作" width="176" fixed="right">
+            <el-table-column label="处理任务" min-width="205">
               <template #default="{ row }">
                 <div class="queue-primary-actions">
+                  <el-button v-if="canAssignQualityTask(row)" size="small" type="primary" @click="openAssignmentDialog(row)">分派</el-button>
                 <el-button
                   v-if="canReviewTask(row)"
-                  link
+                  plain
                   size="small"
                   type="primary"
                   @click="openReviewDialog(row)"
@@ -444,18 +420,30 @@
                 <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
                 </div>
                 <details class="queue-more-actions">
-                  <summary>更多操作</summary>
+                  <summary>更多</summary>
                   <div>
+                    <QualityStageGuidance :task="row" />
+                    <ResourceMutationSummary v-if="userStore.capabilities?.changeHistory" :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" />
+                    <span v-if="userStore.role==='SUPERVISOR' && !canAssignQualityTask(row)" class="queue-assignment-note">{{ qualityActionReason(row,'ASSIGN') }}</span>
                     <TaskClaimCandidatesButton :task="row" @authorized="loadQualityQueue(qualityQueuePage)" />
                     <el-button link size="small" type="info" :disabled="reportDownloading" @click="downloadTaskQualityReport(row.taskId)">任务摘要</el-button>
-                    <el-tooltip v-if="userStore.role === 'SUPERVISOR'" :content="canAssignQualityTask(row) ? '选择责任人并确认分派' : qualityActionReason(row,'ASSIGN')" placement="top"><span><el-button link size="small" type="info" :disabled="!canAssignQualityTask(row)" @click="openAssignmentDialog(row)"><AppIcon name="User" :size="14" />分派</el-button></span></el-tooltip>
                   </div>
                 </details>
               </template>
             </el-table-column>
+            <el-table-column label="质检状态" min-width="128"><template #default="{ row }"><div class="queue-facts">
+              <StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /><span>复核 · {{ reviewStatusText(row.reviewStatus) }}</span>
+            </div></template></el-table-column>
+            <el-table-column label="缺陷" min-width="100"><template #default="{ row }"><div class="queue-facts">
+              <strong>{{ traceCount(row.defectCount) }}</strong><span>{{ severityText(row.severityLevel || row.maxDefectSeverity) }}</span>
+            </div></template></el-table-column>
+            <el-table-column label="责任与截止" min-width="180">
+              <template #default="{ row }"><div class="quality-queue-responsibility"><strong>{{ row.assignee || '未分派' }}</strong><span>{{ row.dueAt ? formatBusinessTime(row.dueAt) || '时间格式未知' : '未设置截止时间' }}</span></div></template>
+            </el-table-column>
+
           </el-table>
 
-          <p class="quality-queue-scope">正式报告请到“报告与审批”查看。</p>
+          <router-link class="quality-queue-scope" to="/quality/reports">查看质检报告<AppIcon name="ArrowRight" :size="14" /></router-link>
           <div v-if="qualityQueueTotal !== null" class="quality-pagination">
             <el-pagination
               v-model:current-page="qualityQueuePage"
@@ -1411,7 +1399,18 @@ async function validateCollaborationAccess(){
 
 .detection-card-heading { display:inline-flex; align-items:center; gap:9px; margin:0; font-size:16px; font-weight:650; color:var(--app-text); }
 .detection-card-heading .el-icon { color:var(--app-primary); }
-.detection-settings { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:16px 26px; padding-bottom:18px; margin-bottom:18px; border-bottom:1px solid var(--app-border); }
+.detection-parameters {margin:12px 0;border-block:1px solid var(--app-border)}
+.detection-parameters summary {display:flex;align-items:center;gap:7px;padding:11px 2px;font-size:13px;cursor:pointer;color:var(--app-text)}
+.detection-parameters summary>span {margin-left:auto;color:var(--app-text-secondary);font-size:12px}
+.detection-parameters summary::-webkit-details-marker {display:none}
+.detection-parameters[open] summary>.el-icon:last-child {transform:rotate(180deg)}
+.detection-parameters summary:focus-visible {outline:2px solid var(--app-primary)}
+.detection-settings {display:grid;gap:10px;padding:8px 2px 12px}
+.single-file-target {display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--app-primary);font-size:15px}
+.single-file-target small {font-size:12px;color:var(--app-text-secondary)}
+.single-image-uploader :deep(.el-upload-dragger) {width:100%;padding:18px 12px;border-color:var(--app-border-focus);background:var(--app-primary-light)}
+.queue-facts {display:grid;justify-items:start;gap:5px}
+.queue-facts > span:last-child,.queue-assignment-note {color:var(--app-text-secondary);font-size:12px}
 .detection-settings > div { min-width:0; }
 .detection-settings :deep(.el-form-item) { margin-bottom:8px; }
 .detection-settings .detection-input-note { margin-bottom:0; }
@@ -1514,7 +1513,7 @@ async function validateCollaborationAccess(){
 
 .single-detection-result {
   min-width: 0;
-  min-height: 320px;
+  min-height: 208px;
   padding: 0 0 0 20px;
   border: 0;
   border-left: 1px solid var(--app-border);
@@ -1824,50 +1823,10 @@ async function validateCollaborationAccess(){
   overflow: hidden;
 }
 
-.quality-queue-tabs {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.quality-queue-chip {
-  border: 1px solid var(--app-border);
-  background: var(--app-surface);
-  border-radius: 8px;
-  padding: 11px 12px;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
-}
-
-.quality-queue-chip:hover {
-  border-color: var(--app-border-focus);
-  background: var(--app-primary-light);
-}
-
-.quality-queue-chip span {
-  display: block;
-  color: var(--app-text);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.quality-queue-chip small {
-  display: block;
-  margin-top: 4px;
-  color: var(--app-text-secondary);
-  font-size: 12px;
-  line-height: 1.85;
-}
-
-.quality-queue-chip.active {
-  border-color: #aac3f6;
-  background: var(--app-primary-soft);
-  box-shadow: none;
-  transform: none;
-}
-
+.quality-queue-tabs {display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:8px 0 14px}
+.quality-queue-chip {border:1px solid transparent;border-radius:6px;background:var(--app-surface-muted);color:var(--app-text-secondary);font:inherit;font-size:13px;line-height:1.6;padding:6px 12px;cursor:pointer}
+.quality-queue-chip:hover,.quality-queue-chip.active {color:var(--app-primary);background:var(--app-primary-soft)}
+.quality-queue-chip.active {border-color:var(--app-border-focus);font-weight:600}
 @media(prefers-reduced-motion:reduce) { .quality-queue-chip { transition:none; transform:none; } }
 
 .queue-primary-actions,.queue-more-actions > div { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; }

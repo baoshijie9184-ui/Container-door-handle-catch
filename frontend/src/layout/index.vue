@@ -3,9 +3,10 @@
     <button class="skip-link" type="button" @click="skipToMainContent">跳到主要内容</button>
     <nav v-if="isAgentSection" class="agent-app-rail" aria-label="Agent 导航">
       <router-link to="/home" class="agent-rail-brand" aria-label="返回业务系统" title="返回业务系统"><el-icon><HomeFilled /></el-icon></router-link>
+      <button type="button" class="rail-find" aria-label="查找功能" title="查找功能" @click="finder.open()"><AppIcon name="Search" /><span>查找功能</span></button>
       <div class="agent-rail-links">
         <el-tooltip v-for="item in agentNavigation" :key="item.path" :content="item.label" placement="right" :show-after="300">
-          <router-link :to="item.path" class="agent-rail-link" :class="{ selected: route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined" :aria-label="item.label"><el-icon><component :is="item.icon" /></el-icon></router-link>
+          <router-link :to="item.path" class="agent-rail-link" :class="{ selected: route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined" :aria-label="item.label"><el-icon><component :is="item.icon" /></el-icon><span class="rail-item-name">{{ item.label }}</span></router-link>
         </el-tooltip>
       </div>
       <AppAccountMenu compact :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @logout="handleLogout" />
@@ -28,13 +29,16 @@
         </div>
       </div>
 
-      <WorkspaceNavigation :groups="visibleNavGroups" :active="activeMenu" :collapsed="collapsed" />
+      <button type="button" class="sidebar-finder" aria-label="查找功能" title="查找功能" @click="finder.open()">
+        <AppIcon name="Search" :size="17" /><span v-if="!collapsed">查找功能</span><kbd v-if="!collapsed">{{ finderShortcut }}</kbd>
+      </button>
+      <WorkspaceNavigation :groups="visibleNavGroups" :home-group="userStore.role === 'SUPERVISOR' ? 'quality' : 'inspection'" :active="activeMenu" :collapsed="collapsed" />
 
     </aside>
 
     <el-drawer v-model="mobileNavVisible" title="工作空间导航" direction="ltr" size="min(310px, 88vw)" class="mobile-system-navigation">
       <div class="mobile-nav-scope"><AppIcon name="User" />{{ accountPresentation.role }} · {{ accountPresentation.scope }}</div>
-      <WorkspaceNavigation id="mobile-system-menu" :groups="visibleNavGroups" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
+      <WorkspaceNavigation id="mobile-system-menu" :groups="visibleNavGroups" :home-group="userStore.role === 'SUPERVISOR' ? 'quality' : 'inspection'" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
     </el-drawer>
 
     <div class="layout-main">
@@ -51,6 +55,7 @@
           >
             <AppIcon :name="isMobile ? 'Menu' : collapsed ? 'Expand' : 'Fold'" :size="20" />
           </button>
+          <button v-if="isMobile && !isAgentSection" type="button" class="mobile-find" aria-label="查找功能" @click="finder.open()"><AppIcon name="Search" /></button>
           <AppBreadcrumbs v-if="breadcrumbs.length" :items="breadcrumbs" />
           <div v-else>
             <div class="header-caption">工业视觉检测平台</div>
@@ -83,6 +88,7 @@
       </button>
     </div>
 
+    <WorkspaceFinder ref="finder" :groups="visibleNavGroups" :role="userStore.role" />
     <ChatAssistantLauncher v-if="!isAgentSection" @open="handleOpenAssistant" />
     <ChatAssistantDrawer v-if="!isAgentChatRoute" />
   </div>
@@ -100,6 +106,7 @@ import '@/assets/agent-section.css'
 import '@/assets/agent-unified.css'
 import ChatAssistantDrawer from '@/components/chat/ChatAssistantDrawer.vue'
 import ChatAssistantLauncher from '@/components/chat/ChatAssistantLauncher.vue'
+import WorkspaceFinder from '@/components/WorkspaceFinder.vue'
 import WorkspaceNavigation from '@/components/WorkspaceNavigation.vue'
 import AppAccountMenu from '@/components/AppAccountMenu.vue'
 import AppBreadcrumbs from '@/components/AppBreadcrumbs.vue'
@@ -117,6 +124,8 @@ import {
   Operation
 } from '@element-plus/icons-vue'
 
+const finder = ref(null)
+const finderShortcut = /Mac|iPad|iPhone/.test(navigator.platform) ? '⌘ K' : 'Ctrl K'
 const userStore = useUserStore()
 const chatAssistantStore = useChatAssistantStore()
 const router = useRouter()
@@ -150,8 +159,8 @@ const agentNavigation = computed(() => [
   { path:'/agent/markets', label:'资源市场', icon:Search },
   { path:'/agent/memory', label:'个人记忆', icon:User },
   { path:'/agent/mcp', label:'MCP 工具', icon:Monitor },
-  { path:'/agent/model-quotas', label:'LLM模型管理', icon:DataAnalysis },
-  ...(userStore.role === 'SUPERVISOR' ? [{ path:'/agent/model-config', label:'模型配置', icon:Operation }] : [])
+  { path:'/agent/model-quotas', label:'模型与额度', icon:DataAnalysis },
+  ...(['SUPERVISOR','ADMIN'].includes(userStore.role) ? [{ path:'/agent/model-budgets', label:'企业额度', icon:Tickets },{ path:'/agent/model-config', label:'模型配置', icon:Operation }] : [])
 ])
 
 const navGroups = [
@@ -209,18 +218,18 @@ const navGroups = [
   },
   {
     key: 'agent',
-    label: 'Agent智能系统',
+    label: '智能助手',
     icon: Operation,
     items: [
       { path: '/agent/chat', label: '智能对话助手', desc: '完整页面对话工作区' },
       { path: '/agent/model-config', label: 'Agent 模型配置', desc: '版本策略与连接凭证', supervisorOnly:true },
-      { path: '/agent/model-quotas', label: 'LLM模型管理', desc: '可用模型、个人额度与申请审批' },
+      { path: '/agent/model-quotas', label: '模型与额度', desc: '可用模型、个人额度与申请审批' },
       { path: '/agent/model-budgets', label: '企业模型额度', desc: '企业用量与供应商核对', supervisorOnly:true },
       { path: '/operations/identity', label: '任务账号关联', desc: '历史身份核对与迁移', supervisorOnly:true },
       { path: '/operations/audit', label: '操作审计', desc: '业务变更与交付记录' },
-      { path: '/agent/trace', label: 'Agent执行追溯', desc: '查看调用过程与关联结果' },
+      { path: '/agent/trace', label: '执行追溯', desc: '查看调用过程与关联结果' },
       { path: '/agent/actions', label: '助手操作确认', desc: '核对分配提议与审计' },
-      { path: '/agent/skills', label: 'Agent技能演化', desc: '经验提炼与审核发布' },
+      { path: '/agent/skills', label: '助手技能', desc: '经验提炼与审核发布' },
       { path: '/agent/markets', label: '资源市场', desc: '发现 Agent、MCP 与 Skill' },
       { path: '/agent/memory', label: '个人记忆', desc: '本人记忆与保存设置' },
       { path: '/agent/mcp', label: 'MCP工具', desc: '本人本地 Stdio 服务' }
@@ -343,7 +352,7 @@ onBeforeUnmount(() => {
   --nav-selected:var(--app-primary-soft); --nav-accent:var(--app-primary);
   background:white; border:0; border-right:1px solid var(--app-border); border-radius:0; box-shadow:none; }
 .layout-sidebar::before { content:none; }
-.brand-block { display:flex; align-items:center; gap:10px; min-height:40px; padding:0 7px; margin-bottom:30px; }
+.brand-block { display:flex; align-items:center; gap:10px; min-height:40px; padding:0 7px; margin-bottom:16px; }
 .brand-mark { display:grid; place-items:center; flex:0 0 36px; height:36px; padding:0; border:0; border-radius:9px; color:white; background:transparent; cursor:pointer; }
 .brand-mark:hover { box-shadow:0 0 0 2px var(--nav-accent); }
 .brand-mark:focus-visible { outline:2px solid var(--nav-accent); }
@@ -389,4 +398,22 @@ onBeforeUnmount(() => {
   .back-top-btn { bottom:78px; right:20px; }
 }
 @media(prefers-reduced-motion:reduce) { .layout-shell,.brand-mark { transition:none; } .brand-mark:hover { transform:none; } .layout-content { scroll-behavior:auto; } }
+.sidebar-finder,.mobile-find,.rail-find {font:inherit;cursor:pointer;color:var(--app-text-secondary);border:1px solid var(--app-border);background:var(--app-surface-muted);border-radius:8px}
+.sidebar-finder {display:flex;align-items:center;gap:10px;padding:9px 11px;margin:0 2px 14px;font-size:14px;text-align:left}
+.sidebar-finder kbd {margin-left:auto;padding:1px 4px;border:1px solid var(--app-border);border-radius:4px;font:11px/1.5 system-ui;background:white}
+.mobile-find,.rail-find {display:grid;place-items:center;min-width:32px;min-height:34px}
+.rail-find {flex-shrink:0;padding:6px;gap:3px}
+.rail-find span,.rail-item-name {display:none}
+.sidebar-collapsed .sidebar-finder {justify-content:center;padding:9px 0}
+:is(.rail-find,.sidebar-finder,.mobile-find):hover {color:var(--app-primary);border-color:var(--app-border-focus)}
+:is(.rail-find,.sidebar-finder,.mobile-find):focus-visible {outline:2px solid var(--app-primary);outline-offset:2px}
+@media(min-width:1050px) {
+  #app .layout-shell.is-agent-section {grid-template-columns:124px minmax(0,1fr)}
+  .agent-app-rail {align-items:stretch;gap:8px}
+  .agent-app-rail .agent-rail-brand,.agent-app-rail :deep(.app-account-menu) {align-self:center}
+  .agent-app-rail .agent-rail-brand {margin-bottom:6px}
+  .rail-find,.agent-rail-link {display:flex;align-items:center;justify-content:flex-start;gap:7px;padding:8px;width:100%;min-height:38px;height:auto;border-radius:7px;box-sizing:border-box}
+  .rail-find span,.rail-item-name {display:inline;font-size:13px;white-space:nowrap}
+  .agent-rail-links {gap:3px}
+}
 </style>

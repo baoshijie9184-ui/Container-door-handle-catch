@@ -90,6 +90,20 @@
           <CollectionEmptyState :loading="loading" :error="listError" :filtered="listLoaded ? Object.keys(appliedFilters).length>0 : !!hasSearch" empty-title="暂无检测模型" :empty-description="isSupervisor?'可使用上方上传入口登记模型，发布后供检测任务选择。':'当前账号可查看已登记模型，需要新增时请联系主管。'" @retry="retryModelList" @reset="resetSearch" />
         </template>
         <el-table-column label="模型与版本" min-width="230"><template #default="{row}"><div class="model-record-cell"><strong>{{ row.modelName||'模型名称未记录' }}</strong><small>版本 {{ row.version||'未记录' }} · ID {{ row.modelId }}</small><span v-if="modelDefault(row.isDefault)==='是'" class="model-default-marker"><AppIcon name="CircleCheck" :size="13" />默认模型</span></div></template></el-table-column>
+        <el-table-column label="操作" :width="isSupervisor?220:88">
+          <template #default="{ row }">
+            <div class="operation-buttons">
+              <el-button size="small" text type="primary" :aria-label="'查看模型 '+row.modelId+' 详情'" @click="handleViewDetails(row)"><AppIcon name="Search" :size="14" />详情</el-button>
+              <StatusBadge v-if="modelUncertain(row.modelId)" domain="apiReceipt" code="UNKNOWN" label="上次操作待核对" /><el-button v-if="isSupervisor" size="small" :disabled="controlsBusy || modelUncertain(row.modelId)" @click="openEvaluationDialog(row)">评估</el-button>
+              <el-dropdown v-if="isSupervisor" trigger="click" :disabled="controlsBusy || modelUncertain(row.modelId)" @command="command=>handleRowCommand(row,command)"><el-button size="small" :disabled="controlsBusy || modelUncertain(row.modelId)" :aria-label="'模型 '+row.modelId+' 的更多操作'">更多<AppIcon name="ArrowDown" :size="12" /></el-button><template #dropdown><el-dropdown-menu>
+                <el-dropdown-item command="edit">编辑版本资料</el-dropdown-item><el-dropdown-item command="rollout">配置登记策略</el-dropdown-item>
+                <el-dropdown-item v-if="!['PUBLISHED','ARCHIVED'].includes(row.status)" command="publish" divided>发布模型</el-dropdown-item><el-dropdown-item v-if="modelDefault(row.isDefault)==='否'&&row.status==='PUBLISHED'" command="set-default">设为默认模型</el-dropdown-item>
+                <el-dropdown-item v-if="row.status!=='ARCHIVED'" command="validate">重新基础校验</el-dropdown-item><el-dropdown-item v-if="row.status==='PUBLISHED'" command="disable">停用模型</el-dropdown-item><el-dropdown-item v-if="row.status!=='ARCHIVED'" command="archive">归档模型</el-dropdown-item>
+                <el-dropdown-item command="delete" divided :disabled="knownCount(row.usageCount)!==0||modelDefault(row.isDefault)!=='否'" :title="knownCount(row.usageCount)!==0?'使用次数未核对或已有使用记录':modelDefault(row.isDefault)!=='否'?'默认状态未核对或仍为默认模型':'删除登记，文件保留待回收'"><span class="model-delete-menu"><AppIcon name="Delete" :size="14" />删除登记</span></el-dropdown-item>
+              </el-dropdown-menu></template></el-dropdown>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.modelId)]" :revision="resourceVersion(row,{model:true})" resource-type="DETECTION_MODEL" :resource-id="row.modelId" domain="DETECTION_MODEL" /></template></el-table-column>
         <el-table-column label="训练资料" min-width="210"><template #default="{row}"><div class="model-record-cell"><strong>{{ modelTrainingImages(row.trainingImageCount) }}</strong><small>完成 {{ modelTime(row.trainingCompletedAt) }}</small></div></template></el-table-column>
         <el-table-column label="漏检率 / 速度" min-width="180"><template #default="{row}"><div class="model-record-cell"><strong>整图未检出 {{ modelNoDetection(row).value }}</strong><small>{{ modelNoDetection(row).description }}</small><small>实测 {{ modelFps(row.inferenceFps) }}</small></div></template></el-table-column>
@@ -111,20 +125,6 @@
         <el-table-column label="登记策略与使用" min-width="190">
           <template #default="{ row }">
             <div class="model-record-cell"><strong>{{ modelStrategy(row) }}</strong><small>已记使用 {{ modelUsage(row.usageCount) }} 次</small><small>最近 {{ formatDateTime(row.lastUsedAt) }}</small></div>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" :width="isSupervisor?220:88">
-          <template #default="{ row }">
-            <div class="operation-buttons">
-              <el-button size="small" text type="primary" :aria-label="'查看模型 '+row.modelId+' 详情'" @click="handleViewDetails(row)"><AppIcon name="Search" :size="14" />详情</el-button>
-              <StatusBadge v-if="modelUncertain(row.modelId)" domain="apiReceipt" code="UNKNOWN" label="上次操作待核对" /><el-button v-if="isSupervisor" size="small" :disabled="controlsBusy || modelUncertain(row.modelId)" @click="openEvaluationDialog(row)">评估</el-button>
-              <el-dropdown v-if="isSupervisor" trigger="click" :disabled="controlsBusy || modelUncertain(row.modelId)" @command="command=>handleRowCommand(row,command)"><el-button size="small" :disabled="controlsBusy || modelUncertain(row.modelId)" :aria-label="'模型 '+row.modelId+' 的更多操作'">更多<AppIcon name="ArrowDown" :size="12" /></el-button><template #dropdown><el-dropdown-menu>
-                <el-dropdown-item command="edit">编辑版本资料</el-dropdown-item><el-dropdown-item command="rollout">配置登记策略</el-dropdown-item>
-                <el-dropdown-item v-if="!['PUBLISHED','ARCHIVED'].includes(row.status)" command="publish" divided>发布模型</el-dropdown-item><el-dropdown-item v-if="modelDefault(row.isDefault)==='否'&&row.status==='PUBLISHED'" command="set-default">设为默认模型</el-dropdown-item>
-                <el-dropdown-item v-if="row.status!=='ARCHIVED'" command="validate">重新基础校验</el-dropdown-item><el-dropdown-item v-if="row.status==='PUBLISHED'" command="disable">停用模型</el-dropdown-item><el-dropdown-item v-if="row.status!=='ARCHIVED'" command="archive">归档模型</el-dropdown-item>
-                <el-dropdown-item command="delete" divided :disabled="knownCount(row.usageCount)!==0||modelDefault(row.isDefault)!=='否'" :title="knownCount(row.usageCount)!==0?'使用次数未核对或已有使用记录':modelDefault(row.isDefault)!=='否'?'默认状态未核对或仍为默认模型':'删除登记，文件保留待回收'"><span class="model-delete-menu"><AppIcon name="Delete" :size="14" />删除登记</span></el-dropdown-item>
-              </el-dropdown-menu></template></el-dropdown>
-            </div>
           </template>
         </el-table-column>
       </el-table>

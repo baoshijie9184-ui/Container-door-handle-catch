@@ -18,11 +18,11 @@
       <el-table :scrollbar-tabindex="0" role="region" aria-label="质检报告记录" :data="records" v-loading="loading" row-key="reportId">
         <template #empty><CollectionEmptyState :loading="loading" :error="error" :filtered="!!(requestedQuery.keyword || requestedQuery.status)" empty-title="暂无质检报告" empty-description="可在新建报告草稿中填写有权访问的检测任务编号，提交后由主管独立审批。" @retry="retryList" @reset="resetSearch" /></template>
         <el-table-column label="报告与编写账号" min-width="265"><template #default="{ row }"><div class="report-list-identity"><button type="button" :disabled="busy" @click="openDetail(row.reportId)">{{ row.title || '未命名报告' }}</button><span>编写账号 {{ row.ownerUsername || '未记录' }}</span><details><summary>报告编号</summary><code>{{ row.reportId }}</code></details></div></template></el-table-column>
+        <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" :disabled="busy" @click="openDetail(row.reportId)"><AppIcon name="Search" :size="16" />查看</el-button></template></el-table-column>
         <el-table-column label="依据任务" min-width="205"><template #default="{ row }"><router-link v-if="row.taskId" class="report-task-link" :to="{ path:'/inspection/history', query:{ keyword:row.taskId } }">{{ row.taskId }}</router-link><span v-else>未记录</span></template></el-table-column>
         <el-table-column label="状态与版本" min-width="145"><template #default="{ row }"><div class="report-list-status"><StatusBadge domain="report" :code="row.status" :label="states[row.status]" /><small>版本 {{ knownCount(row.version) ?? '未记录' }}</small></div></template></el-table-column>
         <el-table-column label="最近更新" min-width="175"><template #default="{ row }"><span class="report-list-time">{{ reportTime(row.updatedAt) }}</span></template></el-table-column>
         <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.reportId)]" :revision="row.version" resource-type="QUALITY_REPORT" :resource-id="row.reportId" domain="QUALITY_REPORT" /></template></el-table-column>
-        <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" :disabled="busy" @click="openDetail(row.reportId)"><AppIcon name="Search" :size="16" />查看</el-button></template></el-table-column>
       </el-table>
       <div v-if="error && records.length" class="report-list-retry"><el-button size="small" :loading="loading" @click="retryList"><AppIcon name="Refresh" :size="15" />重试上次读取</el-button></div>
       <div v-if="total!==null" class="page-footer"><el-pagination :current-page="page" :page-size="20" :total="total" layout="total, prev, pager, next" :disabled="loading || !!error" @current-change="loadAppliedPage" /></div>
@@ -128,7 +128,7 @@ import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
 import { useLatestChanges } from '../composables/useLatestChanges'
 import { resourceHistoryLink } from '../utils/changeHistory'
 import { useResourceChanges } from '../composables/useResourceChanges'
-import { ref, reactive, computed, onBeforeUnmount, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { captureAccountRequest } from '../api/request'
@@ -293,7 +293,13 @@ async function reloadDraft(){
  try{await ElMessageBox.confirm('加载新版本会替换当前未保存标题与意见。需要保留时请先复制草稿。','重新加载报告',{type:'warning',confirmButtonText:'加载最新版本',cancelButtonText:'保留草稿'})}catch{return}
  const id=editingId.value;await openDetail(id);if(detail.value?.reportId===id&&detail.value.status==='DRAFT'){openEdit();reportChanged.value=false}
 }
-onMounted(async () => { if (!userStore.identity) await userStore.checkAuth(); await load(); if (route.query.reportId) await openDetail(String(route.query.reportId)); else if (route.query.taskId) openCreate() })
+function loadRouteFilter() {
+  status.value = Object.hasOwn(states,route.query.status) ? route.query.status : ''
+  keyword.value = ''
+  return load({ status:status.value, keyword:'', page:1 })
+}
+watch(()=>route.query.status,loadRouteFilter)
+onMounted(async () => { if (!userStore.identity) await userStore.checkAuth(); await loadRouteFilter(); if (route.query.reportId) await openDetail(String(route.query.reportId)); else if (route.query.taskId) openCreate() })
 onBeforeUnmount(()=>{detailGeneration++;loadGeneration++;events.value=[];eventsError.value='';keys.clear()})
 </script>
 

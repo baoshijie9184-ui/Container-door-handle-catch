@@ -8,11 +8,11 @@ body { font-family: var(--app-font); background: var(--app-bg); color: var(--app
 .management-scope-note > .el-icon { flex-shrink:0; margin-top:3px; color:var(--app-primary); }
 .management-write-progress { display:flex; align-items:center; gap:8px; margin:0; color:var(--app-primary); font-size:12px; line-height:1.85; }
 .management-filter-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; align-items:end; }
-.management-filter-form > label { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.management-filter-form label { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .management-filter-form .el-select { width:100%; }
 .management-filter-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:32px; }
 .management-filter-actions .el-button + .el-button { margin-left:0; }
-.employee-page .management-filter-actions { grid-column:1/-1; justify-content:flex-end; }
+.management-advanced-filters { grid-column:1/-1; display:grid; grid-template-columns:repeat(auto-fit,minmax(min(190px,100%),1fr)); gap:14px; padding-top:12px; border-top:1px solid var(--app-border) }
 .management-applied-query { margin:0 18px 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
 .management-query-note { margin:0 18px 16px; padding:10px 12px; background:var(--app-primary-soft); color:var(--app-text-secondary); font-size:12px; line-height:1.85; border-radius:7px; }
 .management-retry { margin:12px 18px; }

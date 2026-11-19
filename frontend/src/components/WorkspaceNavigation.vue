@@ -16,10 +16,10 @@
 </template>
 <script setup>
 import {computed,reactive,ref,watch} from 'vue'
-const props=defineProps({ groups: { type: Array, required: true }, active: String, collapsed: Boolean })
+const props=defineProps({ groups: { type: Array, required: true }, active: String, collapsed: Boolean, homeGroup: String })
 defineEmits(['navigate'])
 const menu=ref(null)
-const activeGroup=computed(()=>props.groups.find(group=>group.items.length>1&&group.items.some(item=>item.path===props.active))?.key)
+const activeGroup=computed(()=>props.active==='/home' ? props.homeGroup : props.groups.find(group=>group.items.length>1&&group.items.some(item=>item.path===props.active))?.key)
 const mountedGroups = reactive(new Set())
 watch(() => [props.active, props.collapsed, activeGroup.value, mountedGroups.has(activeGroup.value)], () => {
   const group = activeGroup.value
