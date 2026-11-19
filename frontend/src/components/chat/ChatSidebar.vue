@@ -13,7 +13,7 @@
       <div class="sidebar-caption" :title="SYSTEM_NAME"><strong>{{ SYSTEM_SHORT_NAME }} <span class="sidebar-agent-label">Agent</span></strong><span>{{ SYSTEM_SCOPE }}</span></div>
       <!-- 新建按钮组 -->
       <div class="sidebar-header">
-        <button class="new-session-btn" @click="store.newSession()">
+        <button class="new-session-btn" @click="handleNewSession">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
@@ -563,6 +563,12 @@ const clearSearch = () => {
   nextTick(()=>searchInputRef.value?.focus({preventScroll:true}))
 }
 
+async function handleNewSession() {
+  const previous = store.sessionId
+  await store.newSession()
+  if (props.compact && store.sessionId && store.sessionId !== previous) closeCompactSidebar()
+}
+
 const handleSwitchSession = (sessionId) => {
   store.closeMenu()
   store.closeProjectMenu()
@@ -618,7 +624,9 @@ const cancelEdit = () => {
 }
 
 function handleSidebarEscape(event) {
-  if(event.defaultPrevented || event.target?.closest?.('[role="dialog"]'))return
+  const dialog = event.target?.closest?.('[role="dialog"]')
+  if (event.defaultPrevented || (dialog && sidebarRef.value?.contains(dialog))) return
+  if (collapsed.value && !editingId.value && !store.menuOpenId && !store.projectMenuOpenId) return
   event.preventDefault();event.stopPropagation()
   if(showProjectModal.value)return
   if(editingId.value){cancelEdit();return}

@@ -6,7 +6,7 @@
     @close="chatStore.close()"
     @update:model-value="handleDrawerChange"
   >
-    <div class="chat-panel">
+    <div class="chat-panel" :class="{ 'drawer-panel': !fullScreen }">
       <!-- 拖拽手柄 -->
       <div
         v-if="!isMobile && !fullScreen"
@@ -24,16 +24,13 @@
         @touchstart.prevent="startResizeTouch"
       >
         <div class="resize-knob" :title="resizeTooltip">
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-            <!-- 左箭头 -->
-            <polyline points="7,4 3,10 7,16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <!-- 右箭头 -->
-            <polyline points="13,4 17,10 13,16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <svg width="10" height="20" viewBox="0 0 10 20" fill="none" aria-hidden="true">
+            <path d="M3 5v10M7 5v10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
           </svg>
         </div>
       </div>
       <!-- 侧边栏 + 主区域 -->
-      <div class="chat-layout" ref="workspaceRef">
+      <div class="chat-layout" :class="{ 'compact-history': compactSidebar }" ref="workspaceRef">
         <ChatSidebar :compact="compactSidebar" />
         <div class="chat-main" @click="closeSidebarMenu">
           <!-- 头部 -->
@@ -230,7 +227,7 @@ const drawerSize = computed(() => {
 const compactSidebar=computed(()=>isMobile.value||(!props.fullScreen&&clampPanelWidth(panelWidth.value)<700))
 const containerProps = computed(() => props.fullScreen
   ? { 'aria-label': '智能对话工作区' }
-  : { modelValue: chatStore.visible, size: drawerSize.value, appendToBody: true, withHeader: false, direction: 'rtl', class: 'assistant-drawer' })
+  : { modelValue: chatStore.visible, title: '智能助手', size: drawerSize.value, appendToBody: true, withHeader: false, direction: 'rtl', class: 'assistant-drawer' })
 
 const loadPanelWidth = () => {
   try {
@@ -603,6 +600,38 @@ const handleDrawerChange = (value) => {
 .chat-header-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* The reading column changes width independently of the browser and the history pane. */
+.drawer-panel .chat-main { container: drawer-conversation / inline-size; }
+.drawer-panel .compact-history :deep(.chat-sidebar.collapsed) { width: 0; border: 0; z-index: 3; }
+.drawer-panel .compact-history :deep(.chat-sidebar.collapsed .sidebar-toggle) {
+  left: 14px; right: auto; top: 12px; width: 32px; height: 32px;
+  border-radius: 8px; box-shadow: none;
+}
+.drawer-panel .compact-history .chat-header { padding-left: 58px; }
+.drawer-panel .resize-handle { left: 0; width: 12px; }
+.drawer-panel .resize-knob { width: 10px; height: 36px; border-radius: 5px; }
+
+@container drawer-conversation (max-width: 560px) {
+  .drawer-panel .chat-header { padding-block: 10px; padding-right: 12px; min-height: 56px; gap: 8px; }
+  .drawer-panel .chat-header-secondary-actions { display: none; }
+  .drawer-panel .chat-header-more-actions { display: inline-flex; }
+  .drawer-panel .chat-header-btn, .drawer-panel .chat-header-close { width: 32px; height: 32px; }
+  .drawer-panel .chat-header-main { flex: 1; overflow: hidden; }
+  .drawer-panel .chat-heading p { display: none; }
+  .drawer-panel .chat-body { padding: 16px 14px 8px; }
+  .drawer-panel :deep(.composer) { padding: 8px 12px 12px; }
+  .drawer-panel :deep(.gpt-composer-input) {
+    min-height: 88px; padding: 10px; gap: 4px; border-radius: 15px;
+  }
+  .drawer-panel :deep(.composer-textarea) { min-height: 34px; }
+  .drawer-panel :deep(.composer-toolbar) { gap: 4px; }
+  .drawer-panel :deep(.composer-context), .drawer-panel :deep(.composer-permission) { display: none; }
+  .drawer-panel :deep(.composer-toolbar select) {
+    flex: 1; min-width: 0; max-width: 235px; padding-inline: 6px;
+    background: var(--app-surface-muted); color: var(--app-text);
+  }
 }
 
 /* ── 消息区 ── */
