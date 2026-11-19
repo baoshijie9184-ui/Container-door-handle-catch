@@ -49,6 +49,61 @@ class ConversationInboxServiceTest {
     Duration executionWait(){return Duration.ofSeconds(3);}
     void completed(String id){await().atMost(executionWait()).until(()->"COMPLETED".equals(status(id)));}
     void active(){when(control.inspect(any(),anyString())).thenReturn(new AgentConversationControlApi.View("s1","run-1","RUNNING",0,true,""));}
+    ConversationInboxService.OrderEntry order(ConversationInboxService.Item item) {
+        return new ConversationInboxService.OrderEntry(item.id(),item.revision());
+    }
+    @Test void idleSubmitStartsImmediatelyAndOtherMessagesWaitInTheSavedOrder() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var executed = new CopyOnWriteArrayList<String>();
+        when(chat.handleUserMessage(anyString(),any())).thenAnswer(inv -> {
+            var request=inv.getArgument(1,com.ruanzhu.doorhandle.module.app.dto.chat.ChatSendMessageRequest.class);
+            executed.add(request.getContent());
+            if ("first".equals(request.getContent())) { entered.countDown(); release.await(5,TimeUnit.SECONDS); }
+            return null;
+        });
+        String id=UUID.randomUUID().toString();
+        var first=inbox.submit(alice,"s1",id,"NEXT_TURN","first","CHAT",true,false);
+        try {
+            assertThat(first.status()).isEqualTo("STARTED");
+            assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+            assertThat(inbox.submit(alice,"s1",id,"NEXT_TURN","first","CHAT",true,true).status()).isEqualTo("STARTED");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE action='ENQUEUED'",Integer.class)).isZero();
+            assertThatThrownBy(()->inbox.submit(alice,"s1",UUID.randomUUID().toString(),"NEXT_TURN","closed","CHAT",true,false)).hasMessageContaining("409");
+            var a=inbox.submit(alice,"s1",UUID.randomUUID().toString(),"NEXT_TURN","A","AGUI",true,true);
+            var b=enqueue("B");
+            var c=enqueue("C");
+            assertThat(a.status()).isEqualTo("QUEUED");
+            inbox.reorder(alice,"s1",List.of(order(c),order(a),order(b)));
+            assertThatThrownBy(()->inbox.reorder(alice,"s1",List.of(order(a),order(b),order(c)))).hasMessageContaining("409");
+            var d=enqueue("D");
+            var restarted=create();
+            assertThat(restarted.list(alice,"s1").stream().filter(row->"QUEUED".equals(row.status())).map(ConversationInboxService.Item::content))
+                    .containsExactly("D","B","A","C");
+            release.countDown(); completed(first.id());
+            for (var item:List.of(c,a,b,d)) { restarted.dispatch(); completed(item.id()); }
+            assertThat(executed).containsExactly("first","C","A","B","D");
+        } finally { release.countDown(); }
+    }
+    @Test void aStaleDropCannotOverwriteAnEditNewArrivalWithdrawalOrAnotherSession() {
+        var a=enqueue("A"); var b=enqueue("B");
+        var c=enqueue("C");
+        assertThatThrownBy(()->inbox.reorder(alice,"s1",List.of(order(b),order(a)))).hasMessageContaining("409");
+        assertThatThrownBy(()->inbox.reorder(alice,"s1",List.of(order(b),order(a),order(a)))).hasMessageContaining("409");
+        assertThat(inbox.list(alice,"s1")).extracting(ConversationInboxService.Item::revision).containsOnly(0);
+        assertThatThrownBy(()->inbox.reorder(bob,"s1",List.of(order(b),order(a),order(c)))).hasMessageContaining("404");
+        inbox.change(alice,"s1",c.id(),0,null);
+        assertThatThrownBy(()->inbox.reorder(alice,"s1",List.of(order(b),order(c),order(a)))).hasMessageContaining("409");
+        inbox.change(alice,"s1",a.id(),0,"edited");
+        assertThatThrownBy(()->inbox.reorder(alice,"s1",List.of(order(b),order(a)))).hasMessageContaining("409");
+    }
+    @Test void steeringInputsRespectReorderedDeliveryAtTheCurrentBoundary() {
+        active();
+        var a=inbox.submit(alice,"s1",UUID.randomUUID().toString(),"NEXT_STEP","A","CHAT",true,true);
+        var b=inbox.submit(alice,"s1",UUID.randomUUID().toString(),"NEXT_STEP","B","CHAT",true,true);
+        inbox.reorder(alice,"s1",List.of(order(b),order(a)));
+        assertThat(inbox.take(alice,"s1","run-1")).extracting(AgentSteeringInboxApi.Input::id).containsExactly(b.id(),a.id());
+    }
     @Test void promotingAPendingMessageKeepsItsIdentityDeadlineAndOriginalSubmissionReceipt(){
         var queued=enqueue("PROMOTE_ME");var deadline=jdbc.queryForMap("SELECT expires_at FROM workflow_instance").get("expires_at");active();
         var promoted=inbox.steer(alice,"s1",queued.id(),0,"run-1");

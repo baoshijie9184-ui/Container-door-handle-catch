@@ -95,3 +95,21 @@ test('the first pending chat input and unsuccessful delivery are visible outside
  state.inputs=[{...input,status:'COMPLETED'},{...input,status:'FAILED'}]
  assert.equal(latestDeliveryNotice(state),'')
 })
+test('normal sends request immediate execution and order writes only carry message versions',async()=>{
+ const {ConversationControlClient}=await utility
+ const {queueMove}=await importFrontendModule('src','utils','conversationQueueSort.js')
+ const posts=[]
+ const client=new ConversationControlClient({fetcher:async(path,opts)=>{if(opts.method)posts.push([path,JSON.parse(opts.body)]);return response(snapshot())}})
+ client.enabled=true;client.session='s1';client.state=snapshot()
+ const rows=['A','B','C'].map((id,revision)=>({id,revision,content:'private'}))
+ try{
+  await client.submit('first')
+  assert.equal(posts[0][1].startIfIdle,true)
+  assert.equal(posts[0][1].queueIfBusy,true)
+  const order=queueMove(rows,'C','A')
+  await client.reorder(order)
+  assert.deepEqual(posts[1],['/api/agent/conversations/s1/inputs/order',{order:[{id:'C',revision:2},{id:'A',revision:0},{id:'B',revision:1}]}])
+  assert.deepEqual(queueMove(rows,'A','C').map(row=>row.id),['B','C','A'])
+  assert.equal(queueMove(rows,'A','gone'),null)
+ }finally{client.close()}
+})

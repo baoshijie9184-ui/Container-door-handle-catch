@@ -8,7 +8,7 @@
    <el-button size="small" :icon="Refresh" :disabled="busy" @click="client.poll()">刷新</el-button>
   </div></div>
   <details class="control-help"><summary>执行说明</summary><p class="control-note">暂停在安全切点生效，当前调用可能继续完成；仅在服务进程存活期间继续。排队输入 15 分钟有效，失败不自动重试。</p></details>
-  <div class="conversation-delivery"><label for="conversation-delivery-mode">发送方式</label><select id="conversation-delivery-mode" v-model="mode"><option value="NEXT_TURN">排到下一轮</option><option value="NEXT_STEP">引导当前任务</option></select><span>{{ mode==='NEXT_STEP'?'下一推理切点交付；本轮已结束时转入下一轮':'当前任务结束后按顺序处理' }}</span></div>
+  <div class="conversation-delivery"><label for="conversation-delivery-mode">发送方式</label><select id="conversation-delivery-mode" v-model="mode"><option value="NEXT_TURN">自动发送</option><option value="NEXT_STEP">引导当前任务</option></select><span>{{ mode==='NEXT_STEP'?'下一推理切点交付；本轮已结束时转入下一轮':'空闲时直接发送，忙时排队' }}</span></div>
   <details v-if="receipts.length" class="control-help"><summary>最近交付记录</summary><p v-for="item in receipts" :key="item.id" class="control-receipt"><span>{{ item.mode==='NEXT_STEP'?'补充要求':'消息' }}</span><StatusBadge domain="queuedInput" :code="item.status" :label="inputStatusLabels[item.status]" /><small>{{ item.id.slice(0,8) }}</small></p></details>
   <p v-if="error||state.error" class="control-error" role="alert">{{ error||state.error }}</p>
   <p v-if="state.queueEnabled===false" class="queue-preference">消息排队已关闭，已有消息继续处理<button type="button" @click="client.setQueueEnabled(true)">开启排队</button></p>
@@ -19,15 +19,20 @@
   <section v-if="showQueue" class="conversation-controls" aria-label="待处理消息队列">
   <p v-if="state.queueEnabled===false&&!optionsOpen" class="queue-preference" role="status"><AppIcon name="Clock" :size="14" /><span>消息排队已关闭</span><button type="button" :disabled="busy" @click="client.setQueueEnabled(true)">开启排队</button></p>
   <p v-if="pending.length" class="queue-count" role="status">{{ state.queueEnabled===false?'已有 ':'' }}{{ pending.length }} 条消息待处理</p>
-  <TransitionGroup v-if="pending.length" name="queue-row" tag="ol" class="conversation-queue" aria-label="待处理消息">
-   <li v-for="(item,index) in pending" :key="item.id">
-    <svg class="queue-entry-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3v6a3 3 0 0 0 3 3h14m-5-5 5 5-5 5" /></svg>
+  <TransitionGroup v-if="pending.length" name="queue-row" tag="ol" class="conversation-queue" aria-label="待处理消息" @dragstart="sorting.start" @dragover="sorting.over" @drop="sorting.drop" @dragend="sorting.end">
+   <li v-for="(item,index) in pending" :key="item.id" :data-queue-id="item.id">
+    <button v-if="canSort(item)" class="queue-grip" type="button" draggable="true" :disabled="busy"
+      :aria-label="'调整第 '+(index+1)+' 条消息顺序'" title="拖动排序，或使用上下方向键"
+      @keydown.up.prevent="sorting.adjacent(item.id,-1)" @keydown.down.prevent="sorting.adjacent(item.id,1)">
+      <AppIcon name="Rank" :size="16" />
+    </button>
+    <svg v-else class="queue-entry-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3v6a3 3 0 0 0 3 3h14m-5-5 5 5-5 5" /></svg>
     <p class="queue-content" :title="item.content">{{ item.content }}</p>
     <span v-if="item.clockStatus==='UNRESOLVED'" class="queue-steering-status">历史时区未确认 · 需核对</span>
     <span v-else-if="item.mode==='NEXT_STEP'" class="queue-steering-status">等待引导</span>
     <button v-else type="button" class="queue-steer" :disabled="busy||!state.run?.runId" title="在当前任务的下一推理切点补充要求" @click="steer(item)"><el-icon aria-hidden="true"><Right /></el-icon>引导</button>
     <button type="button" class="queue-icon-button" :aria-label="'撤回第 '+(index+1)+' 条待处理消息'" title="撤回消息" :disabled="busy||item.clockStatus==='UNRESOLVED'" @click="withdraw(item)"><el-icon aria-hidden="true"><Delete /></el-icon></button>
-    <el-dropdown trigger="click" :disabled="busy||item.clockStatus==='UNRESOLVED'" @command="action=>action==='edit'?edit(item):client.setQueueEnabled(false)"><button type="button" class="queue-icon-button" aria-label="更多消息操作" title="更多消息操作" :disabled="busy||item.clockStatus==='UNRESOLVED'"><el-icon aria-hidden="true"><MoreFilled /></el-icon></button><template #dropdown><el-dropdown-menu><el-dropdown-item command="edit" :icon="Edit">编辑消息</el-dropdown-item><el-dropdown-item command="close-queue" :icon="Close" :disabled="state.queueEnabled===false">关闭排队</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
+    <el-dropdown trigger="click" :disabled="busy||item.clockStatus==='UNRESOLVED'" @command="action=>rowAction(action,item)"><button type="button" class="queue-icon-button" aria-label="更多消息操作" title="更多消息操作" :disabled="busy||item.clockStatus==='UNRESOLVED'"><el-icon aria-hidden="true"><MoreFilled /></el-icon></button><template #dropdown><el-dropdown-menu><el-dropdown-item command="edit" :icon="Edit">编辑消息</el-dropdown-item><el-dropdown-item v-if="canSort(item)" command="up" :disabled="item.id===movable[0].id">上移</el-dropdown-item><el-dropdown-item v-if="canSort(item)" command="down" :disabled="item.id===movable.at(-1).id">下移</el-dropdown-item><el-dropdown-item command="close-queue" :icon="Close" :disabled="state.queueEnabled===false">关闭排队</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
    </li>
   </TransitionGroup>
   </section>
@@ -46,6 +51,7 @@ import {ref,computed,watch,onBeforeUnmount} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import {VideoPause,VideoPlay,Refresh,Right,Delete,MoreFilled,Edit,Close} from '@element-plus/icons-vue'
 import {ConversationControlClient,controlPhaseLabels,inputStatusLabels,showConversationQueue,latestDeliveryNotice} from '@/utils/conversationControl'
+import {queueSorting} from '@/utils/conversationQueueSort'
 import '@/assets/conversation-control.css'
 const props=defineProps({sessionId:String}),emit=defineEmits(['snapshot','refresh'])
 const state=ref({enabled:false,run:null,inputs:[]}),mode=ref('NEXT_TURN'),busy=ref(false),error=ref(''),editing=ref(false),editText=ref(''),editItem=ref(null)
@@ -56,6 +62,15 @@ watch(()=>props.sessionId,session=>{error.value='';editing.value=false;optionsOp
 onBeforeUnmount(()=>client.close())
 const deliveryNotice=computed(()=>latestDeliveryNotice(state.value))
 const pending=computed(()=>state.value.inputs.filter(item=>item.status==='QUEUED').reverse())
+const movable=computed(()=>pending.value.filter(item=>item.clockStatus!=='UNRESOLVED'))
+const canSort=item=>movable.value.length>1 && item.clockStatus!=='UNRESOLVED'
+const sorting=queueSorting(()=>movable.value,order=>{if(!busy.value)mutate(()=>client.reorder(order)).catch(()=>{})})
+function rowAction(action,item){
+ if(action==='edit') edit(item)
+ else if(action==='close-queue') client.setQueueEnabled(false)
+ else sorting.adjacent(item.id,action==='up'?-1:1)
+}
+watch(()=>props.sessionId,sorting.end)
 const receipts=computed(()=>state.value.inputs.filter(item=>item.status!=='QUEUED').slice(0,3))
 const editStale=computed(()=>{const current=state.value.inputs.find(item=>item.id===editItem.value?.id);return !current||current.status!=='QUEUED'||current.revision!==editItem.value?.revision})
 async function mutate(action){const generation=client.generation;busy.value=true;error.value='';try{return await action()}catch(cause){if(generation===client.generation)error.value=cause.message;throw cause}finally{if(generation===client.generation)busy.value=false}}

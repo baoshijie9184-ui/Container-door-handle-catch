@@ -68,9 +68,14 @@ export class ConversationControlClient{
   const signature=JSON.stringify([this.session,mode,content]);
   if(!this.uncertain.has(signature)){if(this.uncertain.size>=16)throw Error('存在未核实的提交，请先刷新核对');this.uncertain.set(signature,crypto.randomUUID())}
   const id=this.uncertain.get(signature)
-  const result=await this.write('/'+encodeURIComponent(this.session)+'/inputs',{id,mode,content,entryPoint:this.entryPoint})
+  const result=await this.write('/'+encodeURIComponent(this.session)+'/inputs',{id,mode,content,entryPoint:this.entryPoint,startIfIdle:true,queueIfBusy:this.queueEnabled!==false})
   if(this.uncertain.get(signature)===id)this.uncertain.delete(signature)
   return result
+ }
+ async reorder(order){
+  const generation=this.generation
+  try{return await this.write('/'+encodeURIComponent(this.session)+'/inputs/order',{order})}
+  catch(error){await this.poll(generation);throw error}
  }
  change(item,content){if(item.clockStatus==='UNRESOLVED')throw Error('历史时区未确认，原消息需要核对');return this.write('/'+encodeURIComponent(this.session)+'/inputs/'+encodeURIComponent(item.id),{revision:item.revision,content})}
  setQueueEnabled(enabled){this.queueEnabled=enabled===true;try{globalThis.sessionStorage?.setItem('conversation-queue:'+this.session,this.queueEnabled?'on':'off')}catch{/* The current view still retains the choice. */}if(this.state)this.onState({enabled:this.enabled,...this.state,queueEnabled:this.queueEnabled,error:''})}

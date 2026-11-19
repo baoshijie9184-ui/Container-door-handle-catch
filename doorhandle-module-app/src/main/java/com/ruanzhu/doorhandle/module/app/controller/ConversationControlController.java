@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.app.controller;
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.module.app.service.ChatSessionService;
 import com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxService;
+import com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxService.OrderEntry;
 import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -14,6 +15,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import java.util.Map;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/agent/conversations")
@@ -34,8 +36,14 @@ public class ConversationControlController {
     private void mutation(HttpServletRequest request){if(!"conversation-control".equals(request.getHeader("X-Agent-Action"))||"cross-site".equals(request.getHeader("Sec-Fetch-Site")))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"执行控制请求无效");}
     @GetMapping("/capabilities") public Map<String,Object> capabilities(Authentication auth){actor(auth,null);return Map.of("enabled",inbox.getIfAvailable()!=null&&control.getIfAvailable()!=null,"pauseMode","LIVE_SAFE_BOUNDARY","maxRunSeconds",control.getIfAvailable()==null?180:control.getObject().maxRunSeconds());}
     @GetMapping("/{session}/control") public Object view(Authentication auth,@PathVariable String session){var actor=actor(auth,session);var entries=inbox().list(actor,session);return Map.of("run",control.getObject().inspect(actor,session),"inputs",entries);}
-    public record Enqueue(@NotBlank String id,@NotBlank String mode,@NotBlank @Size(max=8000) String content,String entryPoint){}
-    @PostMapping("/{session}/inputs") public Object enqueue(Authentication auth,@PathVariable String session,@Valid @RequestBody Enqueue input,HttpServletRequest request){mutation(request);return inbox().enqueue(actor(auth,session),session,input.id(),input.mode(),input.content(),input.entryPoint()==null?"CHAT":input.entryPoint());}
+    public record Enqueue(@NotBlank String id,@NotBlank String mode,@NotBlank @Size(max=8000) String content,String entryPoint,boolean startIfIdle,Boolean queueIfBusy){}
+    @PostMapping("/{session}/inputs") public Object enqueue(Authentication auth,@PathVariable String session,@Valid @RequestBody Enqueue input,HttpServletRequest request){mutation(request);return inbox().submit(actor(auth,session),session,input.id(),input.mode(),input.content(),input.entryPoint()==null?"CHAT":input.entryPoint(),input.startIfIdle(),!Boolean.FALSE.equals(input.queueIfBusy()));}
+    public record Reorder(@NotNull @Size(min=2,max=16) List<@NotNull OrderEntry> order){}
+    @PostMapping("/{session}/inputs/order") public Map<String,Boolean> reorder(Authentication auth,@PathVariable String session,@Valid @RequestBody Reorder input,HttpServletRequest request){
+        mutation(request);
+        inbox().reorder(actor(auth,session),session,input.order());
+        return Map.of("saved",true);
+    }
     public record Change(@Min(0) int revision,@Size(max=8000) String content){}
     @PostMapping("/{session}/inputs/{id}") public Object change(Authentication auth,@PathVariable String session,@PathVariable String id,@Valid @RequestBody Change input,HttpServletRequest request){mutation(request);return inbox().change(actor(auth,session),session,id,input.revision(),input.content());}
     public record Command(@NotBlank String runId,@NotBlank String action,@Min(0) long revision,boolean confirmed){}

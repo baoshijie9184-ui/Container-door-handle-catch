@@ -6,22 +6,29 @@ import java.util.Set;
 public final class WorkflowPayloads {
     private WorkflowPayloads() { }
     public record ConversationInputV1(String username, String mode, String requestedMode,
-                                      String entryPoint, String content, String contentSha256) {
+                                      String entryPoint, String content, String contentSha256,
+                                      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Long queueOrder) {
+        public ConversationInputV1(String username,String mode,String requestedMode,String entryPoint,String content,String contentSha256) {
+            this(username,mode,requestedMode,entryPoint,content,contentSha256,null);
+        }
         public ConversationInputV1 {
             text(username, 128, "username");
             if (!Set.of("NEXT_TURN", "NEXT_STEP").contains(mode)
                     || !Set.of("NEXT_TURN", "NEXT_STEP").contains(requestedMode)
                     || !Set.of("CHAT", "AGUI").contains(entryPoint)
                     || content == null || content.length() > ("NEXT_STEP".equals(mode) ? 4000 : 8000)
-                    || contentSha256 == null || !contentSha256.matches("[a-f0-9]{64}")) {
+                    || (queueOrder != null && queueOrder <= 0) || contentSha256 == null || !contentSha256.matches("[a-f0-9]{64}")) {
                 throw new IllegalArgumentException("Invalid conversation input payload");
             }
         }
         public ConversationInputV1 withContent(String body, String digest) {
-            return new ConversationInputV1(username, mode, requestedMode, entryPoint, body, digest);
+            return new ConversationInputV1(username, mode, requestedMode, entryPoint, body, digest, queueOrder);
+        }
+        public ConversationInputV1 withQueueOrder(long position) {
+            return new ConversationInputV1(username, mode, requestedMode, entryPoint, content, contentSha256, position);
         }
         public ConversationInputV1 withMode(String value) {
-            return new ConversationInputV1(username, value, requestedMode, entryPoint, content, contentSha256);
+            return new ConversationInputV1(username, value, requestedMode, entryPoint, content, contentSha256, queueOrder);
         }
     }
     public record KnowledgeCommandV1(String documentId, long documentVersion, String action) {

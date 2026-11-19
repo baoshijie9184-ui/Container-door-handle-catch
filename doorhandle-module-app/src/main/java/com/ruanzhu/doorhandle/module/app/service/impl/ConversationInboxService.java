@@ -20,6 +20,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.*;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -45,7 +47,8 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     private final BusinessUserDirectory users; private final ObjectProvider<AgentConversationControlApi> control;
     private ObjectProvider<AgentWorkbenchApi> workbench;
     @org.springframework.beans.factory.annotation.Autowired public void setWorkbench(ObjectProvider<AgentWorkbenchApi> workbench){this.workbench=workbench;}
-    private final ThreadPoolExecutor workers=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{var t=new Thread(r,"agent-conversation-inbox");t.setDaemon(true);return t;});
+    private final Semaphore workerSlots = new Semaphore(2);
+    private final ThreadPoolExecutor workers=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(2),r->{var t=new Thread(r,"agent-conversation-inbox");t.setDaemon(true);return t;});
     private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"agent-conversation-input-dispatch");t.setDaemon(true);return t;});
     private long dispatchAfterUser,dispatchRoundMaxUser;
     public ConversationInboxService(JdbcTemplate jdbc,PlatformTransactionManager manager,ChatSessionService sessions,ChatConversationService chat,
@@ -70,9 +73,55 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     private void audit(WorkflowRecord row,String action){audits.append(new AuditEvent("CONVERSATION_INPUT",row.ownerUserId(),row.ownerUserId(),"CONVERSATION_INPUT",row.workflowId(),row.sessionId(),row.runId(),null,row.requestId(),action,row.revision(),body(row).contentSha256(),null,1,new AuditPayloads.ConversationInputV1(row.status())));}
     private WorkflowRecord row(long user,String id){var row=workflows.find(KIND,id).orElseThrow(()->fail(404,"消息不存在或无权限"));if(row.ownerUserId()!=user)throw fail(404,"消息不存在或无权限");return row;}
     private Item item(WorkflowRecord row){var body=body(row);var clock=row.legacyClockEvidence();return new Item(row.workflowId(),body.mode(),row.status(),Math.toIntExact(row.revision()),body.content(),row.runId(),clock==null?"UTC":clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes());}
-    public List<Item> list(AgentActor actor,String session){var current=owned(actor,session);return workflows.list(KIND,current.userId(),session,null,Set.of(),false,50,false).stream().map(this::item).toList();}
+    // Original FIFO slots are the database IDs. A reorder permutes those slots, so later arrivals stay last.
+    private long queueOrder(WorkflowRecord row) {
+        Long position = body(row).queueOrder();
+        return position == null ? row.id() : position;
+    }
+    private List<WorkflowRecord> waiting(long owner, String session, String run, boolean executable) {
+        return workflows.list(KIND,owner,session,run,Set.of("QUEUED"),executable,16,true).stream()
+                .sorted(Comparator.comparingLong(this::queueOrder)).toList();
+    }
+    public List<Item> list(AgentActor actor,String session) {
+        var current = owned(actor,session);
+        var recent = workflows.list(KIND,current.userId(),session,null,Set.of(),false,50,false);
+        var rows = new ArrayList<>(recent);
+        if (recent.size() == 50) {
+            var pending = waiting(current.userId(),session,null,false);
+            rows.clear();
+            rows.addAll(pending);
+            recent.stream().filter(row -> !"QUEUED".equals(row.status())).limit(50-pending.size()).forEach(rows::add);
+        }
+        // The wire list is newest first. Both clients reverse its pending rows for display.
+        rows.sort(Comparator.<WorkflowRecord>comparingLong(row -> "QUEUED".equals(row.status()) ? queueOrder(row) : row.id()).reversed());
+        return rows.stream().map(this::item).toList();
+    }
+    public record OrderEntry(String id, int revision) {}
+    public void reorder(AgentActor actor,String session,List<OrderEntry> order) {
+        var current = owned(actor,session);
+        if (order == null || order.size() < 2 || order.size() > 16) throw fail(400,"请选择待排序的消息");
+        tx.executeWithoutResult(status -> {
+            lock(current.userId());
+            var pending = waiting(current.userId(),session,null,true);
+            var byId = new HashMap<String,WorkflowRecord>();
+            pending.forEach(row -> byId.put(row.workflowId(),row));
+            if (order.size() != pending.size()) throw fail(409,"队列已变化，请重新排序");
+            for (int i=0; i<order.size(); i++) {
+                var requested = order.get(i);
+                var row = requested == null ? null : byId.remove(requested.id());
+                if (row == null || row.revision() != requested.revision()) throw fail(409,"队列已变化，请重新排序");
+                if (row.id() == pending.get(i).id()) continue;
+                var payload = body(row).withQueueOrder(queueOrder(pending.get(i)));
+                audit(workflows.transition(row,"QUEUED",payload,row.runId(),null,row.expiresAt()),"REORDERED");
+            }
+        });
+    }
     public Item enqueue(AgentActor actor,String session,String id,String mode,String content){return enqueue(actor,session,id,mode,content,"CHAT");}
     public Item enqueue(AgentActor actor,String session,String id,String mode,String content,String entryPoint){
+        return submit(actor,session,id,mode,content,entryPoint,false,true);
+    }
+    public Item submit(AgentActor actor,String session,String id,String mode,String content,
+                                    String entryPoint,boolean startIfIdle,boolean queueIfBusy) {
         var current=owned(actor,session);
         if(!Set.of("CHAT","AGUI").contains(entryPoint))throw fail(400,"消息入口无效");
         if(id==null||!id.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")||!Set.of("NEXT_TURN","NEXT_STEP").contains(mode)||content==null||content.isBlank()||content.length()>("NEXT_STEP".equals(mode)?4000:8000))throw fail(400,"消息编号、模式或长度无效");
@@ -88,8 +137,16 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
                 if(workflows.count(KIND,current.userId(),null,run.runId(),Set.of("QUEUED","APPLIED"))>=6)throw fail(429,"本轮补充要求已达上限，请使用排队发送");target=run.runId();
             }else actualMode="NEXT_TURN";
             var payload=new ConversationInputV1(current.username(),actualMode,mode,entryPoint,content,hash(content));
+            boolean idle = startIfIdle && "IDLE".equals(run.phase())
+                    && workflows.count(KIND,current.userId(),session,null,PENDING)==0 && canDispatch(current,session,id);
             var saved=workflows.create(new WorkflowDraft(id,KIND,"GLOBAL",id,digest,current.userId(),current.userId(),null,"SESSION",session,null,session,target,"QUEUED",now().plusMinutes(15),1,payload));
-            audit(saved,"ENQUEUED");return item(saved);
+            if (idle) {
+                var started = startAfterCommit(current,session,saved,payload);
+                if (started != null) return item(started);
+            }
+            if (!queueIfBusy && "NEXT_TURN".equals(actualMode)) throw fail(409,"消息排队已关闭，请等待当前任务结束");
+            audit(saved,"ENQUEUED");
+            return item(saved);
         });
     }
     public Item change(AgentActor actor,String session,String id,int revision,String content){
@@ -121,7 +178,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     @Override public List<Input> take(AgentActor actor,String session,String runId){
         var current=owned(actor,session);
         return tx.execute(status->{lock(current.userId());var result=new ArrayList<Input>();
-            for(var entry:workflows.list(KIND,current.userId(),session,runId,Set.of("QUEUED"),true,6,true)){
+            for(var entry:waiting(current.userId(),session,runId,true)){
                 if(entry.legacyClockUnresolved())continue;
                 var payload=body(entry);if(!"NEXT_STEP".equals(payload.mode()))continue;
                 result.add(new Input(entry.workflowId(),payload.content()));
@@ -132,34 +189,70 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     }
     public synchronized void dispatch(){
         if(workers.isShutdown())return;
-        expire();if(workers.getActiveCount()>=2)return;
+        expire();if(workerSlots.availablePermits()==0)return;
         if(dispatchRoundMaxUser==0||dispatchAfterUser>=dispatchRoundMaxUser)startDispatchRound();
         var owners=queuedOwnersAfter(dispatchAfterUser);
         if(owners.isEmpty()&&dispatchAfterUser!=0){startDispatchRound();owners=queuedOwnersAfter(0);}
-        for(long owner:owners){dispatchAfterUser=owner;for(var candidate:workflows.list(KIND,owner,null,null,Set.of("QUEUED"),false,16,true))if(dispatch(candidate))return;}
+        for (long owner : owners) {
+            dispatchAfterUser = owner;
+            var visited = new HashSet<String>();
+            for (var candidate : workflows.list(KIND,owner,null,null,Set.of("QUEUED"),false,16,true)) {
+                if (!candidate.legacyClockUnresolved() && visited.add(candidate.sessionId()) && dispatch(candidate)) return;
+            }
+        }
     }
     private void startDispatchRound(){dispatchAfterUser=0;dispatchRoundMaxUser=workflows.maxOwner(KIND,"QUEUED");}
     private List<Long> queuedOwnersAfter(long after){return workflows.ownersAfter(KIND,"QUEUED",after,dispatchRoundMaxUser,32);}
     private record Claimed(WorkflowRecord claim,ConversationInputV1 original){}
     private boolean dispatch(WorkflowRecord candidate){
-        if(candidate.legacyClockUnresolved())return false;
         long user=candidate.ownerUserId();String session=candidate.sessionId(),id=candidate.workflowId();AgentActor actor;
         try{actor=owned(new AgentActor(user,body(candidate).username(),AgentActor.Role.INSPECTOR),session);}catch(RuntimeException error){failQueued(user,id,"ACCOUNT_OR_SESSION_UNAVAILABLE");return false;}
-        var run=control.getObject().inspect(actor,session);
-        if(workbench!=null&&workbench.getIfAvailable()!=null&&!workbench.getObject().canDispatchInput(actor,session,id))return false;
-        if(!"IDLE".equals(run.phase()))return false;
-        Claimed claimed=tx.execute(status->{lock(user);var entry=row(user,id);if(!"QUEUED".equals(entry.status()))return null;
-            if(entry.legacyClockUnresolved())return null;
-            if(workflows.count(KIND,user,session,null,Set.of("STARTED"))>0||!entry.expiresAt().isAfter(now()))return null;
+        if (!"IDLE".equals(control.getObject().inspect(actor,session).phase())) return false;
+        return tx.execute(status->{
+            lock(user);
+            if(workflows.count(KIND,user,session,null,Set.of("STARTED"))>0) return false;
+            // Read the head under the same lock used by reorder, including workbench continuation eligibility.
+            var entry = waiting(user,session,null,true).stream()
+                    .filter(row -> canDispatch(actor,session,row.workflowId())).findFirst().orElse(null);
+            if (entry == null) return false;
             var payload=body(entry);
             if("NEXT_STEP".equals(payload.mode())){entry=workflows.transition(entry,"QUEUED",payload.withMode("NEXT_TURN"),null,null,entry.expiresAt());audit(entry,"FALLBACK_NEXT_TURN");payload=body(entry);}
+            return startAfterCommit(actor,session,entry,payload)!=null;
+        });
+    }
+    private boolean canDispatch(AgentActor actor,String session,String id) {
+        var service = workbench == null ? null : workbench.getIfAvailable();
+        return service == null || service.canDispatchInput(actor,session,id);
+    }
+    // Reserve capacity under the owner lock. Dispatch only a committed receipt, including in an outer transaction.
+    private WorkflowRecord startAfterCommit(AgentActor actor,String session,WorkflowRecord entry,ConversationInputV1 payload) {
+        if (!workerSlots.tryAcquire()) return null;
+        try {
             Duration lease=Duration.ofSeconds(control.getObject().maxRunSeconds()+10L);
             var started=workflows.claim(entry,"STARTED",payload.withContent("",payload.contentSha256()),entry.runId(),now().plus(lease),lease);
-            audit(started,"STARTED");return new Claimed(started,payload);
-        });
-        if(claimed==null)return false;
-        try{workers.execute(()->execute(actor,session,claimed));}catch(RejectedExecutionException error){finish(claimed,"FAILED","EXECUTOR_UNAVAILABLE");}
-        return true;
+            audit(started,"STARTED");
+            var claimed = new Claimed(started,payload);
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCompletion(int status) {
+                    if (status != STATUS_COMMITTED) { workerSlots.release(); return; }
+                    try {
+                        workers.execute(() -> {
+                            try { execute(actor,session,claimed); }
+                            finally { workerSlots.release(); }
+                        });
+                    } catch (RejectedExecutionException stopped) {
+                        workerSlots.release();
+                        var receipt = new TransactionTemplate(tx.getTransactionManager());
+                        receipt.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+                        receipt.executeWithoutResult(ignored -> finish(claimed,"FAILED","EXECUTOR_UNAVAILABLE"));
+                    }
+                }
+            });
+            return started;
+        } catch (RuntimeException failure) {
+            workerSlots.release();
+            throw failure;
+        }
     }
     private void execute(AgentActor supplied,String session,Claimed claimed){
         var previous=SecurityContextHolder.getContext();
