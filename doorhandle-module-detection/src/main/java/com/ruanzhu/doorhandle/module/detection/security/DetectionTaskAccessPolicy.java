@@ -26,7 +26,7 @@ public class DetectionTaskAccessPolicy {
     public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private org.springframework.jdbc.core.JdbcTemplate folderAssignments;
-    private static final String FOLDER_READER = "EXISTS (SELECT 1 FROM detection_work_unit w WHERE w.work_unit_id=detection_task.task_id AND w.strategy='OSS_FOLDER' AND w.assignee_user_id=CAST({0} AS CHAR))";
+    private static final String FOLDER_READER = "EXISTS (SELECT 1 FROM detection_work_unit w WHERE w.work_unit_id=detection_task.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' AND w.assignee_user_id=CAST({0} AS CHAR))";
     private boolean assignedFolder(DetectionTask task,long user) {
         return task!=null && "OSS_FOLDER".equals(task.getTaskType()) && folderAssignments!=null &&
             Boolean.TRUE.equals(folderAssignments.queryForObject("SELECT EXISTS(SELECT 1 FROM detection_work_unit WHERE work_unit_id=? AND strategy='OSS_FOLDER' AND assignee_user_id=?)",

@@ -32,13 +32,13 @@ public class FolderTaskBoard {
 
     private static final String PHASE = """
         CASE WHEN t.status IN ('FAILED','CANCELLED') THEN 'FAILED'
-             WHEN t.flow_status IN ('RECHECK_REQUIRED','REWORK_REQUIRED','HOLD') THEN 'VERIFYING'
+             WHEN t.flow_status IN ('RECHECK_REQUIRED','REWORK_REQUIRED','HOLD') OR (t.flow_status='CONFIRMED' AND t.review_conclusion='NEEDS_RECHECK') THEN 'VERIFYING'
              WHEN t.reviewed_at IS NOT NULL AND t.review_status='REVIEWED' THEN 'DONE'
              WHEN t.status IN ('COMPLETED','PARTIAL_FAILED') THEN 'VERIFYING'
              WHEN t.status IN ('READY','UPLOADING','UPLOADED','PENDING') THEN 'READY'
              ELSE 'DETECTING' END
         """;
-    private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id AND w.strategy='OSS_FOLDER' ";
+    private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
     private static final String COLUMNS = """
         t.task_id AS taskId,t.task_type AS taskType,t.image_folder_name AS folder,t.source_oss_prefix AS prefix,
         t.model_version AS model,t.status AS modelStatus,t.flow_status AS flow,t.review_status AS reviewStatus,
