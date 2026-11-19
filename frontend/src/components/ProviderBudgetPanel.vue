@@ -1,11 +1,12 @@
 <template>
   <section v-if="visible" class="operation-panel provider-budget" aria-labelledby="provider-budget-title">
     <header class="budget-heading budget-intro">
-      <div><h2 id="provider-budget-title">{{ supervisor ? '厂家预算与员工限额' : '我的使用限额' }}</h2>
+      <div><h2 id="provider-budget-title">{{ supervisor ? '厂家预算与个人限额' : '我的使用限额' }}</h2>
         <p class="operation-muted">百炼按模型扣 token，OpenAI 和 DeepSeek 分别共享各自的账户预算。</p></div>
       <div class="budget-tools">
-        <label v-if="supervisor" class="employee-picker">查看员工
-          <el-select v-model="employee" filterable remote clearable :remote-method="search" :disabled="saving" placeholder="输入账号查找员工" @visible-change="openSearch" @change="switchEmployee">
+        <label v-if="supervisor" class="employee-picker">分配对象
+          <el-select :model-value="employee ?? selfId" filterable remote :remote-method="search" :disabled="saving || dialog" placeholder="搜索员工账号" @visible-change="openSearch" @change="switchEmployee">
+            <el-option v-if="selfId" :value="selfId" label="我自己"/>
             <el-option v-for="u in employees" :key="u.id" :value="u.id" :label="u.name"/>
           </el-select>
         </label>
@@ -36,14 +37,14 @@
           </details>
           <p v-else-if="group.registeredNames.length" class="shared-models">{{ group.registeredNames.join('、') }}</p>
           <div v-if="supervisor" class="balance-row"><span>厂家账面可用</span><b>{{ field(group.pool,'available','待登记') }}</b></div>
-          <div v-if="!supervisor || employee" class="balance-row"><span>员工限额</span><b>{{ field(group.member,'limit','未分配') }}</b></div>
+          <div class="balance-row"><span>{{ employee ? '员工限额' : '我的限额' }}</span><b>{{ field(group.member,'limit','未分配') }}</b></div>
           <dl v-if="group.member"><div><dt>已用</dt><dd>{{ field(group.member,'spent') }}</dd></div>
             <div><dt>预留</dt><dd>{{ field(group.member,'reserved') }}</dd></div>
             <div><dt>可用</dt><dd>{{ field(group.member,'available') }}</dd></div></dl>
           <details v-if="supervisor && group.pool"><summary>厂家预算明细</summary><p>总额 {{ group.pool.limit }} · 期初已用 {{ group.pool.openingUsed }} · 本站已用 {{ group.pool.spent }} · 预留 {{ group.pool.reserved }}</p></details>
           <div class="pool-actions" v-if="supervisor">
             <el-button size="small" @click="edit('NATIVE_POOL',group)">登记厂家额度</el-button>
-            <el-button size="small" type="primary" plain :disabled="!employee" @click="edit('NATIVE_MEMBER',group)">分配员工限额</el-button>
+            <el-button size="small" type="primary" plain @click="edit('NATIVE_MEMBER',group)">{{ memberAction }}</el-button>
             <el-button v-if="group.unit!=='TOKEN'" size="small" @click="edit('NATIVE_RATE',group)">模型单价</el-button>
           </div>
         </section>
@@ -65,7 +66,7 @@
         <div class="pool-actions"><el-button :disabled="saving" @click="reviewDialog=false">返回</el-button><el-button native-type="submit" type="primary" :loading="saving">确认入账</el-button></div>
       </form>
     </el-dialog>
-    <el-dialog v-model="dialog" :title="titles[draft.kind]" width="min(540px,94vw)" :close-on-click-modal="false" :before-close="close">
+    <el-dialog v-model="dialog" :title="draft.kind==='NATIVE_MEMBER' ? memberAction : titles[draft.kind]" width="min(540px,94vw)" :close-on-click-modal="false" :before-close="close">
       <form class="operation-form" @submit.prevent="save">
         <p>{{ target?.name }}<template v-if="target?.vendor==='dashscope'"> · {{ target.label }}</template> · {{ target?.unit }}<template v-if="draft.kind==='NATIVE_MEMBER'"> · {{ employeeName }}</template></p>
         <template v-if="draft.kind==='NATIVE_RATE'">
@@ -74,7 +75,7 @@
           <label v-for="f in priceFields" :key="f.key">{{ f.label }}<input v-model="draft[f.key]" type="text" inputmode="decimal" required :disabled="saving"></label>
         </template>
         <template v-else>
-          <label>{{ draft.kind==='NATIVE_POOL'?'厂家总额度':'该员工累计限额' }}（{{ target?.unit }}）<input v-model="draft.limit" type="text" inputmode="decimal" required :disabled="saving"></label>
+          <label>{{ draft.kind==='NATIVE_POOL'?'厂家总额度':'个人累计限额' }}（{{ target?.unit }}）<input v-model="draft.limit" type="text" inputmode="decimal" required :disabled="saving"></label>
           <label v-if="draft.kind==='NATIVE_POOL'">启用本账本前已用（{{ target?.unit }}）<input v-model="draft.openingUsed" type="text" inputmode="decimal" required :disabled="saving || draft.version>0"></label>
           <p v-if="draft.kind==='NATIVE_MEMBER'" class="operation-muted">修改累计上限会保留已有消耗和预留。</p>
         </template>
@@ -92,7 +93,7 @@ import { captureAccountRequest } from '../api/request'
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { operationData,operationError,utcDisplay } from '../utils/qualityOperations'
 import { createUiRequestId } from '../utils/requestIdentity'
-const props=defineProps({supervisor:Boolean,models:{type:Array,default:()=>[]}})
+const props=defineProps({supervisor:Boolean,selfId:[Number,String],models:{type:Array,default:()=>[]}})
 const emit=defineEmits(['active'])
 const api=captureAccountRequest(), base='/api/agent/provider-budgets'
 const visible=ref(false),view=ref(null),error=ref(''),loading=ref(false)
@@ -101,14 +102,15 @@ const pendingOnly=ref(false),more=ref(false),reviewDialog=ref(false),reviewRow=r
 const reviewFields=[{key:'input',label:'输入 token'},{key:'output',label:'输出 token'}]
 const basisLabels={BILL:'账单核实',USAGE:'用量回执',TARIFF:'按登记单价'}
 const saving=ref(false),formError=ref(''),draft=ref({}),pending=ref(null)
-const titles={NATIVE_POOL:'登记厂家额度',NATIVE_MEMBER:'分配员工限额',NATIVE_RATE:'设置模型单价'}
+const titles={NATIVE_POOL:'登记厂家额度',NATIVE_RATE:'设置模型单价'}
 const statusLabels={NATIVE_RELEASE:'已释放',NATIVE_SETTLE:'已结算',IN_PROGRESS:'进行中',NEEDS_REVIEW:'待核对'}
 const priceFields=[{key:'input',label:'未缓存输入单价'},{key:'cached',label:'缓存输入单价'},{key:'output',label:'输出单价'}]
 const names={openai:'OpenAI',dashscope:'阿里云百炼',deepseek:'DeepSeek'}
 const units={openai:'USD',dashscope:'TOKEN',deepseek:'CNY'}
 const scope=useAccountOperationScope(()=>{view.value=null;visible.value=false;reviewDialog.value=false;reviewRow.value=null;employee.value=null;selectedName.value='';employees.value=[];dialog.value=false;target.value=null;pending.value=null;error.value='';formError.value='';saving.value=false;emit('active',false)})
 const read=scope.channel(),staffRead=scope.channel()
-const employeeName=computed(()=>selectedName.value||String(employee.value||''))
+const employeeName=computed(()=>employee.value ? selectedName.value||String(employee.value) : '我自己')
+const memberAction=computed(()=>employee.value ? '分配员工限额' : '设置我的限额')
 const groups=computed(()=>{
   const map=new Map()
   const registered=new Set(props.models.map(m=>m.modelId))
@@ -161,7 +163,12 @@ async function search(query){
   catch(e){if(staffRead.current(stamp))error.value=operationError(e)}
 }
 function openSearch(open){if(open)search('')}
-function switchEmployee(){selectedName.value=employees.value.find(x=>x.id===employee.value)?.name||'';view.value=null;load()}
+function switchEmployee(id){
+  employee.value=String(id)===String(props.selfId) ? null : id
+  selectedName.value=employees.value.find(x=>x.id===employee.value)?.name||''
+  view.value=null
+  load()
+}
 function edit(kind,group){target.value=group;draft.value={kind,model:group.models[0]};loadForm();dialog.value=true}
 function loadForm(){
   const d=draft.value,g=target.value
@@ -175,7 +182,7 @@ async function save(){
   const d=draft.value
   if(saving.value || !target.value)return
   const payload={kind:d.kind,model:d.model,expectedVersion:d.version}
-  if(d.kind==='NATIVE_MEMBER')payload.employeeId=employee.value
+  if(d.kind==='NATIVE_MEMBER')payload.employeeId=employee.value ?? props.selfId
   const fields=d.kind==='NATIVE_RATE'?['input','cached','output']:d.kind==='NATIVE_POOL'?['limit','openingUsed']:['limit']
   const regex=target.value.unit==='TOKEN'?/^\d+$/:/^\d+(\.\d+)?$/
   for(const key of fields){

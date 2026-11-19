@@ -140,8 +140,8 @@ public class ProviderBudgetService {
             if(!ids.contains(owner)) throw new BusinessException(404,"员工账号不存在");
         }
         requireSupervisor(users.lockCurrent(auth.userId(),auth.username()));
-        if(owner!=0 && jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE id=? AND enabled=TRUE AND role NOT IN ('SUPERVISOR','ADMIN')",Long.class,owner)!=1)
-            throw new BusinessException(400,"只能给启用的员工账号分配额度");
+        if(owner!=0 && jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE id=? AND enabled=TRUE AND (id=? OR role NOT IN ('SUPERVISOR','ADMIN'))",Long.class,owner,auth.userId())!=1)
+            throw new BusinessException(400,"只能给本人或已启用的员工分配限额");
         String digest=ModelConfigurationStore.digest(p.kind(),key,Long.toString(owner),encode(p));
         var existing=jdbc.queryForList("SELECT request_sha256 FROM llm_usage WHERE actor_user_id=? AND native_command=?",String.class,auth.userId(),p.requestId());
         if(!existing.isEmpty()) {
@@ -172,9 +172,10 @@ public class ProviderBudgetService {
 
     void hold(long root,long attempt,BusinessUserDirectory.Identity who,String model,long ceiling) {
         String vendor=ProviderMeter.provider(model),unit=ProviderMeter.unit(vendor);
-        var pool=lock(POOL,ProviderMeter.pool(model),0);
-        Account member=who.supervisor()?null:lock(MEMBER,ProviderMeter.pool(model),who.userId());
-        if(!who.supervisor() && member==null) throw exhausted("请先由主管分配该员工的调用限额");
+        String key=ProviderMeter.pool(model);
+        var pool=lock(POOL,key,0);
+        var member=lock(MEMBER,key,who.userId());
+        if(member==null) throw exhausted(who.supervisor()?"请先在模型与额度中设置我的限额":"请先由主管分配个人调用限额");
         if(pool==null) throw exhausted("主管尚未登记该厂家的模型预算");
         ProviderMeter.Rate rate=null;
         if(!unit.equals("TOKEN")) {
@@ -184,9 +185,9 @@ public class ProviderBudgetService {
         }
         BigDecimal amount=rate==null?BigDecimal.valueOf(ceiling):rate.hold(ceiling);
         var snapshot=new Snapshot(model,unit,rate);
-        for(Account a : member==null?List.of(pool):List.of(pool,member)) {
+        for(Account a : List.of(pool,member)) {
             if(!unit.equals(a.unit())) throw new IllegalStateException("额度单位不一致");
-            if(new BigDecimal(a.available()).compareTo(amount)<0) throw exhausted(a==pool?"厂家可用额度不足":"员工可用限额不足");
+            if(new BigDecimal(a.available()).compareTo(amount)<0) throw exhausted(a==pool?"厂家可用额度不足":"个人可用限额不足");
             jdbc.update("UPDATE llm_quota SET native_reserved=native_reserved+? WHERE id=?",amount,a.id());
             ledger(a.id(),root,attempt,who.userId(),"NATIVE:HOLD","NATIVE_HOLD",amount,ZERO,null,null,null,encode(snapshot));
         }

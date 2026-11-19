@@ -25,7 +25,7 @@
           <thead><tr>
             <th scope="col">模型名称</th><th scope="col">剩余额度 / 总额</th>
             <th scope="col" class="numeric">已用</th><th scope="col" class="numeric">预留</th>
-            <th v-if="supervisor && employee" scope="col">员工限额 / 可用</th>
+            <th v-if="supervisor" scope="col">{{ employee ? '员工限额' : '我的限额' }} / 可用</th>
             <th scope="col">额度状态</th><th v-if="supervisor" scope="col">管理</th>
           </tr></thead>
           <tbody><tr v-for="row in pageRows" :key="row.group.key">
@@ -43,11 +43,13 @@
               </details>
             </td>
             <td class="numeric">{{ formatTokens(row.account?.reserved) }}</td>
-            <td v-if="supervisor && employee">{{ row.group.member ? formatTokens(row.group.member.limit) + ' / ' + formatTokens(row.group.member.available) : '未分配' }}</td>
+            <td v-if="supervisor">{{ row.group.member ? formatTokens(row.group.member.limit) + ' / ' + formatTokens(row.group.member.available) : '未分配' }}
+              <details v-if="row.group.member"><summary>个人用量</summary><p>已用 {{ formatTokens(row.group.member.spent) }} · 预留 {{ formatTokens(row.group.member.reserved) }}</p></details>
+            </td>
             <td><span class="quota-status" :class="{ available: row.available > 0 }">{{ row.status }}</span></td>
             <td v-if="supervisor"><div class="row-actions">
               <el-button link type="primary" @click="emit('configure', 'NATIVE_POOL', row.group)">登记额度</el-button>
-              <el-button link type="primary" :disabled="!employee" @click="emit('configure', 'NATIVE_MEMBER', row.group)">分配限额</el-button>
+              <el-button link type="primary" @click="emit('configure', 'NATIVE_MEMBER', row.group)">{{ employee ? '分配员工限额' : '设置我的限额' }}</el-button>
             </div></td>
           </tr></tbody>
         </table>

@@ -1,13 +1,13 @@
 <template>
   <div class="operation-page llm-management">
-    <PageHero title="LLM模型管理" icon="Cpu" :description="supervisor ? '管理厂家预算和员工限额，核对用量并审批员工申请。' : '查看模型用量与个人限额，申请追加额度并跟进进度。'">
+    <PageHero title="LLM模型管理" icon="Cpu" :description="supervisor ? '管理厂家预算，为自己和员工分配限额，核对用量并审批员工申请。' : '查看模型用量与个人限额，申请追加额度并跟进进度。'">
       <template #actions>
         <el-button :loading="refreshing" :disabled="busy" @click="refresh"><AppIcon name="Refresh" :size="15" />刷新</el-button>
         <el-button v-if="!supervisor" type="primary" :disabled="busy || !applyModels.length" @click="openApply()"><AppIcon name="Plus" :size="15" />申请额度</el-button>
       </template>
     </PageHero>
 
-    <ProviderBudgetPanel :models="models" :supervisor="supervisor" @active="nativeBudgets = $event" />
+    <ProviderBudgetPanel :models="models" :supervisor="supervisor" :self-id="user.userId" @active="nativeBudgets = $event" />
     <p v-if="nativeBudgets && !supervisor" class="operation-muted">下方申请用于追加单模型 token 限额。员工还须由主管分配上方对应的厂家或模型额度。</p>
     <el-alert v-if="supervisor && nativeBudgets && modelsError" :title="modelsError" type="error" :closable="false"><el-button text @click="loadModels">重新读取模型目录</el-button></el-alert>
     <el-alert v-if="quotaChanged" title="额度或申请资料可能已更新 当前未提交内容已保留" type="warning" :closable="false"><el-button text @click="refreshQuotaLatest">核对最新记录</el-button></el-alert>

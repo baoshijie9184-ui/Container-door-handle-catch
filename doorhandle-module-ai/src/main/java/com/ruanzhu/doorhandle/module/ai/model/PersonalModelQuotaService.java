@@ -119,7 +119,7 @@ public class PersonalModelQuotaService {
             if(collaborationHistory!=null)collaborationHistory.replayReceipt(agent(actor),"LLM_QUOTA_APPLICATION","LLM_QUOTA_APPLICATION",existing.id(),request.requestId());
             return collaborationHistory!=null&&collaborationHistory.protectsCommands()?originalApplication(existing):view(existing);
         }
-        if(actor.supervisor())throw new BusinessException(403,"主管直接使用企业预算，无需申请个人额度");
+        if(actor.supervisor())throw new BusinessException(403,"主管无需提交个人额度申请");
         String id=UUID.randomUUID().toString();
         if(receipt(actor.userId(),request.requestId(),id,"APPLY",hash))throw inconsistent();
         jdbc.update("""
