@@ -349,16 +349,16 @@ public class DashboardServiceImpl implements DashboardService {
                        IF(JSON_VALID(t.statistics_json), t.statistics_json, '{}') AS stats
                 FROM detection_task t JOIN model_management m ON m.model_id = t.model_id
                 WHERE t.status IN ('COMPLETED','PARTIAL_FAILED') AND (%s)
-            ), parsed AS (
-                SELECT s.*, %s AS missed, %s AS reportedSuccess, %s AS reportedFailed, %s AS reportedTotal,
+            ), fields AS (
+                SELECT s.*, JSON_EXTRACT(stats,'$.noDetectionImages') AS missField,
+                       JSON_EXTRACT(stats,'$.successfulImages') AS successField,
+                       JSON_EXTRACT(stats,'$.failedImages') AS failedField,
+                       JSON_EXTRACT(stats,'$.totalImages') AS totalField,
                        CAST(JSON_UNQUOTE(JSON_EXTRACT(stats,'$.missDetectionRate')) AS DECIMAL(10,4)) AS legacyRate
                 FROM task_snapshots s
-                JOIN JSON_TABLE(s.stats, '$' COLUMNS (
-                    missText VARCHAR(64) PATH '$.noDetectionImages' DEFAULT '"invalid"' ON ERROR,
-                    successText VARCHAR(64) PATH '$.successfulImages' DEFAULT '"invalid"' ON ERROR,
-                    failedText VARCHAR(64) PATH '$.failedImages' DEFAULT '"invalid"' ON ERROR,
-                    totalText VARCHAR(64) PATH '$.totalImages' DEFAULT '"invalid"' ON ERROR
-                )) j ON TRUE
+            ), parsed AS (
+                SELECT f.*, %s AS missed, %s AS reportedSuccess, %s AS reportedFailed, %s AS reportedTotal
+                FROM fields f
             ), counts AS (
                 SELECT p.*, COALESCE(successful_images, reportedSuccess) AS succeeded,
                        COALESCE(failed_images, reportedFailed) AS failed,
@@ -391,15 +391,16 @@ public class DashboardServiceImpl implements DashboardService {
 
     private static String imageCount(String column) {
         // A malformed count must not silently become a genuine zero through MySQL coercion.
-        return "CASE WHEN " + column + " IS NULL THEN NULL WHEN " + column
-                + " REGEXP '^[0-9]{1,10}$' THEN CAST(" + column + " AS SIGNED) ELSE -1 END";
+        String text = "JSON_UNQUOTE(" + column + ")";
+        return "CASE WHEN " + column + " IS NULL OR JSON_TYPE(" + column + ") = 'NULL' THEN NULL WHEN "
+                + text + " REGEXP '^[0-9]{1,10}$' THEN CAST(" + text + " AS SIGNED) ELSE -1 END";
     }
 
     @Override
     public List<Map<String, Object>> getModelStats() {
         var scope = accessPolicy.currentSqlScope("t.");
-        String sql = MODEL_STATS_SQL.formatted(scope.predicate(), imageCount("missText"),
-                imageCount("successText"), imageCount("failedText"), imageCount("totalText"));
+        String sql = MODEL_STATS_SQL.formatted(scope.predicate(), imageCount("missField"),
+                imageCount("successField"), imageCount("failedField"), imageCount("totalField"));
         List<Map<String, Object>> models = new ArrayList<>();
         Map<Integer, List<Map<String, Object>>> rates = new HashMap<>();
         for (var row : scopedJdbc.queryForList(sql, scope.parameters())) {
