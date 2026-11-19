@@ -3,7 +3,7 @@ Description=Forward review TLS connections to the OpenAI API through the local H
 
 [Service]
 EnvironmentFile=%h/.config/doorhandle/review-openai-relay.env
-ExecStart=/usr/bin/socat -T300 TCP4-LISTEN:${REVIEW_OPENAI_RELAY_PORT},bind=${REVIEW_BRIDGE_GATEWAY},range=${REVIEW_BRIDGE_SUBNET},reuseaddr,fork,max-children=24 PROXY:127.0.0.1:api.openai.com:443,proxyport=${REVIEW_HOST_PROXY_PORT},connect-timeout=10
+ExecStart=/usr/bin/python3 -B %h/.local/lib/doorhandle/review-openai-proxy.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
