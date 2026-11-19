@@ -6,7 +6,7 @@ import com.ruanzhu.doorhandle.module.ai.workbench.ConversationModelPreferences;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.lang.Nullable;
 import org.springframework.http.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -17,11 +17,10 @@ import java.util.Map;
 /** Session-owned model preference. A logical execution snapshots it before the first request. */
 @RestController
 @RequestMapping("/api/agent/conversations/{sessionId}/model-selection")
-@ConditionalOnProperty(prefix="agentscope.ai",name="enabled",havingValue="true")
 public class ConversationModelController {
     private final ConversationModelPreferences preferences;
     private final AgentModelService models;
-    public ConversationModelController(@org.springframework.lang.Nullable ConversationModelPreferences preferences,AgentModelService models){this.preferences=preferences;this.models=models;}
+    public ConversationModelController(@Nullable ConversationModelPreferences preferences,@Nullable AgentModelService models){this.preferences=preferences;this.models=models;}
     public record Select(@NotNull @Size(max=160) String modelId,@Min(0) long revision,@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,128}") String requestId){}
     @GetMapping public ResponseEntity<?> get(Authentication auth,@PathVariable String sessionId){var actor=AgentIdentity.from(auth);return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(preferences==null?Map.of("enabled",false):preferences.modelSelection(actor,sessionId));}
     @PostMapping public ResponseEntity<ConversationModelPreferences.ModelSelection> select(Authentication auth,@PathVariable String sessionId,@Valid @RequestBody Select input,HttpServletRequest request){

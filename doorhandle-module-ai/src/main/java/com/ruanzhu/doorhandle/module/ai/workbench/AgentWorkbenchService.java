@@ -4,6 +4,7 @@ import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
+import com.ruanzhu.doorhandle.module.ai.model.AgentModelService;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.*;
 import io.agentscope.core.event.*;
@@ -80,6 +81,10 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
     @Override public void assertForkPoint(AgentActor actor,String session,long message){owned(actor,session);var turn=store.find(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"turn:"+message));if(turn!=null&&!turn.status().equals("COMPLETED"))throw fail(409,"此轮仍在等待或已中断，不能作为完成切点");}
     @Override public void forked(AgentActor actor,String source,String target,long message){owned(actor,source);owned(actor,target);var turn=store.find(actor.userId(),source,WorkbenchStore.stable(actor.userId(),source,"turn:"+message));if(turn!=null)store.create(actor.userId(),target,WorkbenchStore.stable(actor.userId(),target,"fork-snapshot"),"FORK_SNAPSHOT","REFERENCE_ONLY",Map.of("text",store.encode(turn.data().get("snapshot")),"sourceSessionId",source,"throughMessageId",message));if(contexts!=null&&contexts.getIfAvailable()!=null)contexts.getObject().fork(actor,source,target,message);}
     @Override public String waitingPhase(AgentActor actor,String session){var job=store.find(actor.userId(),session,mainId(actor,session));if(job==null)return null;return switch(job.status()){case "WAITING_PLAN"->"WAITING_PLAN";case "WAITING_INPUT"->"WAITING_INPUT";case "WAITING_CHILD"->"WAITING_CHILD";case "NEEDS_REVIEW","UNKNOWN"->"AWAITING_RECOVERY";default->null;};}
+    private AgentModelService models;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setModels(AgentModelService models) { this.models = models; }
+
     public Scope prepare(AgentActor actor,String session,String question,String runId){
         owned(actor,session);return store.locked(actor.userId(),()->{
             String id=mainId(actor,session);var job=store.find(actor.userId(),session,id);
@@ -89,8 +94,22 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             var data=continuation?new LinkedHashMap<>(job.data()):new LinkedHashMap<String,Object>();
             if(continuation&&!actor.role().name().equals(data.get("role")))throw fail(403,"账号角色已变化，不能继续原任务");
             data.put("username",actor.username());data.put("role",actor.role().name());data.put("runId",runId);data.put("instance",instance);data.put("yieldReady",false);data.put("title",bounded(question,200));
-            if(!continuation){data.put("logicalTaskId",UUID.randomUUID().toString());data.put("planRequired",settings.isPlans()&&!simple(question));data.put("modelId",modelSelectionEnabled ? ConversationModelPreferences.read(store,actor,session).modelId() : "");}
-            if(!continuation&&modelConfigurations!=null&&modelConfigurations.getIfAvailable()!=null){var model=modelConfigurations.getObject().active();data.put("modelConfigVersion",model.version());data.put("modelDefault",model.defaultModel());}
+            if(!continuation) {
+                data.put("logicalTaskId",UUID.randomUUID().toString());
+                data.put("planRequired",settings.isPlans()&&!simple(question));
+                String preference=modelSelectionEnabled?ConversationModelPreferences.read(store,actor,session).modelId():"";
+                data.put("modelId",preference);
+                if(models!=null) {
+                    var selected=models.snapshot(preference);
+                    data.put("modelId",selected.id());
+                    data.put("modelConfigVersion",selected.version());
+                    if(preference.isEmpty())data.put("modelDefault",selected.id());
+                } else if(modelConfigurations!=null&&modelConfigurations.getIfAvailable()!=null) {
+                    var model=modelConfigurations.getObject().active();
+                    data.put("modelConfigVersion",model.version());
+                    data.put("modelDefault",model.defaultModel());
+                }
+            }
             validateTaskModel(data);
             job=job==null?store.create(actor.userId(),session,id,"EXECUTION","RUNNING",data):store.update(job,"RUNNING",data,"EXECUTION_STARTED");
             liveExecutions.put(id,runId);durableAttempts.put(id,store.attempt(job));

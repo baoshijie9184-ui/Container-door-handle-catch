@@ -87,6 +87,17 @@ class AgentModelServiceTest {
         });
         var actor=new AgentActor(7,"fixture",AgentActor.Role.INSPECTOR);
         try(var models=new AgentModelService(connections,agent)){
+            var budget=mock(ModelBudgetService.class);
+            var charged=new CopyOnWriteArrayList<String>();
+            when(budget.started(any(),anyString(),anyString(),anyString(),anyLong(),anyString())).thenAnswer(call->{
+                ModelBudgetContext identity=call.getArgument(0);
+                assertThat(identity.actor()).isEqualTo(actor);
+                String id=call.getArgument(3);
+                return new ModelBudgetService.Ticket(1,2,actor.userId(),id,identity.runId());
+            });
+            doAnswer(call->{ModelBudgetService.Ticket ticket=call.getArgument(0);charged.add(ticket.modelId());return null;})
+                    .when(budget).finished(any(),anyMap());
+            models.setBudget(budget);
             var factory=new RoleAgentFactory(agent,mock(BusinessToolkitFactory.class),models::resolve);
             factory.setVersionedModels(models::resolveAt,models::currentDefault);
             var chat=new AgentScopeConversationService(factory,new AgentRunRegistry(),agent);
@@ -103,6 +114,7 @@ class AgentModelServiceTest {
             var second=chat.start(actor,"session",history,"",events::add,"AGUI","turn2").result().get(15,java.util.concurrent.TimeUnit.SECONDS);
             assertThat(second).contains("第二轮回答");
             assertThat(requests).extracting(req->req.path("model").asText()).containsExactly("gpt-test","qwen-plus");
+            assertThat(charged).containsExactly("openai-official:gpt-test","dashscope:qwen-plus");
             assertThat(requests.get(1).path("messages").toString()).contains("测试记录 A17",first,"请复述刚才的标记");
             assertThat(events).filteredOn(e->e.type().equals("MODEL_ATTEMPT_STARTED"))
                     .extracting(e->e.modelReceipt().get("modelId")).containsExactly("openai-official:gpt-test","dashscope:qwen-plus");

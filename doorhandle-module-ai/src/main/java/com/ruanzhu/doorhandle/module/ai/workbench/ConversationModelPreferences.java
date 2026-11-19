@@ -5,7 +5,7 @@ import com.ruanzhu.doorhandle.contracts.agent.AgentChatSessionApi;
 import com.ruanzhu.doorhandle.module.ai.agent.AgentRunRegistry;
 import com.ruanzhu.doorhandle.module.ai.model.AgentModelService;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -16,7 +16,7 @@ import java.util.Set;
 import static com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchStore.fail;
 
 @Service
-@ConditionalOnProperty(prefix = "agentscope.model-selection", name = "enabled", havingValue = "true")
+@ConditionalOnExpression("${agentscope.ai.enabled:false} and ${agentscope.model-selection.enabled:false}")
 public class ConversationModelPreferences {
     public record ModelSelection(String modelId, long revision) {}
 
