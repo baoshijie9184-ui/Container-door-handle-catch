@@ -129,27 +129,29 @@ class PersonalModelQuotaMySqlTest {
         assertThat(account(4)).containsEntry("total_tokens",70L);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM llm_usage",Long.class)).isEqualTo(1);
     }
-    @Test void oppositeSupervisorApprovalsUseTheSameUserLockOrder()throws Exception {
-        as(3);var boss=apply(10);as(6);var admin=apply(20);
+    @Test void supervisorsCanApproveDifferentEmployeesConcurrently()throws Exception {
+        as(4);var firstEmployee=apply(10);as(5);var secondEmployee=apply(20);
         var pool=Executors.newFixedThreadPool(2);var start=new CountDownLatch(1);
         try {
-            var first=pool.submit(()->{as(3);start.await();return service.decide(admin.id(),approval(key()));});
-            var second=pool.submit(()->{as(6);start.await();return service.decide(boss.id(),approval(key()));});
+            var first=pool.submit(()->{as(3);start.await();return service.decide(secondEmployee.id(),approval(key()));});
+            var second=pool.submit(()->{as(6);start.await();return service.decide(firstEmployee.id(),approval(key()));});
             start.countDown();assertThat(first.get(10,TimeUnit.SECONDS).status()).isEqualTo("APPROVED");
             assertThat(second.get(10,TimeUnit.SECONDS).status()).isEqualTo("APPROVED");
         }finally{pool.shutdownNow();}
-        assertThat(account(3)).containsEntry("total_tokens",10L);assertThat(account(6)).containsEntry("total_tokens",20L);
+        assertThat(account(4)).containsEntry("total_tokens",10L);assertThat(account(5)).containsEntry("total_tokens",20L);
     }
-    @Test void supervisorCannotApproveTheirOwnApplicationAndAnotherSupervisorCan() {
-        jdbc.update("INSERT INTO users(id,username,password,role) VALUES(7,'independent-boss','fixture','SUPERVISOR')");
-        as(3);var application=apply(90);var command=approval(key());
+    @Test void managersDoNotApplyAndAPromotedEmployeesPendingRequestCanBeClosed() {
+        as(3);failure(()->apply(90),403);
+        as(6);failure(()->apply(90),403);
+        as(4);var application=apply(90);var command=approval(key());
+        jdbc.update("UPDATE users SET role='SUPERVISOR' WHERE id=4");as(4);
         failure(()->service.decide(application.id(),command),403);
         assertThat(jdbc.queryForObject("SELECT status FROM workflow_instance WHERE workflow_id=?",String.class,application.id())).isEqualTo("PENDING");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM llm_quota WHERE scope_type='USER'",Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='LLM_QUOTA_APPLICATION' AND action='APPROVE'",Long.class)).isZero();
-        as(7);var approved=service.decide(application.id(),approval(key()));
-        assertThat(approved.status()).isEqualTo("APPROVED");assertThat(approved.deciderUserId()).isEqualTo(7);
-        assertThat(account(3)).containsEntry("total_tokens",90L);
+        as(3);failure(()->service.decide(application.id(),approval(key())),409);
+        var rejected=service.decide(application.id(),new PersonalModelQuotaService.Decision("REJECT","使用主管预算",0L,key()));
+        assertThat(rejected.status()).isEqualTo("REJECTED");
     }
     @Test void auditFailureRollsBackGrantLedgerAndDecisionTogether() {
         var application=apply(90);as(3);

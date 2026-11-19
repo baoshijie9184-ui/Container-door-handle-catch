@@ -29,6 +29,10 @@ final class QuotaAccountStore {
 
     /** A replay returns the original account set; a newly granted personal quota is never charged retroactively. */
     Reservation reserve(long root, long attempt, long owner, String model, long ceiling) {
+        return reserve(root, attempt, owner, model, ceiling, true);
+    }
+
+    Reservation reserve(long root, long attempt, long owner, String model, long ceiling, boolean usePersonalQuota) {
         if (ceiling <= 0) throw new IllegalArgumentException("A provider attempt needs a positive token ceiling");
         String state = lockOperation(root, attempt, owner, model);
         var previous = reservations(root, attempt, owner, model);
@@ -39,11 +43,10 @@ final class QuotaAccountStore {
         if (!"RESERVED".equals(state)) throw new IllegalStateException("Only an undispatched attempt can reserve tokens");
         Account enterprise = lockModel(model);
         var accounts = new ArrayList<Account>(); accounts.add(enterprise);
-        var personal = jdbc.query("""
+        if (usePersonalQuota) accounts.addAll(jdbc.query("""
                 SELECT * FROM llm_quota WHERE scope_type='USER' AND owner_user_id=?
                     AND model_id=? AND period_key='TOTAL' FOR UPDATE
-                """, this::account, owner, enterprise.model());
-        accounts.addAll(personal);
+                """, this::account, owner, enterprise.model()));
         LocalDateTime now = jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class);
         // Validate both accounts before changing either; all deltas and ledger entries commit together.
         for (var account : accounts) {

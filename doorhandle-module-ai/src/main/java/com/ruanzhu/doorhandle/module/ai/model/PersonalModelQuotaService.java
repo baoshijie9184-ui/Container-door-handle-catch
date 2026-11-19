@@ -119,6 +119,7 @@ public class PersonalModelQuotaService {
             if(collaborationHistory!=null)collaborationHistory.replayReceipt(agent(actor),"LLM_QUOTA_APPLICATION","LLM_QUOTA_APPLICATION",existing.id(),request.requestId());
             return collaborationHistory!=null&&collaborationHistory.protectsCommands()?originalApplication(existing):view(existing);
         }
+        if(actor.supervisor())throw new BusinessException(403,"主管直接使用企业预算，无需申请个人额度");
         String id=UUID.randomUUID().toString();
         if(receipt(actor.userId(),request.requestId(),id,"APPLY",hash))throw inconsistent();
         jdbc.update("""
@@ -169,6 +170,8 @@ public class PersonalModelQuotaService {
         protocol.requireTransition(application.status(),next);
         Long before=null,after=null;Personal previousQuota=null;
         if("APPROVE".equals(action)) {
+            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT role IN ('SUPERVISOR','ADMIN') FROM users WHERE id=?",Boolean.class,application.owner())))
+                throw new BusinessException(409,"申请人现为主管，无需追加个人额度，可驳回历史申请");
             requireConfigured(application.model());accounts.lockModel(application.model());
             var personal=personal(application.owner(),application.model(),true);
             previousQuota=personal;

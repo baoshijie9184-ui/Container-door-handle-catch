@@ -98,17 +98,21 @@ public class ProviderBudgetService {
         // Only the company-side receipt is counted. Member and pool entries describe the same call.
         var usage=jdbc.query("""
                 SELECT h.operation_id,w.resource_id,h.native_reserved_delta,f.native_spent_delta,
-                       q.native_unit,CASE WHEN w.status='STARTED' AND w.updated_at<UTC_TIMESTAMP(6)-INTERVAL 1 DAY THEN 'STALE' ELSE w.status END,f.input_tokens,f.output_tokens,f.cached_tokens,h.created_at,f.entry_type,JSON_EXTRACT(f.native_detail,'$.reference')
+                       q.native_unit,CASE WHEN w.status='STARTED' AND w.updated_at<UTC_TIMESTAMP(6)-INTERVAL 1 DAY THEN 'STALE' ELSE w.status END,
+                       COALESCE(f.input_tokens,t.input_tokens),COALESCE(f.output_tokens,t.output_tokens),
+                       COALESCE(f.cached_tokens,t.cached_tokens),h.created_at,f.entry_type,JSON_EXTRACT(f.native_detail,'$.reference')
                 FROM llm_usage h JOIN llm_quota q ON q.id=h.account_id
                 JOIN workflow_instance w ON w.id=h.operation_id
                 LEFT JOIN llm_usage f ON f.account_id=h.account_id AND f.operation_id=h.operation_id AND f.entry_key='NATIVE:FINAL'
+                LEFT JOIN llm_quota m ON m.scope_type='MODEL' AND m.subject_key=0 AND m.model_id=w.resource_id AND m.period_key='TOTAL'
+                LEFT JOIN llm_usage t ON t.account_id=m.id AND t.operation_id=h.operation_id AND t.entry_key='FINAL' AND t.entry_type='SETTLE'
                 WHERE q.period_key='NATIVE_POOL' AND h.actor_user_id=? AND h.entry_key='NATIVE:HOLD' AND h.operation_id<?
                   AND (?=FALSE OR (f.id IS NULL AND (w.status<>'STARTED' OR w.updated_at<UTC_TIMESTAMP(6)-INTERVAL 1 DAY)))
                 ORDER BY h.operation_id DESC LIMIT 50
                 """,(r,i)->new Usage(r.getLong(1),r.getString(2),r.getString(5),decimal(r.getBigDecimal(3)),
                         decimal(r.getBigDecimal(4)),r.getString(11)!=null?r.getString(11):
                         "STARTED".equals(r.getString(6))?"IN_PROGRESS":"NEEDS_REVIEW",
-                        r.getString(11)==null?null:r.getString(12)!=null?"BILL":r.getString(5).equals("TOKEN")?"USAGE":"TARIFF",
+                        !"NATIVE_SETTLE".equals(r.getString(11))?null:r.getString(12)!=null?"BILL":r.getString(5).equals("TOKEN")?"USAGE":"TARIFF",
                         r.getObject(7,Long.class),r.getObject(8,Long.class),r.getObject(9,Long.class),r.getTimestamp(10).toLocalDateTime()+"Z"),owner,before,pending);
         return new View(list,usage);
     }
@@ -197,7 +201,11 @@ public class ProviderBudgetService {
     void settle(long root,long attempt,long owner,long in,long out,Long cached) {
         var rows=holds(attempt);
         if(rows.isEmpty()) return; // Pre-activation reservation.
-        var pricing=rows.get(0).snapshot().rate();
+        var snapshot=rows.get(0).snapshot();
+        // Direct DeepSeek reports token counts but its CNY tariff varies by billing period.
+        // Keep the maximum-price reservation until a supervisor confirms the supplier charge.
+        if ("deepseek".equals(ProviderMeter.provider(snapshot.model()))) return;
+        var pricing=snapshot.rate();
         BigDecimal cost=pricing==null?BigDecimal.valueOf(Math.addExact(in,out)):pricing.cost(in,out,cached);
         if(cost==null) return; // Provider omitted cache usage needed by this tariff. Keep the hold pending.
         finish(root,attempt,owner,rows,cost,in,out,cached,null);
@@ -242,13 +250,19 @@ public class ProviderBudgetService {
         if("STARTED".equals(opRecord.status()) && jdbc.queryForObject(
                 "SELECT COUNT(*) FROM workflow_instance WHERE id=? AND updated_at<UTC_TIMESTAMP(6)-INTERVAL 1 DAY",Long.class,attemptId)!=1)
             throw new BusinessException(409,"调用仍在进行");
+        Long cached=r.cached();
         if("COMPLETED".equals(opRecord.status())) {
             var booked=jdbc.queryForList("""
-                    SELECT input_tokens,output_tokens FROM llm_usage WHERE account_id=(SELECT id FROM llm_quota
+                    SELECT input_tokens,output_tokens,cached_tokens FROM llm_usage WHERE account_id=(SELECT id FROM llm_quota
                     WHERE scope_type='MODEL' AND subject_key=0 AND model_id=? AND period_key='TOTAL') AND operation_id=? AND entry_key='FINAL'
                     """,model,attemptId);
             if(booked.size()!=1 || !r.input().equals(booked.get(0).get("input_tokens")) || !r.output().equals(booked.get(0).get("output_tokens")))
                 throw new BusinessException(409,"已入账的 token 与核对值不符");
+            Number reported=(Number)booked.get(0).get("cached_tokens");
+            if(reported!=null) {
+                if(cached!=null && cached.longValue()!=reported.longValue()) throw new BusinessException(409,"缓存 token 与厂家回执不符");
+                cached=reported.longValue();
+            }
         } else {
             if(!List.of("STARTED","NEEDS_REVIEW").contains(opRecord.status())) throw new BusinessException(409,"调用状态不支持核对");
             new QuotaAccountStore(jdbc).settle(root,attemptId,owner,model,r.input(),r.output(),r.cached());
@@ -256,7 +270,7 @@ public class ProviderBudgetService {
             if(!"COMPLETED".equals(parent.status()) && jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE parent_workflow_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED')",Long.class,root)==0)
                 workflows.transition(parent,"COMPLETED",workflows.payload(parent,ModelBudgetWorkflow.RequestV1.class),parent.runId(),null,null);
         }
-        finish(root,attemptId,owner,reservations,r.amount(),r.input(),r.output(),r.cached(),verified);
+        finish(root,attemptId,owner,reservations,r.amount(),r.input(),r.output(),cached,verified);
     }
     private void finish(long root,long attempt,long owner,List<Hold> rows,BigDecimal cost,Long in,Long out,Long cached,Verified verification) {
         for(var h:rows) {

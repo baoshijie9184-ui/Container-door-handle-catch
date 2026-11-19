@@ -20,6 +20,8 @@ services:
     image: ${LOCAL_WORKER_IMAGE:?Set the pinned worker image}
   backend:
     image: ${LOCAL_BACKEND_IMAGE:?Set the pinned task branch backend image}
+    environment:
+      DASHSCOPE_ADDITIONAL_MODELS: ${DASHSCOPE_ADDITIONAL_MODELS:-qwen3.8-max-0902,qwen-plus,qwen-flash,qwen-max,qwen3.7-plus,glm-5.3,kimi-k3,deepseek-v4-pro,deepseek-v4.1-flash}
   nginx:
     image: ${LOCAL_WEB_IMAGE:?Set the pinned task branch web image}
     ports: !override

@@ -219,7 +219,7 @@ public class ModelBudgetService {
                     "LLM_MODEL",modelId,null,null,context.runId(),"RESERVED",null,1,payload));
             attempt=workflows.findLocked(WorkflowKind.LLM_PROVIDER_ATTEMPT,attempt.workflowId()).orElseThrow();
             if(!"RESERVED".equals(attempt.status()))throw new ModelAttemptTrace.RecordingException();
-            var reservation=accounts.reserve(root.id(),attempt.id(),actor.userId(),modelId,reservedTokens);
+            var reservation=accounts.reserve(root.id(),attempt.id(),actor.userId(),modelId,reservedTokens,!actor.supervisor());
             if(!reservation.created())throw new ModelAttemptTrace.RecordingException();
             if(providerBudgets!=null) providerBudgets.hold(root.id(),attempt.id(),actor,modelId,reservedTokens);
             // MODEL locking serializes a supervisor's new observation with this admission.

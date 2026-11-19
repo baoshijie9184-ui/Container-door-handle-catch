@@ -110,16 +110,40 @@ class ProviderBudgetMySqlTest {
         assertEquals("220",account(5,"NATIVE_MEMBER",B).available());
         assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM llm_usage WHERE native_command=?",Integer.class,topup.requestId()));
     }
+    @Test void supervisorUsesCompanyBudgetEvenWithAnOldZeroPersonalLimit(){
+        current.set(3L);String model="dashscope:supervisor-fixture";
+        pool(model,"1000","0");
+        jdbc.update("INSERT INTO llm_quota(scope_type,owner_user_id,model_id,period_key,total_tokens,created_at,updated_at) VALUES('USER',3,?,'TOTAL',0,UTC_TIMESTAMP(),UTC_TIMESTAMP())",model);
+        var attempt=start(model,100);
+        finish(attempt,40,20,null);
+        assertEquals("940",account(3,"NATIVE_POOL",model).available());
+        assertEquals(0L,jdbc.queryForObject("SELECT spent_tokens FROM llm_quota WHERE scope_type='USER' AND owner_user_id=3 AND model_id=? AND period_key='TOTAL'",Long.class,model));
+        assertThrows(ModelBudgetService.Exhausted.class,()->start(model,941));
+    }
     @Test void uncertainDeepSeekCostRetainsHoldsUntilAnAuditedReview(){
         current.set(3L);String ds="deepseek:deepseek-flash";pool(ds,"100","0");member(ds,4,"5");rate(ds,"1","0.1","2",0);
         current.set(4L);var t=start(ds,1000);finish(t,80,20,null);
         assertEquals("0.002",account(4,"NATIVE_MEMBER","deepseek").reserved());
+        var pending=view(4).usage().stream().filter(a->a.attempt()==t.attemptId()).findFirst().orElseThrow();
+        assertEquals(80L,pending.inputTokens());assertEquals(20L,pending.outputTokens());
+        assertNull(pending.cost());assertEquals("NEEDS_REVIEW",pending.status());
         var review=new ProviderBudgetService.Review(80L,20L,40L,n("0.000084"),"test-invoice-123",key());
         assertThrows(BusinessException.class,()->tx.executeWithoutResult(s->nativeBudgets.review(t.attemptId(),review)));
         current.set(3L);
         tx.executeWithoutResult(s->nativeBudgets.review(t.attemptId(),review));
         tx.executeWithoutResult(s->nativeBudgets.review(t.attemptId(),review));
         assertEquals("4.999916",account(4,"NATIVE_MEMBER","deepseek").available());
+        current.set(4L);var timed=start(ds,1000);finish(timed,80,20,40L);finish(timed,80,20,40L);
+        var completeTokens=view(4).usage().stream().filter(a->a.attempt()==timed.attemptId()).findFirst().orElseThrow();
+        assertEquals(40L,completeTokens.cachedTokens());assertEquals("NEEDS_REVIEW",completeTokens.status());
+        assertNull(completeTokens.cost());
+        current.set(3L);
+        var conflicting=new ProviderBudgetService.Review(80L,20L,30L,n("0.000042"),"bad-cache",key());
+        assertThrows(BusinessException.class,()->tx.executeWithoutResult(s->nativeBudgets.review(timed.attemptId(),conflicting)));
+        var invoice=new ProviderBudgetService.Review(80L,20L,null,n("0.000042"),"confirmed-offpeak",key());
+        tx.executeWithoutResult(s->nativeBudgets.review(timed.attemptId(),invoice));
+        tx.executeWithoutResult(s->nativeBudgets.review(timed.attemptId(),invoice));
+        assertEquals("0.000126",account(4,"NATIVE_MEMBER","deepseek").spent());
         assertEquals("BILL",view(4).usage().stream().filter(a->a.attempt()==t.attemptId()).findFirst().orElseThrow().basis());
         current.set(4L);
         var unknown=start(ds,1000);budgets.finished(unknown,Map.of("modelId",ds,"status","FAILED"));
@@ -127,7 +151,7 @@ class ProviderBudgetMySqlTest {
         var clear=new ProviderBudgetService.Review(0L,0L,null,ZERO,"supplier-confirmed-no-charge",key());
         tx.executeWithoutResult(s->nativeBudgets.review(unknown.attemptId(),clear));
         assertEquals("0",account(4,"NATIVE_MEMBER","deepseek").reserved());
-        assertEquals("4.999916",account(4,"NATIVE_MEMBER","deepseek").available());
+        assertEquals("4.999874",account(4,"NATIVE_MEMBER","deepseek").available());
     }
     private static final BigDecimal ZERO=BigDecimal.ZERO;
 }

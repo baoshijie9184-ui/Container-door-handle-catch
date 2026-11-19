@@ -1,14 +1,15 @@
 <template>
   <div class="operation-page llm-management">
-    <PageHero title="LLM模型管理" icon="Cpu" description="查看当前模型与个人 token 额度，向企业主管申请追加额度，并跟进处理结果。">
+    <PageHero title="LLM模型管理" icon="Cpu" :description="supervisor ? '管理厂家预算和员工限额，核对用量并审批员工申请。' : '查看模型用量与个人限额，申请追加额度并跟进进度。'">
       <template #actions>
         <el-button :loading="refreshing" :disabled="busy" @click="refresh"><AppIcon name="Refresh" :size="15" />刷新</el-button>
-        <el-button type="primary" :disabled="busy || !applyModels.length" @click="openApply()"><AppIcon name="Plus" :size="15" />申请额度</el-button>
+        <el-button v-if="!supervisor" type="primary" :disabled="busy || !applyModels.length" @click="openApply()"><AppIcon name="Plus" :size="15" />申请额度</el-button>
       </template>
     </PageHero>
 
     <ProviderBudgetPanel :models="models" :supervisor="supervisor" @active="nativeBudgets = $event" />
-    <p v-if="nativeBudgets" class="operation-muted">下方申请用于追加单模型 token 限额。员工还须由主管分配上方对应的厂家或模型额度。</p>
+    <p v-if="nativeBudgets && !supervisor" class="operation-muted">下方申请用于追加单模型 token 限额。员工还须由主管分配上方对应的厂家或模型额度。</p>
+    <el-alert v-if="supervisor && nativeBudgets && modelsError" :title="modelsError" type="error" :closable="false"><el-button text @click="loadModels">重新读取模型目录</el-button></el-alert>
     <el-alert v-if="quotaChanged" title="额度或申请资料可能已更新 当前未提交内容已保留" type="warning" :closable="false"><el-button text @click="refreshQuotaLatest">核对最新记录</el-button></el-alert>
     <section v-if="supervisor" class="operation-toolbar llm-admin" aria-label="主管管理入口">
       <span><AppIcon name="Operation" :size="16" />主管管理</span>
@@ -22,19 +23,20 @@
       <el-button :disabled="busy" @click="dialogVisible = true">继续处理</el-button>
     </section>
 
-    <section aria-labelledby="llm-models-title" :aria-busy="modelsLoading">
+    <section v-if="!supervisor || !nativeBudgets" aria-labelledby="llm-models-title" :aria-busy="modelsLoading">
       <div class="llm-section-heading">
-        <div><h2 id="llm-models-title">模型与个人额度</h2><p>额度单位为 token · 预留用于进行中的调用，完成后按实际用量结算</p></div>
+        <div><h2 id="llm-models-title">{{ supervisor ? '已登记模型' : '模型与个人额度' }}</h2><p v-if="!supervisor">额度单位为 token · 预留用于进行中的调用，完成后按实际用量结算</p></div>
         <el-switch v-model="showUnconfigured" active-text="显示未配置模型" />
       </div>
-      <p class="operation-muted llm-quota-note">个人未设置额度时保留已有使用权限；设置额度后按个人额度扣减。模型连接、企业额度与有效期仍决定实际能否调用。</p>
+      <p v-if="!supervisor && !nativeBudgets" class="operation-muted llm-quota-note">个人未设置额度时保留已有使用权限；设置额度后按个人额度扣减。模型连接、企业额度与有效期仍决定实际能否调用。</p>
       <p v-if="modelsLoading && models.length" class="operation-muted" role="status">正在刷新，下方为上次读取的额度</p>
-      <el-alert v-if="modelsError && models.length" :title="modelsError + '；下方为上次读取的额度，暂不能发起新申请'" type="warning" :closable="false" />
+      <el-alert v-if="modelsError && models.length" :title="modelsError + '；下方为上次读取的记录'" type="warning" :closable="false" />
       <TransitionGroup name="quota-record" tag="div" class="operation-cards llm-model-cards">
         <article v-for="model in visibleModels" :key="model.modelId" class="operation-card llm-model-card">
           <div class="llm-model-heading"><span class="llm-model-icon"><AppIcon name="Cpu" :size="19" /></span><div><h3>{{ model.model || model.modelId }}</h3><p>{{ model.provider || '接入方未记录' }} · {{ model.modelId }}</p></div></div>
-          <el-tag :type="quotaStatus(model).tone">{{ quotaStatus(model).label }}</el-tag>
+          <el-tag v-if="!supervisor" :type="quotaStatus(model).tone">{{ quotaStatus(model).label }}</el-tag>
           <el-alert v-if="enterpriseQuotaBlock(model)" class="llm-enterprise-block" :title="enterpriseQuotaBlock(model)" type="warning" :closable="false" />
+          <template v-if="!supervisor">
           <div class="operation-metrics">
             <div><strong>{{ personalQuotaValue(model, 'totalTokens') }}</strong><span>个人总额度</span></div>
             <div><strong>{{ personalQuotaValue(model, 'availableTokens') }}</strong><span>个人可用额度</span></div>
@@ -46,17 +48,14 @@
           <p v-if="quotaNumber(model.availableTokens) !== null && Number(model.availableTokens) < 0">实际消耗超过可用额度，已完整计入用量；追加额度后仍需满足调用所需的预留量。</p>
           <p v-if="model.hasPersonalQuota === true">个人额度到期时间 {{ model.expiresAt === null ? '未设置' : utcDisplay(model.expiresAt) }} · 北京时间</p>
           <div class="operation-actions"><el-button type="primary" plain :disabled="busy || modelsLoading || !!modelsError || !canApplyForQuota(model)" @click="openApply(model)">申请追加额度</el-button><router-link v-if="user.capabilities?.changeHistory && model.quotaId" :to="resourceHistoryLink('LLM_PERSONAL_QUOTA',model.quotaId,'MODEL_BUDGET')">个人额度修改记录</router-link></div>
+          </template>
         </article>
       </TransitionGroup>
-      <CollectionEmptyState v-if="!visibleModels.length" :loading="modelsLoading" :error="modelsError" :empty-title="models.length ? '当前没有已配置的模型' : '当前模型目录为空'" empty-description="主管配置模型连接后，可在这里查看个人额度并申请使用。" @retry="loadModels" />
+      <CollectionEmptyState v-if="!visibleModels.length" :loading="modelsLoading" :error="modelsError" :empty-title="models.length ? '当前没有已配置的模型' : '当前模型目录为空'" :empty-description="supervisor ? '可在模型连接与备用配置中登记模型。' : '主管配置模型连接后，可在这里查看个人额度并申请使用。'" @retry="loadModels" />
     </section>
 
     <section class="operation-panel llm-applications" aria-labelledby="llm-applications-title">
-      <div class="llm-section-heading"><div><h2 id="llm-applications-title">额度申请</h2><p>批准后追加个人额度，保留已用与预留记录；不变更模型权限或企业总额度</p></div></div>
-      <el-tabs v-model="listScope" @tab-change="changeListScope">
-        <el-tab-pane label="我的申请" name="mine" />
-        <el-tab-pane v-if="supervisor" label="企业审批" name="team" />
-      </el-tabs>
+      <div class="llm-section-heading"><div><h2 id="llm-applications-title">{{supervisor ? '员工额度审批' : '我的申请'}}</h2><p>批准后追加员工的个人额度，保留已用与预留记录。</p></div></div>
       <div class="llm-list-toolbar"><p class="operation-muted">{{ listScope === 'team' ? '企业申请按提交时间倒序展示，待审批记录可批准或拒绝' : '查看本人申请；待审批时可以取消' }}</p><div class="llm-list-filters"><el-select v-model="activeList.status" aria-label="申请状态" :disabled="busy" @change="changeStatus"><el-option label="全部状态" value="" /><el-option v-for="(label, status) in quotaApplicationLabels" :key="status" :label="label" :value="status" /></el-select><el-button :loading="activeList.loading" :disabled="busy" @click="loadApplications(listScope)">刷新申请</el-button></div></div>
       <el-alert v-if="activeList.error" :title="activeList.error" type="error" :closable="false" />
       <TransitionGroup name="quota-record" tag="div" class="llm-application-list" :aria-busy="activeList.loading">
@@ -130,14 +129,14 @@ const supervisor = computed(() => ['SUPERVISOR', 'ADMIN'].includes(user.role))
 const base = '/api/agent/model-quotas', headers = { 'X-Budget-Action': 'update' }
 const models = ref([]), modelsLoading = ref(false), modelsError = ref(''), showUnconfigured = ref(false)
 const route=useRoute(),quotaConflict=ref(false)
-const listScope = ref(supervisor.value&&route.query.scope==='team'?'team':'mine'), busy = ref(false), notice = ref('')
+const listScope = computed(()=>supervisor.value ? 'team' : 'mine'), busy = ref(false), notice = ref('')
 const emptyList = (status = '') => ({ items: [], nextCursor: null, loading: false, error: '', loaded: false, status })
 const lists = reactive({ mine: emptyList(), team: emptyList('PENDING') })
 if (Object.hasOwn(quotaApplicationLabels, route.query.status)) lists[listScope.value].status = route.query.status
 const dialogVisible = ref(false), dialogMode = ref('apply'), selectedApplication = ref(null), formError = ref(''), command = ref(null)
 const draft = reactive({ modelId: '', requestedTokens: undefined, reason: '', decision: 'APPROVE' })
 const scope = useAccountOperationScope(() => {
-  models.value = []; modelsLoading.value = false; modelsError.value = ''; listScope.value = 'mine'
+  models.value = []; modelsLoading.value = false; modelsError.value = ''
   Object.assign(lists, { mine: emptyList(), team: emptyList('PENDING') })
   busy.value = false; notice.value = ''; dialogVisible.value = false; selectedApplication.value = null
   command.value = null; formError.value = ''; Object.assign(draft, { modelId: '', requestedTokens: undefined, reason: '', decision: 'APPROVE' })
@@ -189,12 +188,11 @@ async function loadApplications(which = 'mine', more = false) {
   finally { if (listReads[which].current(token)) list.loading = false }
 }
 
-async function refresh() { await Promise.allSettled([loadModels(), loadApplications('mine'), ...(supervisor.value && (listScope.value === 'team' || lists.team.loaded) ? [loadApplications('team')] : [])]) }
-function changeListScope(which) { if (!lists[which]?.loaded) loadApplications(which) }
+async function refresh() { await Promise.allSettled([loadModels(), loadApplications(listScope.value)]) }
 function changeStatus() { activeList.value.items = []; activeList.value.nextCursor = null; loadApplications(listScope.value) }
 function reopenPending() { if (!command.value) return false; dialogVisible.value = true; return true }
 function openApply(model) {
-  if (busy.value || reopenPending()) return
+  if (supervisor.value || busy.value || reopenPending()) return
   const selected = model || applyModels.value[0]
   if (!canApplyForQuota(selected)) return
   dialogMode.value = 'apply'; selectedApplication.value = null
