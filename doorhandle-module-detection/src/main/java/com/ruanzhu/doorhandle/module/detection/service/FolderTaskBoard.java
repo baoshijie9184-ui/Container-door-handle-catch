@@ -176,7 +176,7 @@ public class FolderTaskBoard {
         var unit=rows.get(0);
         if(((Number)unit.get("version")).intValue()!=version)throw new BusinessException(409,"任务已更新，请刷新");
         detection.dispatchAssignedFolder(id);
-        jdbc.update("UPDATE detection_work_unit SET status='PROCESSING',submitted_at=NOW(),assigned_user_name=?,version=version+1 WHERE work_unit_id=?",actor.username(),id);
+        jdbc.update("UPDATE detection_work_unit SET status='PROCESSING',submitted_at=NOW(),completed_at=NULL,completed_count=0,assigned_user_name=?,version=version+1 WHERE work_unit_id=?",actor.username(),id);
     }
     private static BusinessException bad(String reason){return new BusinessException(400,reason);}
 }

@@ -8,6 +8,13 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface DetectionTaskMapper extends BaseMapper<DetectionTask> {
+    @Update("""
+            UPDATE detection_work_unit SET status=#{status},completed_at=#{finished},completed_count=#{count}
+            WHERE work_unit_id=#{taskId} AND strategy='OSS_FOLDER' AND status='PROCESSING'
+            """)
+    int finishFolderAssignment(@Param("taskId") String taskId,@Param("status") String status,
+                               @Param("count") int count,@Param("finished") java.time.LocalDateTime finished);
+
     @Update("UPDATE detection_task SET claim_candidate_ids=NULL WHERE task_id=#{taskId}")
     int clearClaimCandidates(@Param("taskId") String taskId);
 

@@ -174,6 +174,10 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         var task = getTaskForSystemLocked(taskId);
         if (!"OSS_FOLDER".equals(task.getTaskType()) || !Set.of("READY","FAILED").contains(task.getStatus()))
             throw new BusinessException(409, "任务已启动，请刷新进度");
+        if ("FAILED".equals(task.getStatus())) {
+            retryPreparedTask(task,null,null);
+            return;
+        }
         task.setDispatchId(UUID.randomUUID().toString());
         task.setFlowStatus("DETECTING");
         task.setProcessedImages(0);
@@ -1000,6 +1004,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
             }
         }
         if(detectionTaskMapper.updateById(task)!=1)throw new IllegalStateException("检测完成状态未保存");
+        finishFolderAssignment(task);
         saveIdentity(task);
         if(systemChanges!=null)systemChanges.record(before,com.ruanzhu.doorhandle.contracts.collaboration.SystemChangeAuditApi.Component.DETECTION_WORKER,
                 event.getEventId(),"SYSTEM_"+task.getStatus(),task);
@@ -1009,6 +1014,12 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
                 @Override public void afterCommit(){notifyDetectionCompleted(task);}});
         else notifyDetectionCompleted(task);
+    }
+
+    private void finishFolderAssignment(DetectionTask task) {
+        if (!"OSS_FOLDER".equals(task.getTaskType())) return;
+        String status = "FAILED".equals(task.getStatus()) ? "FAILED" : "COMPLETED";
+        detectionTaskMapper.finishFolderAssignment(task.getTaskId(),status,defaultInt(task.getSuccessfulImages()),task.getFinishedAt());
     }
 
     private void notifyDetectionCompleted(DetectionTask task) {
@@ -1060,6 +1071,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setFinishedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         if(detectionTaskMapper.updateById(task)!=1)throw new IllegalStateException("检测失败状态未保存");
+        finishFolderAssignment(task);
         saveIdentity(task);
         if(systemChanges!=null)systemChanges.record(before,com.ruanzhu.doorhandle.contracts.collaboration.SystemChangeAuditApi.Component.DETECTION_WORKER,
                 null,"SYSTEM_FAILED",task);
