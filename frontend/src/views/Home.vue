@@ -435,8 +435,9 @@
           </div>
         </div>
         <details class="dashboard-source-note">
-          <summary><AppIcon name="Warning" :size="15" />漏检率统计口径待核对</summary>
-          <p>历史任务的漏检率字段存在不同算法和单位，且接口可能将缺失值返回为零。这里保留原始字段供核对，不换算百分比，也不作为质量指标；人工结论请查看质检记录。</p>
+          <summary><AppIcon name="Picture" :size="15" />图片漏检率</summary>
+          <p>图片漏检率 = 未检出任何目标的图片数 ÷ 成功检测的图片数 × 100%。检测失败的图片排除在统计之外。<router-link to="/inspection/history">查看检测记录</router-link></p>
+          <p>以下是历史任务的原始均值，单位未统一，缺失值也可能显示为零。</p>
           <dl><dt>总览原始均值</dt><dd>{{ rawStatistic(avgMissRate) }}</dd><template v-for="item in modelStats" :key="item.modelId"><dt>{{ item.modelName }}</dt><dd>{{ rawStatistic(item.avgMissRate) }}</dd></template></dl>
         </details>
       </el-card>
@@ -1644,7 +1645,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 .dashboard-refresh-note { margin-bottom: 16px; font-size: 11px; color: var(--app-text-muted); }
 .dashboard-data-note { margin: 0; color: var(--app-text-secondary); font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
 .dashboard-source-note { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--app-border); color: var(--app-text-secondary); font-size: 12px; line-height: 1.8; }
-.dashboard-source-note summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--app-warning); font-weight: 550; }
+.dashboard-source-note summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--app-text); font-weight: 550; }
 .dashboard-source-note summary .app-icon { margin-right: 5px; vertical-align: middle; }
 .dashboard-source-note p { max-width: 80ch; }
 .dashboard-source-note dl { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr); gap: 8px 16px; max-width: 600px; }
