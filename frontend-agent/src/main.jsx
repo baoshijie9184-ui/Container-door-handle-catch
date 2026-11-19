@@ -303,7 +303,7 @@ function App() {
     {title:'执行与调研',note:'工具轨迹、模型路由与来源',path:'/agent/trace'+(threadId?'?sessionId='+encodeURIComponent(threadId):''),icon:ChartNoAxesCombined},
   ];
   const infoTabKey=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=event.key==='Home'?0:event.key==='End'?1:infoTab==='workspace'?1:0;setInfoTab(index?'models':'workspace');event.currentTarget.querySelectorAll('[role="tab"]')[index]?.focus();};
-  return <ConfigProvider prefixCls="ant" iconfont="" theme={{ cssVar:{key:'doorhandle-workbench'}, token: { colorPrimary: '#2563eb', colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#181b23', colorTextSecondary: '#525b6a', colorBorder: '#e6e8ec', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
+  return <ConfigProvider prefixCls="ant" iconfont="" theme={{ cssVar:{key:'doorhandle-workbench'}, token: { colorPrimary: '#2563eb', colorSuccess: '#375c85', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#181b23', colorTextSecondary: '#525b6a', colorBorder: '#e6e8ec', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
     <Layout className={`agent-shell ${sidebarOpen ? 'with-sessions' : ''} ${infoOpen ? 'with-info' : ''}`}>
       <nav id="agent-sessions" className="session-sidebar" aria-label="对话历史" hidden={!sidebarOpen}>
         <a className="agent-brand" href={BUSINESS} title={SYSTEM_NAME} aria-label={SYSTEM_NAME}><span className="brand-symbol"><ScanLine size={20} /></span><span>{SYSTEM_SHORT_NAME}<strong>{SYSTEM_TAGLINE}</strong></span></a>

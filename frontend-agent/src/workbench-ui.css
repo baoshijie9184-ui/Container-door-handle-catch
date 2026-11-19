@@ -49,7 +49,7 @@
 .a2ui-field .ant-input:focus { border-color:#90b1fa; box-shadow:0 0 0 3px #2463eb0c; }
 .a2ui-surface .a2ui-status { border:0; border-radius:5px; padding:2px 8px; font-size:11px; color:#536174; background:#f0f3f7; }
 .a2ui-surface .a2ui-status[data-tone="info"] { color:#245fc9; background:#edf3ff; }
-.a2ui-surface .a2ui-status[data-tone="success"] { color:#1b764b; background:#eaf6ef; }
+.a2ui-surface .a2ui-status[data-tone="success"] { color:var(--app-success); background:var(--app-success-soft); }
 .a2ui-surface .a2ui-status[data-tone="warning"] { color:#946214; background:#fff7e8; }
 .a2ui-surface .a2ui-status[data-tone="error"] { color:#b43b3b; background:#fff0ef; }
 .a2ui-table { min-width:0; max-width:100%; overflow:hidden; }.a2ui-table .ant-table { font-size:12px; }.a2ui-table .ant-table-cell { max-width:260px; overflow-wrap:anywhere; }

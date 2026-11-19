@@ -11,7 +11,7 @@
       <div><dt>检测模型</dt><dd>{{ number(summary.modelCount) }}</dd></div>
     </dl>
     <div class="history-chart-heading">
-      <h3>{{ measure.title }}</h3>
+      <div class="history-chart-label"><h3>{{ measure.title }}</h3><span>单位：{{ measure.unit }}</span></div>
       <div class="history-switch" role="group" aria-label="年度图表指标">
         <button v-for="option in measures" :key="option.key" type="button" :aria-pressed="measure === option" @click="selected = option.key">{{ option.label }}</button>
       </div>
@@ -72,16 +72,18 @@ const period = computed(() => {
 .history-volume dd { font-size:clamp(25px,2.4vw,36px); letter-spacing:-.045em; }
 .history-volume small { color:var(--app-text-muted); font-size:12px; font-weight:500; }
 .history-chart-heading { justify-content:space-between; gap:8px; margin-bottom:10px; }
+.history-chart-label { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; }
+.history-chart-label > span { color:var(--app-text-muted); font-size:11px; }
 .history-chart-heading h3 { margin:0; font-size:13px; font-weight:600; }
 .history-switch { gap:2px; padding:3px; background:var(--app-surface-muted); border-radius:7px; }
 .history-switch button { border:0; border-radius:5px; padding:4px 10px; background:transparent; color:var(--app-text-secondary); font:inherit; font-size:12px; cursor:pointer; }
-.history-switch button[aria-pressed=true] { background:white; color:var(--app-primary-deep); font-weight:650; box-shadow:0 1px 4px #132f2620; }
+.history-switch button[aria-pressed=true] { background:white; color:var(--app-primary-deep); font-weight:650; box-shadow:0 1px 4px #16345c20; }
 .history-scroll { overflow-x:auto; }
 .year-chart { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(60px,1fr); gap:4px; margin:0; padding:0; list-style:none; }
 .year-chart li { display:grid; grid-template-rows:auto 56px auto; gap:5px; text-align:center; font-size:11px; color:var(--app-text-muted); font-variant-numeric:tabular-nums; }
 .year-chart strong { color:var(--app-text-secondary); font-weight:550; }
 .year-meter { display:flex; align-items:end; justify-content:center; background:repeating-linear-gradient(to top,var(--app-border) 0 1px,transparent 1px 50%); }
-.year-meter i { width:55%; max-width:40px; background:linear-gradient(to top,#226958,#55a78a); border-radius:4px 4px 0 0; }
+.year-meter i { width:55%; max-width:40px; background:linear-gradient(to top,var(--app-primary-active),var(--el-color-primary-light-3)); border-radius:4px 4px 0 0; }
 .history-details { margin-top:9px; font-size:12px; }
 .history-details summary { width:fit-content; padding:4px 0; color:var(--app-primary); cursor:pointer; }
 .history-details table { width:100%; border-collapse:collapse; white-space:nowrap; font-variant-numeric:tabular-nums; }

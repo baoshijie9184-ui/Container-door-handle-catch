@@ -60,7 +60,7 @@
           <router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />全部质检任务</router-link>
         </header>
         <div class="quality-overview-grid">
-          <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone">
+          <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="qualityWorkload?.[metric.key] > 0 ? metric.tone : 'neutral'">
             <span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="17" /></span>
             <span class="queue-metric"><small>{{ metric.label }}</small><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong></span>
             <span v-if="qualityWorkload" class="queue-meter" aria-hidden="true"><i :style="{ width: queuePeak ? (qualityWorkload[metric.key] / queuePeak * 100) + '%' : '0%' }" /></span>
@@ -96,7 +96,7 @@
           </router-link>
           <router-link class="highlight-card hl-success" title="打开设备列表核对登记状态" to="/devices">
             <div class="hl-header">
-              <div class="hl-icon hl-icon-green">
+              <div class="hl-icon hl-icon-steel">
                 <el-icon><Monitor /></el-icon>
               </div>
               <span class="hl-trend">{{ formatNumber(deviceStatus.inUse) }} 使用中</span>
@@ -246,7 +246,7 @@
             </div>
           </router-link>
           <router-link class="quick-stat-item" to="/devices">
-            <div class="qs-icon qs-icon-green">
+            <div class="qs-icon qs-icon-steel">
               <el-icon><Monitor /></el-icon>
             </div>
             <div class="qs-content">
@@ -379,7 +379,7 @@
         <div class="summary-list summary-list-horizontal">
           <router-link v-for="(item, idx) in employeeTypeItems" :key="item.label" class="summary-item interactive" to="/employees">
             <div class="sm-left">
-              <div class="sm-icon" :class="['sm-icon-green', 'sm-icon-blue', 'sm-icon-amber'][idx]">
+              <div class="sm-icon" :class="['sm-icon-steel', 'sm-icon-blue', 'sm-icon-amber'][idx]">
                 <el-icon><User /></el-icon>
               </div>
               <div>
@@ -390,7 +390,7 @@
             <div class="sm-value-block">
               <div class="summary-value">{{ formatNumber(item.value) }} <small>人</small></div>
               <div v-if="ratio(item.value, totalEmployees) !== null" class="sm-bar-track" aria-hidden="true">
-                <div class="sm-bar-fill" :class="['sm-bar-green', 'sm-bar-blue', 'sm-bar-amber'][idx]"
+                <div class="sm-bar-fill" :class="['sm-bar-steel', 'sm-bar-blue', 'sm-bar-amber'][idx]"
                   :style="{ width: ratio(item.value, totalEmployees) + '%' }"></div>
               </div>
             </div>
@@ -756,7 +756,7 @@ async function fetchModelStats() {
 // ── 图表更新 ──
 
 const CHART_COLORS = {
-  blue: '#2563eb', green: '#059669', amber: '#d97706',
+  blue: '#2563eb', steel: '#52749a', amber: '#d97706',
   violet: '#7c3aed', red: '#dc2626', slate: '#94a3b8',
   purple: '#8b5cf6', cyan: '#0891b2', pale: '#cbd5e1'
 }
@@ -789,7 +789,7 @@ async function updateDetectionTrendChart() {
 
     charts.detectionTrend.setOption({
       ...chartMotionOptions(),
-      color: [CHART_COLORS.blue, CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
+      color: [CHART_COLORS.blue, CHART_COLORS.steel, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
       tooltip: {
         trigger: 'axis',
         backgroundColor: '#fff',
@@ -862,7 +862,7 @@ async function updateDetectionDistributionChart() {
 
     charts.detectionDistribution.setOption({
       ...chartMotionOptions(),
-      color: [CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
+      color: [CHART_COLORS.steel, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
       tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
       legend: { bottom: 0, textStyle: { color: '#475569', fontSize: 12 } },
       series: [{
@@ -929,7 +929,7 @@ function updateEmployeeStatusChart() {
   }
   charts.employeeStatus.setOption({
     ...chartMotionOptions(),
-    color: [CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.slate],
+    color: [CHART_COLORS.steel, CHART_COLORS.amber, CHART_COLORS.slate],
     tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
     legend: { bottom: 0, textStyle: { color: '#475569', fontSize: 12 } },
     series: [{
@@ -1051,7 +1051,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 
 <style scoped>
 .dashboard-hero { position:relative; isolation:isolate; overflow:hidden; padding:clamp(22px,2.3vw,34px); border:1px solid var(--app-border); border-radius:var(--app-radius-lg); background:white; box-shadow:var(--app-shadow-sm); }
-.dashboard-hero::before { content:''; position:absolute; z-index:-1; inset:0 0 0 55%; background:linear-gradient(90deg,#fff 0%,#ffffff75 27%,transparent 60%),url('../assets/images/container-lock.webp') 68% 52%/cover; filter:grayscale(.92); }
+.dashboard-hero::before { content:''; position:absolute; z-index:-1; inset:0 0 0 55%; background:linear-gradient(90deg,#fff 0%,#ffffff75 27%,transparent 60%),url('../assets/images/container-lock.webp') 68% 52%/cover; filter:grayscale(1); }
 .dashboard-hero-copy { max-width:63%; }
 .dashboard-hero h1 { color:var(--app-text); font-size:clamp(28px,2.4vw,40px); font-weight:680; letter-spacing:-.045em; line-height:1.23; }
 .dashboard-hero p { margin:8px 0 18px; color:var(--app-text-secondary); font-size:13px; line-height:1.8; }
@@ -1187,7 +1187,7 @@ useResourceChanges({refresh:()=>refreshAll()})
   font-size: 16px;
 }
 .hl-icon-blue   { color: var(--app-primary); background: var(--app-primary-soft); }
-.hl-icon-green  { color: var(--app-success); background: var(--app-success-soft); }
+.hl-icon-steel  { color: var(--app-success); background: var(--app-success-soft); }
 
 
 .hl-trend {
@@ -1482,7 +1482,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 }
 
 .qs-icon-blue  { color: var(--app-primary); background: var(--app-primary-soft); }
-.qs-icon-green { color: var(--app-success); background: var(--app-success-soft); }
+.qs-icon-steel { color: var(--app-success); background: var(--app-success-soft); }
 .qs-icon-slate { color: var(--app-text-secondary); background: var(--app-info-soft); }
 
 .qs-content {
@@ -1551,7 +1551,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 }
 .sm-icon-cyan   { color: #0891b2; background: rgba(8,145,178,0.1); }
 .sm-icon-indigo { color: #4f46e5; background: rgba(79,70,229,0.1); }
-.sm-icon-green  { color: #059669; background: rgba(5,150,105,0.1); }
+.sm-icon-steel  { color: var(--app-success); background: var(--app-success-soft); }
 .sm-icon-blue   { color: #2563eb; background: rgba(37,99,235,0.1); }
 .sm-icon-amber  { color: #d97706; background: rgba(217,119,6,0.1); }
 
@@ -1606,7 +1606,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 }
 .sm-bar-cyan   { background: #0891b2; }
 .sm-bar-indigo { background: #4f46e5; }
-.sm-bar-green  { background: #059669; }
+.sm-bar-steel  { background: var(--app-success); }
 .sm-bar-blue   { background: #2563eb; }
 .sm-bar-amber  { background: #d97706; }
 

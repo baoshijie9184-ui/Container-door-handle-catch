@@ -144,7 +144,7 @@ const handleLogin = async () => {
   background: white;
 }
 .login-showcase { display:flex; flex-direction:column; justify-content:space-between; gap:24px; min-width:0; padding:clamp(24px,3.2vw,56px); border:1px solid var(--app-border); border-radius:20px; background:#f8f9fa; }
-.login-showcase::before { content:''; order:1; flex:1 1 160px; min-height:100px; max-height:40vh; border-radius:12px; background:url('../assets/images/container-lock.webp') center 48% / cover; filter:grayscale(.93); }
+.login-showcase::before { content:''; order:1; flex:1 1 160px; min-height:100px; max-height:40vh; border-radius:12px; background:url('../assets/images/container-lock.webp') center 48% / cover; filter:grayscale(1); }
 .login-brand { display:inline-flex; align-items:center; align-self:flex-start; gap:12px; color:var(--app-text); font-size:17px; font-weight:650; }
 .login-brand img { border-radius:10px; }
 .login-brand small { display:block; margin-top:2px; font-size:11px; font-weight:450; letter-spacing:.08em; color:var(--app-text-muted); }

@@ -363,7 +363,7 @@ onBeforeUnmount(() => {
 .layout-shell { display:grid; grid-template-columns:232px minmax(0,1fr); height:100vh; height:100dvh; overflow:hidden; background:var(--app-bg); transition:grid-template-columns var(--app-transition-base); }
 .layout-shell.sidebar-collapsed { grid-template-columns:68px minmax(0,1fr); }
 .layout-sidebar { display:flex; flex-direction:column; height:100%; min-height:0; padding:20px 12px 14px; overflow-y:auto; overflow-x:hidden; --nav-label:var(--app-text-secondary); --nav-muted:var(--app-text-muted); --nav-hover:var(--app-surface-muted);
-  --nav-selected:#eaf3f1; --nav-accent:var(--app-primary);
+  --nav-selected:var(--app-primary-soft); --nav-accent:var(--app-primary);
   background:white; border:0; border-right:1px solid var(--app-border); border-radius:0; box-shadow:none; }
 .layout-sidebar::before { content:none; }
 .brand-block { display:flex; align-items:center; gap:10px; min-height:40px; padding:0 7px; margin-bottom:30px; }
