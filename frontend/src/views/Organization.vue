@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell organization-page">
-    <PageHero title="账号与组织" description="核对个人员工身份，主管可维护账号关联和部门。">
+    <PageHero title="账号与组织">
       <template #actions><el-button :loading="loading" :disabled="saving" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新身份与列表</el-button></template>
     </PageHero>
 

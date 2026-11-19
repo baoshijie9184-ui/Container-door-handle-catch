@@ -1,6 +1,10 @@
 package com.ruanzhu.doorhandle.module.device.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.ruanzhu.doorhandle.module.device.entity.Employee;
+import java.util.List;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
@@ -27,6 +31,36 @@ class ResourceAgentReadApiImplTest {
         when(employees.getEmployeeStats()).thenReturn(Map.of("total", 9L));
         assertThatThrownBy(() -> api.employeeCounts(boss)).isInstanceOf(IllegalStateException.class);
     }
+    @Test void exactNameReturnsDistinctRecordsAndOnlyTheDirectorySummary() throws Exception {
+        var first = new Employee(); first.setName("张三"); first.setEmployeeNumber("A1"); first.setContact("excluded-contact");
+        var second = new Employee(); second.setName("张三"); second.setEmployeeNumber("B2"); second.setRemark("excluded-remark");
+        when(employees.page(org.mockito.ArgumentMatchers.<Page<Employee>>any(), any())).thenAnswer(call -> {
+            Page<Employee> page = call.getArgument(0);
+            QueryWrapper<Employee> query = call.getArgument(1);
+            assertThat(query.getSqlSegment()).contains("name =", "ORDER BY id ASC").doesNotContain("LIKE");
+            assertThat(query.getSqlSelect()).doesNotContain("contact", "remark");
+            assertThat(query.getParamNameValuePairs()).containsValue("张三");
+            return page.setTotal(2).setRecords(List.of(first, second));
+        });
+        for (var actor : List.of(boss, new AgentActor(2, "staff", AgentActor.Role.INSPECTOR))) {
+            var result = api.employeesByName(actor, " 张三 ", 1);
+            assertThat(result.total()).isEqualTo(2);
+            assertThat(result.records()).extracting("employeeNumber").containsExactly("A1", "B2");
+            assertThat(new ObjectMapper().writeValueAsString(result)).doesNotContain("contact", "remark");
+        }
+    }
+
+    @Test void emptyResultAndInvalidNameAreDistinct() {
+        when(employees.page(org.mockito.ArgumentMatchers.<Page<Employee>>any(), any())).thenReturn(new Page<Employee>(1, 10));
+        assertThat(api.employeesByName(boss, "无人匹配", 1).records()).isEmpty();
+        clearInvocations(employees);
+        for (var name : List.of("", "  ", "长".repeat(51))) {
+            assertThatThrownBy(() -> api.employeesByName(boss, name, 1)).isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThatThrownBy(() -> api.employeesByName(boss, "张三", 0)).isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(employees);
+    }
+
     @Test void detailRetainsExactPrimaryKeyAndOnlyReturnsOperationalSummary() throws Exception {
         var device=new Device();device.setId(Long.MAX_VALUE);device.setDeviceCode("CODE-DIFFERENT");
         device.setStatus("IDLE");device.setOnlineStatus("OFFLINE");device.setSerialNumber("private-serial");

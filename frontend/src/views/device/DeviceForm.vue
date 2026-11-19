@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell form-page managed-form-page">
-    <PageHero :title="isEdit ? '编辑设备' : '新增设备'" description="维护设备登记与业务状态。设备分配、实时心跳和检测任务分别管理。" icon="Monitor">
+    <PageHero :title="isEdit ? '编辑设备' : '新增设备'" icon="Monitor">
       <template #actions><el-button @click="goBack"><AppIcon name="ArrowLeft" :size="16" />返回列表</el-button></template>
     </PageHero>
     <CollaborationRefreshNotice :changed="externalChanged" :editing="loading" :opened-version="form.version" :history-to="{path:'/operations/audit',query:{resourceType:'DEVICE',resourceId:deviceId}}" @refresh="reload" />

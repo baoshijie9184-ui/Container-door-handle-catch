@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell employee-page">
-    <PageHero title="人员管理" icon="User" description="按岗位、部门和在岗状态查找人员，核对业务登记资料与设备分配。"><template #actions><el-button v-if="isSupervisor" type="primary" :disabled="writeBusy" @click="createEmployee"><AppIcon name="Plus" :size="16" />新增人员</el-button></template></PageHero>
+    <PageHero title="人员管理" icon="User"><template #actions><el-button v-if="isSupervisor" type="primary" :disabled="writeBusy" @click="createEmployee"><AppIcon name="Plus" :size="16" />新增人员</el-button></template></PageHero>
 
     <!-- 独立登记统计，不随下方列表筛选变化 -->
     <section class="stats-bar" :aria-busy="statsLoading">
@@ -44,7 +44,7 @@
 
     <div v-if="statsError" class="statistics-notice" role="alert"><AppIcon name="Warning" :size="17" /><span>{{ statsError }}</span><el-button size="small" :loading="statsLoading" @click="fetchEmployeeStats">重新读取统计</el-button></div>
 
-    <p class="management-scope-note"><AppIcon name="User" :size="15" />上方为独立人员登记统计，不随列表筛选变化；业务岗位、登录账号与操作权限分别维护。</p>
+    <p class="management-scope-note"><AppIcon name="User" :size="15" />人数按全部登记记录统计。</p>
     <form class="toolbar-panel management-filter-form" @submit.prevent="searchEmployees">
       <label for="employee-name-query">姓名<el-input id="employee-name-query" v-model="filters.name" placeholder="输入姓名" clearable /></label>
       <label for="employee-number-query">员工编号<el-input id="employee-number-query" v-model="filters.employeeNumber" placeholder="输入员工编号" clearable /></label>
@@ -59,7 +59,7 @@
     <section class="table-panel management-list-panel">
       <div class="collection-heading"><h2><AppIcon name="User" :size="18" />人员记录</h2><span>{{ loading ? '正在读取…' : listError ? '本次读取失败' : total===null ? '总数尚未核对' : `共 ${total} 条` }}</span><el-button size="small" :loading="loading" @click="fetchEmployees"><AppIcon name="Refresh" :size="14" />刷新已读范围</el-button></div>
       <p v-if="listLoaded" class="management-applied-query">已读取：{{ appliedDescription }} · 第 {{ pagination.current }} 页</p>
-      <p v-if="filtersDirty && employees.length" class="management-query-note" role="status">条件已修改，当前保留已查询范围；点击查询更新。刷新与翻页不会采用未提交条件。</p>
+      <p v-if="filtersDirty && employees.length" class="management-query-note" role="status">筛选已改，点击查询更新结果。</p>
       <el-alert v-if="listError && employees.length" :title="listError+'；下方保留已读取记录，请重新核对。'" type="error" show-icon :closable="false" />
       <div v-if="listError && employees.length" class="management-retry"><el-button size="small" :loading="loading" @click="retryEmployees">重读上次查询</el-button></div>
       <TableReadHint v-if="employees.length" />

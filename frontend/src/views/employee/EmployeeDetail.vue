@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell detail-page">
-    <PageHero :title="employee.name || '人员详情'" description="核对人员登记、设备关系与采集记录；人员业务岗位与登录账号权限分别管理。" icon="User">
+    <PageHero :title="employee.name || '人员详情'" icon="User">
       <template #actions>
         <el-button :loading="loading" @click="refreshEmployee"><AppIcon name="Refresh" :size="16" />刷新资料</el-button>
         <el-button v-if="isSupervisor" type="primary" :disabled="loading || !!loadError || !employee.id" @click="editEmployee"><AppIcon name="Edit" :size="16" />编辑人员</el-button>
@@ -52,7 +52,6 @@
         <div class="panel-header">
           <div>
             <h3 class="app-panel-title">基本信息</h3>
-            <p class="app-panel-subtitle">人员登记资料与联系方式</p>
           </div>
         </div>
       </template>
@@ -109,7 +108,7 @@
         <div class="panel-header">
           <div>
             <h3 class="app-panel-title">已分配设备</h3>
-            <p class="app-panel-subtitle">当前登记的设备关系，不代表设备实时在线。</p>
+            <p class="app-panel-subtitle">按登记的分配关系显示。</p>
           </div>
           <el-button size="small" :loading="deviceLoading" @click="fetchAssignedDevices"><AppIcon name="Refresh" :size="15" />刷新关系</el-button><el-button v-if="isSupervisor" type="primary" size="small" :disabled="loading || !!loadError || !employee.id" @click="assignDevices"><AppIcon name="Monitor" :size="15" />分配设备</el-button>
         </div>
@@ -148,7 +147,7 @@
         <div class="panel-header">
           <div>
             <h3 class="app-panel-title">采集记录</h3>
-            <p class="app-panel-subtitle">按登记姓名匹配，仍受当前账号任务权限约束；同名或更名需核对。最多读取 50 条。</p>
+            <p class="app-panel-subtitle">按登记姓名匹配，最多 50 条。同名或更名请核对。</p>
           </div>
           <el-button size="small" @click="fetchCollectionRecords" :loading="collectionLoading"><AppIcon name="Refresh" :size="16" />刷新</el-button>
         </div>

@@ -1,6 +1,6 @@
 <template>
   <section class="skills-page app-panel">
-    <header><div><h2><AgentSectionIcon kind="skills" />Agent 技能演化</h2><p>授权经验来源 创建技能草稿 规则评测 独立审核与版本回退</p></div><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新</el-button></header>
+    <header><div><h2><AgentSectionIcon kind="skills" />Agent 技能演化</h2></div><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新</el-button></header>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
     <el-alert title="自动 Eval 检查结构与权限规则 业务适用性和隐私仍需主管人工审核" type="info" :closable="false" />
     <AgentLifecycleGuide label="Skill 从私人草稿到发布的流程" :steps="skillStages" />

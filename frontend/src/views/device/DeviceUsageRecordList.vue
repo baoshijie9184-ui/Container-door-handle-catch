@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell usage-page">
-    <PageHero title="设备使用记录" description="按历史快照查看使用员工、开始及结束时间。记录状态与设备实时在线状态分别核对。" icon="Clock">
+    <PageHero title="设备使用记录" description="领用记录按历史快照展示。" icon="Clock">
       <template #actions>
         <el-button :loading="loading" @click="refreshRecords"><AppIcon name="Refresh" :size="16" />刷新记录</el-button>
         <el-button v-if="deviceCodeFromRoute || deviceIdFromRoute" @click="backToDeviceList"><AppIcon name="ArrowLeft" :size="16" />返回设备列表</el-button>

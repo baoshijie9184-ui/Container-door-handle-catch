@@ -4,15 +4,8 @@
     <PageHero class="page-hero detection-hero command-panel">
       <div>
         <h1 class="page-hero-title">{{ workspacePresentation.title }}</h1>
-        <p class="page-hero-text">
-          {{ workspacePresentation.description }}
-        </p>
       </div>
       <router-link v-if="activeTab === 'history' || activeTab === 'workspace'" class="upload-route" to="/upload"><AppIcon name="Upload" :size="16" />采集上传</router-link>
-      <div v-else class="hero-side-note">
-        <strong><AppIcon name="DocumentChecked" :size="16" />保留检测依据</strong>
-        <span>模型结果供人工核对，放行、返工与报告审批按当前账号权限完成。</span>
-      </div>
     </PageHero>
 
     <el-tabs v-model="activeTab" class="workspace-tabs" @tab-change="handleTabChange">
@@ -44,13 +37,13 @@
                   </el-form-item>
                   <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
                   <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
-                  <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '已选模型仅作为本次提交参数，实际执行版本请核对任务记录。' : '未指定模型时由服务端按现有配置选择，实际模型以任务记录为准。' }}</p>
+                  <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '执行版本见任务记录。' : '留空将自动选择模型。' }}</p>
                 </div>
                 <div>
                   <el-form-item label="置信度阈值">
                     <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" :format-tooltip="value=>Math.round(value*100)+'%'" :format-value-text="value=>value.toFixed(2)+'，'+Math.round(value*100)+'%'" aria-label="本次检测置信度阈值，范围 0 至 1" aria-describedby="detection-threshold-note" />
                     <div class="threshold-text"><span>本次提交阈值</span><output aria-label="当前置信度阈值">{{ form.threshold.toFixed(2) }}<small>（{{ Math.round(form.threshold * 100) }}%）</small></output></div>
-                    <p id="detection-threshold-note" class="detection-input-note">阈值是模型分数的筛选条件，不是准确率或人工结论。本页设置用于下一次单图或待检测任务提交，不会改写已经提交的任务。</p>
+                    <p id="detection-threshold-note" class="detection-input-note">按模型分数筛选，仅对新提交生效。</p>
                   </el-form-item>
                 </div>
               </div>
@@ -312,7 +305,7 @@
                 <div v-if="selectedTaskId === task.taskId" :id="'workbench-task-detail-'+task.taskId" class="task-item-detail">
                   <details v-if="taskExecutionLogs(task).length" class="task-log-block">
                     <summary class="task-log-head">最近动态 · 本机记录 · UTC+8</summary>
-                    <p class="task-log-note">仅展示本机已记录的动态，不代替服务器审计；只有时分秒的旧记录无法核对日期。</p>
+                    <p class="task-log-note">本机记录；旧记录可能缺少日期。</p>
                     <ol class="task-log-list">
                       <li v-for="log in taskExecutionLogs(task)" :key="log.key" class="task-log-item">
                         <span class="task-log-time">{{ log.time }}</span>
@@ -322,7 +315,7 @@
                   </details>
 
                   <TaskResultSnapshot v-if="task.result" :task-id="task.taskId" :result="task.result" @trace="openTraceDialog" />
-                  <p v-else-if="task.stage==='completed' || task.stage==='failed'" class="task-result-unread">本机未保存结果正文，可通过“追溯详情”重新读取。没有正文不代表服务器没有结果。</p>
+                  <p v-else-if="task.stage==='completed' || task.stage==='failed'" class="task-result-unread">本机未缓存结果，可到“追溯详情”读取。</p>
                 </div>
                 </Transition>
               </div>
@@ -335,7 +328,7 @@
       <el-tab-pane name="history" label="检测记录">
         <el-card class="detection-card history-page-card" shadow="never">
           <template #header><div class="card-title-row"><span><AppIcon name="Filter" :size="18" />筛选记录</span><el-tag type="info" effect="plain">{{ historyLoading ? '正在读取任务与结果' : historyError ? '本次读取未完成' : historyTotal!==null ? `共 ${historyTotal} 条` : historyLoaded ? '总数未提供' : '数量尚未读取' }}</el-tag><el-button size="small" :loading="historyLoading" @click="refreshHistory"><AppIcon name="Refresh" :size="15" />刷新已读范围</el-button></div></template>
-          <p class="history-scope-note"><AppIcon name="Lock" :size="15" />{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测完成与人工复核、放行、报告审批分别记录。</p>
+          <p class="history-scope-note"><AppIcon name="Lock" :size="15" />{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测结果与人工结论分别记录。</p>
           <form class="history-query-form" @submit.prevent="onHistorySearch">
             <label for="history-keyword" class="history-query-keyword">任务、文件夹、工单或批次<el-input id="history-keyword" v-model="historySearchKeyword" clearable placeholder="输入编号或文件夹关键词"><template #prefix><AppIcon name="Search" :size="15" /></template></el-input></label>
             <label for="history-collector">采集人员<el-input id="history-collector" v-model="historyFilterCollector" clearable placeholder="输入采集人员" /></label>
@@ -344,7 +337,7 @@
             <div class="history-query-actions"><el-button type="primary" native-type="submit" :loading="historyLoading"><AppIcon name="Search" :size="15" />查询</el-button><el-button v-if="hasHistoryFilters" @click="onHistoryReset"><AppIcon name="Refresh" :size="15" />重置</el-button></div>
           </form>
           <p v-if="historyLoaded" class="history-applied-query">已读取：{{ historyAppliedDescription }} · 第 {{ historyPage }} 页 · 本页 {{ historyRecords.length }} 条</p>
-          <p v-if="historyFiltersDirty && historyRecords.length" class="history-filter-note" role="status">输入条件已修改，下方仍为已读取范围；点击查询更新。刷新和翻页沿用已执行的条件。</p>
+          <p v-if="historyFiltersDirty && historyRecords.length" class="history-filter-note" role="status">筛选已改，点击查询更新结果。</p>
           <el-alert v-if="historyError && historyRecords.length" :title="historyError+'；下方保留已读取资料，请重新核对。'" type="error" show-icon :closable="false" />
           <div v-if="historyError && historyRecords.length" class="history-retry"><el-button size="small" :loading="historyLoading" @click="retryHistoryRead"><AppIcon name="Refresh" :size="14" />重读上次查询</el-button></div>
           <CollectionEmptyState v-if="!historyRecords.length" :loading="historyLoading" :error="historyError" :filtered="historyLoaded ? Object.keys(historyAppliedFilters).length>0 : hasHistoryFilters" empty-title="暂无检测记录" empty-description="可从图片上传创建任务，或核对关键词与当前账号范围后重新查询。" @retry="retryHistoryRead" @reset="onHistoryReset" />
@@ -365,7 +358,7 @@
             </div>
           </template>
 
-          <p class="quality-queue-scope"><AppIcon name="User" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 按所选处理阶段查看，不代表全部历史任务</p>
+          <p class="quality-queue-scope"><AppIcon name="User" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 仅显示所选阶段</p>
           <div class="quality-queue-tabs" role="group" aria-label="按质检处理阶段筛选">
             <button
               v-for="queue in qualityQueues"
@@ -462,7 +455,7 @@
             </el-table-column>
           </el-table>
 
-          <p class="quality-queue-scope">任务摘要是当前记录导出，正式报告仍需在“报告与审批”独立核对。</p>
+          <p class="quality-queue-scope">正式报告请到“报告与审批”查看。</p>
           <div v-if="qualityQueueTotal !== null" class="quality-pagination">
             <el-pagination
               v-model:current-page="qualityQueuePage"
@@ -507,7 +500,7 @@
             </el-button>
             <el-button @click="resetDefectGalleryFilters"><AppIcon name="Refresh" :size="16" />重置</el-button></div>
           </form>
-          <p v-if="defectFiltersDirty && defectGalleryRecords.length" class="defect-gallery-filter-note" role="status">筛选条件已修改，当前仍为上次读取的结果。点击查询更新，翻页和刷新沿用已读取条件。</p>
+          <p v-if="defectFiltersDirty && defectGalleryRecords.length" class="defect-gallery-filter-note" role="status">筛选已改，点击查询更新结果。</p>
 
           <el-alert v-if="defectGalleryError && defectGalleryRecords.length" :title="defectGalleryError + '；下方保留先前读取的记录，请刷新核对。'" type="error" show-icon :closable="false" />
           <CollectionEmptyState v-if="!defectGalleryRecords.length" :loading="defectGalleryLoading" :error="defectGalleryError" :filtered="hasDefectFilters" empty-title="暂无缺陷证据" empty-description="检测后，可在这里查找缺陷任务，并通过追溯详情对照图片与人工结论。" @retry="loadDefectGallery()" @reset="resetDefectGalleryFilters" />
@@ -533,7 +526,7 @@
                 </section>
                 <dl class="defect-card-responsibility"><div><dt>责任人</dt><dd>{{ task.assignee || '未记录' }}</dd></div><div><dt>截止（UTC+8）</dt><dd>{{ task.dueAt ? displayBusinessTime(task.dueAt) : '未记录' }}</dd></div></dl>
                 <details class="defect-card-disclosure"><summary>任务来源<AppIcon name="ArrowDown" :size="13" /></summary><dl class="defect-card-facts"><div class="defect-fact-wide"><dt>采集设备</dt><dd>{{ task.deviceName || '未记录' }}</dd></div><div class="defect-fact-wide"><dt>批次编号</dt><dd>{{ task.batchNo || '未记录' }}</dd></div><div class="defect-fact-wide"><dt>工单编号</dt><dd>{{ task.workOrderNo || '未记录' }}</dd></div></dl></details>
-                <details v-if="Array.isArray(task.defectEvidence) && task.defectEvidence.length" class="defect-card-disclosure"><summary>本次返回证据 {{ task.defectEvidence.length.toLocaleString('zh-CN') }} 条<AppIcon name="ArrowDown" :size="13" /></summary><p class="defect-card-note">以下显示前 {{ Math.min(task.defectEvidence.length,3) }} 条摘录，置信度为模型记录，不代表人工确认。</p><ol class="defect-evidence-excerpts"><li v-for="(evidence,evidenceIndex) in task.defectEvidence.slice(0,3)" :key="evidenceIndex"><strong>{{ evidence.imageName || '图片名称未记录' }}</strong><span>{{ evidence.defectType ? getCategoryText(evidence.defectType) : '类型未记录' }} · 模型置信度 {{ formatEvidenceConfidence(evidence.confidence) }}</span></li></ol></details>
+                <details v-if="Array.isArray(task.defectEvidence) && task.defectEvidence.length" class="defect-card-disclosure"><summary>本次返回证据 {{ task.defectEvidence.length.toLocaleString('zh-CN') }} 条<AppIcon name="ArrowDown" :size="13" /></summary><p class="defect-card-note">前 {{ Math.min(task.defectEvidence.length,3) }} 条模型记录，待人工核对。</p><ol class="defect-evidence-excerpts"><li v-for="(evidence,evidenceIndex) in task.defectEvidence.slice(0,3)" :key="evidenceIndex"><strong>{{ evidence.imageName || '图片名称未记录' }}</strong><span>{{ evidence.defectType ? getCategoryText(evidence.defectType) : '类型未记录' }} · 模型置信度 {{ formatEvidenceConfidence(evidence.confidence) }}</span></li></ol></details>
                 <QualityStageGuidance :task="task" />
                 <div class="defect-card-actions">
                   <el-button size="small" type="primary" plain @click="openTraceDialog(task.taskId)"><AppIcon name="Search" :size="15" />追溯详情</el-button>

@@ -1,13 +1,13 @@
 <template>
   <section class="market-page" aria-labelledby="market-title">
     <header class="market-header">
-      <div><h2 id="market-title"><AgentSectionIcon kind="markets" />资源市场</h2><p>寻找 Agent、Skill 与 MCP 资源，核对来源后选择接入方式</p></div>
+      <div><h2 id="market-title"><AgentSectionIcon kind="markets" />资源市场</h2></div>
       <el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新目录</el-button>
     </header>
 
     <section class="market-intro" aria-label="资源目录与本系统的关系">
       <div class="market-catalog-summary"><AppIcon name="Compass" :size="22" /><div><strong>{{ catalog ? `${markets.length} 个收录平台` : loading ? '正在读取资源目录' : '平台数量尚未读取' }}</strong><p>{{ catalog?.verifiedOn ? `目录核对日期 ${catalog.verifiedOn}` : '核对日期尚未读取' }}<span v-if="catalog?.version"> · 目录版本 {{ catalog.version }}</span></p></div></div>
-      <p class="integration-note">这是外部资源目录，收录与能力说明不代表已安装、通过审核或当前可连通。资源许可、账号条件和收费以来源详情为准。</p>
+      <p class="integration-note">外部资源，许可及收费见来源详情。收录不代表已审核或安装。</p>
       <div class="market-management-links">
         <router-link to="/agent/skills"><AppIcon name="Collection" :size="18" /><span><strong>Skill 安装与审核</strong><small>从支持的公开链接下载为本人草稿</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
         <router-link to="/agent/mcp"><AppIcon name="Connection" :size="18" /><span><strong>固定 Fetch MCP</strong><small>查看本人安装、启用与执行状态</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>

@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell reports-page">
-    <PageHero title="报告与审批" description="编写个人报告，提交固定版本给主管独立审批，编写人不能审批本人报告。"><template #actions><el-button :loading="loading" :disabled="busy" @click="load()"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button><el-button type="primary" :disabled="busy" @click="openCreate"><AppIcon name="Plus" :size="16" />新建报告草稿</el-button></template></PageHero>
+    <PageHero title="报告与审批" description="主管审批，编写人须回避。"><template #actions><el-button :loading="loading" :disabled="busy" @click="load()"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button><el-button type="primary" :disabled="busy" @click="openCreate"><AppIcon name="Plus" :size="16" />新建报告草稿</el-button></template></PageHero>
     <el-alert v-if="reportChanged" title="相关资料可能已更新 正在编辑的草稿已保留 请核对修改记录或明确加载最新版本" type="warning" :closable="false"><router-link :to="reportHistory">查看修改记录</router-link><el-button text @click="readLatestReport">核对最新资料</el-button></el-alert>
     <p class="report-scope-note"><AppIcon name="Lock" :size="15" />{{ reportScope }}</p>
     <form class="toolbar-panel report-toolbar" @submit.prevent="search">
@@ -10,7 +10,7 @@
       <el-button v-if="keyword.trim() || status" @click="resetSearch"><AppIcon name="Refresh" :size="16" />重置</el-button>
     </form>
     <section class="table-panel">
-      <p v-if="filtersDirty&&records.length" class="report-query-note" role="status">查询条件已修改，下方保留上次读取的结果；点击查询更新。</p>
+      <p v-if="filtersDirty&&records.length" class="report-query-note" role="status">筛选已改，点击查询更新结果。</p>
       <div class="collection-heading"><h2><AppIcon name="DocumentChecked" :size="18" />报告记录</h2><span>{{ loading ? '正在读取…' : error ? '本次读取失败' : total===null ? '总数尚未读取' : `共 ${total} 条` }}</span></div>
       <p v-if="listLoaded" class="report-applied-query">已读取范围：{{ appliedQuery.keyword ? `关键词“${appliedQuery.keyword}”` : '全部关键词' }} · {{ appliedQuery.status ? states[appliedQuery.status] || '指定状态' : '全部状态' }} · 第 {{ appliedPage }} 页</p>
       <el-alert v-if="error && records.length" :title="error + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
@@ -163,7 +163,7 @@ const transitionVisible = ref(false), transition = ref('submit')
 const decisionVisible = ref(false), decision = ref('APPROVE'), reason = ref(''), preview = ref(null), decisionError = ref('')
 const own = computed(() => detail.value?.ownerUserId === userStore.identity?.userId)
 const isSupervisor = computed(() => userStore.role === 'SUPERVISOR')
-const reportScope = computed(() => isSupervisor.value ? '主管查看本人草稿及有权访问的非草稿报告；其他账号的私人草稿不共享。' : userStore.role === 'INSPECTOR' ? '员工查看本人报告，依据任务仍需在当前账号可访问范围；报告审批不代替任务放行。' : '仅显示当前账号有权访问的报告，私人草稿按编写账号隔离。')
+const reportScope = computed(() => isSupervisor.value ? '可见本人草稿及有权查看的已提交报告。' : userStore.role === 'INSPECTOR' ? '仅显示本人报告，审批与任务放行分开。' : '仅显示当前账号有权访问的报告，私人草稿按编写账号隔离。')
 const reportNextStep = computed(() => {
   const state = detail.value?.status
   if (state === 'DRAFT') return own.value ? '当前为个人草稿。核对编写意见与依据后，提交固定版本给其他主管审批。' : '报告尚为草稿，需编写人提交后才能进入审批。'

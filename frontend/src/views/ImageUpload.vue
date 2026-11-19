@@ -1,19 +1,11 @@
 <template>
   <div class="page-shell upload-container">
-    <PageHero class="page-hero upload-hero">
-      <div>
-        <span class="page-hero-label">Upload Workspace</span>
-        <h1 class="page-hero-title">图片上传</h1>
-        <p class="page-hero-text">
-          按文件夹上传采集原图。上传后自动提交检测，可到检测工作台查看进度。
-        </p>
-      </div>
-    </PageHero>
+    <PageHero title="图片上传" />
 
     <ol class="upload-flow" aria-label="图片上传与检测步骤">
-      <li :aria-current="uploadStep === 1 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Picture" :size="20" /></span><div><strong>1 选择图片</strong><p>选择文件夹并核对采集信息</p></div></li>
-      <li :aria-current="uploadStep === 2 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Upload" :size="20" /></span><div><strong>2 上传原图</strong><p>核对上传进度及自动提交回执</p></div></li>
-      <li :aria-current="uploadStep === 3 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Search" :size="20" /></span><div><strong>3 核对检测</strong><p><router-link to="/inspection/workbench">查看实际进度与模型记录</router-link></p></div></li>
+      <li :aria-current="uploadStep === 1 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Picture" :size="20" /></span><div><strong>1 选择图片</strong></div></li>
+      <li :aria-current="uploadStep === 2 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Upload" :size="20" /></span><div><strong>2 上传原图</strong></div></li>
+      <li :aria-current="uploadStep === 3 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Search" :size="20" /></span><strong><router-link to="/inspection/workbench">3 查看检测进度</router-link></strong></li>
     </ol>
 
     <!-- 断点续传提示卡片 -->
@@ -63,7 +55,7 @@
         <el-form label-position="top">
           <div class="input-block">
             <div class="input-block-title"><el-icon aria-hidden="true"><FolderOpened /></el-icon>选择图片文件夹</div>
-            <p id="upload-image-format" class="upload-format-note">支持 JPG、JPEG、PNG 图片，可从文件夹中批量选择</p>
+            <p id="upload-image-format" class="upload-format-note">支持 JPG、JPEG、PNG</p>
             <input
               ref="folderInput"
               type="file"
@@ -153,7 +145,7 @@
               <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="例如 批次A" />
             </el-form-item>
           </div>
-          <p v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">人员与设备候选仅为本次已加载范围。采集信息作为来源记录，不改变账号身份或质检分派。</p>
+          <p v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">候选仅含已加载人员和设备。采集登记不影响账号或分派。</p>
 
           <p v-if="folderInfo.imageCount" class="upload-readiness" :data-ready="!missingCaptureFields.length"><AppIcon :name="missingCaptureFields.length ? 'Warning' : 'CircleCheck'" :size="16" />{{ missingCaptureFields.length ? '还需补全：'+missingCaptureFields.join('、') : '采集信息已填写，请核对后上传' }}</p>
           <el-button
@@ -165,9 +157,9 @@
             size="large"
           >
             <el-icon><UploadFilled /></el-icon>
-            {{ uploadingToOss ? '正在上传原图…' : uploadAttempted ? '本次上传已发起' : '上传原图' }}
+            {{ uploadingToOss ? '正在上传原图…' : uploadAttempted ? '本次上传已发起' : '上传原图并提交检测' }}
           </el-button>
-          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><strong>请在上传历史核对本次结果</strong><p>已发起不等于全部上传或检测完成。此处保留所选图片与采集信息，不自动重复提交；如需新建任务，请重新选择文件夹。</p><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
+          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><strong>请在上传历史核对本次结果</strong><p>已保留本次选择。新建任务请重新选择文件夹。</p><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
 
           <Transition name="upload-feedback"><div v-if="uploadingTask" class="upload-progress-card">
             <div class="upload-progress-header">
@@ -239,7 +231,7 @@
           />
           </label>
         </div>
-        <p class="upload-history-cache-note">筛选仅作用于当前已加载记录。清除本机缓存不删除后端任务或图片，也不取消服务器检测；重新读取后可能再次显示。</p>
+        <p class="upload-history-cache-note">仅筛选已加载记录。清除缓存只影响本机，服务器任务和原图仍保留。</p>
         <div class="upload-history-scope"><span>{{ historyLoading ? '正在核对上传记录…' : `已加载 ${taskList.length} 条，当前匹配 ${uploadHistory.length} 条` }}</span><el-button v-if="hasHistoryFilters" link size="small" @click="resetHistoryFilters">清空筛选</el-button></div>
         <el-alert v-if="historyError && uploadHistory.length" :title="historyError + '；以下为先前已加载的记录，请刷新核对。'" type="error" show-icon :closable="false" />
         <CollectionEmptyState

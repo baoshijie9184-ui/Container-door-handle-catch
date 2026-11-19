@@ -33,6 +33,22 @@ class BusinessToolkitFactoryTest {
             verify(resources, times(1)).employeeCounts(actor);
         }
     }
+    @Test void nameLookupUsesTheAuthenticatedActorAndRequiresAnExplicitName() {
+        for (var actor : List.of(supervisor, employee)) {
+            var owner = RoleAgentCatalog.specialists(actor).stream()
+                    .filter(def -> def.tools().contains("find_employees_by_name")).findFirst().orElseThrow();
+            var tool = factory.create(actor, owner).getTool("find_employees_by_name");
+            assertThat(tool.getParameters().get("required")).isEqualTo(List.of("name"));
+            when(resources.employeesByName(actor, "张三", 1)).thenReturn(new ResourceAgentReadApi.EmployeeMatches(List.of(), 0, 1, 10));
+            var result = tool.callAsync(ToolCallParam.builder().input(Map.of("name", "张三")).build()).block();
+            assertThat(result.getOutput().toString()).contains("records", "total");
+            for (Map<String,Object> input : List.<Map<String,Object>>of(Map.of(), Map.of("name", "张三", "role", "SUPERVISOR"))) {
+                tool.callAsync(ToolCallParam.builder().input(input).build()).block();
+            }
+            verify(resources).employeesByName(actor, "张三", 1);
+        }
+        verifyNoMoreInteractions(resources);
+    }
     @Test void allEightToolkitsHaveExactWhitelistsAndAreReadOnly() {
         for (var actor : List.of(employee, supervisor)) {
             for (var definition : RoleAgentCatalog.specialists(actor)) {

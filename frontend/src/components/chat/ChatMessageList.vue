@@ -6,7 +6,6 @@
       <div class="empty-avatar"><el-icon><ChatDotRound /></el-icon></div>
       <span class="welcome-eyebrow">{{ SYSTEM_SHORT_NAME }}</span>
       <h2 class="empty-title">今天，想先解决什么？</h2>
-      <p class="empty-desc">查看检测结果、追溯质检任务，或一起梳理下一步</p>
       <div class="welcome-prompts">
         <button v-for="prompt in welcomePrompts" :key="prompt.title" class="welcome-prompt" @click="$emit('send', prompt.query)">
           <span class="prompt-icon"><el-icon><component :is="prompt.icon" /></el-icon></span>

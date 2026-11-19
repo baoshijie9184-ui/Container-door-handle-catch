@@ -1,6 +1,6 @@
 <template>
   <div class="operation-page">
-    <PageHero title="企业模型额度" icon="DataAnalysis" description="每个模型单独登记企业额度与核对记录。供应商剩余额度以核对时点为准；本站用量只统计已接入的 AgentScope 路由请求，不包含站外、独立记忆、独立 RAG 和探测调用。"><template #actions><el-button @click="$router.push('/agent/model-quotas')">LLM模型管理</el-button><el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="configure(null)"><AppIcon name="Plus" :size="16" />登记企业额度</el-button></template></PageHero>
+    <PageHero title="企业模型额度" icon="DataAnalysis" description="供应商余额以核对时点为准。本站用量仅含已接入的 AgentScope 请求。"><template #actions><el-button @click="$router.push('/agent/model-quotas')">LLM模型管理</el-button><el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="configure(null)"><AppIcon name="Plus" :size="16" />登记企业额度</el-button></template></PageHero>
     <el-alert v-if="error && rows.length" :title="error" type="warning" :closable="false" />
     <el-alert v-if="budgetChanged" title="模型额度已有新记录 当前登记或核对内容已保留" type="warning" :closable="false"><el-button text :disabled="busy" @click="readLatestBudgets">核对最新额度</el-button></el-alert>
     <section class="operation-cards" aria-label="各模型额度">

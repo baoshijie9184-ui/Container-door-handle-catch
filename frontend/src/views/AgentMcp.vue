@@ -1,6 +1,6 @@
 <template>
   <section class="mcp-page app-panel">
-    <header><div><h2><AgentSectionIcon kind="mcp" />MCP 工具</h2><p>按账号安装与启用 由 AgentScope 通过受控运行环境调用</p></div><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新状态</el-button></header>
+    <header><div><h2><AgentSectionIcon kind="mcp" />MCP 工具</h2></div><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新状态</el-button></header>
     <p v-if="error&&state" class="error" role="alert">{{ error }}</p>
     <AgentLifecycleGuide label="固定 Fetch 工具从安装到执行清理的流程" :steps="mcpStages" />
     <CollectionEmptyState v-if="!state" :loading="loading" :error="error" empty-title="MCP 状态尚未读取" empty-description="请先读取当前账号的固定 Fetch 登记，不根据空资料推断已经安装或未安装。" @retry="refresh" />

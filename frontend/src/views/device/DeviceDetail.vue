@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell detail-page">
-    <PageHero :title="device?.deviceCode || '设备详情'" description="核对设备登记、当前使用员工与采集记录。业务状态不代表实时在线状态。" icon="Monitor">
+    <PageHero :title="device?.deviceCode || '设备详情'" description="设备登记状态与实时连接状态分别显示。" icon="Monitor">
       <template #actions>
         <el-button :loading="loading" :disabled="deleteBusy" @click="refreshDevice"><AppIcon name="Refresh" :size="16" />刷新资料</el-button>
         <el-button :disabled="loading || !device" @click="viewUsageRecords"><AppIcon name="Clock" :size="16" />使用记录</el-button>

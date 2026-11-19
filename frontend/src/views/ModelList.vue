@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell model-page">
-    <PageHero title="检测模型管理" description="核对模型版本、基础校验和已登记的效果指标，模型发布与默认选择分别管理。">
+    <PageHero title="检测模型管理">
       <template #actions>
         <el-button :loading="loading" @click="fetchModelList"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button>
         <ModelFileJournal />
@@ -9,7 +9,7 @@
     </PageHero>
 
     <el-alert v-if="modelChanged" title="模型资料可能已更新 当前编辑草稿与读取版本已保留" type="warning" :closable="false"><el-button text type="primary" @click="rereadModelChanges">核对最新模型</el-button></el-alert>
-    <p class="management-scope-note"><AppIcon name="Tickets" :size="16" /><span>这里维护图片检测模型，基础校验、评估资料、发布和默认选择分别记录。对话 LLM 使用独立配置。</span></p>
+    <p class="management-scope-note"><AppIcon name="Tickets" :size="16" /><span>仅含图像检测模型。对话模型在 LLM 模型管理中配置。</span></p>
     <section class="toolbar-panel app-panel">
       <form class="management-filter-form model-filter-form" @submit.prevent="handleSearch">
         <label for="detection-model-filter-id">模型 ID<el-input id="detection-model-filter-id" v-model="searchForm.modelId" placeholder="正整数编号" inputmode="numeric" clearable /></label>
@@ -81,7 +81,7 @@
     <section class="table-panel">
       <div class="collection-heading"><h2><AppIcon name="Collection" :size="18" />模型记录</h2><span>{{ loading ? '正在读取…' : listError ? '本次读取失败' : total==null?'总数尚未核对':`匹配 ${total} 条` }}</span></div>
       <p class="management-applied-query">已查询范围：{{ appliedDescription }}。本页统计不代表全部模型统计，时间 UTC+8。</p>
-      <p v-if="filtersDirty" class="management-query-note" role="status">筛选内容尚未查询，翻页和刷新继续沿用已执行的条件。</p>
+      <p v-if="filtersDirty" class="management-query-note" role="status">筛选已改，点击查询更新结果。</p>
       <el-button v-if="listError && modelList.length" class="management-retry" :loading="loading" @click="retryModelList"><AppIcon name="Refresh" :size="14" />重读上次请求</el-button>
       <el-alert v-if="listError && modelList.length" :title="listError + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
       <TableReadHint v-if="modelList.length" />

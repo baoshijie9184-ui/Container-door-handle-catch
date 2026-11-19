@@ -1,6 +1,6 @@
 <template>
   <section class="identity-page" aria-labelledby="identity-page-title" :aria-busy="busy || confirming">
-    <header class="identity-page-header"><div class="identity-heading"><span class="heading-icon"><el-icon><UserFilled /></el-icon></span><div><h2 id="identity-page-title">任务账号关联</h2><p>保留历史名称，明确每条记录的账号归属</p></div></div><el-button :loading="busy" :disabled="confirming || !!pending" :icon="Refresh" @click="refresh">重新预览</el-button></header>
+    <header class="identity-page-header"><div class="identity-heading"><span class="heading-icon"><el-icon><UserFilled /></el-icon></span><div><h2 id="identity-page-title">任务账号关联</h2></div></div><el-button :loading="busy" :disabled="confirming || !!pending" :icon="Refresh" @click="refresh">重新预览</el-button></header>
     <div class="identity-overview">
       <div><el-icon><Key /></el-icon><span>授权模式<strong>{{ !state ? '尚未读取' : state.mode === 'ACTIVE' ? state.sourceMode === 'ACTIVE' ? 'ID 与来源保护' : '按账号 ID' : '等待核对' }}</strong></span></div>
       <div><el-icon><DocumentChecked /></el-icon><span>{{ previewError&&state ? '上次读取的预览' : '当前预览' }}<strong>{{ state ? rows.length : '—' }} 条关联</strong></span></div>

@@ -1,7 +1,7 @@
 <template>
   <section v-if="!accountChanged" class="trace-workspace" :class="{ 'has-inspector': selectedEvent, 'history-open': historyOpen }" aria-label="Agent 执行追溯">
     <header class="trace-page-header">
-      <div class="trace-page-title"><span class="trace-brand"><el-icon><Connection /></el-icon></span><div><h2>Agent 执行追溯</h2><p>从一次提问，追踪实际发生的调用</p></div></div>
+      <div class="trace-page-title"><span class="trace-brand"><el-icon><Connection /></el-icon></span><div><h2>Agent 执行追溯</h2></div></div>
       <div class="trace-page-actions">
         <el-button :loading="refreshing" aria-label="刷新运行记录" title="刷新运行记录" @click="refresh"><el-icon><Refresh /></el-icon><span>刷新记录</span></el-button>
         <el-button :disabled="!canExport" aria-label="导出当前运行轨迹" title="导出当前运行轨迹" @click="exportTrace"><el-icon><Download /></el-icon><span>导出轨迹</span></el-button>

@@ -1,6 +1,9 @@
 package com.ruanzhu.doorhandle.module.device.api;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.ruanzhu.doorhandle.module.device.entity.Employee;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.agent.ResourceAgentReadApi;
@@ -33,6 +36,23 @@ public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
         Map<String, Object> stats = employees.getEmployeeStats();
         return new EmployeeCounts(count(stats, "total"), count(stats, "active"),
                 count(stats, "vacation"), count(stats, "resigned"));
+    }
+
+    @Override
+    public EmployeeMatches employeesByName(AgentActor actor, String name, int page) {
+        Objects.requireNonNull(actor, "需要已认证的账号");
+        String query = name == null ? "" : name.strip();
+        if (query.isBlank() || query.codePointCount(0, query.length()) > 50 || query.codePoints().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("请提供有效的人员姓名");
+        }
+        if (page < 1 || page > 10000) throw new IllegalArgumentException("页码超出范围");
+        final int pageSize = 10;
+        var matches = employees.page(new Page<Employee>(page, pageSize), new QueryWrapper<Employee>()
+                .select("name", "employee_number", "department", "employee_type", "status", "hire_date")
+                .eq("name", query).orderByAsc("id"));
+        var rows = matches.getRecords().stream().map(row -> new EmployeeSummary(row.getName(),
+                row.getEmployeeNumber(), row.getDepartment(), row.getEmployeeType(), row.getStatus(), row.getHireDate())).toList();
+        return new EmployeeMatches(rows, matches.getTotal(), page, pageSize);
     }
 
     private static long count(Map<String, Object> stats, String key) {

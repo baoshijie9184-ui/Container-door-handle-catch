@@ -25,20 +25,11 @@
         </button>
         <div v-show="!collapsed" class="brand-text" :title="SYSTEM_NAME" :aria-label="SYSTEM_NAME">
           <div class="brand-title">{{ SYSTEM_SHORT_NAME }}</div>
-          <div class="brand-subtitle">{{ SYSTEM_TAGLINE }}</div>
         </div>
       </div>
 
-      <div v-show="!collapsed" class="nav-section-label">业务导航</div>
       <WorkspaceNavigation :groups="visibleNavGroups" :active="activeMenu" :collapsed="collapsed" />
 
-      <div v-show="!collapsed" class="sidebar-footer">
-        <div class="footer-card">
-          <div class="footer-card-label">当前工作空间</div>
-          <div class="footer-card-title">{{ accountPresentation.workspace }}</div>
-          <div class="footer-card-desc">{{ accountPresentation.description }}</div>
-        </div>
-      </div>
     </aside>
 
     <el-drawer v-model="mobileNavVisible" title="工作空间导航" direction="ltr" size="min(310px, 88vw)" class="mobile-system-navigation">
@@ -98,7 +89,7 @@
 
 <script setup>
 import RealtimeStatus from '../components/RealtimeStatus.vue'
-import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE} from '@/utils/systemBrand'
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME} from '@/utils/systemBrand'
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useRouter, useRoute } from 'vue-router'
@@ -358,13 +349,6 @@ onBeforeUnmount(() => {
 .brand-mark:focus-visible { outline:2px solid var(--nav-accent); }
 .brand-text { min-width:0; overflow:hidden; white-space:nowrap; }
 .brand-title { font-size:15px; font-weight:650; letter-spacing:-.02em; color:var(--app-text); }
-.brand-subtitle { margin-top:2px; font-size:11px; color:var(--nav-muted); }
-.nav-section-label { margin:0 12px 9px; color:var(--nav-muted); font-size:11px; letter-spacing:.08em; }
-.sidebar-footer { margin-top:auto; padding-top:26px; }
-.footer-card { padding:16px; border:1px solid var(--app-border); border-radius:12px; background:var(--app-surface-muted); }
-.footer-card-label { margin-bottom:7px; font-size:11px; color:var(--nav-muted); }
-.footer-card-title { font-size:14px; font-weight:600; color:var(--app-text); }
-.footer-card-desc { margin-top:5px; color:var(--nav-label); font-size:11px; line-height:1.7; }
 .sidebar-collapsed .brand-block { justify-content:center; padding:0; }
 .sidebar-collapsed .layout-sidebar { padding-inline:7px; }
 .layout-main { display:flex; flex-direction:column; position:relative; min-width:0; min-height:0; overflow:hidden; }

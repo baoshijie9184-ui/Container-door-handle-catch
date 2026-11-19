@@ -7,14 +7,12 @@
       </a>
       <div class="showcase-inner">
         <h1>集装箱门把手盖<br /><em>视觉质检</em></h1>
-        <p>从原图采集到人工复核，追溯每一次质量判断。</p>
       </div>
     </section>
     <section class="login-panel" aria-labelledby="login-title">
       <div class="login-card">
         <span class="login-card-icon"><AppIcon name="Key" :size="24" /></span>
         <h2 id="login-title">登录工作空间</h2>
-        <p class="login-card-desc">使用员工或主管账号，进入检测与质检工作台。</p>
         <el-alert v-if="loginError" id="login-error" ref="loginErrorRef" tabindex="-1" :title="loginError" type="error" :closable="false" show-icon role="alert" />
         <p v-if="!online" class="login-inline-note is-warning" role="status"><AppIcon name="Connection" :size="15" />浏览器报告网络已断开，请核对连接。恢复后不会自动提交登录。</p>
         <el-form ref="loginFormRef" :model="loginForm" :rules="rules" :disabled="loading || loginAccepted" label-position="top" class="login-form" :aria-busy="loading" @submit.prevent="handleLogin">

@@ -1,6 +1,6 @@
 <template>
   <div class="operation-page llm-management">
-    <PageHero title="LLM模型管理" icon="Cpu" :description="supervisor ? '管理厂家预算，为自己和员工分配限额，核对用量并审批员工申请。' : '查看模型用量与个人限额，申请追加额度并跟进进度。'">
+    <PageHero title="LLM模型管理" icon="Cpu">
       <template #actions>
         <el-button :loading="refreshing" :disabled="busy" @click="refresh"><AppIcon name="Refresh" :size="15" />刷新</el-button>
         <el-button v-if="!supervisor" type="primary" :disabled="busy || !applyModels.length" @click="openApply()"><AppIcon name="Plus" :size="15" />申请额度</el-button>
@@ -56,7 +56,7 @@
 
     <section class="operation-panel llm-applications" aria-labelledby="llm-applications-title">
       <div class="llm-section-heading"><div><h2 id="llm-applications-title">{{supervisor ? '员工额度审批' : '我的申请'}}</h2><p>批准后追加员工的个人额度，保留已用与预留记录。</p></div></div>
-      <div class="llm-list-toolbar"><p class="operation-muted">{{ listScope === 'team' ? '企业申请按提交时间倒序展示，待审批记录可批准或拒绝' : '查看本人申请；待审批时可以取消' }}</p><div class="llm-list-filters"><el-select v-model="activeList.status" aria-label="申请状态" :disabled="busy" @change="changeStatus"><el-option label="全部状态" value="" /><el-option v-for="(label, status) in quotaApplicationLabels" :key="status" :label="label" :value="status" /></el-select><el-button :loading="activeList.loading" :disabled="busy" @click="loadApplications(listScope)">刷新申请</el-button></div></div>
+      <div class="llm-list-toolbar"><div class="llm-list-filters"><el-select v-model="activeList.status" aria-label="申请状态" :disabled="busy" @change="changeStatus"><el-option label="全部状态" value="" /><el-option v-for="(label, status) in quotaApplicationLabels" :key="status" :label="label" :value="status" /></el-select><el-button :loading="activeList.loading" :disabled="busy" @click="loadApplications(listScope)">刷新申请</el-button></div></div>
       <el-alert v-if="activeList.error" :title="activeList.error" type="error" :closable="false" />
       <TransitionGroup name="quota-record" tag="div" class="llm-application-list" :aria-busy="activeList.loading">
         <article v-for="application in activeList.items" :key="application.id" class="operation-chunk llm-application">

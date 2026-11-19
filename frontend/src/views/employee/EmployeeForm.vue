@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell form-page managed-form-page">
-    <PageHero :title="isEdit ? '编辑人员' : '新增人员'" description="维护业务人员登记、部门与岗位。登录账号及权限在账号与组织页面单独管理。" icon="User">
+    <PageHero :title="isEdit ? '编辑人员' : '新增人员'" description="登录权限请到“账号与组织”管理。" icon="User">
       <template #actions><el-button @click="goBack"><AppIcon name="ArrowLeft" :size="16" />返回列表</el-button></template>
     </PageHero>
     <CollaborationRefreshNotice :changed="externalChanged" :editing="loading" :opened-version="employeeForm.version" :history-to="{path:'/operations/audit',query:{resourceType:'EMPLOYEE',resourceId:employeeId}}" @refresh="reload" />

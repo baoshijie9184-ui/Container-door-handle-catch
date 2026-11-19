@@ -2,7 +2,7 @@
   <section v-if="visible" class="operation-panel provider-budget" aria-labelledby="provider-budget-title">
     <header class="budget-heading budget-intro">
       <div><h2 id="provider-budget-title">{{ supervisor ? '厂家预算与个人限额' : '我的使用限额' }}</h2>
-        <p class="operation-muted">百炼按模型扣 token，OpenAI 和 DeepSeek 分别共享各自的账户预算。</p></div>
+        </div>
       <div class="budget-tools">
         <label v-if="supervisor" class="employee-picker">分配对象
           <el-select :model-value="employee ?? selfId" filterable remote :remote-method="search" :disabled="saving || dialog" placeholder="搜索员工账号" @visible-change="openSearch" @change="switchEmployee">

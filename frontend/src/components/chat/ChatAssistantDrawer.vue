@@ -48,7 +48,6 @@
               </div>
               <div class="chat-heading">
                 <h3 class="chat-header-title">{{ chatStore.sessionTitle }}</h3>
-                <p>检测与质检工作助手</p>
               </div>
             </div>
             <div class="chat-header-actions" @keydown.esc.capture="dismissHeaderMenu">

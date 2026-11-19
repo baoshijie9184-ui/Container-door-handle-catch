@@ -13,7 +13,6 @@
     <header class="dashboard-hero">
       <div>
         <h1>{{ canViewHistoricalSummary ? '企业质量工作台' : '我的检测工作台' }}</h1>
-        <p>{{ canViewHistoricalSummary ? '部门检测、质检待办与历史登记数据' : '查看分配给我的任务，提交检测并核对图片' }}</p>
       </div>
       <router-link class="model-link" to="/models"><AppIcon name="Cpu" :size="17" />查看检测模型</router-link>
     </header>
@@ -30,31 +29,32 @@
       </router-link>
       <router-link class="desk-link" to="/inspection/history">
         <span class="desk-link-top"><AppIcon name="Picture" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
-        <strong>浏览检测图片</strong><span>按检测记录逐张核对</span>
+        <strong>浏览检测图片</strong>
       </router-link>
       <router-link class="desk-link" :to="canViewHistoricalSummary ? '/inspection/workbench' : '/upload'">
         <span class="desk-link-top"><AppIcon :name="canViewHistoricalSummary ? 'Search' : 'Upload'" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
-        <strong>{{ canViewHistoricalSummary ? '开始图像检测' : '上传采集图片' }}</strong><span>{{ canViewHistoricalSummary ? '选择图片与检测模型' : '按文件夹提交原图' }}</span>
+        <strong>{{ canViewHistoricalSummary ? '开始图像检测' : '上传采集图片' }}</strong>
       </router-link>
     </nav>
     <div role="status" class="dashboard-refresh-note">
       <AppIcon name="Clock" :size="14" />
-      <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新' }}</span>
-      <span v-if="lastUpdated"> · 最近更新 {{ lastUpdated }} UTC+8</span>
+      <span v-if="refreshing">正在刷新…</span>
+      <span v-else-if="lastUpdated">最近更新 {{ lastUpdated }} UTC+8</span>
+      <span v-else>等待更新</span>
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
-        :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
+        :title="`未更新：${failedSections.join('、')}。显示上次数据或“—”。`" />
     </div>
     <div class="dashboard-overview" :class="{ 'with-history': canViewHistoricalSummary && historicalSummary }">
       <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
         <header>
           <div class="quality-heading">
             <span class="quality-heading-icon"><AppIcon name="DocumentChecked" :size="21" /></span>
-            <div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按处理状态查看任务</p></div>
+            <div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2></div>
           </div>
           <router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />查看队列</router-link>
         </header>
         <div v-if="qualityQueueEmpty" class="queue-empty">
-          <AppIcon name="CircleCheck" :size="25" /><div><strong>当前没有待处理的质检任务</strong><p>收到待复核、返工或异常任务后，会在这里按状态显示。</p></div>
+          <AppIcon name="CircleCheck" :size="25" /><div><strong>当前没有待处理的质检任务</strong></div>
         </div>
         <div v-else class="quality-overview-grid">
           <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="qualityWorkload?.[metric.key] > 0 ? metric.tone : 'neutral'">
@@ -63,13 +63,16 @@
             <AppIcon class="queue-chevron" name="ArrowRight" :size="13" />
           </router-link>
         </div>
-        <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
-        <p v-else-if="!qualityQueueEmpty || failedSections.includes('质量待办')" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '同一任务可计入多个状态。' }}</p>
+        <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新。' : '正在读取质量待办…' }}</p>
+        <p v-else-if="failedSections.includes('质量待办')" class="quality-overview-note" role="status">刷新失败，显示上次数据。</p>
       </section>
       <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
       <CollaborationTodos />
     </div>
-    <p class="dashboard-data-note">任务按当前账号权限汇总，设备与人员按全部登记资料统计。缺失或无法计算的指标显示为“—”。</p>
+    <details class="dashboard-data-note count-scope">
+      <summary>统计口径</summary>
+      <p>任务按账号可见范围汇总，设备与人员按全部登记资料统计。“—”表示数据缺失或无法计算。同一任务可计入多个质检状态。</p>
+    </details>
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
       <div class="hero-panel app-panel command-panel">
@@ -118,7 +121,7 @@
         <div class="status-header">
           <div>
             <h3 class="app-panel-title">运行态势</h3>
-            <p class="app-panel-subtitle">设备与人员登记状态，不表示实时在线心跳</p>
+            <p class="app-panel-subtitle">按业务登记状态统计</p>
           </div>
           <el-button text size="small" :loading="refreshing" @click="refreshAll">
             <el-icon><Refresh /></el-icon>
@@ -175,7 +178,7 @@
     <div class="workflow-summaries">
     <section class="workflow-summary app-panel">
       <h3>{{ workUnitSummary?.scope === 'DEPARTMENT' ? '部门工作单元概览' : '我的工作单元概览' }}</h3>
-      <p>仅统计当前工作单元，不代表已审批公开检测记录；员工仅统计当前分配给自己的任务。</p>
+      <p>仅含当前工作单元。</p>
       <div v-if="workUnitSummary" class="hero-telemetry">
         <span v-if="workUnitSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ formatNumber(workUnitSummary.counts.WAITING) }}</span>
         <span class="metric-chip">已分配 {{ formatNumber(workUnitSummary.counts.ASSIGNED) }}</span>
@@ -187,7 +190,7 @@
     </section>
     <section class="workflow-summary app-panel">
       <h3>{{ duplicateSummary?.scope === 'DEPARTMENT' ? '部门重复图片复查' : '我的重复图片复查' }}</h3>
-      <p>统计已创建的未完成工单；员工仅查看分配给自己的复查工作。</p>
+      <p>仅含未完成工单。</p>
       <div v-if="duplicateSummary" class="hero-telemetry">
         <span v-if="duplicateSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ formatNumber(duplicateSummary.counts.OPEN) }}</span>
         <span class="metric-chip">待对比 {{ formatNumber(duplicateSummary.counts.ASSIGNED) }}</span>
@@ -217,7 +220,7 @@
           </div>
         </template>
         <div ref="detectionTrendChartRef" class="chart" role="img" :aria-label="`${trendScopeLabel}检测趋势：左轴任务图片数，右轴各类目标数`" :aria-busy="trendLoading"></div>
-        <p class="dashboard-data-note">图片数与目标数单位不同，一张图片可以有多个目标；此时间范围仅作用于本图。</p>
+        <p class="dashboard-data-note">左轴为图片数，右轴为目标数。</p>
         <p v-if="detectionTimeRange==='month'" class="dashboard-data-note">月份标签沿用原统计记录，尚未包含年份；跨年明细请在检测历史核对。</p>
         <ChartDataDetails title="查看趋势数据" :columns="trendColumns" :rows="chartReadouts.trend.rows" :scope="chartReadouts.trend.scope || trendScopeLabel" :loaded="chartReadouts.trend.loaded" :loading="trendLoading" :read-error="failedSections.includes('检测趋势')?'趋势统计暂不可读取。':''" />
       </el-card>
@@ -228,7 +231,6 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">快速状态</h3>
-              <p class="app-panel-subtitle">关键指标一览</p>
             </div>
           </div>
         </template>
@@ -278,12 +280,12 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">地区图片采集量</h3>
-              <p class="app-panel-subtitle">当前账号可访问的累计完成任务（含部分失败），按登记地区分组</p>
+              <p class="app-panel-subtitle">已完成任务（含部分失败） · 按登记地区</p>
             </div>
           </div>
         </template>
         <div ref="regionChartRef" class="chart" role="img" aria-label="登记地区的累计任务图片数与任务数"></div>
-        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="当前账号可访问的累计完成任务（含部分失败），按登记地区分组" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
+        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="已完成任务（含部分失败） · 按登记地区" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
       </el-card>
 
       <!-- 检测结果分布 (右半) -->
@@ -292,12 +294,11 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">检测结果分布</h3>
-              <p class="app-panel-subtitle">当前账号可访问的累计完成任务（含部分失败），六类检测目标占比</p>
+              <p class="app-panel-subtitle">已完成任务（含部分失败） · 按检测目标计数</p>
             </div>
           </div>
         </template>
         <div ref="detectionDistributionChartRef" class="chart" role="img" aria-label="六类检测目标累计分布，不代表人工复核结果"></div>
-        <p class="dashboard-data-note">按检测目标计数，非图片数或人工复核结论。</p>
         <ChartDataDetails title="查看分类目标数" :columns="targetColumns" :rows="chartReadouts.distribution.rows" scope="当前账号可访问的累计完成任务（含部分失败），按检测目标计数" :loaded="chartReadouts.distribution.loaded" :loading="refreshing" :read-error="failedSections.includes('检测分布')?'分类统计暂不可读取。':''" />
       </el-card>
 
@@ -307,7 +308,6 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">设备状态分布</h3>
-              <p class="app-panel-subtitle">全部登记设备的当前状态：使用中、离线、维护与未使用</p>
             </div>
           </div>
         </template>
@@ -321,7 +321,6 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">人员状态分布</h3>
-              <p class="app-panel-subtitle">全部登记人员的当前状态：在岗、休假与离职</p>
             </div>
           </div>
         </template>
@@ -335,7 +334,6 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">设备类型概览</h3>
-              <p class="app-panel-subtitle">图片采集设备与图像检测设备分布</p>
             </div>
           </div>
         </template>
@@ -369,7 +367,6 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">人员类型概览</h3>
-              <p class="app-panel-subtitle">检测、采集、维修三类岗位分布</p>
             </div>
           </div>
         </template>
@@ -402,7 +399,7 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">模型使用统计</h3>
-              <p class="app-panel-subtitle">当前账号可访问的累计完成任务（含部分失败），按检测模型汇总</p>
+              <p class="app-panel-subtitle">已完成任务（含部分失败） · 按模型</p>
             </div>
           </div>
         </template>
@@ -1045,7 +1042,6 @@ useResourceChanges({refresh:()=>refreshAll()})
 <style scoped>
 .dashboard-hero { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .dashboard-hero h1 { margin:0; color:var(--app-text); font-size:clamp(27px,2.2vw,35px); font-weight:680; line-height:1.24; letter-spacing:-.04em; }
-.dashboard-hero p { margin:6px 0 0; color:var(--app-text-secondary); font-size:14px; line-height:1.6; }
 .model-link { display:inline-flex; flex:none; align-items:center; gap:8px; padding:8px 13px; border:1px solid var(--app-border-strong); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:13px; }
 .model-link:hover { color:var(--app-primary); border-color:var(--app-border-focus); }
 .action-deck { display:grid; grid-template-columns:minmax(0,1.6fr) repeat(2,minmax(0,1fr)); gap:14px; }
@@ -1065,7 +1061,6 @@ useResourceChanges({refresh:()=>refreshAll()})
 .desk-link-top { display:flex; width:100%; align-items:center; justify-content:space-between; margin-bottom:auto; color:var(--app-primary); }
 .desk-link-top > :last-child { color:var(--app-text-muted); }
 .desk-link strong { margin:14px 0 2px; font-size:18px; font-weight:640; }
-.desk-link > span:last-child { font-size:13px; color:var(--app-text-secondary); }
 .home-loading .skeleton-title { width:35%; height:32px; margin-bottom:25px; }
 .home-loading .action-deck > div { height:143px; }
 .dashboard-overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:16px; }
@@ -1086,7 +1081,6 @@ useResourceChanges({refresh:()=>refreshAll()})
 }
 .queue-empty { display:flex; align-items:flex-start; gap:12px; padding:19px 16px; border-radius:9px; background:var(--app-primary-light); color:var(--app-primary-deep); }
 .queue-empty strong { font-size:15px; }
-.queue-empty p { margin:6px 0 0; color:var(--app-text-secondary); font-size:13px; line-height:1.75; }
 .home-page > .dashboard-refresh-note { margin:0; }
 .home-page .hero-panel > .app-panel-title { font-size:16px; font-weight:600; margin-bottom:16px; }
 .home-page .hero-panel .hero-telemetry { margin:0 0 20px; gap:12px; }
@@ -1657,6 +1651,8 @@ useResourceChanges({refresh:()=>refreshAll()})
   .hl-value { font-size: 26px; }
 }
 .dashboard-refresh-note { margin-bottom: 16px; font-size: 11px; color: var(--app-text-muted); }
+.count-scope summary { width:fit-content; cursor:pointer; color:var(--app-primary-deep); }
+.count-scope p { margin:5px 0 0; }
 .dashboard-data-note { margin: 0; color: var(--app-text-secondary); font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
 .dashboard-source-note { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--app-border); color: var(--app-text-secondary); font-size: 12px; line-height: 1.8; }
 .dashboard-source-note summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--app-text); font-weight: 550; }

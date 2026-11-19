@@ -9,6 +9,13 @@ public interface ResourceAgentReadApi {
     record EmployeeCounts(long total, long active, long vacation, long resigned) {}
     EmployeeCounts employeeCounts(AgentActor actor);
 
+    record EmployeeSummary(String name, String employeeNumber, String department,
+                           String employeeType, String status, String hireDate) {}
+    record EmployeeMatches(List<EmployeeSummary> records, long total, int page, int pageSize) {
+        public EmployeeMatches { records = List.copyOf(records); }
+    }
+    EmployeeMatches employeesByName(AgentActor actor, String name, int page);
+
     record DeviceView(String deviceId, String deviceCode, String status, String onlineStatus,
                       String plcStatus, String cameraStatus, String captureStatus) {}
     List<DeviceView> devices(AgentActor actor, int page, int size);

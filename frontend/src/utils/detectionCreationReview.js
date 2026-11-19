@@ -27,7 +27,7 @@ export function transferReadIssue(error,hasSnapshot=false){
  if(status===403)return {clear:true,availability:'',message:'当前账号无权读取这些核对资料，已清除旧内容。不会重发原操作。'}
  return {clear,availability:'',message:'核对状态暂不可读取，请刷新后再操作。'+(hasSnapshot?'已显示内容仅为上次快照。':'')+'不会重发原操作。'}
 }
-export const transferDisabledMessage='此环境未启用检测创建核对。普通对话可继续使用；启用前需要核对后端配置与迁移。'
+export const transferDisabledMessage='此环境未启用此功能，可继续对话。'
 export const transferLabels={NEEDS_REVIEW:'待核对',QUEUED:'已提交检测',CANCELLED:'已终止',PREPARING:'准备中',UPLOADING:'传输中'}
 export const checkLabels={QUEUED:'等待核对',RUNNING:'核对中',VERIFIED:'内容一致',INCOMPLETE:'内容不齐或不一致',UNCONFIRMED:'核对未完成',CANCELLED:'核对已终止'}
 export function validTransferReview(value){return !!value&&uuid(value.commandId)&&typeof value.taskId==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value.taskId)&&Object.hasOwn(transferLabels,value.status)&&integer(value.revision)&&integer(value.images)&&integer(value.acknowledged)&&value.acknowledged<=value.images&&typeof value.manifestAvailable==='boolean'&&typeof value.canFinalize==='boolean'&&(value.checkId==null||uuid(value.checkId))&&(value.checkStatus==null||Object.hasOwn(checkLabels,value.checkStatus))&&integer(value.checked)&&integer(value.verified)&&value.verified<=value.checked&&value.checked<=value.images}

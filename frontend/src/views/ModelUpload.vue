@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell model-upload-container">
-    <PageHero icon="Upload" title="上传检测模型" description="上传支持的模型文件，填写版本说明并查看登记结果。"><template #actions><ModelFileJournal ref="fileJournal" /><el-button :disabled="loading" @click="$router.push('/models')"><AppIcon name="ArrowLeft" />返回模型列表</el-button></template></PageHero>
+    <PageHero icon="Upload" title="上传检测模型"><template #actions><ModelFileJournal ref="fileJournal" /><el-button :disabled="loading" @click="$router.push('/models')"><AppIcon name="ArrowLeft" />返回模型列表</el-button></template></PageHero>
     <el-alert v-if="userStore.hasCheckedAuth && !isSupervisor" title="仅已登录的主管可上传检测模型，请返回列表核对当前账号。" type="warning" show-icon :closable="false" /><el-card class="upload-card">
       <div class="model-upload-guidance"><span class="model-upload-symbol"><AppIcon name="Upload" :size="24" /></span><div><h2>登记新的检测模型</h2><p>选择文件并填写版本信息，上传后核对基础校验结果。模型发布与默认设置在模型列表操作。</p></div></div>
       <el-form :model="form" :rules="rules" ref="uploadFormRef" scroll-to-error label-position="top" :disabled="loading || uploadUncertain || !isSupervisor" @submit.prevent="submitUpload">

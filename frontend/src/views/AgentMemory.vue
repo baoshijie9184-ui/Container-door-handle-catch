@@ -1,6 +1,6 @@
 <template>
   <section class="memory-page app-panel">
-    <header><div><h2><AgentSectionIcon kind="memory" />个人记忆</h2><p>管理助手保存的本人长期记忆 不包含其他账号的私人信息</p></div><el-button :loading="loading" :disabled="busy||editor.visible||policy.visible" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新</el-button></header>
+    <header><div><h2><AgentSectionIcon kind="memory" />个人记忆</h2></div><el-button :loading="loading" :disabled="busy||editor.visible||policy.visible" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新</el-button></header>
     <p v-if="error" role="alert" class="memory-error">{{ error }}</p>
     <section class="memory-settings" aria-label="长期记忆设置">
       <h3><AgentSectionIcon kind="memory" small />记忆设置</h3>
