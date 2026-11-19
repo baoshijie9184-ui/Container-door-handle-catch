@@ -2,6 +2,7 @@ package com.ruanzhu.doorhandle.module.detection.controller;
 
 import com.ruanzhu.doorhandle.common.Result;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
+import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -83,8 +84,8 @@ public class DashboardController {
      * @return 各地区的采集图片数量和任务数
      */
     @GetMapping("/region-stats")
-    public Result getRegionStats() {
-        return Result.success(dashboardService.getRegionStats());
+    public Result getRegionStats(@RequestParam(defaultValue = "ACCOUNT") DashboardScope scope) {
+        return Result.success(dashboardService.getRegionStats(scope));
     }
 
     /**
@@ -92,8 +93,8 @@ public class DashboardController {
      * @return 各模型的使用次数、检测图片数、平均漏检率
      */
     @GetMapping("/model-stats")
-    public Result getModelStats() {
-        return Result.success(dashboardService.getModelStats());
+    public Result getModelStats(@RequestParam(defaultValue = "ACCOUNT") DashboardScope scope) {
+        return Result.success(dashboardService.getModelStats(scope));
     }
 
     /**

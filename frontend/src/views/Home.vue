@@ -75,7 +75,7 @@
     </div>
     <details class="dashboard-data-note count-scope">
       <summary>统计口径</summary>
-      <p>任务按账号可见范围汇总，设备与人员按全部登记资料统计。“—”表示数据缺失或无法计算。同一任务可计入多个质检状态。</p>
+      <p>检测趋势、目标分类、地区和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。“—”表示数据缺失或无法计算。同一任务可计入多个质检状态。</p>
     </details>
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
@@ -88,16 +88,16 @@
         </div>
 
         <div class="hero-highlights">
-          <router-link class="highlight-card hl-primary" title="打开检测记录，统计范围以列表查询为准" to="/inspection/history">
-            <div class="hl-header">
-              <div class="hl-icon hl-icon-blue">
+          <button class="highlight-card hl-primary" type="button" title="查看企业检测趋势" @click="trendHeading?.focus()">
+            <span class="hl-header">
+              <span class="hl-icon hl-icon-blue">
                 <el-icon><DataAnalysis /></el-icon>
-              </div>
+              </span>
               <span class="hl-trend">累计</span>
-            </div>
-            <strong class="hl-value">{{ formatNumber(totalDetections) }}</strong>
-            <span class="hl-label">累计完成检测任务数（含部分失败）</span>
-          </router-link>
+            </span>
+            <strong class="hl-value">{{ formatNumber(companyDetections) }}</strong>
+            <span class="hl-label">企业累计完成检测任务（含部分失败）</span>
+          </button>
           <router-link class="highlight-card hl-success" title="打开设备列表核对登记状态" to="/devices">
             <div class="hl-header">
               <div class="hl-icon hl-icon-steel">
@@ -213,8 +213,8 @@
         <template #header>
           <div class="panel-header">
             <div>
-              <h3 class="app-panel-title">检测趋势</h3>
-              <p class="app-panel-subtitle">{{ trendScopeLabel }} · 按任务创建日期分组，仅含完成及部分失败任务</p>
+              <h3 ref="trendHeading" tabindex="-1" class="app-panel-title">检测趋势</h3>
+              <p class="app-panel-subtitle">企业汇总 · {{ trendScopeLabel }} · 按任务创建日期</p>
             </div>
             <el-radio-group v-model="detectionTimeRange" size="small" aria-label="检测趋势统计范围">
               <el-radio-button label="week">近 7 天</el-radio-button>
@@ -225,7 +225,6 @@
         </template>
         <div ref="detectionTrendChartRef" class="chart" role="img" :aria-label="`${trendScopeLabel}检测趋势：左轴任务图片数，右轴各类目标数`" :aria-busy="trendLoading"></div>
         <p class="dashboard-data-note">左轴为图片数，右轴为目标数。</p>
-        <p v-if="detectionTimeRange==='month'" class="dashboard-data-note">月份标签沿用原统计记录，尚未包含年份；跨年明细请在检测历史核对。</p>
         <ChartDataDetails title="查看趋势数据" :columns="trendColumns" :rows="chartReadouts.trend.rows" :scope="chartReadouts.trend.scope || trendScopeLabel" :loaded="chartReadouts.trend.loaded" :loading="trendLoading" :read-error="failedSections.includes('检测趋势')?'趋势统计暂不可读取。':''" />
       </el-card>
 
@@ -245,7 +244,7 @@
             </div>
             <div class="qs-content">
               <div class="qs-value">{{ formatNumber(totalDetections) }}</div>
-              <div class="qs-label">累计完成任务（含部分失败）</div>
+              <div class="qs-label">{{ isSupervisor ? '企业已完成任务' : '我可查看的已完成任务' }}（含部分失败）</div>
             </div>
           </router-link>
           <router-link class="quick-stat-item" to="/devices">
@@ -284,12 +283,12 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">地区图片采集量</h3>
-              <p class="app-panel-subtitle">已完成任务（含部分失败） · 按登记地区</p>
+              <p class="app-panel-subtitle">企业汇总 · 按登记地区</p>
             </div>
           </div>
         </template>
         <div ref="regionChartRef" class="chart" role="img" aria-label="登记地区的累计任务图片数与任务数"></div>
-        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="已完成任务（含部分失败） · 按登记地区" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
+        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="企业汇总 · 按登记地区" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
       </el-card>
 
       <!-- 检测结果分布 (右半) -->
@@ -298,12 +297,12 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">检测结果分布</h3>
-              <p class="app-panel-subtitle">已完成任务（含部分失败） · 按检测目标计数</p>
+              <p class="app-panel-subtitle">企业汇总 · 按检测目标计数</p>
             </div>
           </div>
         </template>
         <div ref="detectionDistributionChartRef" class="chart" role="img" aria-label="六类检测目标累计分布，不代表人工复核结果"></div>
-        <ChartDataDetails title="查看分类目标数" :columns="targetColumns" :rows="chartReadouts.distribution.rows" scope="当前账号可访问的累计完成任务（含部分失败），按检测目标计数" :loaded="chartReadouts.distribution.loaded" :loading="refreshing" :read-error="failedSections.includes('检测分布')?'分类统计暂不可读取。':''" />
+        <ChartDataDetails title="查看分类目标数" :columns="targetColumns" :rows="chartReadouts.distribution.rows" scope="企业累计完成任务（含部分失败），按检测目标计数" :loaded="chartReadouts.distribution.loaded" :loading="refreshing" :read-error="failedSections.includes('检测分布')?'分类统计暂不可读取。':''" />
       </el-card>
 
       <!-- 设备状态分布 -->
@@ -403,7 +402,7 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">模型使用统计</h3>
-              <p class="app-panel-subtitle">已完成任务（含部分失败） · 按模型</p>
+              <p class="app-panel-subtitle">企业汇总 · 按模型</p>
             </div>
           </div>
         </template>
@@ -541,6 +540,9 @@ function markSectionFailed(section) {
 }
 
 const totalDetections = ref(null)
+const companyDetections = ref(null)
+const trendHeading = ref(null)
+const companyScope = { scope: 'COMPANY' }
 const historicalSummary = ref(null)
 const isSupervisor = computed(() => userStore.isAuthenticated && ['SUPERVISOR', 'ADMIN'].includes(userStore.role))
 const historicalAccountScope = () => JSON.stringify([userStore.identity?.userId, userStore.username, userStore.role, userStore.isAuthenticated])
@@ -703,8 +705,9 @@ async function fetchDashboardStats() {
     const s = res.data?.data || {}
     if (disposed) return
     totalDetections.value = knownCount(s.detectionCount)
+    companyDetections.value = knownCount(s.companyDetectionCount)
     if (owner === historicalAccountScope()) historicalSummary.value = userStore.isAuthenticated && s.historicalSummary && typeof s.historicalSummary === 'object' && !Array.isArray(s.historicalSummary) ? s.historicalSummary : null
-    if (totalDetections.value === null) markSectionFailed('总览')
+    if (totalDetections.value === null || companyDetections.value === null) markSectionFailed('总览')
   } catch { /* 保留旧值，统一显示失败提示。 */ }
 }
 
@@ -746,7 +749,7 @@ async function fetchModelStats() {
   if (modelStatsLoading.value || disposed) return
   modelStatsLoading.value = true
   try {
-    const res = await dashboardRequest('模型', '/api/dashboard/model-stats')
+    const res = await dashboardRequest('模型', '/api/dashboard/model-stats', { params: companyScope })
     if (disposed) return
     if (!Array.isArray(res.data?.data) || res.data.data.some(item => !item || typeof item !== 'object')) throw new Error('模型统计格式异常')
     modelStats.value = res.data.data
@@ -773,14 +776,14 @@ async function updateDetectionTrendChart() {
     chartReadouts.trend={rows:[],loaded:false,scope:trendScopeLabel.value}
   }
   try {
-    const res = await request.get('/api/statistics/detection-trend', { params: { timeRange } })
+    const res = await request.get('/api/statistics/detection-trend', { params: { ...companyScope, timeRange } })
     if (disposed || generation !== trendRequestGeneration) return
     if (res.data?.code !== 200 || !Array.isArray(res.data?.data)) throw new Error('趋势统计格式异常')
     failedSections.value = failedSections.value.filter(item => item !== '检测趋势')
     charts.detectionTrend.clear()
     renderedTrendRange = timeRange
     const data = res.data?.data || []
-    if (!data.length) { chartReadouts.trend={rows:[],loaded:true,scope:trendScopeLabel.value};charts.detectionTrend.setOption(buildEmptyOption('暂无趋势数据')); return }
+    if (!data.length) { chartReadouts.trend={rows:[],loaded:true,scope:trendScopeLabel.value};charts.detectionTrend.setOption(buildEmptyOption('所选时段没有已完成或部分失败的检测任务')); return }
     const countKeys = ['total', 'normal', 'bent', 'deformed', 'rusty', 'missing', 'compromised']
     if (data.some(item => !item || countKeys.some(key => knownCount(item[key]) === null))) throw new Error('趋势统计字段不完整')
     chartReadouts.trend={rows:data.map(item=>Object.fromEntries([['period',item.date],...countKeys.map(key=>[key,knownCount(item[key])])])),loaded:true,scope:trendScopeLabel.value}
@@ -845,7 +848,7 @@ async function updateDetectionTrendChart() {
 async function updateDetectionDistributionChart() {
   if (!charts.detectionDistribution) return
   try {
-    const res = await dashboardRequest('检测分布', '/api/statistics/detection-distribution')
+    const res = await dashboardRequest('检测分布', '/api/statistics/detection-distribution', { params: companyScope })
     if (disposed) return
     charts.detectionDistribution.clear()
     const resultMap = { 正常: null, 弯曲: null, 形变: null, 锈蚀: null, 缺失: null, 结构损伤: null }
@@ -950,7 +953,7 @@ function updateEmployeeStatusChart() {
 async function updateRegionChart() {
   if (!charts.region) return
   try {
-    const res = await dashboardRequest('地区采集', '/api/dashboard/region-stats')
+    const res = await dashboardRequest('地区采集', '/api/dashboard/region-stats', { params: companyScope })
     if (disposed) return
     charts.region.clear()
     const data = res.data?.data
@@ -1175,6 +1178,8 @@ useResourceChanges({refresh:()=>refreshAll()})
   transition: border-color var(--app-transition-fast), background-color var(--app-transition-fast), box-shadow var(--app-transition-fast), transform var(--app-transition-fast);
   box-shadow: var(--app-shadow-xs);
 }
+
+button.highlight-card { text-align:left; font:inherit; color:inherit; cursor:pointer; }
 
 .highlight-card::after {
   content: none;

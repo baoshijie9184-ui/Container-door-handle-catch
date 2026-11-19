@@ -244,7 +244,9 @@ def response(path, method='GET', role='SUPERVISOR', url='', body=None):
         if path.endswith('/audit') or path.endswith('/events'): return wrapped([])
         return wrapped(next((r for r in REPORTS if r['reportId']==path.split('/')[4]),None))
     if path=='/api/device-usage-records': return wrapped({'records':[],'total':0})
-    if path=='/api/dashboard/stats': return wrapped({'detectionCount':sum(t['status'] in ('COMPLETED','PARTIAL_FAILED','FAILED') for t in TASKS),'avgMissRate':None})
+    if path=='/api/dashboard/stats':
+        completed=sum(t['status'] in ('COMPLETED','PARTIAL_FAILED') for t in TASKS)
+        return wrapped({'detectionCount':completed,'companyDetectionCount':completed,'avgMissRate':None})
     if path=='/api/dashboard/model-stats': return wrapped([{'modelId':m['modelId'],'modelName':m['modelName'],'avgMissRate':None} for m in MODELS])
     if path=='/api/dashboard/quality-workload':
         flows=Counter(t['flowStatus'] for t in TASKS)

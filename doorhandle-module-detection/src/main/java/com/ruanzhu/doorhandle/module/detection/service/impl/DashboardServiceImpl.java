@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
+import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
 import com.ruanzhu.doorhandle.module.detection.service.HistoricalDetectionSummaryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -43,9 +44,9 @@ public class DashboardServiceImpl implements DashboardService {
         Map<String, Object> stats = new HashMap<>();
 
         // 从 detection_task 表统计 COMPLETED / PARTIAL_FAILED 的任务数
-        List<Integer> detectionCounts = scopedJdbc.queryForList(
-            "SELECT COUNT(*) FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate(), scope.parameters(), Integer.class);
-        Integer detectionCount = detectionCounts.isEmpty() ? 0 : detectionCounts.get(0);
+        var detectionCounts = scopedJdbc.queryForMap(
+                "SELECT COUNT(*) AS companyCount, COUNT(CASE WHEN " + scope.predicate() + " THEN 1 END) AS visibleCount " +
+                "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED')", scope.parameters());
 
         // 从 statistics_json 提取平均漏检率
         List<Double> missRates = scopedJdbc.queryForList(
@@ -61,7 +62,8 @@ public class DashboardServiceImpl implements DashboardService {
             "SELECT COUNT(*) FROM device_management", Integer.class);
         Integer deviceCount = deviceCounts.isEmpty() ? 0 : deviceCounts.get(0);
 
-        stats.put("detectionCount", detectionCount != null ? detectionCount : 0);
+        stats.put("detectionCount", detectionCounts.get("visibleCount"));
+        stats.put("companyDetectionCount", detectionCounts.get("companyCount"));
         stats.put("employeeCount", employeeCount != null ? employeeCount : 0);
         stats.put("deviceCount", deviceCount != null ? deviceCount : 0);
         stats.put("avgMissRate", avgMissRate != null ? avgMissRate : 0.0);
@@ -308,8 +310,8 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    public List<Map<String, Object>> getRegionStats() {
-        var scope = accessPolicy.currentSqlScope("");
+    public List<Map<String, Object>> getRegionStats(DashboardScope audience) {
+        var scope = audience.forAggregate(accessPolicy, "");
         String sql = "SELECT " +
                 "CASE " +
                 "  WHEN region LIKE '%区' THEN '北京' " +
@@ -328,8 +330,8 @@ public class DashboardServiceImpl implements DashboardService {
         for (Map<String, Object> row : queryResult) {
             Map<String, Object> item = new HashMap<>();
             item.put("region", row.get("city"));
-            item.put("imageCount", row.get("imageCount") != null ? ((Number) row.get("imageCount")).intValue() : 0);
-            item.put("taskCount", row.get("taskCount") != null ? ((Number) row.get("taskCount")).intValue() : 0);
+            item.put("imageCount", row.get("imageCount") != null ? ((Number) row.get("imageCount")).longValue() : 0L);
+            item.put("taskCount", row.get("taskCount") != null ? ((Number) row.get("taskCount")).longValue() : 0L);
             result.add(item);
         }
 
@@ -394,8 +396,8 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    public List<Map<String, Object>> getModelStats() {
-        var scope = accessPolicy.currentSqlScope("t.");
+    public List<Map<String, Object>> getModelStats(DashboardScope audience) {
+        var scope = audience.forAggregate(accessPolicy, "t.");
         String sql = MODEL_STATS_SQL.formatted(scope.predicate(), imageCount("missField"),
                 imageCount("successField"), imageCount("failedField"), imageCount("totalField"));
         List<Map<String, Object>> models = new ArrayList<>();

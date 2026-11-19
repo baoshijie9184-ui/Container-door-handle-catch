@@ -63,7 +63,7 @@ def api(route):
         return route.fulfill(content_type='text/event-stream', body=text)
     if path.endswith('work-unit-summary'): return reply(route, {'scope': 'DEPARTMENT', 'counts': {'WAITING': 3, 'ASSIGNED': 8, 'PROCESSING': 4, 'SUBMITTED': 6}})
     if path.endswith('duplicate-summary'): return reply(route, {'scope': 'DEPARTMENT', 'counts': {'OPEN': 1, 'ASSIGNED': 2, 'COMPARING': 1, 'PENDING_APPROVAL': 0}})
-    if path == '/api/dashboard/stats': return reply(route, {'detectionCount': 128, 'employeeCount': 12, 'deviceCount': 8, 'avgMissRate': .01})
+    if path == '/api/dashboard/stats': return reply(route, {'detectionCount': 128, 'companyDetectionCount': 128, 'employeeCount': 12, 'deviceCount': 8, 'avgMissRate': .01})
     if path == '/api/devices/stats': return reply(route, {'total': 8, 'inUse': 6, 'offline': 1, 'maintenance': 1, 'idle': 0})
     if path == '/api/employees/stats': return reply(route, {'total': 12, 'active': 10, 'vacation': 2, 'resigned': 0})
     return reply(route, [])

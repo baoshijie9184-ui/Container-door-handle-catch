@@ -32,13 +32,17 @@ public interface DashboardService {
      * 获取各地区图片采集量统计
      * @return 各地区的采集图片数量
      */
-    List<Map<String, Object>> getRegionStats();
+    default List<Map<String, Object>> getRegionStats() { return getRegionStats(DashboardScope.ACCOUNT); }
+
+    List<Map<String, Object>> getRegionStats(DashboardScope scope);
 
     /**
      * 获取模型使用统计
      * @return 各模型的使用次数、检测图片数、平均漏检率
      */
-    List<Map<String, Object>> getModelStats();
+    default List<Map<String, Object>> getModelStats() { return getModelStats(DashboardScope.ACCOUNT); }
+
+    List<Map<String, Object>> getModelStats(DashboardScope scope);
 
     /**
      * 获取质检处置统计

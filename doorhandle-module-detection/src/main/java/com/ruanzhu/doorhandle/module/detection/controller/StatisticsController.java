@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -168,8 +169,9 @@ public class StatisticsController {
      * 获取检测记录趋势统计 — 从 detection_task 表
      */
     @GetMapping("/detection-trend")
-    public Result getDetectionTrend(@RequestParam(defaultValue = "month") String timeRange) {
-        var scope = accessPolicy.currentSqlScope("");
+    public Result getDetectionTrend(@RequestParam(defaultValue = "month") String timeRange,
+                                    @RequestParam(name = "scope", defaultValue = "ACCOUNT") DashboardScope audience) {
+        var scope = audience.forAggregate(accessPolicy, "");
         log.info("获取检测记录趋势统计，时间范围: {}", timeRange);
 
         String dateFormat;
@@ -215,7 +217,14 @@ public class StatisticsController {
                     "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND created_at IS NOT NULL AND " + scope.predicate() + " ";
 
             if (!"year".equals(timeRange)) {
-                sql += "AND created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL " + interval + ") ";
+                if (audience == DashboardScope.COMPANY) {
+                    String firstDay = "month".equals(timeRange)
+                            ? "DATE_SUB(DATE_FORMAT(CURRENT_DATE(), '%Y-%m-01'), INTERVAL 11 MONTH)"
+                            : "DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY)";
+                    sql += "AND created_at >= " + firstDay + " AND created_at < CURRENT_DATE() + INTERVAL 1 DAY ";
+                } else {
+                    sql += "AND created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL " + interval + ") ";
+                }
             }
 
             sql += "GROUP BY " + groupBy + " " +
@@ -228,7 +237,9 @@ public class StatisticsController {
                 Map<String, Object> newRow = new HashMap<>();
 
                 String date = (String) row.get("date");
-                if ("month".equals(timeRange)) {
+                if (audience == DashboardScope.COMPANY) {
+                    newRow.put("date", date);
+                } else if ("month".equals(timeRange)) {
                     String[] parts = date.split("-");
                     if (parts.length == 2) {
                         newRow.put("date", parts[1] + "月");
@@ -246,13 +257,13 @@ public class StatisticsController {
                     }
                 }
 
-                newRow.put("total", row.get("total") != null ? ((Number) row.get("total")).intValue() : 0);
-                newRow.put("normal", row.get("normal") != null ? ((Number) row.get("normal")).intValue() : 0);
-                newRow.put("bent", row.get("bent") != null ? ((Number) row.get("bent")).intValue() : 0);
-                newRow.put("deformed", row.get("deformed") != null ? ((Number) row.get("deformed")).intValue() : 0);
-                newRow.put("rusty", row.get("rusty") != null ? ((Number) row.get("rusty")).intValue() : 0);
-                newRow.put("missing", row.get("missing") != null ? ((Number) row.get("missing")).intValue() : 0);
-                newRow.put("compromised", row.get("compromised") != null ? ((Number) row.get("compromised")).intValue() : 0);
+                newRow.put("total", row.get("total") != null ? ((Number) row.get("total")).longValue() : 0L);
+                newRow.put("normal", row.get("normal") != null ? ((Number) row.get("normal")).longValue() : 0L);
+                newRow.put("bent", row.get("bent") != null ? ((Number) row.get("bent")).longValue() : 0L);
+                newRow.put("deformed", row.get("deformed") != null ? ((Number) row.get("deformed")).longValue() : 0L);
+                newRow.put("rusty", row.get("rusty") != null ? ((Number) row.get("rusty")).longValue() : 0L);
+                newRow.put("missing", row.get("missing") != null ? ((Number) row.get("missing")).longValue() : 0L);
+                newRow.put("compromised", row.get("compromised") != null ? ((Number) row.get("compromised")).longValue() : 0L);
 
                 processedResult.add(newRow);
             }
@@ -270,8 +281,8 @@ public class StatisticsController {
      * 获取检测结果分布统计 — 从 detection_task 的 statistics_json 提取
      */
     @GetMapping("/detection-distribution")
-    public Result getDetectionDistribution() {
-        var scope = accessPolicy.currentSqlScope("");
+    public Result getDetectionDistribution(@RequestParam(name = "scope", defaultValue = "ACCOUNT") DashboardScope audience) {
+        var scope = audience.forAggregate(accessPolicy, "");
         log.info("获取检测结果分布统计");
 
         String jc = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.%s')) AS UNSIGNED), 0)";

@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.detection.service.impl;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -25,6 +26,18 @@ class DashboardServiceImplTest {
                 "alice", "n/a", List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"))));
     }
     @AfterEach void clear() { SecurityContextHolder.clearContext(); }
+
+    @Test
+    void companyChartsRequireAnAuthenticatedAccountAndKeepTheDefaultTaskScope() {
+        var access = new DetectionTaskAccessPolicy();
+        assertEquals(Map.of("scopeUsername", "alice"), DashboardScope.ACCOUNT.forAggregate(access, "t.").parameters());
+        var company = DashboardScope.COMPANY.forAggregate(access, "t.");
+        assertEquals("1 = 1", company.predicate());
+        assertTrue(company.parameters().isEmpty());
+        SecurityContextHolder.clearContext();
+        org.junit.jupiter.api.Assertions.assertThrows(com.ruanzhu.doorhandle.common.BusinessException.class,
+                () -> DashboardScope.COMPANY.forAggregate(access, ""));
+    }
 
     @Test
     void keepsThresholdCountsOnOneModelCardWithinTheCurrentAccountScope() {
