@@ -43,7 +43,7 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
     @Override @Transactional
     public DetectionWorkUnit submit(String workUnitId, DetectionWorkUnitSubmitRequest request, String userId) {
         DetectionWorkUnit unit = mapper.selectOne(new LambdaQueryWrapper<DetectionWorkUnit>().eq(DetectionWorkUnit::getWorkUnitId, workUnitId));
-        if (unit == null) throw new IllegalArgumentException("工作单元不存在");
+        if (unit == null || "OSS_FOLDER".equals(unit.getStrategy())) throw new IllegalArgumentException("工作单元不存在");
         if (userId == null || !userId.equals(unit.getAssigneeUserId())) throw new com.ruanzhu.doorhandle.common.BusinessException(403, "仅当前负责人可提交工作单元");
         if (!List.of("ASSIGNED", "PROCESSING").contains(unit.getStatus())) throw new IllegalStateException("当前工作单元状态不可提交");
         checkVersion(unit, request.getExpectedVersion());
@@ -79,7 +79,7 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
 
     private DetectionWorkUnit find(String workUnitId) {
         DetectionWorkUnit unit = mapper.selectOne(new LambdaQueryWrapper<DetectionWorkUnit>().eq(DetectionWorkUnit::getWorkUnitId, workUnitId));
-        if (unit == null) throw new IllegalArgumentException("工作单元不存在");
+        if (unit == null || "OSS_FOLDER".equals(unit.getStrategy())) throw new IllegalArgumentException("工作单元不存在");
         return unit;
     }
     private void checkVersion(DetectionWorkUnit unit, Integer expectedVersion) {

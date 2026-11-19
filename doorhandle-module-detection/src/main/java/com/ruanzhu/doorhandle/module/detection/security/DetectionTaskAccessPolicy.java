@@ -24,6 +24,14 @@ public class DetectionTaskAccessPolicy {
     public void setUsers(BusinessUserDirectory value){users=value;}
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private org.springframework.jdbc.core.JdbcTemplate folderAssignments;
+    private static final String FOLDER_READER = "EXISTS (SELECT 1 FROM detection_work_unit w WHERE w.work_unit_id=detection_task.task_id AND w.strategy='OSS_FOLDER' AND w.assignee_user_id=CAST({0} AS CHAR))";
+    private boolean assignedFolder(DetectionTask task,long user) {
+        return task!=null && "OSS_FOLDER".equals(task.getTaskType()) && folderAssignments!=null &&
+            Boolean.TRUE.equals(folderAssignments.queryForObject("SELECT EXISTS(SELECT 1 FROM detection_work_unit WHERE work_unit_id=? AND strategy='OSS_FOLDER' AND assignee_user_id=?)",
+            Boolean.class,task.getTaskId(),Long.toString(user)));
+    }
     public boolean stableIdentityActive(){return identities!=null&&identities.active();}
     public String actorPredicate(String alias,String parameter){if(!alias.matches("(?:[A-Za-z][A-Za-z0-9_]*\\.)?"))throw new IllegalArgumentException("非法别名");return stableIdentityActive()?identities.predicate(alias,parameter):"("+alias+"created_by="+parameter+" OR "+alias+"assignee="+parameter+")";}
     public String actorPredicate(String alias,String parameter,String candidateParameter){
@@ -63,6 +71,7 @@ public class DetectionTaskAccessPolicy {
 
     public boolean canAccess(DetectionTask task,Authentication authentication) {
         if(canMutate(task,authentication))return true;
+        if(users!=null && assignedFolder(task,current(authentication).userId()))return true;
         return candidateReadsEnabled && task!=null && (users!=null||identities!=null)
                 && DetectionClaimCandidates.includes(task,current(authentication).userId());
     }
@@ -95,7 +104,7 @@ public class DetectionTaskAccessPolicy {
         if(!canMutate(task,actor))throw new SecurityException("领取任务后才可修改任务");
     }
     public boolean readOnlyCandidate(DetectionTask task){
-        if(!candidateReadsEnabled||task==null||task.getClaimCandidateIds()==null)return false;
+        if(task==null || (!"OSS_FOLDER".equals(task.getTaskType()) && (!candidateReadsEnabled||task.getClaimCandidateIds()==null)))return false;
         var authentication=SecurityContextHolder.getContext().getAuthentication();
         return canAccess(task,authentication)&&!canMutate(task,authentication);
     }
@@ -119,8 +128,13 @@ public class DetectionTaskAccessPolicy {
     public void applyScope(LambdaQueryWrapper<DetectionTask> query, Authentication authentication) {
         assertAuthenticated(authentication);
         if (!isAdmin(authentication)) {
-            if(stableIdentityActive()){query.apply(actorPredicate("","{0}","{0}"),current(authentication).userId());return;}
+            if(stableIdentityActive()){
+                var id=current(authentication).userId();
+                query.and(q->{q.apply(actorPredicate("","{0}","{0}"),id); if(folderAssignments!=null) q.or().apply(FOLDER_READER,id);});
+                return;
+            }
             query.and(q -> {q.eq(DetectionTask::getCreatedBy, authentication.getName()).or().eq(DetectionTask::getAssignee, authentication.getName());
+                if(folderAssignments!=null && users!=null)q.or().apply(FOLDER_READER,current(authentication).userId());
                 if(candidateReadsEnabled&&(users!=null||identities!=null))q.or().apply(DetectionClaimCandidates.predicate("","{0}"),current(authentication).userId());});
         }
     }

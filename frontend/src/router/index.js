@@ -29,6 +29,11 @@ const routes = [
         meta: { title: '图像检测', requiresAuth: true, hidden: true, detectionTab: 'workspace' }
       },
       {
+        path: 'inspection/tasks', name: 'folderTaskBoard',
+        component: () => import('../views/FolderTaskBoard.vue'),
+        meta: { title: '任务总表', requiresAuth: true }
+      },
+      {
         path: 'inspection/workbench',
         name: 'inspectionWorkbench',
         component: () => import('../views/ImageDetection.vue'),

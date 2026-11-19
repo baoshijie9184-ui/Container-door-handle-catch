@@ -514,7 +514,8 @@
     <el-dialog v-model="reviewDialogVisible" class="quality-operation-dialog" title="人工复核" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
       <QualityTaskContext :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
-      <EvidenceComparison v-if="reviewImages" :task-id="reviewTask?.taskId" :originals="reviewImages.originals" :annotations="reviewImages.annotations" />
+      <div v-if="reviewImages"><p v-if="reviewImages.counts" class="review-counts"><span v-for="(label,category) in CATEGORY_LABELS" :key="category">{{ label }} <b>{{ reviewImages.counts[category] ?? '—' }}</b></span></p>
+      <EvidenceComparison :task-id="reviewTask?.taskId" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
       <div v-else class="quality-feedback-note" role="status"><AppIcon name="Picture" :size="16" />{{ reviewImageError || '正在读取本次任务的原图与标注图…' }}
         <el-button v-if="reviewImageError" link type="primary" @click="reviewImageAttempt++">重新读取图片</el-button>
       </div>
@@ -698,6 +699,7 @@ import { useLatestChanges } from '../composables/useLatestChanges'
 import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
 import { resourceHistoryLink } from '../utils/changeHistory'
 import { resourceVersion } from '../utils/mutationVersion'
+import {captureAccountRequest} from '@/api/request'
 import { accountSession } from '../utils/accountContext'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import QualityStageGuidance from '@/components/QualityStageGuidance.vue'
@@ -1216,7 +1218,7 @@ watch([()=>reviewDialogVisible.value ? reviewTask.value?.taskId : null, ()=>user
       const originals=detail.originalImages?.length ? detail.originalImages : annotations
         .filter(image=>image && typeof image.originalUrl==='string' && image.originalUrl)
         .map(image=>({imageName:image.imageName,previewUrl:image.originalUrl}))
-      reviewImages.value={originals,annotations}
+      reviewImages.value={originals,annotations,counts:detail.statistics?.classCounts}
     }catch{
       if(!controller.signal.aborted && accountSession.current(owner))reviewImageError.value='未能读取本次任务的图片。'
     }
@@ -1295,8 +1297,20 @@ onMounted(async () => {
 
   // 从上传页跳转过来时自动选中对应任务
   const queryTaskId = route.query.taskId
-  if (queryTaskId) {
+  if (queryTaskId && route.fullPath === initialNavigation) {
     selectedTaskId.value = String(queryTaskId)
+    const action=route.query.boardAction
+    if (action==='trace') openTraceDialog(String(queryTaskId))
+    if (action==='assign' || action==='review') {
+      try {
+        const response=await captureAccountRequest().get('/api/detection/tasks/'+encodeURIComponent(queryTaskId))
+        if(route.fullPath===initialNavigation && response.data?.code===200) {
+          const row=response.data.data
+          if(action==='assign')openAssignmentDialog(row)
+          else openReviewDialog(row)
+        }
+      } catch {ElMessage.error('任务已更新或无法访问，请返回任务列表核对')}
+    }
   }
 
   if (route.fullPath === initialNavigation && queryWorkOrderNo && activeTab.value === 'work-order-trace') {
@@ -1381,6 +1395,7 @@ async function validateCollaborationAccess(){
 </script>
 
 <style scoped>
+.review-counts{display:flex;flex-wrap:wrap;gap:5px 12px;font-size:12px;color:var(--app-text-secondary)}
 .image-detection-container {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

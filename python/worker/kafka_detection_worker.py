@@ -4,6 +4,9 @@ import signal
 import threading
 import time
 import logging
+import re
+import tempfile
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -24,6 +27,85 @@ def create_oss_bucket(settings: KafkaWorkerSettings) -> Any:
 
     auth = oss2.Auth(settings.oss_access_key_id, settings.oss_access_key_secret)
     return oss2.Bucket(auth, settings.oss_endpoint, settings.oss_bucket)
+
+
+def folder_source_bucket(fallback):
+    """Review installations can read historical originals with their private preview connection."""
+    endpoint = os.getenv("ALIYUN_OSS_PREVIEW_ENDPOINT")
+    if not endpoint:
+        return fallback
+    import oss2
+    auth = oss2.Auth(os.environ["ALIYUN_OSS_PREVIEW_ACCESSKEYID"], os.environ["ALIYUN_OSS_PREVIEW_ACCESSKEYSECRET"])
+    proxy = os.getenv("FOLDER_SOURCE_PROXY")
+    return oss2.Bucket(auth, endpoint, os.environ["ALIYUN_OSS_PREVIEW_BUCKETNAME"],
+                       proxies={"https": proxy, "http": proxy} if proxy else None)
+
+
+class LocalFolderResults:
+    def __init__(self, root, prefix):
+        self.root = Path(root)
+        self.prefix = prefix
+
+    def put_object(self, key, body):
+        if not key.startswith(self.prefix):
+            raise ValueError("Unexpected result destination")
+        filename = key[len(self.prefix):]
+        if not filename or filename in {".", ".."} or "/" in filename or chr(92) in filename:
+            raise ValueError("Invalid result file name")
+        directory = self.root / self.prefix.removeprefix("detection/folder-results/").rstrip("/")
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as out:
+            try:
+                out.write(body)
+                out.flush()
+                os.fsync(out.fileno())
+                os.replace(out.name, directory / filename)
+            finally:
+                Path(out.name).unlink(missing_ok=True)
+
+
+def process_folder(task, bucket, detector, expected_model_id, heartbeat, progress):
+    started = datetime.now(BUSINESS_TIMEZONE).isoformat()
+    total = len(task.original_keys)
+    if not re.fullmatch(r"det_folder_[0-9a-f]{32}", task.task_id) or not re.fullmatch(r"[a-f0-9-]{36}", task.dispatch_id):
+        raise ValueError("Invalid folder task identity")
+    prefix = f"detection/folder-results/{task.task_id}/{task.dispatch_id}/"
+    rows, previews, failures = [], [], []
+    try:
+        if expected_model_id is not None and task.model_id != expected_model_id:
+            raise ValueError("所选模型没有部署到当前 Worker")
+        if not total or not task.source_prefix.startswith("detection/") or not task.source_prefix.endswith("/"):
+            raise ValueError("目录清单无效")
+        reader = folder_source_bucket(bucket)
+        root = os.getenv("FOLDER_RESULTS_DIR")
+        uploader = OssResultUploader(LocalFolderResults(root, prefix) if root else bucket)
+        for index, key in enumerate(task.original_keys, 1):
+            name = key.removeprefix(task.source_prefix)
+            if not key.startswith(task.source_prefix) or "/" in name or chr(92) in name or not name.lower().endswith((".jpg",".jpeg",".png",".bmp")):
+                raise ValueError("原图不属于已派发目录")
+            if heartbeat:
+                heartbeat()
+            try:
+                source = reader.get_object(key)
+                data = source.read(26214401)
+                if not data or len(data)>26214400:
+                    raise ValueError("原图大小不支持")
+                image, detections = detector(data, float(task.threshold or .5))
+                preview = uploader.upload_preview_image(prefix + name, image)
+                previews.append(preview)
+                rows.append({"sourceKey": key, "fileName": name, "previewKey": preview, "detections": detections})
+            except Exception:
+                failures.append(name)
+            if progress and (index == 1 or index % 5 == 0 or index == total):
+                progress(index, len(rows), len(failures))
+        statistics = build_statistics(rows, len(failures))
+        evidence = build_defect_evidence(rows)
+        statistics.update(totalImages=total, successfulImages=len(rows), failedImages=len(failures), defectCount=len(evidence))
+        report = uploader.upload_json(prefix+"detection_results.json", {"taskId":task.task_id,"statistics":statistics,"results":rows,"failedImages":failures})
+        return build_finished_event(task, report, previews, statistics, evidence, len(rows), len(failures), started,
+                                    "部分原图读取、推理或保存失败" if failures else None)
+    except Exception:
+        return build_finished_event(task, "", [], {}, [], 0, total, started, "文件夹模型检测失败，请检查模型、目录读取权限和结果存储")
 
 
 def default_detector(image_bytes: bytes, threshold: float) -> Tuple[Any, List[Dict[str, Any]]]:
@@ -421,7 +503,11 @@ def run_worker() -> None:
         with telemetry.span("worker.consume", attributes, headers=source_headers) as consume_span:
             def operation():
                 with telemetry.span("worker.infer", attributes) as inference_span:
-                    result = process_created_event(task, bucket, default_detector, expected_model_id, heartbeat)
+                    if task.task_id.startswith("det_folder_"):
+                        report_progress = (lambda n, ok, failed: receipts.folder_progress(task,n,ok,failed)) if receipts else None
+                        result = process_folder(task, bucket, default_detector, expected_model_id, heartbeat, report_progress)
+                    else:
+                        result = process_created_event(task, bucket, default_detector, expected_model_id, heartbeat)
                     # Only counts/status leave the process; business error text,
                     # image keys, capture metadata and detections remain private.
                     if hasattr(result, "successful_images"):

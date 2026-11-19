@@ -76,6 +76,14 @@ class MysqlDetectionReceipts:
             if connection is not None:
                 connection.close()
 
+    def folder_progress(self, task, processed, successful, failed):
+        with self.transaction() as cursor:
+            cursor.execute("""UPDATE detection_task SET status='DETECTING',stage='DETECTING',
+                processed_images=%s,successful_images=%s,failed_images=%s,started_at=COALESCE(started_at,NOW())
+                WHERE task_id=%s AND dispatch_id=%s AND task_type='OSS_FOLDER'
+                AND status IN ('QUEUED','DETECTING') AND COALESCE(processed_images,0)<=%s""",
+                (processed, successful, failed, task.task_id, task.dispatch_id, processed))
+
     def validate_schema(self):
         with self.transaction() as cursor:
             cursor.execute('SELECT workflow_id,kind,resource_id,run_id,request_id,request_sha256,claim_token,'

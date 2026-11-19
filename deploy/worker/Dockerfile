@@ -14,6 +14,7 @@ COPY tenant_detection_authority.py tenant_execution_security.py runtime_telemetr
 COPY model-source/ /opt/model-source/
 COPY DINOv3-LICENSE.md BUILD_PROVENANCE.json /opt/model-source/
 COPY PyMySQL-LICENSE.txt /app/licenses/PyMySQL-LICENSE.txt
+RUN mkdir -p /var/lib/doorhandle/folder-results && chown app:app /var/lib/doorhandle/folder-results
 USER app
 HEALTHCHECK --interval=15s --timeout=3s --start-period=90s --retries=3 CMD python /app/worker_health.py
 LABEL io.doorhandle.business-schema="compact29-v1"

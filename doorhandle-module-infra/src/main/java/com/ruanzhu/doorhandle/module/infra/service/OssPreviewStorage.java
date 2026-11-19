@@ -51,6 +51,15 @@ public class OssPreviewStorage {
         return client;
     }
 
+    public com.aliyun.oss.model.ObjectListing listFolder(String prefix, String marker) {
+        var request = new com.aliyun.oss.model.ListObjectsRequest(settings.getBucketName());
+        request.setPrefix(prefix);
+        request.setDelimiter("/");
+        request.setMarker(marker);
+        request.setMaxKeys(250);
+        return client().listObjects(request);
+    }
+
     public URL sign(String key, Duration validity) {
         var request = new GeneratePresignedUrlRequest(settings.getBucketName(), key, HttpMethod.GET);
         request.setExpiration(Date.from(Instant.now().plus(validity)));

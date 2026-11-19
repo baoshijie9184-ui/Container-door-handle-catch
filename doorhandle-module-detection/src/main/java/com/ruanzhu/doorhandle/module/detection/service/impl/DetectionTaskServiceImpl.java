@@ -137,10 +137,57 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     @Value("${detection.max-image-bytes:10485760}")
     private long maxImageBytes;
 
+    public void registerFolder(String taskId, String prefix, List<String> keys, String creator) {
+        var model = resolveModelInfo(null);
+        if (model == null) throw new BusinessException(409, "尚未配置默认检测模型");
+        var task = new DetectionTask();
+        task.setTaskId(taskId);
+        task.setWorkflowUuid(UUID.randomUUID().toString());
+        task.setTaskType("OSS_FOLDER");
+        task.setStatus("READY");
+        task.setStage("READY");
+        task.setFlowStatus("PENDING_DETECTION");
+        task.setReviewStatus("PENDING");
+        task.setWorkOrderNo(buildWorkOrderNo());
+        String[] parts = prefix.split("/");
+        String name = parts[parts.length-1];
+        if (parts.length > 2 && (name.equalsIgnoreCase("Original") || name.equalsIgnoreCase("originals"))) name = parts[parts.length-2];
+        task.setImageFolderName(name.substring(0,Math.min(name.length(),128)));
+        task.setSourceOssPrefix(prefix);
+        task.setOriginalImageKeysJson(writeJson(keys));
+        task.setTotalImages(keys.size());
+        task.setProcessedImages(0);
+        task.setSuccessfulImages(0);
+        task.setFailedImages(0);
+        task.setModelId(model.getModelId());
+        task.setModelVersion(model.getVersion());
+        task.setThreshold(BigDecimal.valueOf(.5));
+        task.setCreatedBy(creator);
+        task.setCreatedAt(LocalDateTime.now());
+        task.setUpdatedAt(task.getCreatedAt());
+        detectionTaskMapper.insert(task);
+        if (identities != null) identities.recordCreation(task);
+    }
+
+    /** The board has locked the assignment and verified the employee before calling this method. */
+    public void dispatchAssignedFolder(String taskId) {
+        var task = getTaskForSystemLocked(taskId);
+        if (!"OSS_FOLDER".equals(task.getTaskType()) || !Set.of("READY","FAILED").contains(task.getStatus()))
+            throw new BusinessException(409, "任务已启动，请刷新进度");
+        task.setDispatchId(UUID.randomUUID().toString());
+        task.setFlowStatus("DETECTING");
+        task.setProcessedImages(0);
+        task.setSuccessfulImages(0);
+        task.setFailedImages(0);
+        task.setUpdatedAt(LocalDateTime.now());
+        dispatch(task);
+    }
+
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard", "model"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="createTask")
     public CreateDetectionTaskResponse createTask(CreateDetectionTaskRequest request) {
+        if ("OSS_FOLDER".equalsIgnoreCase(request.getTaskType())) throw new BusinessException(400,"请从文件夹派单入口创建");
         if (!ossStorageService.isConfigured()) {
             throw new BusinessException("OSS 未配置，暂时无法创建云端检测任务");
         }
@@ -262,6 +309,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     public DetectionTaskProgressResponse confirmUploaded(String taskId, DetectionTaskUploadedRequest request) {
         DetectionTask task = getTask(taskId);
         accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
+        if ("OSS_FOLDER".equals(task.getTaskType())) throw new BusinessException(409, "请由受派员工从任务列表启动检测");
         if (!Set.of("UPLOADING", "FAILED").contains(task.getStatus())) {
             return buildProgressResponse(task, "任务已进入检测阶段");
         }
@@ -1536,6 +1584,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     }
 
     private void validateRetryable(DetectionTask task) {
+        if ("OSS_FOLDER".equals(task.getTaskType())) throw new BusinessException(409, "请由受派员工从任务列表重试");
         com.ruanzhu.doorhandle.module.detection.service.detection.DetectionRetryPolicy.assertEligible(task,objectMapper);
     }
 

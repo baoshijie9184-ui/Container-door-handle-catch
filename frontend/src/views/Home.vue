@@ -5,6 +5,7 @@
         <h1>{{ isSupervisor ? '企业质量工作台' : '我的检测工作台' }}</h1>
       </div>
       <nav class="shared-directories" aria-label="公共资料">
+        <router-link :to="!isSupervisor && folderInbox ? '/inspection/tasks?inbox=1' : '/inspection/tasks'"><AppIcon name="Tickets" :size="17" />{{ isSupervisor ? '任务总表' : '我的任务' }}<b v-if="!isSupervisor && folderInbox">{{ folderInbox }} 待办</b></router-link>
         <router-link to="/employees"><AppIcon name="User" :size="17" />人员目录</router-link>
         <router-link to="/devices"><AppIcon name="Monitor" :size="17" />设备目录</router-link>
         <router-link to="/models"><AppIcon name="Cpu" :size="17" />检测模型</router-link>
@@ -661,11 +662,18 @@ onBeforeUnmount(() => {
 
 // ── 数据获取 ──
 
+const folderInbox=ref(null)
+async function readFolderInbox(){
+  if(isSupervisor.value)return
+  try {const r=await request.get('/api/detection/board',{params:{inbox:true,size:1}})
+    if(!disposed && r.data?.code===200)folderInbox.value=r.data.data.total
+  }catch{folderInbox.value=null}
+}
 async function refreshAll() {
   if (refreshing.value || disposed) return
   refreshing.value = true
   try {
-    await Promise.all([fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary(), fetchQualityWorkload()])
+    await Promise.all([readFolderInbox(),fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary(), fetchQualityWorkload()])
     if (!disposed) await updateChartData()
     if (!failedSections.value.length && !trendLoading.value && charts.region) lastUpdated.value = beijingDateTime()
   } finally {

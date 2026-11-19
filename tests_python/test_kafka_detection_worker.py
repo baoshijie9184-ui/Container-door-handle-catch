@@ -159,3 +159,35 @@ def test_undeployed_model_fails_without_reading_or_mislabeling_images():
     # Even a worker running on a UTC host publishes explicit Beijing offsets.
     assert finished.started_at.endswith('+08:00')
     assert finished.finished_at.endswith('+08:00')
+
+
+def test_folder_detection_keeps_originals_and_reports_real_progress(tmp_path, monkeypatch):
+    import io
+    import json
+    from kafka_detection_worker import process_folder
+    from PIL import Image
+
+    class Source:
+        def get_object(self, key):
+            if key.endswith('bad.jpg'):
+                raise OSError('unavailable')
+            return io.BytesIO(b'original')
+
+    monkeypatch.delenv('ALIYUN_OSS_PREVIEW_ENDPOINT', raising=False)
+    monkeypatch.setenv('FOLDER_RESULTS_DIR', str(tmp_path))
+    prefix = 'detection/example/Original/'
+    task = DetectionTaskCreatedEvent.from_dict({
+        'taskId':'det_folder_'+'1'*32,'dispatchId':'00000000-0000-4000-8000-000000000001',
+        'sourcePrefix':prefix,'originalKeys':[prefix+'good.jpg',prefix+'bad.jpg'],'modelId':106
+    })
+    seen = []
+    result = process_folder(task, Source(), lambda data,t: (Image.new('RGB',(4,4)),[{'label':'Bent'}]),
+                            106,None,lambda *args:seen.append(args))
+    assert seen == [(1,1,0),(2,1,1)]
+    assert result.status == 'PARTIAL_FAILED'
+    assert result.statistics['classCounts']['Bent'] == 1
+    assert len(result.statistics['classCounts']) == 6
+    location = tmp_path / task.task_id / task.dispatch_id
+    assert json.loads((location/'detection_results.json').read_text())['failedImages']==['bad.jpg']
+    assert (location/'good.jpg').is_file()
+    assert not (location/'bad.jpg').exists()

@@ -24,8 +24,8 @@ public interface DetectionWorkUnitMapper extends BaseMapper<DetectionWorkUnit> {
     int transition(@org.apache.ibatis.annotations.Param("unit") DetectionWorkUnit unit,
                    @org.apache.ibatis.annotations.Param("expectedVersion") Integer expectedVersion,
                    @org.apache.ibatis.annotations.Param("expectedStatus") String expectedStatus);
-    @Select("SELECT * FROM detection_work_unit WHERE status IN ('WAITING','ASSIGNED','PROCESSING','SUBMITTED') ORDER BY created_at ASC")
+    @Select("SELECT * FROM detection_work_unit WHERE strategy <> 'OSS_FOLDER' AND status IN ('WAITING','ASSIGNED','PROCESSING','SUBMITTED') ORDER BY created_at ASC")
     List<DetectionWorkUnit> findActive();
-    @Select("SELECT * FROM detection_work_unit WHERE applicant_user_id = #{userId} OR assignee_user_id = #{userId} ORDER BY created_at DESC")
+    @Select("SELECT * FROM detection_work_unit WHERE strategy <> 'OSS_FOLDER' AND (applicant_user_id = #{userId} OR assignee_user_id = #{userId}) ORDER BY created_at DESC")
     List<DetectionWorkUnit> findMine(String userId);
 }

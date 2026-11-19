@@ -1,8 +1,22 @@
-# Read settings are supplied only to the review backend. The worker keeps its own storage.
+# Historical sources are read through the review relay. Folder outputs stay on this review volume.
 services:
-  backend:
+  detection-worker:
     env_file:
       - ${REVIEW_OSS_PREVIEW_ENV:?Set the private preview connection file}
     environment:
+      FOLDER_SOURCE_PROXY: http://${REVIEW_BRIDGE_GATEWAY:?Set review gateway}:${REVIEW_OPENAI_RELAY_PORT:-17898}
+      FOLDER_RESULTS_DIR: /var/lib/doorhandle/folder-results
+    volumes:
+      - folder-results:/var/lib/doorhandle/folder-results
+  backend:
+    volumes:
+      - folder-results:/var/lib/doorhandle/folder-results:ro
+    env_file:
+      - ${REVIEW_OSS_PREVIEW_ENV:?Set the private preview connection file}
+    environment:
+      FOLDER_RESULTS_DIR: /var/lib/doorhandle/folder-results
       ALIYUN_OSS_PREVIEW_PROXYHOST: ${REVIEW_BRIDGE_GATEWAY:?Set the review bridge gateway}
       ALIYUN_OSS_PREVIEW_PROXYPORT: ${REVIEW_OPENAI_RELAY_PORT:-17898}
+
+volumes:
+  folder-results: {}
