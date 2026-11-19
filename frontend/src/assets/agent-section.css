@@ -7,7 +7,7 @@
 .agent-rail-link:hover { background: #f0f5ff; color: #2563eb; transform: translateY(-1px); }
 .agent-rail-link.selected { color: #2563eb; background: #eaf1ff; box-shadow: inset 0 0 0 1px #dae6ff; }
 #app .is-agent-section .layout-header { min-height:58px; padding:10px 28px; background: #ffffffb8; }
-#app .is-agent-section .collapse-btn, #app .is-agent-section .manual-entry-link, #app .is-agent-section .assistant-entry-link { display: none; }
+#app .is-agent-section .collapse-btn, #app .is-agent-section .assistant-entry-link { display: none; }
 #app .is-agent-section .layout-content { padding: 28px 36px; }
 #app .is-agent-section.is-agent-workspace .layout-content { padding: 0; }
 #app .is-agent-section.is-agent-workspace .chat-workspace { border: 0; border-radius: 0; box-shadow: none; }

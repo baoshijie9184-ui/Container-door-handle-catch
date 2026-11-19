@@ -8,8 +8,7 @@
           <router-link :to="item.path" class="agent-rail-link" :class="{ selected: route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined" :aria-label="item.label"><el-icon><component :is="item.icon" /></el-icon></router-link>
         </el-tooltip>
       </div>
-      <router-link to="/manual" class="agent-rail-link" aria-label="使用手册" title="使用手册"><el-icon><Files /></el-icon></router-link>
-      <AppAccountMenu compact :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @manual="router.push('/manual')" @logout="handleLogout" />
+      <AppAccountMenu compact :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @logout="handleLogout" />
     </nav>
     <aside v-else id="system-sidebar" class="layout-sidebar app-panel" aria-label="系统导航">
       <div class="brand-block">
@@ -71,13 +70,10 @@
         <RealtimeStatus />
         <div class="header-actions">
           <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
-          <router-link to="/manual" class="manual-entry-link">
-            <el-icon aria-hidden="true"><Files /></el-icon>使用手册
-          </router-link>
           <router-link v-if="!isAgentChatRoute" to="/agent/chat" class="assistant-entry-link" aria-label="AI 工作助手">
             <el-icon aria-hidden="true"><ChatDotRound /></el-icon><span>AI 工作助手</span>
           </router-link>
-          <AppAccountMenu :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @manual="router.push('/manual')" @logout="handleLogout" />
+          <AppAccountMenu :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @logout="handleLogout" />
         </div>
       </header>
 
@@ -124,7 +120,6 @@ import {
   Upload,
   DataAnalysis,
   Search,
-  Files,
   ChatDotRound,
   Operation
 } from '@element-plus/icons-vue'
@@ -237,15 +232,6 @@ const navGroups = [
       { path: '/agent/markets', label: '资源市场', desc: '发现 Agent、MCP 与 Skill' },
       { path: '/agent/memory', label: '个人记忆', desc: '本人记忆与保存设置' },
       { path: '/agent/mcp', label: 'MCP工具', desc: '本人本地 Stdio 服务' }
-    ]
-  },
-  {
-    key: 'help',
-    label: '帮助中心',
-    icon: Files,
-    desc: '快速了解系统用法',
-    items: [
-      { path: '/manual', label: '用户使用手册', desc: '模块说明与操作流程' }
     ]
   }
 ]
@@ -399,7 +385,7 @@ onBeforeUnmount(() => {
 .is-agent-workspace .layout-content,.is-trace-workspace .layout-content { padding:0; overflow:hidden; }
 .back-top-btn { display:grid; place-items:center; position:absolute; bottom:82px; right:24px; width:36px; height:36px; border:1px solid var(--app-border); border-radius:9px; background:white; color:var(--app-text-secondary); box-shadow:var(--app-shadow-sm); cursor:pointer; }
 .back-top-btn:hover { background:var(--app-primary-soft); color:var(--app-primary); }
-@media(max-width:1100px) { .workspace-scope { display:none; } .header-actions { gap:8px; } .manual-entry-link { display:none; } }
+@media(max-width:1100px) { .workspace-scope { display:none; } .header-actions { gap:8px; } }
 @media (min-width:641px) and (max-width:960px) {
   .layout-header { grid-template-columns:minmax(0,1fr) auto; gap:3px 12px; }
   .layout-header > .collaboration-status { grid-column:1/-1; grid-row:2; max-width:none; }

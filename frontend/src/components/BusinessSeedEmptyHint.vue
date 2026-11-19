@@ -5,9 +5,6 @@
     <p class="business-seed-empty-hint__desc">
       {{ description }}
     </p>
-    <router-link v-if="manualLink" to="/manual" class="business-seed-empty-hint__link">
-      查看使用手册
-    </router-link>
   </div>
 </template>
 
@@ -20,10 +17,6 @@ defineProps({
   description: {
     type: String,
     default: '当前范围暂无记录。可以调整筛选条件，或创建新的业务记录后刷新。'
-  },
-  manualLink: {
-    type: Boolean,
-    default: true
   }
 })
 </script>
@@ -50,17 +43,5 @@ defineProps({
 
 .business-seed-empty-hint__desc {
   margin: 0;
-}
-
-.business-seed-empty-hint__link {
-  color: var(--app-primary);
-  font-size: 12px;
-  font-weight: 700;
-  text-decoration: none;
-}
-
-.business-seed-empty-hint__link:hover {
-  color: var(--app-primary-hover);
-  text-decoration: underline;
 }
 </style>

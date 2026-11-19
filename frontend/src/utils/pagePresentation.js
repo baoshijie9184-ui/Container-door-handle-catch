@@ -25,7 +25,6 @@ const sections = [
   ['/agent/model-quotas', 'LLM模型管理', 'Cpu', '智能助手'],
   ['/agent/model-budgets', '企业模型额度', 'DataAnalysis', '智能助手'],
   ['/upload', '图片上传', 'Upload', '检测业务'],
-  ['/manual', '使用手册', 'Files', '帮助'],
   ['/home', '首页总览', 'DataAnalysis', '工作空间'],
   ['/test-upload', '上传诊断', 'Upload', '诊断工具']
 ]

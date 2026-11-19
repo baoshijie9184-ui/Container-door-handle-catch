@@ -167,7 +167,6 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
   const presetSource = readFrontendFile('src', 'config', 'businessTracePresets.js')
   const traceComposableSource = readFrontendFile('src', 'composables', 'useTraceReports.js')
   const businessSeedEmptyHintSource = readFrontendFile('src', 'components', 'BusinessSeedEmptyHint.vue')
-  const userManualSource = readFrontendFile('src', 'views', 'UserManual.vue')
   const dbReadmeSource = readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'README.md')
   const userGuideSource = readProjectFile('docs', 'system-user-guide.md')
   const businessSeedConfig = readProjectFile('doorhandle-module-app', 'src', 'main', 'java', 'com', 'ruanzhu',
@@ -215,9 +214,7 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
   assert.doesNotMatch(userGuideSource, /初始化演示数据/)
   assert.doesNotMatch(businessSeedEmptyHintSource, /APP_BUSINESS_SEED_ENABLED|业务预置数据导入/)
   assert.match(businessSeedEmptyHintSource, /当前范围暂无记录/)
-  assert.match(businessSeedEmptyHintSource, /to="\/manual"/)
-  assert.match(userManualSource, /从图片采集流程创建真实任务/)
-  assert.doesNotMatch(userManualSource, /APP_BUSINESS_SEED_ENABLED|start-backend-with-business-seed\.ps1/)
+  assert.doesNotMatch(businessSeedEmptyHintSource, /\/manual|查看使用手册/)
   assert.match(businessSeedConfig, /throw new IllegalStateException\("APP_BUSINESS_SEED_ENABLED 已退役/)
 
   assert.match(migrationSource, /REPLACE\(`work_order_no`, 'WO-DEMO-', 'WO-'\)/)

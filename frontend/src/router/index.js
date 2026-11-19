@@ -143,12 +143,6 @@ const routes = [
         meta: { title: '设备使用记录', requiresAuth: true, icon: 'DocumentCopy' }
       },
       {
-        path: 'manual',
-        name: 'userManual',
-        component: () => import('../views/UserManual.vue'),
-        meta: { title: '用户使用手册', requiresAuth: true, icon: 'Files' }
-      },
-      {
         path: 'agent/chat',
         name: 'agentChat',
         component: () => import('../views/AgentChat.vue'),

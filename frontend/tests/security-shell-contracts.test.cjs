@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
-const { readFrontendFile, readProjectFile } = require('./helpers/project-source.cjs')
+const { readFrontendFile } = require('./helpers/project-source.cjs')
 const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64')
 
 test('tests\\auth-response-guard-contract.test.cjs', async () => {
@@ -117,14 +117,8 @@ test('tests\\cookie-only-auth-contract.test.cjs', () => {
 
 test('tests\\hash-route-anchor-contract.test.cjs', () => {
   const layoutSource = readFrontendFile('src', 'layout', 'index.vue')
-  const userManualSource = readFrontendFile('src', 'views', 'UserManual.vue')
-
-  for (const source of [layoutSource, userManualSource]) {
-    assert.doesNotMatch(source, /href="#(?!\/)/, 'Hash router pages must not use bare hash anchors')
-    assert.doesNotMatch(source, /:href="`#/, 'Hash router pages must not generate bare hash anchors')
-  }
-
-  assert.match(userManualSource, /scrollToManualSection/)
+  assert.doesNotMatch(layoutSource, /href="#(?!\/)/, 'Hash router pages must not use bare hash anchors')
+  assert.doesNotMatch(layoutSource, /:href="`#/, 'Hash router pages must not generate bare hash anchors')
   assert.match(layoutSource, /skipToMainContent/)
 
   console.log('hash route anchor contract assertions passed')
@@ -139,10 +133,13 @@ test('tests\\hash-route-anchor-contract.test.cjs', () => {
     assert.doesNotMatch(source, /系统管理账号/)
   })
 
-  test('user manual explains current role boundaries and private conversations', () => {
-    const source = readFrontendFile('src', 'views', 'UserManual.vue')
-    assert.match(source, /员工只能查看本人及分派任务/)
-    assert.match(source, /主管/)
-    assert.match(source, /不读取其他账号私人会话/)
+  test('the retired manual has no route or navigation entry', () => {
+    const router = readFrontendFile('src', 'router', 'index.js')
+    const layout = readFrontendFile('src', 'layout', 'index.vue')
+    const accountMenu = readFrontendFile('src', 'components', 'AppAccountMenu.vue')
+    const presentation = readFrontendFile('src', 'utils', 'pagePresentation.js')
+    for (const source of [router, layout, accountMenu, presentation]) {
+      assert.doesNotMatch(source, /['"]\/?manual['"]|UserManual\.vue|使用手册/)
+    }
   })
 }

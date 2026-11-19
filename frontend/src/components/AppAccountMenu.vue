@@ -8,7 +8,6 @@
   <template #dropdown><el-dropdown-menu>
    <el-dropdown-item disabled class="app-account-profile"><div><small>当前账号</small><strong>{{ accountName }}</strong><span>{{ role || '角色未记录' }}</span><span v-if="department">{{ department }}</span><small>{{ scope || '资料范围以当前授权为准' }}</small></div></el-dropdown-item>
    <el-dropdown-item command="home"><AppIcon name="HomeFilled" :size="16" />返回业务首页</el-dropdown-item>
-   <el-dropdown-item command="manual"><AppIcon name="Files" :size="16" />使用手册</el-dropdown-item>
    <el-dropdown-item divided command="logout" class="app-account-logout"><AppIcon name="Close" :size="16" />退出登录</el-dropdown-item>
   </el-dropdown-menu></template>
  </el-dropdown>
@@ -17,10 +16,10 @@
 import {computed,ref,watch} from 'vue'
 import AppIcon from './AppIcon.vue'
 const props=defineProps({username:String,role:String,department:String,scope:String,compact:Boolean})
-const emit=defineEmits(['home','manual','logout'])
+const emit=defineEmits(['home','logout'])
 const menu=ref(null),opened=ref(false)
 const accountName=computed(()=>typeof props.username==='string' && props.username.trim()?props.username:'账号未记录')
-function command(value){if(['home','manual','logout'].includes(value))emit(value)}
+function command(value){if(['home','logout'].includes(value))emit(value)}
 watch(()=>[props.username,props.role,props.department,props.scope],()=>{menu.value?.handleClose();opened.value=false})
 </script>
 <style scoped>

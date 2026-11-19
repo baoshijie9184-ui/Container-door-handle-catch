@@ -154,40 +154,6 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .identity-page .identity-preview-note { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary); }
 #app .identity-page .mapping-table .cell { overflow-wrap: anywhere; }
 #app .identity-page .mapping-table .el-table__header .cell { font-size: 12px; line-height: 1.8; }
-#app .layout-header a.manual-entry-link { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:7px 11px; box-sizing:border-box; border:1px solid var(--app-border); border-radius:7px; background:white; color:var(--app-text-secondary); font-size:12px; font-weight:550; text-decoration:none; transition:background 150ms ease, border-color 150ms ease; }
-@media(max-width:1100px) { #app .layout-header a.manual-entry-link { display:none; } }
-#app .layout-header a.manual-entry-link:hover { color:var(--app-primary); border-color:#b8cdf4; background:var(--app-primary-light); }
-#app .user-manual-page { max-width: 1380px; margin-inline: auto; }
-#app .user-manual-page .manual-account-scope { display: flex; gap: 10px; align-items: flex-start; padding: 14px 16px; border-radius: 10px; background: var(--app-primary-soft); color: var(--app-text-secondary); }
-#app .user-manual-page .manual-account-scope > .el-icon { flex: 0 0 auto; margin-top: 3px; color: var(--app-primary); }
-#app .user-manual-page .manual-account-scope p { max-width: 100ch; margin: 0; font-size: 12px; line-height: 1.8; }
-#app .user-manual-page :is(.manual-primary-link, .manual-secondary-link) { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid var(--app-border); border-radius: 7px; font-size: 13px; font-weight: 550; line-height: 1.6; text-decoration: none; transition: background 150ms ease, border-color 150ms ease, transform 150ms ease; }
-#app .user-manual-page .manual-primary-link { color: white; background: var(--app-primary); border-color: var(--app-primary); }
-#app .user-manual-page .manual-primary-link:hover { background: var(--app-primary-hover); }
-#app .user-manual-page .manual-secondary-link { color: var(--app-text-secondary); background: white; }
-#app .user-manual-page .manual-secondary-link:hover { color: var(--app-primary); border-color: #b7cff9; background: var(--app-primary-light); }
-#app .user-manual-page :is(.manual-primary-link, .manual-secondary-link):active { transform: scale(.98); }
-#app .user-manual-page :is(.quick-start-card, .role-guide, .manual-toc, .manual-section) { border: 1px solid var(--app-border); border-radius: 12px; background: white; box-shadow: none; }
-#app .user-manual-page .manual-step-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--app-primary); }
-#app .user-manual-page .step-index { width: 30px; height: 26px; border-radius: 6px; font-size: 12px; font-weight: 600; }
-#app .user-manual-page :is(.quick-start-card h2, .role-route-card h3) { font-size: 16px; font-weight: 650; line-height: 1.6; }
-#app .user-manual-page :is(.quick-start-card p, .role-route-card p, .module-card p, .role-grid p) { font-size: 13px; line-height: 1.8; }
-#app .user-manual-page :is(.quick-start-card a, .module-card a, .role-route-links a, .role-route-card h3) { display: inline-flex; align-items: center; gap: 7px; font-weight: 550; }
-#app .user-manual-page :is(.quick-start-card a, .module-card a, .role-route-links a) { font-size: 12px; }
-#app .user-manual-page .role-route-card { min-height: 190px; border: 0; border-left: 2px solid var(--app-border); border-radius: 0; background: white; padding: 6px 16px; }
-#app .user-manual-page .role-route-links a { border-radius: 6px; padding: 5px 7px; background: #f1f5f9; }
-#app .user-manual-page .manual-toc { top: 16px; }
-#app .user-manual-page .manual-toc button { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 500; border-radius: 7px; }
-#app .user-manual-page .manual-toc button.is-current { color: var(--app-primary); background: var(--app-primary-soft); }
-#app .user-manual-page .manual-section { scroll-margin-top: 24px; }
-#app .user-manual-page .manual-section h2:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 5px; border-radius: 3px; }
-#app .user-manual-page .section-heading h2 { display: flex; align-items: center; gap: 9px; margin: 0 0 18px; font-size: 18px; font-weight: 650; }
-#app .user-manual-page :is(.manual-section p, .manual-list) { font-size: 13px; max-width: 85ch; line-height: 1.9; }
-#app .user-manual-page :is(.module-card, .role-grid article) { border: 0; border-top: 1px solid var(--app-border); padding: 16px 0; border-radius: 0; background: white; }
-#app .user-manual-page :is(.module-card h3, .role-grid h3) { font-size: 14px; font-weight: 650; }
-#app .user-manual-page .flow-line span { border-radius: 7px; padding: 7px 10px; font-size: 12px; font-weight: 500; }
-#app .user-manual-page .question-list div { background: var(--app-primary-light); border-left: 2px solid #bbd0f5; border-radius: 0 7px 7px 0; font-size: 13px; font-weight: 500; }
-#app .user-manual-page .inline-actions { flex-wrap: wrap; }
 #app .image-detection-container .trace-query-label { display: block; margin: 0 0 8px; font-size: 13px; font-weight: 550; color: var(--app-text-secondary); }
 #app .image-detection-container .trace-scope-change-note { margin: 12px 0; padding: 10px 12px; border-radius: 7px; background: var(--app-warning-soft); color: var(--app-warning); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .quality-operation-dialog .el-dialog__body { max-height:calc(82dvh - 130px); min-height:100px; overflow-y:auto; overscroll-behavior:contain; }
@@ -254,7 +220,6 @@ button:not(:disabled):active { transform: scale(.985); }
 .defect-card-responsibility dd { margin: 0; color: var(--app-text-secondary); overflow-wrap: anywhere; }
 .defect-preview-caption { display: inline-flex; align-items: center; gap: 5px; position: absolute; bottom: 10px; right: 10px; padding: 5px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: #ffffffef; color: var(--app-primary); font-size: 11px; }
 .defect-preview-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 18px; color: var(--app-text-muted); font-size: 12px; line-height: 1.8; }
-#app .user-manual-page :is(.manual-card, .app-panel) { box-shadow: none; }
 #app .not-found-page .nf-code { color: var(--app-primary); background: none; -webkit-text-fill-color: currentColor; font-size: clamp(72px, 12vw, 110px); }
 .mobile-system-navigation .el-drawer__header { margin-bottom: 14px; color: var(--app-text); font-size: 17px; font-weight: 650; }
 .mobile-system-navigation .el-drawer__body { padding: 0 14px 20px; }
