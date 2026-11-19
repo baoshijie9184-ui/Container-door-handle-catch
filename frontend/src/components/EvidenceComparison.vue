@@ -1,7 +1,14 @@
 <template>
   <section class="evidence-comparison" :aria-labelledby="headingId">
-    <header><div><h3 :id="headingId"><AppIcon name="Picture" :size="19" />图片对照</h3><p>按唯一文件名对照原图与标注，选择图片后可放大核对</p></div><el-select v-if="pairs.length" :model-value="current?.key" filterable aria-label="选择对照图片" @change="selection = $event"><el-option v-for="pair in pairs" :key="pair.key" :value="pair.key" :label="pair.label" /></el-select></header>
-    <p v-if="current" class="comparison-selection" role="status">当前选择 {{ current.label || '名称未记录' }}<span>本次资料共 {{ pairs.length }} 组<template v-if="unpairedCount"> · {{ unpairedCount }} 组为单份资料</template></span></p>
+    <header>
+      <div><h3 :id="headingId"><AppIcon name="Picture" :size="19" />图片对照</h3><p>按文件名查找，或在翻页区使用左右方向键逐张查看。</p></div>
+      <el-select-v2 v-if="pairs.length" :model-value="current?.key" :options="options" filterable
+                    aria-label="选择对照图片" placeholder="查找图片文件名" @change="selection = $event" />
+    </header>
+    <div v-if="current" class="comparison-toolbar">
+      <p class="comparison-selection">{{ current.label }}<span v-if="unpairedCount">{{ unpairedCount }} 张仅有原图或标注图</span></p>
+      <ImageListNavigation ref="pager" :index="currentIndex" :total="pairs.length" @select="selectIndex" />
+    </div>
     <p v-if="current?.ambiguous" class="comparison-note"><AppIcon name="Warning" :size="15" />同名文件不唯一，当前仅显示单份资料，请结合任务中的存储记录核对。</p>
     <p v-if="!pairs.length" class="comparison-note"><AppIcon name="Files" :size="16" />当前任务没有可对照的图片资料</p>
     <div v-else class="comparison-images">
@@ -12,10 +19,10 @@
         <p class="comparison-filename">{{ side.file?.imageName || '名称未记录' }}</p>
       </figure>
     </div>
-    <el-dialog v-model="zoomOpen" :title="zoomTitle" width="min(1100px, 96vw)" append-to-body class="evidence-zoom-dialog">
+    <el-dialog v-model="zoomOpen" :title="zoomTitle" width="min(1100px, 96vw)" append-to-body class="evidence-zoom-dialog" @opened="zoomPager?.focus()">
       <p class="comparison-zoom-note"><AppIcon name="Picture" :size="16" />图片仅供核对，人工复核结论及放行状态请查看对应业务记录。</p>
-      <div v-if="zoomError" class="comparison-image-empty" data-state="unavailable" role="alert"><AppIcon name="Warning" :size="26" /><strong>图片暂不可读取</strong><p>可通过下方原预览地址核对，或关闭后重新读取任务详情。</p></div><img v-else :src="zoomUrl" :alt="zoomTitle" class="comparison-zoom-image" @error="zoomError = true"/>
-      <template #footer><div class="comparison-zoom-actions"><a v-if="zoomUrl" :href="zoomUrl" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">在新标签页打开原预览<AppIcon name="TopRight" :size="14" /></a><el-button @click="zoomOpen = false">关闭图片</el-button></div></template>
+      <div v-if="!zoomUrl" class="comparison-image-empty"><strong>当前图片没有可打开的{{ zoomSideLabel }}</strong></div><div v-else-if="zoomError" class="comparison-image-empty" data-state="unavailable" role="alert"><AppIcon name="Warning" :size="26" /><strong>图片暂不可读取</strong><p>可通过下方原预览地址核对，或关闭后重新读取任务详情。</p></div><img v-else :key="zoomUrl" :src="zoomUrl" :alt="zoomTitle" class="comparison-zoom-image" @error="zoomError = $event.currentTarget.getAttribute('src') === zoomUrl"/>
+      <template #footer><div class="comparison-zoom-actions"><ImageListNavigation v-if="current" ref="zoomPager" :index="currentIndex" :total="pairs.length" @select="selectIndex" /><a v-if="zoomUrl" :href="zoomUrl" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">在新标签页打开原预览<AppIcon name="TopRight" :size="14" /></a><el-button @click="zoomOpen = false">关闭图片</el-button></div></template>
     </el-dialog>
   </section>
 </template>
@@ -23,14 +30,19 @@
 <script setup>
 import { computed, getCurrentInstance, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
+import ImageListNavigation from './ImageListNavigation.vue'
 import { evidenceComparisonPairs, evidencePreviewUrl } from '../utils/evidencePresentation'
-const props = defineProps({ taskId: String, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
+const props = defineProps({ taskId: String, initialAnnotationUrl: { type: String, default: '' }, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
 const headingId = 'evidence-comparison-' + getCurrentInstance().uid
-const selection = ref(''), failed = ref(new Set()), loaded = ref(new Set()), zoomOpen = ref(false), zoomUrl = ref(''), zoomTitle = ref(''), zoomError = ref(false)
+const selection = ref(''), failed = ref(new Set()), loaded = ref(new Set()), zoomOpen = ref(false), zoomError = ref(false)
+const pager = ref(null), zoomPager = ref(null), zoomSide = ref('original')
 const sides = [{ key: 'original', label: '原图' }, { key: 'annotation', label: '标注图' }]
 const pairs = computed(() => evidenceComparisonPairs(props.originals, props.annotations))
 const unpairedCount = computed(() => pairs.value.filter(pair => !pair.original || !pair.annotation).length)
-const current = computed(() => pairs.value.find(pair => pair.key === selection.value) || pairs.value[0] || null)
+const options = computed(() => pairs.value.map(pair => ({ value: pair.key, label: pair.label })))
+const currentIndex = computed(() => Math.max(0, pairs.value.findIndex(pair => pair.key === selection.value)))
+const current = computed(() => pairs.value[currentIndex.value])
+const selectIndex = index => { if (pairs.value[index]) selection.value = pairs.value[index].key }
 const imageUrl = side => evidencePreviewUrl(current.value?.[side])
 const sideViews = computed(() => sides.map(side => {
   const file=current.value?.[side.key],url=evidencePreviewUrl(file)
@@ -44,9 +56,24 @@ function retryImage(side) {
   const key=side.key+':'+side.url,nextFailed=new Set(failed.value),nextLoaded=new Set(loaded.value)
   nextFailed.delete(key);nextLoaded.delete(key);loaded.value=nextLoaded;failed.value=nextFailed
 }
-function openZoom(side) { if(!side.url || side.failed)return; zoomUrl.value = side.url; zoomTitle.value = side.label + ' · ' + (current.value?.label || '名称未记录'); zoomError.value = false; zoomOpen.value = true }
-watch(() => props.taskId, () => { selection.value = ''; failed.value = new Set(); loaded.value = new Set() })
-watch(() => [props.taskId, current.value?.key, current.value?.name, imageUrl('original'), imageUrl('annotation')], () => { zoomOpen.value = false; zoomUrl.value = ''; zoomError.value = false })
+const zoomSideLabel = computed(() => sides.find(side => side.key === zoomSide.value).label)
+const zoomUrl = computed(() => imageUrl(zoomSide.value))
+const zoomTitle = computed(() => zoomSideLabel.value + ' · ' + (current.value?.label || '名称未记录'))
+function openZoom(side) {
+  if (!side.url || side.failed) return
+  zoomSide.value = side.key
+  zoomError.value = false
+  zoomOpen.value = true
+}
+watch(() => [props.taskId, props.initialAnnotationUrl], () => {
+  const start = props.initialAnnotationUrl && pairs.value.find(pair => evidencePreviewUrl(pair.annotation) === props.initialAnnotationUrl)
+  selection.value = start?.key || ''
+  failed.value = new Set()
+  loaded.value = new Set()
+  zoomOpen.value = false
+}, { immediate: true })
+watch(zoomUrl, () => { zoomError.value = false })
+defineExpose({ focusNavigation: () => pager.value?.focus() })
 </script>
 
 <style scoped>
@@ -55,8 +82,9 @@ watch(() => [props.taskId, current.value?.key, current.value?.name, imageUrl('or
 .evidence-comparison h3 { display: flex; align-items: center; gap: 8px; font-size: 16px; color: var(--app-text); margin: 0; }
 .evidence-comparison h3 .el-icon { color: var(--app-primary); }
 .evidence-comparison header p { margin: 7px 0 0; color: var(--app-text-secondary); font-size: 12px; line-height: 1.8; }
-.evidence-comparison header .el-select { width: min(320px, 100%); }
-.comparison-selection { display:grid; gap:5px; margin:0 0 15px; color:var(--app-text); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.evidence-comparison header :is(.el-select,.el-select-v2) { width: min(320px, 100%); }
+.comparison-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap; margin-bottom:14px; }
+.comparison-selection { display:grid; gap:5px; margin:0; color:var(--app-text); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .comparison-selection > span { color:var(--app-text-secondary); }
 .comparison-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .comparison-images figure { min-width: 0; margin: 0; overflow: hidden; border: 1px solid var(--app-border); border-radius: 9px; }

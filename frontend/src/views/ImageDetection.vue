@@ -239,6 +239,7 @@
 
                 <!-- 操作按钮 -->
                 <div class="task-item-actions">
+                  <el-button v-if="task.stage !== 'uploading'" size="small" @click.stop="openImageBrowser(task.taskId)"><AppIcon name="Picture" :size="15" />浏览图片</el-button>
                   <el-button
                     v-if="task.stage === 'uploaded' && Array.isArray(task.uploadedFiles) && task.uploadedFiles.length"
                     type="primary"
@@ -352,7 +353,7 @@
           <el-alert v-if="historyError && historyRecords.length" :title="historyError+'；下方保留已读取资料，请重新核对。'" type="error" show-icon :closable="false" />
           <div v-if="historyError && historyRecords.length" class="history-retry"><el-button size="small" :loading="historyLoading" @click="retryHistoryRead"><AppIcon name="Refresh" :size="14" />重读上次查询</el-button></div>
           <CollectionEmptyState v-if="!historyRecords.length" :loading="historyLoading" :error="historyError" :filtered="historyLoaded ? Object.keys(historyAppliedFilters).length>0 : hasHistoryFilters" empty-title="暂无检测记录" empty-description="可从图片上传创建任务，或核对关键词与当前账号范围后重新查询。" @retry="retryHistoryRead" @reset="onHistoryReset" />
-          <div v-else class="history-records-grid"><DetectionHistoryCard v-for="task in historyRecords" :key="task.taskId" :task="task" :latest-change="taskChanges[task.taskId]" :show-history="userStore.capabilities?.changeHistory" :cached="Array.isArray(taskStore.taskList) && taskStore.taskList.some(cached=>cached.taskId===task.taskId)" :cache-busy="historyCacheBusy" :refreshing="historyLoading" @trace="openTraceDialog" @refresh="refreshHistory" @remove-cache="clearHistoryTaskCache" /></div>
+          <div v-else class="history-records-grid"><DetectionHistoryCard v-for="task in historyRecords" :key="task.taskId" :task="task" :latest-change="taskChanges[task.taskId]" :show-history="userStore.capabilities?.changeHistory" :cached="Array.isArray(taskStore.taskList) && taskStore.taskList.some(cached=>cached.taskId===task.taskId)" :cache-busy="historyCacheBusy" :refreshing="historyLoading" @trace="openTraceDialog" @browse-images="openImageBrowser" @refresh="refreshHistory" @remove-cache="clearHistoryTaskCache" /></div>
           <div v-if="historyTotal!==null" class="history-pagination"><el-pagination :current-page="historyPage" :page-size="historyPageSize" :total="historyTotal" :page-sizes="[10,20,50]" :disabled="historyLoading || !!historyError" layout="total, sizes, prev, pager, next, jumper" @current-change="onHistoryPageChange" @size-change="onHistorySizeChange" /></div>
         </el-card>
       </el-tab-pane>
@@ -776,9 +777,18 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="traceDialogVisible" class="task-trace-dialog" title="任务追溯详情" width="min(1100px, 96vw)" append-to-body>
-      <TaskTracePanel ref="tracePanel" :detail="traceDetail" :loading="traceLoading" :error="traceError" @refresh="openTraceDialog(traceRequestedId)" />
-      <template #footer><div class="task-trace-footer"><span role="status">{{ traceLoading ? traceDetail ? '正在重新读取，保留上次资料' : '正在读取任务资料' : traceError ? traceDetail ? '读取未成功，仍为上次资料' : '任务详情尚未读取成功' : traceDetail ? '本次已读任务资料' : '尚未读取' }}</span><div><el-button v-if="traceDetail" text @click="tracePanel?.showOverview()">回到概览</el-button><el-button :loading="traceLoading" :disabled="!traceRequestedId || reportDownloading" @click="openTraceDialog(traceRequestedId)"><AppIcon name="Refresh" :size="15" />重新读取</el-button><el-button @click="traceDialogVisible = false">关闭</el-button><el-button v-if="traceDetail?.taskId" type="primary" :loading="reportDownloading" :disabled="traceLoading" @click="downloadTaskQualityReport(traceDetail.taskId)"><AppIcon name="Download" :size="15" />导出任务摘要</el-button></div></div></template>
+    <el-dialog v-model="traceDialogVisible" class="task-trace-dialog" :title="browsingImages ? '浏览任务图片' : '任务追溯详情'" @opened="imageBrowser?.focusNavigation()" width="min(1100px, 96vw)" append-to-body>
+      <template v-if="browsingImages">
+        <CollectionEmptyState v-if="!traceDetail" :loading="traceLoading" :error="traceError" empty-title="尚未读取图片清单" @retry="refreshTrace" />
+        <template v-else-if="traceDialogVisible">
+          <p class="browser-task-id">任务 {{ traceDetail.taskId }}</p>
+          <el-alert v-if="traceError" :title="traceError" type="warning" :closable="false" />
+          <EvidenceComparison ref="imageBrowser" :task-id="traceDetail.taskId" :originals="traceDetail.originalImages || []"
+                              :annotations="traceDetail.previewImages || []" :initial-annotation-url="initialAnnotationUrl" />
+        </template>
+      </template>
+      <TaskTracePanel v-else ref="tracePanel" :detail="traceDetail" :loading="traceLoading" :error="traceError" @refresh="refreshTrace" />
+      <template #footer><div class="task-trace-footer"><span role="status">{{ traceLoading ? traceDetail ? '正在重新读取，保留上次资料' : '正在读取任务资料' : traceError ? traceDetail ? '读取未成功，仍为上次资料' : '任务详情尚未读取成功' : traceDetail ? '本次已读任务资料' : '尚未读取' }}</span><div><el-button v-if="traceDetail && !browsingImages" text @click="tracePanel?.showOverview()">回到概览</el-button><el-button :loading="traceLoading" :disabled="!traceRequestedId || reportDownloading" @click="refreshTrace"><AppIcon name="Refresh" :size="15" />重新读取</el-button><el-button @click="traceDialogVisible = false">关闭</el-button><el-button v-if="traceDetail?.taskId && !browsingImages" type="primary" :loading="reportDownloading" :disabled="traceLoading" @click="downloadTaskQualityReport(traceDetail.taskId)"><AppIcon name="Download" :size="15" />导出任务摘要</el-button></div></div></template>
     </el-dialog>
   </div>
 </template>
@@ -997,6 +1007,7 @@ const clearTaskFilters = (restoreFocus=false)=>{
   if(restoreFocus){const version=taskReadVersion;nextTick(()=>{if(detectionPageActive && version===taskReadVersion)taskKeywordInput.value?.input?.focus({preventScroll:true})})}
 }
 const traceDialogVisible = ref(false)
+const browsingImages = ref(false), initialAnnotationUrl = ref(''), imageBrowser = ref(null)
 const traceLoading = ref(false)
 const traceDetail = ref(null)
 const traceError = ref(''), traceRequestedId = ref(''), tracePanel = ref(null)
@@ -1331,9 +1342,19 @@ const reviewEvidence = computed(() => {
   }
 })
 
-const openTraceDialog = async (taskId) => {
+function openTraceDialog(taskId) {
+  browsingImages.value = false
+  return readTrace(taskId)
+}
+function openImageBrowser(taskId, annotationUrl = '') {
+  browsingImages.value = true
+  initialAnnotationUrl.value = annotationUrl
+  return readTrace(taskId)
+}
+const refreshTrace = () => readTrace(traceRequestedId.value)
+const readTrace = async (taskId) => {
   if (typeof taskId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(taskId)) return
-  const generation = ++traceGeneration, sameTask = traceDetail.value?.taskId === taskId
+  const generation = ++traceGeneration, sameTask = traceDialogVisible.value && traceDetail.value?.taskId === taskId
   traceReadController?.abort()
   const controller = new AbortController(); traceReadController = controller
   traceRequestedId.value = taskId; traceError.value = ''; traceDialogVisible.value = true; traceLoading.value = true
@@ -1344,7 +1365,13 @@ const openTraceDialog = async (taskId) => {
     const detail = response.data?.data
     if (response.data?.code === 200 && detail && typeof detail === 'object' && !Array.isArray(detail) && detail.taskId === taskId && ['timeline','originalImages','previewImages'].every(key => detail[key] == null || Array.isArray(detail[key]))) {
       traceDetail.value = detail
-      if (!sameTask) { await nextTick(); if (generation === traceGeneration) tracePanel.value?.resetScroll() }
+      if (!sameTask) {
+        await nextTick()
+        if (generation === traceGeneration) {
+          if (browsingImages.value) imageBrowser.value?.focusNavigation()
+          else tracePanel.value?.resetScroll()
+        }
+      }
     } else {
       if ([401, 403, 404].includes(response.data?.code)) traceDetail.value = null
       traceError.value = response.data?.code === 200 ? '任务详情返回内容不完整或编号不匹配，请重新读取' : response.data?.message || '获取追溯详情失败'
@@ -1489,6 +1516,7 @@ async function validateCollaborationAccess(){
   gap: 24px;
 }
 
+.browser-task-id { margin:0 0 12px; color:var(--app-text-secondary); font-size:12px; overflow-wrap:anywhere; }
 .image-detection-container > * { min-width:0; }
 
 .detection-hero {
