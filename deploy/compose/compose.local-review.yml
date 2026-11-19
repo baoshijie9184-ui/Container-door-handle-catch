@@ -22,6 +22,18 @@ services:
     image: ${LOCAL_BACKEND_IMAGE:?Set the pinned task branch backend image}
     environment:
       AGENT_MODEL_SELECTION_ENABLED: ${AGENT_MODEL_SELECTION_ENABLED:-true}
+      # Session attachments use the workbench, which requires conversation control and the run journal.
+      AGENT_RUN_JOURNAL_ENABLED: ${AGENT_RUN_JOURNAL_ENABLED:-true}
+      AGENT_CONVERSATION_CONTROL_ENABLED: ${AGENT_CONVERSATION_CONTROL_ENABLED:-true}
+      AGENT_WORKBENCH_ENABLED: ${AGENT_WORKBENCH_ENABLED:-true}
+      AGENT_WORKBENCH_FILES: ${AGENT_WORKBENCH_FILES:-true}
+      AGENT_WORKBENCH_PLANS: ${AGENT_WORKBENCH_PLANS:-false}
+      AGENT_WORKBENCH_QUESTIONS: ${AGENT_WORKBENCH_QUESTIONS:-false}
+      AGENT_WORKBENCH_FORKS: ${AGENT_WORKBENCH_FORKS:-false}
+      AGENT_WORKBENCH_CHILDREN: ${AGENT_WORKBENCH_CHILDREN:-false}
+      AGENT_WORKBENCH_JOBS: ${AGENT_WORKBENCH_JOBS:-false}
+      AGENT_WORKBENCH_USAGE: ${AGENT_WORKBENCH_USAGE:-false}
+      AGENT_WORKBENCH_RECOVERY: ${AGENT_WORKBENCH_RECOVERY:-false}
       DASHSCOPE_ADDITIONAL_MODELS: ${DASHSCOPE_ADDITIONAL_MODELS:-qwen3.8-max-0902,qwen-plus,qwen-flash,qwen-max,qwen3.7-plus,glm-5.3,kimi-k3,deepseek-v4-pro,deepseek-v4.1-flash}
       OPENAI_ADDITIONAL_MODELS: ${OPENAI_ADDITIONAL_MODELS-gpt-6.2-astra,gpt-6.1-terra,gpt-6-luna,gpt-6.1-sol,gpt-6-astra}
   nginx:
