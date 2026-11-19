@@ -441,6 +441,7 @@ class Runner:
         await page.get_by_role('button', name='登录系统', exact=True).click()
         await page.wait_for_url('**/#/home')
         await page.get_by_role('heading', name='登录工作空间', exact=True).wait_for(state='hidden')
+        await page.get_by_text('正在确认登录账号', exact=True).wait_for(state='hidden')
         data = await self.api(page.context, 'GET', '/api/auth/check', auth_key=None)
         require(str(data.get('userId')) == str(account['userId']) and data.get('role') == account['role'], 'actual_identity_mismatch')
         require(all(data.get('capabilities', {}).get(key) is True for key in ('sessionTracking', 'changeHistory', 'mutations', 'realtime')), 'actual_collaboration_flags_required')

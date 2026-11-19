@@ -261,6 +261,24 @@ test('actual login ignores a late older response before checking or broadcasting
     }finally{fixture.close()}
   }
 })
+test('a rejected login can be retried without leaving a pending account notice', async () => {
+  const fixture = await userStoreFixture()
+  const form = { username: 'supervisor-a', password: 'fixture-only' }
+  try {
+    fixture.request.write = async () => { throw Object.assign(Error('unauthorized'), { response: { status: 401 } }) }
+    await assert.rejects(fixture.store.login(form), /用户名或密码错误/)
+    assert.equal(fixture.store.isAuthenticated.value, false)
+    assert.equal(fixture.store.accountNotice.value, '')
+
+    fixture.request.write = async () => ({ data: { code: 200, data: { accountContext: 'context-a' } } })
+    fixture.request.read = async () => ({ data: { data: user() } })
+    await fixture.store.login(form)
+    assert.equal(fixture.store.isAuthenticated.value, true)
+    assert.equal(fixture.store.accountNotice.value, '')
+  } finally {
+    fixture.close()
+  }
+})
 test('actual cross-tab identity binding rechecks without clearing a confirmed account or its draft lifetime',async()=>{
   const fixture=await userStoreFixture()
   try{

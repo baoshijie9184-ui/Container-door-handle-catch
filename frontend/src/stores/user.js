@@ -49,7 +49,7 @@ export const useUserStore = defineStore('user', () => {
     return Promise.reject(error)
   })
   const login = async form => {
-    clearSession('正在确认登录账号')
+    clearSession()
     const started=accountSession.stamp()
     identityChanged()
     try {

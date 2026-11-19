@@ -16,7 +16,7 @@
     <section v-if="currentRoute.path!=='/login' && !account.isAuthenticated" class="account-context-gate app-panel"><h1>请先确认当前登录身份</h1><p>旧账号页面已暂停，未提交内容不会自动上传。</p><router-link to="/login">重新登录</router-link></section>
     <router-view v-if="currentRoute.path==='/login' || account.isAuthenticated" v-slot="{ Component, route }">
       <transition :name="route.meta.transition || 'page-fade'" mode="out-in">
-        <component :is="Component" :key="String(account.accountEpoch)+':'+(route.matched[0]?.path || route.path)" />
+        <component :is="Component" :key="route.name === 'login' ? 'login' : account.accountEpoch + ':' + (route.matched[0]?.path || route.path)" />
       </transition>
     </router-view>
   </div>
