@@ -43,7 +43,7 @@ export function normalizeTraceEvents(rows, legacy = false) {
     const sequence = legacy ? index + 1 : row?.sequence
     if (!row || !Number.isSafeInteger(sequence) || sequence < 1 || seen.has(sequence) || typeof row.type !== 'string') return []
     seen.add(sequence)
-    const source = legacy ? row : row.payload
+    const source = legacy ? { ...row, ...row.modelReceipt } : row.payload
     const payload = {}
     for (const key of textFields) if (typeof source?.[key] === 'string') payload[key] = source[key]
     for (const key of numberFields) if (typeof source?.[key] === 'number' && Number.isFinite(source[key]) && source[key] >= 0) payload[key] = source[key]
@@ -125,7 +125,7 @@ export function traceModelRequests(events, runStatus) {
         failureReason: terminal?.payload.failureReason, httpStatus: terminal?.payload.httpStatus,
         firstEvent: candidate.events[0] }
     })
-    return { ...request, purpose: request.events.some(event=>event.payload.purpose==='CONTEXT_COMPACTION')?'CONTEXT_COMPACTION':null, attempts }
+    return { ...request, preferredModel: attempts.find(item=>item.attempt===1)?.modelId, purpose: request.events.some(event=>event.payload.purpose==='CONTEXT_COMPACTION')?'CONTEXT_COMPACTION':null, attempts }
   })
 }
 export function traceCompleteness(events, lastSequence) {

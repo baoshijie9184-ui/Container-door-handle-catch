@@ -39,6 +39,8 @@ class AgentWorkbenchServiceTest {
     private static boolean sharedQuiescent=true;
     final AgentActor alice=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
     WorkbenchStore store;WorkbenchProperties properties;AgentWorkbenchService service;WorkbenchSessionApi app;BusinessUserDirectory users;RoleAgentFactory factory;com.zaxxer.hikari.HikariDataSource pool;
+    ConversationModelPreferences preferences;
+    AgentRunRegistry runs = new AgentRunRegistry();
     CompactActionMySqlFixture fixture;
     @BeforeEach void setup(TestInfo test)throws Exception{
         if(test.getTestMethod().orElseThrow().isAnnotationPresent(Order.class))
@@ -58,6 +60,11 @@ class AgentWorkbenchServiceTest {
         store=new WorkbenchStore(jdbc,new DataSourceTransactionManager(source),new ObjectMapper());properties=new WorkbenchProperties();properties.setEnabled(true);
         users=mock(BusinessUserDirectory.class);when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));
         app=mock(WorkbenchSessionApi.class);var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(app);
+        var chatSessions=mock(AgentChatSessionApi.class);
+        doAnswer(call->{app.assertOwned(call.getArgument(0),call.getArgument(1));return null;}).when(chatSessions).assertOwned(any(),anyString());
+        ObjectProvider<AgentChatSessionApi> chatProvider=mock(ObjectProvider.class);
+        when(chatProvider.getObject()).thenReturn(chatSessions);
+        preferences=new ConversationModelPreferences(store,chatProvider,runs,null);
         factory=mock(RoleAgentFactory.class);when(factory.definitions(alice)).thenReturn(RoleAgentCatalog.specialists(alice));var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);
         service=new AgentWorkbenchService(store,properties,users,provider,factory,journal);service.validate();
     }
@@ -158,17 +165,21 @@ class AgentWorkbenchServiceTest {
         var summary=service.list(alice,"s1").get(0);assertThat(summary.data().get("inputTokens")).isNull();assertThat(summary.data().get("outputTokens")).isEqualTo(410L);assertThat(summary.data().get("text").toString()).contains("205");
     }
     @Test void modelSelectionIsOwnedVersionedAndFrozenDuringExecution(){
-        assertThat(service.modelSelection(alice,"s1").modelId()).isEmpty();
-        String model="deepseek:demo";var selected=service.selectModel(alice,"s1",model,0,"select-1",Set.of(model));
-        assertThat(service.selectModel(alice,"s1",model,0,"select-1",Set.of(model))).isEqualTo(selected);
-        assertThatThrownBy(()->service.selectModel(alice,"s1","arbitrary:url",selected.revision(),"bad",Set.of(model))).hasMessageContaining("400");
-        assertThatThrownBy(()->service.selectModel(alice,"s1","",0,"stale",Set.of(model))).hasMessageContaining("409");
+        assertThat(preferences.modelSelection(alice,"s1").modelId()).isEmpty();
+        String model="deepseek:demo";var selected=preferences.selectModel(alice,"s1",model,0,"select-1",Set.of(model));
+        assertThat(preferences.selectModel(alice,"s1",model,0,"select-1",Set.of(model))).isEqualTo(selected);
+        assertThatThrownBy(()->preferences.selectModel(alice,"s1","arbitrary:url",selected.revision(),"bad",Set.of(model))).hasMessageContaining("400");
+        assertThatThrownBy(()->preferences.selectModel(alice,"s1","",0,"stale",Set.of(model))).hasMessageContaining("409");
+        String runKey=AgentRunRegistry.key(alice,"s1");
+        assertThat(runs.acquire(runKey)).isTrue();
+        try { assertThatThrownBy(()->preferences.selectModel(alice,"s1","",selected.revision(),"busy-chat",Set.of(model))).hasMessageContaining("409"); }
+        finally { runs.release(runKey); }
         var scope=scope("查看任务");assertThat(scope.modelId("default")).isEqualTo(model);
-        assertThatThrownBy(()->service.selectModel(alice,"s1","",selected.revision(),"active",Set.of(model))).hasMessageContaining("409");
+        assertThatThrownBy(()->preferences.selectModel(alice,"s1","",selected.revision(),"active",Set.of(model))).hasMessageContaining("409");
         assertThat(scope.modelId("default")).isEqualTo(model);scope.finish("COMPLETED","完成");scope.release();
-        service.selectModel(alice,"s1","",selected.revision(),"select-default",Set.of(model));assertThat(scope("查看模型").modelId("default")).isEqualTo("default");
+        preferences.selectModel(alice,"s1","",selected.revision(),"select-default",Set.of(model));assertThat(scope("查看模型").modelId("default")).isEqualTo("default");
         doThrow(new org.springframework.security.access.AccessDeniedException("forbidden")).when(app).assertOwned(alice,"foreign");
-        assertThatThrownBy(()->service.modelSelection(alice,"foreign")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThatThrownBy(()->preferences.modelSelection(alice,"foreign")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
     }
     private ModelConfigurationApi versionedModels(){
         var configuration=mock(ModelConfigurationApi.class);
@@ -213,17 +224,17 @@ class AgentWorkbenchServiceTest {
             if(!(actor.userId()==1&&Set.of("alice-1","alice-2").contains(session))&&!(actor.userId()==2&&session.equals("bob-1")))throw new org.springframework.security.access.AccessDeniedException("private session");return null;
         }).when(app).assertOwned(any(),anyString());
         var configured=Set.of("dashscope:flash","dashscope:max");
-        service.selectModel(alice,"alice-1","dashscope:flash",0,"same-request",configured);
-        service.selectModel(bob,"bob-1","dashscope:max",0,"same-request",configured);
-        assertThat(service.modelSelection(alice,"alice-1").modelId()).isEqualTo("dashscope:flash");
-        assertThat(service.modelSelection(alice,"alice-2")).isEqualTo(new AgentWorkbenchService.ModelSelection("",0));
-        assertThat(service.modelSelection(bob,"bob-1").modelId()).isEqualTo("dashscope:max");
-        assertThatThrownBy(()->service.modelSelection(bob,"alice-1")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
-        assertThatThrownBy(()->service.selectModel(bob,"alice-1","dashscope:max",1,"cross-account",configured)).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        preferences.selectModel(alice,"alice-1","dashscope:flash",0,"same-request",configured);
+        preferences.selectModel(bob,"bob-1","dashscope:max",0,"same-request",configured);
+        assertThat(preferences.modelSelection(alice,"alice-1").modelId()).isEqualTo("dashscope:flash");
+        assertThat(preferences.modelSelection(alice,"alice-2")).isEqualTo(new ConversationModelPreferences.ModelSelection("",0));
+        assertThat(preferences.modelSelection(bob,"bob-1").modelId()).isEqualTo("dashscope:max");
+        assertThatThrownBy(()->preferences.modelSelection(bob,"alice-1")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThatThrownBy(()->preferences.selectModel(bob,"alice-1","dashscope:max",1,"cross-account",configured)).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
         // A fresh execution reads the saved route rather than the global default.
         var scope=service.prepare(alice,"alice-1","查看任务","route-test");
         assertThat(scope.modelId("global-default")).isEqualTo("dashscope:flash");scope.finish("COMPLETED","done");scope.release();
-        assertThat(service.modelSelection(bob,"bob-1").modelId()).isEqualTo("dashscope:max");
+        assertThat(preferences.modelSelection(bob,"bob-1").modelId()).isEqualTo("dashscope:max");
     }
     @Test void unapprovedPlanDoesNotAdvertiseProfessionalOrArtifactTools(){
         var scope=scope("查询任务，不修改或审批");var toolkit=new Toolkit();

@@ -13,7 +13,8 @@ public interface AgentConversationApi {
         }
     }
     record Message(String role, String content) {}
-    record Event(String type, String agent, String tool, String text, long elapsedMs, String callId) {
+    record Event(String type, String agent, String tool, String text, long elapsedMs, String callId, java.util.Map<String,Object> modelReceipt) {
+        public Event(String type,String agent,String tool,String text,long elapsedMs,String callId){this(type,agent,tool,text,elapsedMs,callId,null);}
         public Event(String type,String agent,String tool,String text,long elapsedMs){this(type,agent,tool,text,elapsedMs,null);}
     }
     record Run(CompletableFuture<String> result, Runnable cancel, String runId, java.util.function.Supplier<List<AgentCards.Reference>> cards) {

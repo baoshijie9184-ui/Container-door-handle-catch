@@ -19,7 +19,7 @@ test('stale selection can be reconciled read-only without losing the draft or re
  const {ComposerResources}=await mod;let selection={modelId:'',revision:0};let writes=0;
  const client=new ComposerResources({fetcher:async(path,options)=>{if(options.method){writes++;selection={modelId:'deepseek:demo',revision:2};return response({},409)}return path.endsWith('/model-selection')?response(selection):fixture(path)}});
  await client.open('mine');client.draft('保留未发送的问题');client.publish({files:[{id:fid,name:'private.md',bytes:4}]});await assert.rejects(client.select('deepseek:demo'));
- assert.equal(client.state.modelError,true);assert.equal(client.state.modelId,'');await client.refreshModels();assert.equal(writes,1);assert.equal(client.state.modelId,'deepseek:demo');assert.equal(client.state.revision,2);assert.equal(client.state.modelError,false);assert.equal(client.text,'保留未发送的问题');assert.equal(client.state.files[0].id,fid);assert.equal(client.pending.size,0);
+ assert.equal(client.state.modelError,false);assert.match(client.state.modelNotice,/状态已变化/);assert.equal(writes,1);assert.equal(client.state.modelId,'deepseek:demo');assert.equal(client.state.revision,2);assert.equal(client.state.modelError,false);assert.equal(client.text,'保留未发送的问题');assert.equal(client.state.files[0].id,fid);assert.equal(client.pending.size,0);
 });
 
 test('an uncertain switch is read back, and returning to system default persists with the current revision',async()=>{
@@ -75,4 +75,19 @@ test('unknown upload keeps request identity across reload and is only retried wh
  const fetcher=async(path,options)=>{if(path==='/api/auth/check')return response({code:200,data:{username:'alice',userId:1}});if(options.method){posts.push(options.body.get('requestId'));if(fail)throw Error('network');return response({id:fid,name:'private.md',bytes:4})}return fixture(path)};
  const first=new ComposerResources({fetcher,storage});await first.open('same');const file=new File(['test'],'private.md');await assert.rejects(first.upload([file]));first.close();
  const next=new ComposerResources({fetcher,storage});await next.open('same');assert.equal(posts.length,1);fail=false;await next.upload([file]);assert.equal(posts[0],posts[1]);assert.equal(next.state.files[0].id,fid);
+});
+
+test('workbench and model selection have independent capability states',async()=>{
+ const {ComposerResources}=await mod;
+ for(const enabled of [true,false]){
+  const client=new ComposerResources({fetcher:async path=>path.endsWith('capabilities')?response({code:404}):!enabled&&path.endsWith('model-selection')?response({enabled:false}):fixture(path)});
+  await client.open('mine');
+  assert.equal(client.state.ready,enabled);assert.equal(client.state.modelDisabled,!enabled);assert.equal(client.state.filesEnabled,false);assert.equal(client.state.modelError,false);
+ }
+});
+test('a pending attachment capability cannot block the model picker',async()=>{
+ const {ComposerResources}=await mod;let finish;
+ const client=new ComposerResources({fetcher:async path=>path.endsWith('capabilities')?new Promise(resolve=>{finish=resolve}):fixture(path)});
+ const opened=client.open('mine');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(client.state.ready,true);finish(response({files:false,enabled:false}));await opened;
 });

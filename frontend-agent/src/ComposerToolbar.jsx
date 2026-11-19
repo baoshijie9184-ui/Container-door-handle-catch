@@ -17,18 +17,18 @@ export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,
   {!!state.files.length&&<p className="composer-attachment-note">发送时引用这些会话文件，取消引用不会删除文件</p>}
   <div className="composer-resource-toolbar">
    <input type="file" hidden multiple ref={input} accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" onChange={upload}/>
-   <button type="button" aria-label="添加附件" title={composerUploadHint(state,disabled)} disabled={!state.ready||!state.filesEnabled||state.busy||disabled} onClick={()=>input.current.click()}><Plus size={19} aria-hidden="true"/></button>
+   <button type="button" aria-label="添加附件" title={composerUploadHint(state,disabled)} disabled={!state.filesEnabled||state.busy||disabled} onClick={()=>input.current.click()}><Plus size={19} aria-hidden="true"/></button>
    <span className="composer-permission" title="工具按当前账号权限执行，敏感操作仍需人工确认"><ShieldCheck size={15} aria-hidden="true"/><span>按账号权限</span></span>
-   <select aria-label="使用模型" title={composerModelTitle(state,locked,disabled)} value={state.modelId} disabled={!state.ready||state.busy||locked||disabled} onChange={event=>client.current.select(event.target.value).catch(()=>{})}><option value="">{composerDefaultModel(state)}</option>{selectedModelMissing(state)&&<option value={state.modelId} disabled>原选模型已不可用，请重新选择</option>}{state.models.map(model=><option key={model.id} value={model.id}>{modelLabel(model)}</option>)}</select>
+   <select aria-label="使用模型" title={composerModelTitle(state,locked,disabled)} value={state.modelId} disabled={!state.ready||state.busy||locked||disabled} onChange={event=>client.current.select(event.target.value).catch(()=>{})}><option value="">{composerDefaultModel(state)}</option>{selectedModelMissing(state)&&<option value={state.modelId} disabled>{state.modelId}（已不可用）</option>}{state.models.map(model=><option key={model.id} value={model.id}>{modelLabel(model)}</option>)}</select>
    <span className="composer-context" title="使用本会话历史与已授权的资料"><MessageSquareText size={15} aria-hidden="true"/><span>会话上下文</span></span>
    {state.busy&&<span className="composer-upload-status" role="status">处理中</span>}
    {streaming||run?.local&&run.runId&&!draft.trim()&&!state.files.length?<button type="button" className="gpt-stop" aria-label="停止任务" title="停止当前任务" onClick={onStop}><Square size={14} fill="currentColor" aria-hidden="true"/></button>:<button type="button" className="gpt-send" aria-label="发送消息" title="发送消息" disabled={disabled||state.busy||(!draft.trim()&&!state.files.length)} onClick={()=>onSend(draft)}><ArrowUp size={18} aria-hidden="true"/></button>}
   </div>
   {state.error&&<p className="control-error" role="alert">{state.error}</p>}
-  {(selectedModelMissing(state)||state.modelNotice||state.modelError)&&<div className="model-selection-feedback"><span role="status">{selectedModelMissing(state)?'原选模型已不在可用目录，请选择其他模型':state.modelNotice||''}</span>{state.modelError&&<button type="button" disabled={state.busy||disabled} onClick={()=>client.current.refreshModels()}>核对模型选择</button>}</div>}
+  {(selectedModelMissing(state)||state.modelNotice||state.modelError)&&<div className="model-selection-feedback"><span role="status">{selectedModelMissing(state)?'原选模型已不在可用目录，请选择其他模型':state.modelNotice||''}</span>{state.modelError&&<button type="button" disabled={state.busy||disabled} onClick={()=>client.current.refreshModels()}>重新读取</button>}</div>}
   {state.draftWarning&&<p className="command-hint" role="status">{state.draftWarning}</p>}
   {state.storageWarning&&<p className="composer-state-note" data-tone="warning" role="status"><TriangleAlert size={14} aria-hidden="true"/>{state.storageWarning}</p>}
   {browserOffline&&<p className="composer-state-note" data-tone="warning" role="status"><WifiOff size={14} aria-hidden="true"/>浏览器报告网络离线，当前输入保留；恢复连接后请手动发送，不会自动重发。</p>}
-  {state.ready&&!state.filesEnabled&&<p className="composer-state-note">当前服务未启用会话文件上传</p>}
+  {state.filesLoaded&&!state.filesEnabled&&<p className="composer-state-note">当前服务未启用会话文件上传</p>}
  </div>
 });

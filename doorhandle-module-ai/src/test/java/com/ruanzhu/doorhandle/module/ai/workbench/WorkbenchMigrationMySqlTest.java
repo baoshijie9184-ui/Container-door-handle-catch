@@ -61,8 +61,8 @@ class WorkbenchMigrationMySqlTest {
         var task=jdbc.queryForMap("SELECT created_at,updated_at,finished_at,payload_json FROM workflow_instance WHERE kind='WORKBENCH_LOGICAL_TASK'");assertThat(task.get("created_at")).isNull();assertThat(task.get("updated_at")).isNull();assertThat(task.get("finished_at")).isNull();
         assertThat(task.get("payload_json").toString()).contains("\"importedCurrentSnapshot\":true","\"initialRunId\":null");
         assertThat(jdbc.queryForObject("SELECT content_sha256 FROM audit_event WHERE kind='WORKBENCH'",String.class)).isEqualTo(WorkbenchStore.hash("original historical payload, not the current item"));
-        var replay=store.request(7,"legacy-command","original command signature",AgentWorkbenchService.ModelSelection.class,()->{throw new AssertionError("Imported command must not execute again");});assertThat(replay).isEqualTo(new AgentWorkbenchService.ModelSelection("fixture-model",7));
-        assertThatThrownBy(()->store.request(7,"legacy-command","different signature",AgentWorkbenchService.ModelSelection.class,()->null)).hasMessageContaining("409");
+        var replay=store.request(7,"legacy-command","original command signature",ConversationModelPreferences.ModelSelection.class,()->{throw new AssertionError("Imported command must not execute again");});assertThat(replay).isEqualTo(new ConversationModelPreferences.ModelSelection("fixture-model",7));
+        assertThatThrownBy(()->store.request(7,"legacy-command","different signature",ConversationModelPreferences.ModelSelection.class,()->null)).hasMessageContaining("409");
         assertThat(new WorkbenchChildProvenanceReader(store).find(7,"deleted-session","legacy-child")).isPresent();assertThat(new WorkbenchChildProvenanceReader(store).find(8,"deleted-session","legacy-child")).isEmpty();
         store.recover(item);assertThat(store.require(7,"deleted-session","legacy-child").status()).isEqualTo("NEEDS_REVIEW");
         assertThat(source.queryForObject("SELECT status FROM agent_workbench_item",String.class)).isEqualTo("RUNNING");

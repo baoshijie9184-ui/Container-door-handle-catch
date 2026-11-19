@@ -8,7 +8,7 @@ import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowKind;
 import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.module.ai.context.ChildProvenanceReader;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -26,7 +26,7 @@ import java.util.function.Supplier;
 
 /** Closed workbench protocols on the compact operation store. No legacy fallback. */
 @Repository
-@ConditionalOnProperty(prefix="agentscope.workbench",name="enabled",havingValue="true")
+@ConditionalOnExpression("${agentscope.workbench.enabled:false} or ${agentscope.model-selection.enabled:false}")
 public class WorkbenchStore {
     private static final String ITEMS="'WORKBENCH_EXECUTION','WORKBENCH_CHILD','WORKBENCH_PLAN','WORKBENCH_QUESTION','WORKBENCH_TASKS','WORKBENCH_TOOL','WORKBENCH_CHECKPOINT','WORKBENCH_MODEL_SELECTION','WORKBENCH_TURN','WORKBENCH_FORK_SNAPSHOT','WORKBENCH_ARTIFACT','WORKBENCH_USAGE','WORKBENCH_CONTEXT','WORKBENCH_TOOL_TIMING'";
     private static final String COLUMNS="id,workflow_id,resource_id,owner_user_id,session_id,kind,status,revision,payload_version,payload_json,updated_at,claim_token,fence,lease_expires_at,legacy_source,legacy_key,legacy_clock_json";

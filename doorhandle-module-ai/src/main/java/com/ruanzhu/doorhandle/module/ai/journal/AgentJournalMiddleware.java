@@ -50,6 +50,15 @@ public class AgentJournalMiddleware implements MiddlewareBase {
                 .doFinally(signal->{if(signal==SignalType.CANCEL&&terminal.compareAndSet(false,true))recordCancellation("AGENT_CANCELLED",duration(agent,start));});
         });
     }
+    /** Expose model receipts for the compact session trace when the full journal is disabled. */
+    public MiddlewareBase modelCallsOnly() {
+        return new MiddlewareBase() {
+            @Override public Flux<AgentEvent> onModelCall(Agent agent, RuntimeContext context, ModelCallInput input,
+                                                         Function<ModelCallInput,Flux<AgentEvent>> next) {
+                return AgentJournalMiddleware.this.onModelCall(agent, context, input, next);
+            }
+        };
+    }
     @Override public Flux<AgentEvent> onModelCall(Agent agent,RuntimeContext context,ModelCallInput input,Function<ModelCallInput,Flux<AgentEvent>> next) {
         return Flux.defer(()->{
             long start=System.nanoTime();

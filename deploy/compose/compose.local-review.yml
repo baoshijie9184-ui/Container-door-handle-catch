@@ -21,6 +21,7 @@ services:
   backend:
     image: ${LOCAL_BACKEND_IMAGE:?Set the pinned task branch backend image}
     environment:
+      AGENT_MODEL_SELECTION_ENABLED: ${AGENT_MODEL_SELECTION_ENABLED:-true}
       DASHSCOPE_ADDITIONAL_MODELS: ${DASHSCOPE_ADDITIONAL_MODELS:-qwen3.8-max-0902,qwen-plus,qwen-flash,qwen-max,qwen3.7-plus,glm-5.3,kimi-k3,deepseek-v4-pro,deepseek-v4.1-flash}
       OPENAI_ADDITIONAL_MODELS: ${OPENAI_ADDITIONAL_MODELS-gpt-6.2-astra,gpt-6.1-terra,gpt-6-luna,gpt-6.1-sol,gpt-6-astra}
   nginx:

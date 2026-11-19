@@ -133,7 +133,7 @@ final class WorkbenchProtocol {
         var tree=(ObjectNode)json.valueToTree(payload.data());var result=new LinkedHashMap<String,Object>();
         for(String key:new TreeSet<>(payload.presentFields()))result.put(key,json.convertValue(tree.get(key),Object.class));return result;
     }
-    String commandType(Class<?> type){if(type==AgentWorkbenchApi.Item.class)return "ITEM";if(type==AgentWorkbenchService.ModelSelection.class)return "MODEL_SELECTION";throw new IllegalArgumentException("Unsupported workbench command result");}
+    String commandType(Class<?> type){if(type==AgentWorkbenchApi.Item.class)return "ITEM";if(type==ConversationModelPreferences.ModelSelection.class)return "MODEL_SELECTION";throw new IllegalArgumentException("Unsupported workbench command result");}
     <T>T result(String body,String expected,Class<T> type){try{
         var result=json.readValue(body,CommandResultV1.class);responseType(result.responseType());if(!expected.equals(result.responseType()))throw new IllegalStateException("工作台回执类型冲突");
         var tree=json.readTree(result.responseJson());Set<String> required=expected.equals("ITEM")?Set.of("id","kind","status","revision","data"):Set.of("modelId","revision");

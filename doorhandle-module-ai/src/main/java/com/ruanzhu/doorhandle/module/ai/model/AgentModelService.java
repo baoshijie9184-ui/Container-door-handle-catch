@@ -38,6 +38,19 @@ public class AgentModelService implements AutoCloseable {
     public void setCircuitRedis(org.springframework.data.redis.core.StringRedisTemplate value){circuitRedis=value;}
     public void setConfigurations(ModelConfigurationService value){configurations=value;}
     public String currentDefault(){return configurations==null?agent.getModel():configurations.active().defaultModel();}
+    public record RunModel(String id, long version) {}
+    public RunModel snapshot(String preference) {
+        if (configurations != null) {
+            var active = configurations.active();
+            String id = preference.isEmpty() ? active.defaultModel() : preference;
+            configurations.assertUsable(active.version(), id);
+            return new RunModel(id, active.version());
+        }
+        String id = preference.isEmpty() ? agent.getModel() : preference;
+        if (entries().stream().noneMatch(entry -> entry.configured() && entry.id().equals(id)))
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "任务首选模型已不可用，请重新选择");
+        return new RunModel(id, 0);
+    }
     public Model resolveAt(String id,long revision){
         if(configurations==null)return resolve(id);
         long version=revision==0?configurations.active().version():revision;

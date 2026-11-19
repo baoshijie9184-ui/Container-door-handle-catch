@@ -5,6 +5,7 @@
     <article v-for="request in visible" :key="request.key" class="model-route-request">
       <header class="model-route-request-heading"><span class="model-route-symbol"><AppIcon name="Cpu" :size="19" /></span><div><h5>{{ request.agent || 'Agent 未记录' }}</h5><p>{{ request.purpose === 'CONTEXT_COMPACTION' ? '上下文摘要请求' : '模型逻辑请求' }} · {{ request.attempts.length.toLocaleString('zh-CN') }} 条候选记录</p></div></header>
       <p class="model-route-id">请求编号 <code>{{ request.requestId }}</code></p>
+      <p v-if="request.preferredModel" class="model-route-id">本次首选模型 <code>{{ request.preferredModel }}</code></p>
       <section v-for="attempt in request.attempts" :key="attempt.key" class="model-route-attempt" :data-status="attempt.status" aria-label="模型候选记录">
         <header><div><span class="model-route-attempt-number">候选 {{ attempt.attempt }}</span><strong>{{ attempt.modelId || '候选编号未记录' }}</strong></div><StatusBadge domain="traceExecution" :code="attempt.status" :label="traceStatus(attempt.status)" /></header>
         <dl><div><dt>供应商接入</dt><dd>{{ attempt.provider || '未记录' }}</dd></div><div><dt>请求模型名</dt><dd>{{ attempt.model || '未记录' }}</dd></div><template v-if="attempt.status !== 'SKIPPED'"><div><dt>模型耗时</dt><dd>{{ traceDuration(attempt.durationMs) }}</dd></div><div><dt>首段内容耗时</dt><dd>{{ traceDuration(attempt.firstContentMs) }}</dd></div></template></dl>

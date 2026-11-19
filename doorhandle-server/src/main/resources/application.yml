@@ -323,6 +323,8 @@ agentscope:
     master-key-file: ${MODEL_CONFIG_MASTER_KEY_FILE:}
   conversation-control:
     enabled: ${AGENT_CONVERSATION_CONTROL_ENABLED:false}
+  model-selection:
+    enabled: ${AGENT_MODEL_SELECTION_ENABLED:${AGENT_WORKBENCH_ENABLED:false}}
   workbench:
     enabled: ${AGENT_WORKBENCH_ENABLED:false}
     plans: ${AGENT_WORKBENCH_PLANS:true}

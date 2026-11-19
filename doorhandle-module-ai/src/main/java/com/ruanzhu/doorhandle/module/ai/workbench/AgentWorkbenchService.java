@@ -58,17 +58,9 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
     public AgentWorkbenchService(WorkbenchStore store,WorkbenchProperties settings,BusinessUserDirectory users,ObjectProvider<WorkbenchSessionApi> sessions,RoleAgentFactory factory,AgentJournal journal){this.store=store;this.settings=settings;this.users=users;this.sessions=sessions;this.factory=factory;this.journal=journal;}
     @PostConstruct void validate(){store.validate();store.jdbc().queryForList("SELECT state_key FROM runtime_state WHERE namespace='SDK_CHECKPOINT' AND 1=0");if(!journal.enabled())throw new IllegalStateException("Agent 工作台要求运行日志已启用");if(control!=null&&control.getIfAvailable()==null)throw new IllegalStateException("Agent 工作台需要启用会话控制及 compact 消息队列");}
     private void owned(AgentActor actor,String session){var identity=users.current(actor.userId(),actor.username());if(identity.userId()!=actor.userId()||identity.supervisor()!=actor.supervisor())throw new SecurityException("账号授权已变化");sessions.getObject().assertOwned(actor,session);}
-    public record ModelSelection(String modelId,long revision) {}
-    public ModelSelection modelSelection(AgentActor actor,String session){owned(actor,session);var row=store.find(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"model-selection"));return row==null?new ModelSelection("",0):new ModelSelection(Objects.toString(row.data().get("modelId"),""),row.revision());}
-    public ModelSelection selectModel(AgentActor actor,String session,String modelId,long revision,String request,Set<String> configured){
-        owned(actor,session);if(modelId==null||modelId.length()>160||(!modelId.isEmpty()&&!configured.contains(modelId)))throw fail(400,"模型未配置或不可选择");
-        return store.request(actor.userId(),request,store.encode(List.of(session,"select-model",modelId,revision)),ModelSelection.class,()->{
-            var job=store.find(actor.userId(),session,mainId(actor,session));if(job!=null&&!Set.of("COMPLETED","CANCELLED").contains(job.status()))throw fail(409,"请先结束当前任务，再选择新任务使用的模型");
-            var current=modelSelection(actor,session);if(current.revision()!=revision)throw fail(409,"模型选择已变化，请刷新核对");
-            String id=WorkbenchStore.stable(actor.userId(),session,"model-selection");var row=store.find(actor.userId(),session,id);if(row==null)row=store.create(actor.userId(),session,id,"MODEL_SELECTION","ACTIVE",Map.of("modelId",""));
-            var updated=store.update(row,"ACTIVE",Map.of("modelId",modelId),"MODEL_SELECTED");return new ModelSelection(modelId,updated.revision());
-        });
-    }
+    @org.springframework.beans.factory.annotation.Value("${agentscope.model-selection.enabled:${agentscope.workbench.enabled:false}}")
+    private boolean modelSelectionEnabled = true;
+
     @Override public Map<String,Boolean> capabilities(){return Map.of("enabled",true,"plans",settings.isPlans(),"questions",settings.isQuestions(),"files",settings.isFiles(),"forks",settings.isForks(),"children",settings.isChildren(),"jobs",settings.isJobs(),"usage",settings.isUsage(),"recovery",settings.isRecovery(),"modelConfig",modelConfigurations!=null&&modelConfigurations.getIfAvailable()!=null);}
     @Override public List<Item> list(AgentActor actor,String session){owned(actor,session);var result=new ArrayList<>(store.publicRows(actor.userId(),session).stream().map(store::view).toList());if(settings.isJobs()){
         var external=sessions.getObject().externalJobs(actor,session);if(external!=null)result.addAll(external.stream().limit(10).toList());
@@ -97,7 +89,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             var data=continuation?new LinkedHashMap<>(job.data()):new LinkedHashMap<String,Object>();
             if(continuation&&!actor.role().name().equals(data.get("role")))throw fail(403,"账号角色已变化，不能继续原任务");
             data.put("username",actor.username());data.put("role",actor.role().name());data.put("runId",runId);data.put("instance",instance);data.put("yieldReady",false);data.put("title",bounded(question,200));
-            if(!continuation){data.put("logicalTaskId",UUID.randomUUID().toString());data.put("planRequired",settings.isPlans()&&!simple(question));data.put("modelId",modelSelection(actor,session).modelId());}
+            if(!continuation){data.put("logicalTaskId",UUID.randomUUID().toString());data.put("planRequired",settings.isPlans()&&!simple(question));data.put("modelId",modelSelectionEnabled ? ConversationModelPreferences.read(store,actor,session).modelId() : "");}
             if(!continuation&&modelConfigurations!=null&&modelConfigurations.getIfAvailable()!=null){var model=modelConfigurations.getObject().active();data.put("modelConfigVersion",model.version());data.put("modelDefault",model.defaultModel());}
             validateTaskModel(data);
             job=job==null?store.create(actor.userId(),session,id,"EXECUTION","RUNNING",data):store.update(job,"RUNNING",data,"EXECUTION_STARTED");

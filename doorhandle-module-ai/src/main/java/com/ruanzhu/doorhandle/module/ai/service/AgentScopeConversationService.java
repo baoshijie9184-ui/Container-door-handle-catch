@@ -4,6 +4,8 @@ import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
 import com.ruanzhu.doorhandle.module.ai.journal.*;
+import com.ruanzhu.doorhandle.module.ai.workbench.ConversationModelPreferences;
+import com.ruanzhu.doorhandle.module.ai.model.AgentModelService.RunModel;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.AgentBase;
 import io.agentscope.core.agent.EventType;
@@ -53,6 +55,14 @@ public class AgentScopeConversationService implements AgentConversationApi {
             public void bindCancel(Runnable cancel){stored.bindCancel(cancel);}
             public void event(String type,java.util.Map<String,Object> payload){
                 stored.event(type,payload);
+                if (type.startsWith("MODEL_") && payload.get("modelRequestId") instanceof String) {
+                    var receipt = new java.util.LinkedHashMap<String,Object>();
+                    for (String key : java.util.List.of("modelRequestId","parentCallId","modelId","provider","model","attempt","durationMs",
+                            "firstContentMs","nextModelId","failureReason","httpStatus","inputTokens","outputTokens","elapsedMs")) {
+                        if (payload.get(key) != null) receipt.put(key,payload.get(key));
+                    }
+                    events.accept(new Event(type,java.util.Objects.toString(payload.get("agent"),"agent"),null,null,0,null,receipt));
+                }
                 if(java.util.Set.of("TOOL_STARTED","TOOL_COMPLETED","TOOL_ERROR","TOOL_CANCELLED").contains(type)) {
                     long elapsed=payload.get("elapsedMs") instanceof Number number?number.longValue():0;
                     events.accept(new Event(type,java.util.Objects.toString(payload.get("agent"),"agent"),
@@ -71,6 +81,10 @@ public class AgentScopeConversationService implements AgentConversationApi {
     private com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService workbench;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void setWorkbench(com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService workbench){this.workbench=workbench;}
+
+    private ConversationModelPreferences preferences;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void setPreferences(ConversationModelPreferences preferences) { this.preferences=preferences; }
 
     public AgentScopeConversationService(RoleAgentFactory factory, AgentRunRegistry registry, AgentScopeProperties properties) {
         this(factory, registry, properties, AgentJournal.disabled());
@@ -118,10 +132,15 @@ public class AgentScopeConversationService implements AgentConversationApi {
             messages.set(messages.size()-1,new UserMessage("本轮用户请求：\n"+history.get(history.size()-1).content()));
         }
         String main = factory.resolveMainId(actor, null);
-        String session = actor.userId() + ":" + main + ":" + sessionId;
+        String session = AgentRunRegistry.key(actor, sessionId);
         if (!registry.acquire(session)) throw new IllegalStateException("当前会话仍在处理上一轮请求");
         AgentJournal.Run audit;
-        try { audit = uiJournal(journal.begin(actor, sessionId, main, entryPoint, requestId, properties.getModel()), consumer); }
+        final RunModel selection;
+        try {
+            selection = preferences == null || workbench != null ? null : preferences.snapshot(actor, sessionId);
+            audit = uiJournal(journal.begin(actor, sessionId, main, entryPoint, requestId,
+                    selection == null ? properties.getModel() : selection.id()), consumer);
+        }
         catch (RuntimeException error) { registry.release(session); throw error; }
         Agent agent;
         final com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Scope work;
@@ -145,14 +164,14 @@ public class AgentScopeConversationService implements AgentConversationApi {
                 consumer.accept(new Event("RUN_FINISHED",main,null,null,0));
                 return new Run(CompletableFuture.completedFuture(command.reply()),()->{},audit.id());
             }
-            if(command!=null){messages.set(messages.size()-1,new UserMessage(command.question()));if(work!=null)work.bindContextInput(messages,history.size()-1);
-                var middleware=journal.enabled()?new AgentJournalMiddleware(audit,actor,factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
-                agent=factory.create(actor,main,middleware,cards,command.skill(),control,work,answerEvidence,command.question());
-            }else {
-                if(work!=null)work.bindContextInput(messages,history.size()-1);
-                var middleware=journal.enabled()?new AgentJournalMiddleware(audit, actor, factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
-                agent=factory.create(actor,main,middleware,cards,null,control,work,answerEvidence,last);
-            }
+            if(command!=null) messages.set(messages.size()-1,new UserMessage(command.question()));
+            if(work!=null) work.bindContextInput(messages,history.size()-1);
+            var recorder=new AgentJournalMiddleware(audit, actor, factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled());
+            var middleware=journal.enabled()?recorder:selection!=null?recorder.modelCallsOnly():null;
+            var skill=command==null?null:command.skill();
+            String question=command==null?last:command.question();
+            agent=selection==null ? factory.create(actor,main,middleware,cards,skill,control,work,answerEvidence,question)
+                    : factory.create(actor,main,middleware,cards,skill,control,work,answerEvidence,question,selection);
         }
         catch (RuntimeException error) {
             try {

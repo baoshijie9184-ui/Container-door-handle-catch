@@ -8,6 +8,12 @@ import org.springframework.stereotype.Component;
 @Component
 public class AgentRunRegistry {
     private final Set<String> active = ConcurrentHashMap.newKeySet();
+    public static String key(com.ruanzhu.doorhandle.contracts.agent.AgentActor actor, String session) {
+        return actor.userId() + ":" + RoleAgentCatalog.mainId(actor) + ":" + session;
+    }
+    public boolean isActive(com.ruanzhu.doorhandle.contracts.agent.AgentActor actor, String session) {
+        return active.contains(key(actor, session));
+    }
     public boolean acquire(String session) { return active.add(session); }
     public void release(String session) { active.remove(session); }
 }

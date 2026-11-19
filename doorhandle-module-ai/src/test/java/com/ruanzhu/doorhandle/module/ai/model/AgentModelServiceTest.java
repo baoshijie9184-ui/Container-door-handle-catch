@@ -5,6 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.module.ai.config.AgentModelProperties;
 import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
 import com.sun.net.httpserver.HttpServer;
+import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
+import com.ruanzhu.doorhandle.contracts.agent.AgentConversationApi;
+import com.ruanzhu.doorhandle.module.ai.agent.AgentRunRegistry;
+import com.ruanzhu.doorhandle.module.ai.agent.RoleAgentFactory;
+import com.ruanzhu.doorhandle.module.ai.service.AgentScopeConversationService;
+import com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactory;
+import com.ruanzhu.doorhandle.module.ai.workbench.ConversationModelPreferences;
+import static org.mockito.Mockito.*;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.UserMessage;
@@ -36,7 +44,7 @@ class AgentModelServiceTest {
             JsonNode request = json.readTree(exchange.getRequestBody());
             requests.add(request); credentials.add(exchange.getRequestHeaders().getFirst("Authorization"));
             headers.add(exchange.getRequestHeaders().getFirst("x-openai-actor-authorization"));
-            boolean tools = request.has("tools") && !request.get("tools").isEmpty();
+            boolean tools = request.path("tools").toString().contains("lookup_task");
             boolean resultReceived = request.get("input").toString().contains("function_call_output");
             Map<String, Object> item = tools && !resultReceived
                     ? Map.of("id", "fc-1", "type", "function_call", "call_id", "call-1", "name", "lookup_task", "arguments", "{\"taskId\":\"t1\"}", "status", "completed")
@@ -64,6 +72,43 @@ class AgentModelServiceTest {
         agent = new AgentScopeProperties(); agent.setModel("openai-official:gpt-test");
     }
     @AfterEach void stop() { server.stop(0); }
+
+    @Test void chatAndAguiSendTheFrozenModelAndHistoryWithoutWorkbench(@org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        agent.setWorkspace(workspace.toString());
+        connections.getDashscope().setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/compatible-mode/v1");
+        connections.getDashscope().setApiKey("fixture-qwen");
+        server.createContext("/compatible-mode/v1/chat/completions", exchange -> {
+            requests.add(json.readTree(exchange.getRequestBody()));
+            String chunk=json.writeValueAsString(Map.of("id","fixture","object","chat.completion.chunk","created",1,
+                    "model","qwen-plus","choices",List.of(Map.of("index",0,"delta",Map.of("role","assistant","content","第二轮回答"),"finish_reason","stop"))));
+            byte[] body=("data: "+chunk+"\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type","text/event-stream");
+            exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
+        });
+        var actor=new AgentActor(7,"fixture",AgentActor.Role.INSPECTOR);
+        try(var models=new AgentModelService(connections,agent)){
+            var factory=new RoleAgentFactory(agent,mock(BusinessToolkitFactory.class),models::resolve);
+            factory.setVersionedModels(models::resolveAt,models::currentDefault);
+            var chat=new AgentScopeConversationService(factory,new AgentRunRegistry(),agent);
+            var preferences=mock(ConversationModelPreferences.class);
+            chat.setPreferences(preferences);
+            when(preferences.snapshot(actor,"session")).thenReturn(models.snapshot(""),models.snapshot("dashscope:qwen-plus"));
+            var history=new java.util.ArrayList<AgentConversationApi.Message>();
+            var events=new CopyOnWriteArrayList<AgentConversationApi.Event>();
+            history.add(new AgentConversationApi.Message("user","测试记录 A17"));
+            var first=chat.start(actor,"session",history,"",events::add,"CHAT","turn1").result().get(15,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(first).contains("任务已读取");
+            history.add(new AgentConversationApi.Message("assistant",first));
+            history.add(new AgentConversationApi.Message("user","请复述刚才的标记"));
+            var second=chat.start(actor,"session",history,"",events::add,"AGUI","turn2").result().get(15,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(second).contains("第二轮回答");
+            assertThat(requests).extracting(req->req.path("model").asText()).containsExactly("gpt-test","qwen-plus");
+            assertThat(requests.get(1).path("messages").toString()).contains("测试记录 A17",first,"请复述刚才的标记");
+            assertThat(events).filteredOn(e->e.type().equals("MODEL_ATTEMPT_STARTED"))
+                    .extracting(e->e.modelReceipt().get("modelId")).containsExactly("openai-official:gpt-test","dashscope:qwen-plus");
+            assertThatThrownBy(()->models.snapshot("dashscope:retired")).hasMessageContaining("重新选择");
+        }
+    }
 
     @Test void gatewayKeepsProviderPathsAndRejectsEmbeddedCredentials() {
         connections.setGatewayBaseUrl("http://higress:8080");

@@ -31,11 +31,11 @@
       />
       <div class="composer-toolbar">
         <input ref="fileInputRef" type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" @change="uploadFiles" />
-        <button class="composer-add" type="button" aria-label="添加附件" :title="composerUploadHint(resources,loading)" :disabled="!resources.ready||!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon aria-hidden="true"><Plus /></el-icon></button>
+        <button class="composer-add" type="button" aria-label="添加附件" :title="composerUploadHint(resources,loading)" :disabled="!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon aria-hidden="true"><Plus /></el-icon></button>
         <el-dropdown v-if="!loading&&showPresets" trigger="click" @command="sendPreset"><button type="button" class="composer-add" aria-label="快捷提问" title="快捷提问" :disabled="resources.busy"><AppIcon name="MagicStick" :size="17" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="chip in quickChips" :key="chip.text" :command="chip.text" :disabled="resources.busy"><AppIcon :name="chip.icon" :size="14" />{{ chip.label }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
         <span class="composer-permission" title="工具按当前账号权限执行，敏感操作仍需人工确认"><el-icon aria-hidden="true"><Lock /></el-icon><span>按账号权限</span></span>
         <span v-if="resources.busy" class="composer-upload-status" role="status">处理中</span>
-        <select aria-label="使用模型" :title="composerModelTitle(resources,modelLocked,loading)" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">{{ composerDefaultModel(resources) }}</option><option v-if="selectedModelMissing(resources)" :value="resources.modelId" disabled>原选模型已不可用，请重新选择</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ modelLabel(model) }}</option></select>
+        <select aria-label="使用模型" :title="composerModelTitle(resources,modelLocked,loading)" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">{{ composerDefaultModel(resources) }}</option><option v-if="selectedModelMissing(resources)" :value="resources.modelId" disabled>{{ resources.modelId }}（已不可用）</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ modelLabel(model) }}</option></select>
         <span class="composer-context" title="使用本会话历史与已授权的资料"><el-icon aria-hidden="true"><Document /></el-icon><span>会话上下文</span></span>
       </div>
 
@@ -72,11 +72,11 @@
     </div>
     <Transition name="slash-menu"><section v-if="pendingVoice" class="composer-voice-review" aria-label="待插入的语音识别结果"><h4><AppIcon name="ChatDotRound" :size="16" />识别结果待插入</h4><p>原输入已保留，追加后仍需手动发送。未插入结果会在关闭面板或切换会话时清除。</p><details class="composer-voice-text"><summary>查看识别全文<AppIcon class="composer-voice-chevron" name="ArrowDown" :size="13" /></summary><div class="composer-voice-result" tabindex="0" role="region" aria-label="已识别的语音全文，可使用方向键滚动">{{ pendingVoice.text }}</div></details><div class="composer-voice-actions"><button type="button" :disabled="loading || resources.busy" @click="insertPendingVoice"><AppIcon name="Plus" :size="14" />追加到输入</button><button type="button" @click="pendingVoice=null;voiceHint='已放弃此段识别结果，原输入保留'"><AppIcon name="Close" :size="14" />放弃此段</button></div></section></Transition>
     <p v-if="resources.error" class="command-error" role="alert">{{ resources.error }}</p>
-    <div v-if="selectedModelMissing(resources)||resources.modelNotice||resources.modelError" class="model-selection-feedback"><span v-if="selectedModelMissing(resources)" role="status">原选模型已不在可用目录，请选择其他模型</span><span v-else-if="resources.modelNotice" role="status">{{ resources.modelNotice }}</span><button v-if="resources.modelError" type="button" :disabled="resources.busy||loading" @click="resourceClient.refreshModels()">核对模型选择</button></div>
+    <div v-if="selectedModelMissing(resources)||resources.modelNotice||resources.modelError" class="model-selection-feedback"><span v-if="selectedModelMissing(resources)" role="status">原选模型已不在可用目录，请选择其他模型</span><span v-else-if="resources.modelNotice" role="status">{{ resources.modelNotice }}</span><button v-if="resources.modelError" type="button" :disabled="resources.busy||loading" @click="resourceClient.refreshModels()">重新读取</button></div>
     <p v-if="resources.draftWarning" class="command-error" role="status">{{ resources.draftWarning }}</p>
     <p v-if="resources.storageWarning" class="composer-state-note" data-tone="warning" role="status"><AppIcon name="Warning" :size="14" />{{ resources.storageWarning }}</p>
     <p v-if="browserOffline" class="composer-state-note" data-tone="warning" role="status"><AppIcon name="Connection" :size="14" />浏览器报告网络离线，当前输入保留；恢复连接后请手动发送，不会自动重发。</p>
-    <p v-if="resources.ready&&!resources.filesEnabled" class="composer-state-note">当前服务未启用会话文件上传</p>
+    <p v-if="resources.filesLoaded&&!resources.filesEnabled" class="composer-state-note">当前服务未启用会话文件上传</p>
     <p v-if="voiceHint" class="composer-hint" :role="!recording ? 'status' : undefined">{{ voiceHint }}</p>
   </div>
 </template>
