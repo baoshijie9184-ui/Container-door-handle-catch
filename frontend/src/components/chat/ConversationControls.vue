@@ -15,6 +15,7 @@
   <template #footer><el-button :disabled="busy" @click="optionsOpen=false">关闭</el-button></template>
   </el-dialog>
   <p v-if="state.enabled&&!editing&&!optionsOpen&&(error||state.error)" class="control-error conversation-control-error" role="alert">{{ error||state.error }}</p>
+  <p v-if="deliveryNotice && !optionsOpen && !editing" class="control-note" role="status">{{ deliveryNotice }}</p>
   <section v-if="showQueue" class="conversation-controls" aria-label="待处理消息队列">
   <p v-if="state.queueEnabled===false&&!optionsOpen" class="queue-preference" role="status"><AppIcon name="Clock" :size="14" /><span>消息排队已关闭</span><button type="button" :disabled="busy" @click="client.setQueueEnabled(true)">开启排队</button></p>
   <p v-if="pending.length" class="queue-count" role="status">{{ state.queueEnabled===false?'已有 ':'' }}{{ pending.length }} 条消息待处理</p>
@@ -44,7 +45,7 @@
 import {ref,computed,watch,onBeforeUnmount} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import {VideoPause,VideoPlay,Refresh,Right,Delete,MoreFilled,Edit,Close} from '@element-plus/icons-vue'
-import {ConversationControlClient,controlPhaseLabels,inputStatusLabels,showConversationQueue} from '@/utils/conversationControl'
+import {ConversationControlClient,controlPhaseLabels,inputStatusLabels,showConversationQueue,latestDeliveryNotice} from '@/utils/conversationControl'
 import '@/assets/conversation-control.css'
 const props=defineProps({sessionId:String}),emit=defineEmits(['snapshot','refresh'])
 const state=ref({enabled:false,run:null,inputs:[]}),mode=ref('NEXT_TURN'),busy=ref(false),error=ref(''),editing=ref(false),editText=ref(''),editItem=ref(null)
@@ -53,6 +54,7 @@ const client=new ConversationControlClient({base:(import.meta.env.VITE_API_URL||
 let ready=Promise.resolve()
 watch(()=>props.sessionId,session=>{error.value='';editing.value=false;optionsOpen.value=false;busy.value=false;ready=client.open(session)},{immediate:true})
 onBeforeUnmount(()=>client.close())
+const deliveryNotice=computed(()=>latestDeliveryNotice(state.value))
 const pending=computed(()=>state.value.inputs.filter(item=>item.status==='QUEUED').reverse())
 const receipts=computed(()=>state.value.inputs.filter(item=>item.status!=='QUEUED').slice(0,3))
 const editStale=computed(()=>{const current=state.value.inputs.find(item=>item.id===editItem.value?.id);return !current||current.status!=='QUEUED'||current.revision!==editItem.value?.revision})

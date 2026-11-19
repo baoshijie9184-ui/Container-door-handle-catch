@@ -2,10 +2,16 @@ import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
 
 export const controlPhaseLabels={IDLE:'空闲',RUNNING:'执行中',PAUSE_REQUESTED:'等待安全切点暂停',PAUSED:'已暂停',REMOTE_RUNNING:'其他实例执行中',WAITING_PLAN:'等待计划审阅',WAITING_INPUT:'等待补充信息',WAITING_CHILD:'后台专业任务执行中',AWAITING_RECOVERY:'等待核对与恢复'}
 export const inputStatusLabels={QUEUED:'待处理',STARTED:'已领取执行',APPLIED:'已交付安全切点',COMPLETED:'已完成',FAILED:'已停止或失败',CANCELLED:'已撤回',EXPIRED:'已过期'}
-// The current/first message is not a visible backlog. Show only extra waiting input.
 export function showConversationQueue(state){
- const count=(state?.inputs||[]).filter(item=>item.status==='QUEUED').length
- return state?.enabled===true && count>0 && (count>1 || !!state.run?.runId&&state.run.phase!=='IDLE' || (state.inputs||[]).some(item=>item.status==='QUEUED'&&item.clockStatus==='UNRESOLVED'))
+ return state?.enabled===true && state.inputs?.some(item=>item.status==='QUEUED')
+}
+export function latestDeliveryNotice(state){
+ const item=state?.inputs?.[0]
+ if(!state?.enabled || !item || item.clockStatus==='UNRESOLVED')return ''
+ if(item.status==='STARTED' && !state.run?.runId)return '消息已接收，正在启动助手…'
+ if(item.status==='FAILED')return '上一条消息执行失败。请核对所选模型、个人限额和执行记录后再发送。'
+ if(item.status==='EXPIRED')return '上一条消息等待超时。请核对会话状态后重新发送。'
+ return ''
 }
 export function normalizeControl(value,sessionId){
  const run=value?.run

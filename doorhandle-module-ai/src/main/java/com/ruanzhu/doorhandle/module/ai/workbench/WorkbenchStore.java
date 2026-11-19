@@ -62,6 +62,18 @@ public class WorkbenchStore {
     };}
     private static String currentRead(){return org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()?" FOR SHARE":"";}
     Row find(long user,String session,String id){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ("+ITEMS+") AND owner_user_id=? AND session_id=? AND workbench_item_id=?"+currentRead(),mapper(),user,session,id).stream().findFirst().orElse(null);}
+    record MainSlot(String id, Row current, boolean followsLegacy) {}
+    static MainSlot mainSlot(WorkbenchStore store, long user, String session) {
+        String id = stable(user, session, "MAIN_EXECUTION");
+        Row original = store.find(user, session, id);
+        if (original != null && original.legacyClockEvidence() != null
+                && Set.of("COMPLETED", "CANCELLED").contains(original.status())) {
+            // Keep the migrated row immutable. Later turns in this session share a new native slot.
+            String next = stable(user, session, "MAIN_EXECUTION_AFTER_LEGACY");
+            return new MainSlot(next, store.find(user, session, next), true);
+        }
+        return new MainSlot(id, original, false);
+    }
     Row require(long user,String session,String id){var row=find(user,session,id);if(row==null)throw fail(404,"工作项不存在或无权限");return row;}
     List<Row> list(long user,String session){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ("+ITEMS+") AND owner_user_id=? AND session_id=? ORDER BY id DESC LIMIT 200",mapper(),user,session);}
     List<Row> publicRows(long user,String session){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ("+ITEMS+") AND owner_user_id=? AND session_id=? AND kind NOT IN ('WORKBENCH_TOOL','WORKBENCH_CHECKPOINT','WORKBENCH_TURN','WORKBENCH_MODEL_SELECTION') ORDER BY id DESC LIMIT 180",mapper(),user,session);}

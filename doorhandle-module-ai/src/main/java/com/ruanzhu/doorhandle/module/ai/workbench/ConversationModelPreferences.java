@@ -56,7 +56,7 @@ public class ConversationModelPreferences {
         return store.request(actor.userId(), request, store.encode(List.of(session, "select-model", modelId, revision)),
                 ModelSelection.class, () -> {
                     if (!modelId.isEmpty() && !configured.contains(modelId)) throw fail(400, "模型未配置或不可选择");
-                    var job = store.find(actor.userId(), session, WorkbenchStore.stable(actor.userId(), session, "MAIN_EXECUTION"));
+                    var job = WorkbenchStore.mainSlot(store, actor.userId(), session).current();
                     if (runs.isActive(actor, session) || job != null && !Set.of("COMPLETED", "CANCELLED").contains(job.status()))
                         throw fail(409, "请先结束当前任务，再选择新任务使用的模型");
                     String id = WorkbenchStore.stable(actor.userId(), session, "model-selection");

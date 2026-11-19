@@ -81,3 +81,17 @@ test('clock metadata cannot introduce offset coercion or malformed fields into q
   {clockStatus:'UNRESOLVED',sourceWallTimes:{created_at:'2026-10-17 11:45:27+08:00'}}
  ])assert.throws(()=>normalizeControl(snapshot('s1',{inputs:[{...snapshot().inputs[0],...metadata}]}),'s1'),/INVALID_INPUT_CLOCK/)
 })
+
+test('the first pending chat input and unsuccessful delivery are visible outside task options', async()=>{
+ const {showConversationQueue,latestDeliveryNotice}=await utility
+ const input=snapshot().inputs[0]
+ const state={enabled:true,run:{runId:null,phase:'IDLE'},inputs:[input]}
+ assert.equal(showConversationQueue(state),true)
+ for(const status of ['STARTED','FAILED','EXPIRED']){
+  state.inputs=[{...input,status}]
+  assert.equal(showConversationQueue(state),false)
+  assert.ok(latestDeliveryNotice(state))
+ }
+ state.inputs=[{...input,status:'COMPLETED'},{...input,status:'FAILED'}]
+ assert.equal(latestDeliveryNotice(state),'')
+})

@@ -1,0 +1,9 @@
+# Add to the isolated local review stack when using the fixed TLS relay.
+services:
+  backend:
+    extra_hosts:
+      api.openai.com: "${REVIEW_BRIDGE_GATEWAY:?Set the review bridge gateway}"
+    environment:
+      OPENAI_API_KEY: ${REVIEW_OPENAI_API_KEY:?Load the OpenAI credential from the private provider file}
+      AGENT_RESPONSES_BASE_URL: "https://api.openai.com:${REVIEW_OPENAI_RELAY_PORT:-17898}/v1"
+      AGENT_MODEL_PROXY_URL: ""

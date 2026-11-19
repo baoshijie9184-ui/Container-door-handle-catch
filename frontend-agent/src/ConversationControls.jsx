@@ -1,7 +1,7 @@
 import React,{forwardRef,useEffect,useImperativeHandle,useRef,useState} from 'react';
 import {Button,Modal,Input,Dropdown} from 'antd';
 import {Pause,Play,RefreshCw,CornerDownRight,ArrowRight,Trash2,Ellipsis,Pencil,ListX,Clock} from 'lucide-react';
-import {ConversationControlClient,controlPhaseLabels,inputStatusLabels,showConversationQueue} from '../../frontend/src/utils/conversationControl.js';
+import {ConversationControlClient,controlPhaseLabels,inputStatusLabels,showConversationQueue,latestDeliveryNotice} from '../../frontend/src/utils/conversationControl.js';
 import '../../frontend/src/assets/conversation-control.css';
 import StatusBadge from './StatusBadge';
 import {useReducedMotion} from './useReducedMotion';
@@ -18,6 +18,7 @@ export const ConversationControls=forwardRef(function Controls({sessionId,base,o
  useImperativeHandle(ref,()=>({ready:async()=>{await ready.current;return client.current.enabled},submit:content=>mutate(()=>client.current.submit(content,mode)),cancel:requestCancel,openOptions:()=>{if(client.current.enabled)setOptionsOpen(true)}}),[mode]);
  async function command(action){try{await mutate(()=>client.current.command(action))}catch{/* Show the result and require a new explicit action. */}}
  const run=state.run,pending=state.inputs.filter(item=>item.status==='QUEUED').reverse();
+ const deliveryNotice=latestDeliveryNotice(state);
  const currentEdit=state.inputs.find(item=>item.id===edit?.id),editStale=!currentEdit||currentEdit.status!=='QUEUED'||currentEdit.revision!==edit?.revision;
  if(!state.enabled)return null;
  return <>
@@ -35,6 +36,7 @@ export const ConversationControls=forwardRef(function Controls({sessionId,base,o
   {state.queueEnabled===false&&<p className="queue-preference">消息排队已关闭，已有消息继续处理<button type="button" onClick={()=>client.current.setQueueEnabled(true)}>开启排队</button></p>}
   </Modal>
   {!edit&&!optionsOpen&&(error||state.error)&&<p className="control-error conversation-control-error" role="alert">{error||state.error}</p>}
+  {deliveryNotice&&!optionsOpen&&!edit&&<p className="control-note" role="status">{deliveryNotice}</p>}
   {showConversationQueue(state)&&<section className="conversation-controls" aria-label="待处理消息队列">
   {state.queueEnabled===false&&!optionsOpen&&<p className="queue-preference" role="status"><Clock size={14} aria-hidden="true"/><span>消息排队已关闭</span><button type="button" disabled={busy} onClick={()=>client.current.setQueueEnabled(true)}>开启排队</button></p>}
   {!!pending.length&&<p className="queue-count" role="status">{state.queueEnabled===false?'已有 ':''}{pending.length} 条消息待处理</p>}

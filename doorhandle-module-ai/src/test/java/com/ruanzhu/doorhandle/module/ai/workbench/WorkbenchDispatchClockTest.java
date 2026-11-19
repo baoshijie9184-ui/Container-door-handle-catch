@@ -97,6 +97,23 @@ class WorkbenchDispatchClockTest {
         when(store.find(1,"fixture-session",main)).thenReturn(row("EXECUTION","COMPLETED",2,null));
         assertThat(service.canDispatchInput(actor,"fixture-session","new-input")).isTrue();
     }
+    @Test void freshInputAfterClosedLegacyExecutionUsesANativeSlot() throws Exception {
+        String session = "fixture-session";
+        String original = WorkbenchStore.stable(1,session,"MAIN_EXECUTION");
+        String next = WorkbenchStore.stable(1,session,"MAIN_EXECUTION_AFTER_LEGACY");
+        String fresh = java.util.UUID.randomUUID().toString();
+        for (String status : List.of("COMPLETED","CANCELLED")) {
+            when(store.find(1,session,original)).thenReturn(row("EXECUTION",status,2,unresolved()));
+            assertThat(service.canDispatchInput(actor,session,fresh)).isTrue();
+            assertThat(WorkbenchStore.mainSlot(store,1,session).id()).isEqualTo(next);
+        }
+        when(store.find(1,session,next)).thenReturn(row("EXECUTION","WAITING_PLAN",1,null));
+        assertThat(service.waitingPhase(actor,session)).isEqualTo("WAITING_PLAN");
+        assertThat(service.canDispatchInput(actor,session,fresh)).isFalse();
+        when(store.find(1,session,original)).thenReturn(row("EXECUTION","READY",2,unresolved()));
+        assertThat(service.canDispatchInput(actor,session,fresh)).isFalse();
+        verify(store,never()).update(any(),anyString(),anyMap(),anyString());
+    }
     @Test void confirmedReadyUsesFinalRevisionAndAdmitsOnlyInsideTheExistingLock(){
         var scanned=row("EXECUTION","READY",2,null);var current=row("EXECUTION","READY",4,null);
         when(store.dispatch(0)).thenReturn(List.of(scanned));
