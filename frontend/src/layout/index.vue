@@ -68,8 +68,8 @@
           </div>
         </div>
 
+        <RealtimeStatus />
         <div class="header-actions">
-          <RealtimeStatus />
           <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
           <router-link to="/manual" class="manual-entry-link">
             <el-icon aria-hidden="true"><Files /></el-icon>使用手册
@@ -362,32 +362,29 @@ onBeforeUnmount(() => {
 <style scoped>
 .layout-shell { display:grid; grid-template-columns:232px minmax(0,1fr); height:100vh; height:100dvh; overflow:hidden; background:var(--app-bg); transition:grid-template-columns var(--app-transition-base); }
 .layout-shell.sidebar-collapsed { grid-template-columns:68px minmax(0,1fr); }
-.layout-sidebar { display:flex; flex-direction:column; height:100%; min-height:0; padding:20px 12px 14px; overflow-y:auto; overflow-x:hidden; --nav-label: #c6d9d0;
-  --nav-muted: #a6c0b4;
-  --nav-hover: #244d43;
-  --nav-selected: #31564a;
-  --nav-accent: #c1eec1;
-  background:#142f29; border:0; border-right:1px solid #18392f; border-radius:0; box-shadow:none; }
+.layout-sidebar { display:flex; flex-direction:column; height:100%; min-height:0; padding:20px 12px 14px; overflow-y:auto; overflow-x:hidden; --nav-label:var(--app-text-secondary); --nav-muted:var(--app-text-muted); --nav-hover:var(--app-surface-muted);
+  --nav-selected:#eaf3f1; --nav-accent:var(--app-primary);
+  background:white; border:0; border-right:1px solid var(--app-border); border-radius:0; box-shadow:none; }
 .layout-sidebar::before { content:none; }
 .brand-block { display:flex; align-items:center; gap:10px; min-height:40px; padding:0 7px; margin-bottom:30px; }
 .brand-mark { display:grid; place-items:center; flex:0 0 36px; height:36px; padding:0; border:0; border-radius:9px; color:white; background:transparent; cursor:pointer; }
 .brand-mark:hover { box-shadow:0 0 0 2px var(--nav-accent); }
 .brand-mark:focus-visible { outline:2px solid var(--nav-accent); }
 .brand-text { min-width:0; overflow:hidden; white-space:nowrap; }
-.brand-title { font-size:15px; font-weight:650; letter-spacing:-.02em; color:#fff; }
+.brand-title { font-size:15px; font-weight:650; letter-spacing:-.02em; color:var(--app-text); }
 .brand-subtitle { margin-top:2px; font-size:11px; color:var(--nav-muted); }
 .nav-section-label { margin:0 12px 9px; color:var(--nav-muted); font-size:11px; letter-spacing:.08em; }
 .sidebar-footer { margin-top:auto; padding-top:26px; }
-.footer-card { padding:16px; border:1px solid #39584c; border-radius:12px; background:#1b3930; }
+.footer-card { padding:16px; border:1px solid var(--app-border); border-radius:12px; background:var(--app-surface-muted); }
 .footer-card-label { margin-bottom:7px; font-size:11px; color:var(--nav-muted); }
-.footer-card-title { font-size:14px; font-weight:600; color:#ecf7ec; }
+.footer-card-title { font-size:14px; font-weight:600; color:var(--app-text); }
 .footer-card-desc { margin-top:5px; color:var(--nav-label); font-size:11px; line-height:1.7; }
 .sidebar-collapsed .brand-block { justify-content:center; padding:0; }
 .sidebar-collapsed .layout-sidebar { padding-inline:7px; }
 .layout-main { display:flex; flex-direction:column; position:relative; min-width:0; min-height:0; overflow:hidden; }
-.layout-header { display:flex; align-items:center; justify-content:space-between; flex:0 0 auto; min-height:62px; padding:8px var(--app-page-gutter); gap:16px; background:var(--app-surface); border-bottom:1px solid var(--app-border); }
+.layout-header { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,auto) auto; align-items:center; flex:0 0 auto; min-height:62px; padding:8px var(--app-page-gutter); gap:16px; background:var(--app-surface); border-bottom:1px solid var(--app-border); }
 .header-left,.header-actions { display:flex; align-items:center; gap:14px; min-width:0; }
-.header-left { flex:1; }
+.layout-header > .collaboration-status { max-width:28em; }
 .header-actions { flex:0 0 auto; }
 .collapse-btn { display:grid; place-items:center; flex:0 0 30px; width:30px; height:30px; border:0; border-radius:6px; padding:0; color:var(--app-text-muted); background:transparent; cursor:pointer; }
 .collapse-btn:hover { background:var(--app-surface-hover); color:var(--app-text); }
@@ -403,15 +400,18 @@ onBeforeUnmount(() => {
 .back-top-btn { display:grid; place-items:center; position:absolute; bottom:82px; right:24px; width:36px; height:36px; border:1px solid var(--app-border); border-radius:9px; background:white; color:var(--app-text-secondary); box-shadow:var(--app-shadow-sm); cursor:pointer; }
 .back-top-btn:hover { background:var(--app-primary-soft); color:var(--app-primary); }
 @media(max-width:1100px) { .workspace-scope { display:none; } .header-actions { gap:8px; } .manual-entry-link { display:none; } }
+@media (min-width:641px) and (max-width:960px) {
+  .layout-header { grid-template-columns:minmax(0,1fr) auto; gap:3px 12px; }
+  .layout-header > .collaboration-status { grid-column:1/-1; grid-row:2; max-width:none; }
+  .layout-header > .header-actions { grid-column:2; grid-row:1; }
+}
 @media (max-width: 640px) {
   .layout-shell,.layout-shell.sidebar-collapsed { grid-template-columns:minmax(0,1fr); }
   .layout-sidebar { display:none; }
-  .layout-header { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; min-height:54px; padding:9px 14px; gap:6px 8px; }
+  .layout-header { grid-template-columns:minmax(0,1fr) auto; min-height:54px; padding:9px 14px; gap:6px 8px; }
   .header-left { grid-column:1; grid-row:1; gap:8px; }
-  .header-actions { display:contents; }
-  .header-actions > .assistant-entry-link { grid-column:2; grid-row:1; }
-  .header-actions > .app-account-menu { grid-column:3; grid-row:1; }
-  .header-actions > .collaboration-status { grid-column:1/-1; grid-row:2; min-width:0; padding:4px 0 0; }
+  .header-actions { grid-column:2; grid-row:1; gap:4px; }
+  .layout-header > .collaboration-status { grid-column:1/-1; grid-row:2; max-width:none; }
   .assistant-entry-link { padding:6px; width:30px; height:30px; justify-content:center; }
   .assistant-entry-link > span { display:none; }
   .layout-content { padding:22px 16px 78px; }

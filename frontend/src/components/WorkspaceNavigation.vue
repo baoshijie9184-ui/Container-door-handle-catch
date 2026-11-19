@@ -1,11 +1,11 @@
 <template>
-  <el-menu ref="menu" :default-active="active" router :collapse="collapsed" class="nav-menu" @select="$emit('navigate')">
+  <el-menu ref="menu" :default-active="active" router :collapse="collapsed" :collapse-transition="false" :default-openeds="activeGroup ? [activeGroup] : []" class="nav-menu" @select="$emit('navigate')">
     <template v-for="group in groups" :key="group.key">
       <el-menu-item v-if="group.items.length === 1" :index="group.items[0].path" :title="group.items[0].label" :aria-current="active===group.items[0].path ? 'page' : undefined">
         <el-icon aria-hidden="true"><component :is="group.icon" /></el-icon>
         <template #title><span>{{ group.items[0].label }}</span></template>
       </el-menu-item>
-      <el-sub-menu v-else :index="group.key" :aria-label="group.label" popper-class="workspace-nav-popover">
+      <el-sub-menu v-else :index="group.key" @vue:mounted="mountedGroups.add(group.key)" @vue:before-unmount="mountedGroups.delete(group.key)" :aria-label="group.label" popper-class="workspace-nav-popover">
         <template #title><el-icon aria-hidden="true"><component :is="group.icon" /></el-icon><span>{{ group.label }}</span></template>
         <el-menu-item v-for="item in group.items" :key="item.path" :index="item.path" :title="item.desc || item.label" :aria-current="active===item.path ? 'page' : undefined">
           <span>{{ item.label }}</span>
@@ -15,17 +15,16 @@
   </el-menu>
 </template>
 <script setup>
-import {computed,nextTick,ref,watch} from 'vue'
+import {computed,reactive,ref,watch} from 'vue'
 const props=defineProps({ groups: { type: Array, required: true }, active: String, collapsed: Boolean })
 defineEmits(['navigate'])
 const menu=ref(null)
 const activeGroup=computed(()=>props.groups.find(group=>group.items.length>1&&group.items.some(item=>item.path===props.active))?.key)
-watch(()=>[props.active,props.collapsed,activeGroup.value],async()=>{
-  const key=activeGroup.value,path=props.active
-  if(!key||props.collapsed)return
-  await nextTick()
-  if(!props.collapsed&&activeGroup.value===key&&props.active===path)menu.value?.open(key)
-},{immediate:true,flush:'post'})
+const mountedGroups = reactive(new Set())
+watch(() => [props.active, props.collapsed, activeGroup.value, mountedGroups.has(activeGroup.value)], () => {
+  const group = activeGroup.value
+  if (group && !props.collapsed && mountedGroups.has(group)) menu.value?.open(group)
+}, { flush: 'post' })
 </script>
 <style scoped>
 .nav-menu { width: 100%; border: 0; background: transparent; }

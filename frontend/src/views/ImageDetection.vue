@@ -23,36 +23,42 @@
     <el-tabs v-model="activeTab" class="workspace-tabs" @tab-change="handleTabChange">
       <el-tab-pane name="workspace" label="检测工作台">
         <div class="workspace-grid">
-          <el-card class="detection-card detection-input-card" header="检测输入" shadow="never">
+          <el-card class="detection-card detection-input-card" shadow="never">
+            <template #header><h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />检测输入</h2></template>
             <el-form label-position="top">
-              <el-form-item label="选择模型（可选）">
-                <el-select
-                  v-model="form.modelId"
-                  aria-describedby="detection-model-choice-note"
-                  aria-label="选择检测模型，不选则由服务端选择" placeholder="不选则由服务端选择"
-                  :loading="modelsLoading" :disabled="loadingSingle"
-                  :no-data-text="modelsError ? '目录读取失败，请重新读取' : modelsLoading || !modelsLoaded ? '正在核对模型目录' : '目录没有返回模型，可由服务端选择'"
-                  clearable
-                >
-                  <el-option
-                    v-for="model in modelList"
-                    :key="model.modelId"
-                    :value="model.modelId"
-                    :label="detectionModelOptionLabel(model)"
-                  >
-                    <span class="detection-model-option"><span>{{ detectionModelOptionLabel(model) }}</span><StatusBadge domain="model" :code="model.status" /></span>
-                  </el-option>
-                </el-select>
-              </el-form-item>
-              <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
-              <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
-              <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '已选模型仅作为本次提交参数，实际执行版本请核对任务记录。' : '未指定模型时由服务端按现有配置选择，实际模型以任务记录为准。' }}</p>
-
-              <el-form-item label="置信度阈值">
-                <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" :format-tooltip="value=>Math.round(value*100)+'%'" :format-value-text="value=>value.toFixed(2)+'，'+Math.round(value*100)+'%'" aria-label="本次检测置信度阈值，范围 0 至 1" aria-describedby="detection-threshold-note" />
-                <div class="threshold-text"><span>本次提交阈值</span><output aria-label="当前置信度阈值">{{ form.threshold.toFixed(2) }}<small>（{{ Math.round(form.threshold * 100) }}%）</small></output></div>
-                <p id="detection-threshold-note" class="detection-input-note">阈值是模型分数的筛选条件，不是准确率或人工结论。本页设置用于下一次单图或待检测任务提交，不会改写已经提交的任务。</p>
-              </el-form-item>
+              <div class="detection-settings">
+                <div>
+                  <el-form-item label="选择模型（可选）">
+                    <el-select
+                      v-model="form.modelId"
+                      aria-describedby="detection-model-choice-note"
+                      aria-label="选择检测模型，不选则由服务端选择" placeholder="不选则由服务端选择"
+                      :loading="modelsLoading" :disabled="loadingSingle"
+                      :no-data-text="modelsError ? '目录读取失败，请重新读取' : modelsLoading || !modelsLoaded ? '正在核对模型目录' : '目录没有返回模型，可由服务端选择'"
+                      clearable
+                    >
+                      <el-option
+                        v-for="model in modelList"
+                        :key="model.modelId"
+                        :value="model.modelId"
+                        :label="detectionModelOptionLabel(model)"
+                      >
+                        <span class="detection-model-option"><span>{{ detectionModelOptionLabel(model) }}</span><StatusBadge domain="model" :code="model.status" /></span>
+                      </el-option>
+                    </el-select>
+                  </el-form-item>
+                  <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
+                  <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
+                  <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '已选模型仅作为本次提交参数，实际执行版本请核对任务记录。' : '未指定模型时由服务端按现有配置选择，实际模型以任务记录为准。' }}</p>
+                </div>
+                <div>
+                  <el-form-item label="置信度阈值">
+                    <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" :format-tooltip="value=>Math.round(value*100)+'%'" :format-value-text="value=>value.toFixed(2)+'，'+Math.round(value*100)+'%'" aria-label="本次检测置信度阈值，范围 0 至 1" aria-describedby="detection-threshold-note" />
+                    <div class="threshold-text"><span>本次提交阈值</span><output aria-label="当前置信度阈值">{{ form.threshold.toFixed(2) }}<small>（{{ Math.round(form.threshold * 100) }}%）</small></output></div>
+                    <p id="detection-threshold-note" class="detection-input-note">阈值是模型分数的筛选条件，不是准确率或人工结论。本页设置用于下一次单图或待检测任务提交，不会改写已经提交的任务。</p>
+                  </el-form-item>
+                </div>
+              </div>
 
               <div class="input-grid">
                 <div class="input-block">
@@ -99,7 +105,7 @@
                     <section class="single-detection-result" :aria-busy="loadingSingle" aria-label="本次单图检测状态与结果">
                       <div class="single-result-heading">
                         <div>
-                          <strong>检测结果</strong>
+                          <strong class="detection-card-heading"><AppIcon name="Picture" :size="17" />检测结果</strong>
                         </div>
                         <div class="single-result-tags">
                           <StatusBadge domain="singleDetection" :code="singleStageCode" />
@@ -1508,6 +1514,12 @@ async function validateCollaborationAccess(){
   height: 48px;
 }
 
+.detection-card-heading { display:inline-flex; align-items:center; gap:9px; margin:0; font-size:16px; font-weight:650; color:var(--app-text); }
+.detection-card-heading .el-icon { color:var(--app-primary); }
+.detection-settings { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:16px 26px; padding-bottom:18px; margin-bottom:18px; border-bottom:1px solid var(--app-border); }
+.detection-settings > div { min-width:0; }
+.detection-settings :deep(.el-form-item) { margin-bottom:8px; }
+.detection-settings .detection-input-note { margin-bottom:0; }
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

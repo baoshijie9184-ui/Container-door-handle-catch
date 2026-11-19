@@ -18,7 +18,7 @@ const presentation = computed(() => pagePresentation(route))
 </script>
 <style scoped>
 .ui-page-heading { display:flex; flex-flow:row wrap; align-items:flex-start; gap:13px; width:100%; min-width:0; padding:0 0 24px; border:0; border-bottom:1px solid var(--app-border); border-radius:0; background:transparent; box-shadow:none; overflow:visible; }
-.ui-page-symbol { display:grid; place-items:center; flex:0 0 40px; width:40px; height:40px; margin-top:1px; border:1px solid #cddfd4; border-radius:12px; color:var(--app-primary); background:var(--app-primary-soft); }
+.ui-page-symbol { display:grid; place-items:center; flex:0 0 40px; width:40px; height:40px; margin-top:1px; border:1px solid var(--app-border); border-radius:12px; color:var(--app-primary); background:white; box-shadow:0 2px 6px #172f3810; }
 .ui-page-symbol :deep(svg) { width:21px; height:21px; }
 .ui-page-heading > :deep(div:first-of-type) { flex:1 1 260px; min-width:0; }
 .ui-page-heading :deep(.page-hero-title) { margin:0; font-size:var(--app-font-title); font-weight:650; line-height:1.35; letter-spacing:-.035em; color:var(--app-text); }

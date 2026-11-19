@@ -50,17 +50,29 @@
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
     </div>
-    <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
-      <header><div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按当前账号可访问任务统计 · 当前状态 · 时间 UTC+8</p></div><router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="16" />全部质检任务</router-link></header>
-      <div class="quality-overview-grid">
-        <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone"><span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="20" /></span><span><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong><small>{{ metric.label }}</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
-      </div>
-      <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
-      <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '各类待办可能交叉，不能直接相加作为任务总数。' }}</p>
-    </section>
-    <CollaborationTodos />
+    <div class="dashboard-overview" :class="{ 'with-history': canViewHistoricalSummary && historicalSummary }">
+      <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
+        <header>
+          <div class="quality-heading">
+            <span class="quality-heading-icon"><AppIcon name="DocumentChecked" :size="21" /></span>
+            <div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>当前账号可访问的任务 · 按处理状态</p></div>
+          </div>
+          <router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />全部质检任务</router-link>
+        </header>
+        <div class="quality-overview-grid">
+          <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone">
+            <span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="17" /></span>
+            <span class="queue-metric"><small>{{ metric.label }}</small><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong></span>
+            <span v-if="qualityWorkload" class="queue-meter" aria-hidden="true"><i :style="{ width: queuePeak ? (qualityWorkload[metric.key] / queuePeak * 100) + '%' : '0%' }" /></span>
+          </router-link>
+        </div>
+        <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
+        <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '条形按本组最高值缩放，同一任务可能计入多个类别。' }}</p>
+      </section>
+      <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
+      <CollaborationTodos />
+    </div>
     <p class="dashboard-data-note">任务统计按当前账号可访问范围汇总；历史累计沿用历史登记数值，设备与人员为全部登记资料。“—”表示尚未读取、字段缺失或无法计算，不代表零。</p>
-    <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
       <div class="hero-panel app-panel command-panel">
@@ -467,6 +479,8 @@ const qualityMetrics = [
   { key:'failedCount',label:'检测异常',queue:'FAILED',icon:'Warning',tone:'danger' }
 ]
 
+const queuePeak = computed(() => qualityWorkload.value ? Math.max(0, ...Object.values(qualityWorkload.value)) : 0)
+
 async function fetchQualityWorkload() {
   try {
     const response = await dashboardRequest('质量待办', '/api/dashboard/quality-workload')
@@ -564,13 +578,14 @@ const deviceStatusChartRef = ref(null)
 const employeeStatusChartRef = ref(null)
 const regionChartRef = ref(null)
 
-const charts = reactive({
+const charts = {
   detectionTrend: null,
   detectionDistribution: null,
   deviceStatus: null,
   employeeStatus: null,
   region: null
-})
+}
+let chartObserver
 
 const chartMotionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
 function chartMotionOptions() {
@@ -628,7 +643,11 @@ onMounted(async () => {
   await refreshAll()
   if (disposed) return
   await initCharts()
-  window.addEventListener('resize', resizeCharts)
+  if (disposed) return
+  chartObserver = new ResizeObserver(entries => {
+    for (const entry of entries) echarts.getInstanceByDom(entry.target)?.resize()
+  })
+  Object.values(charts).forEach(chart => chartObserver.observe(chart.getDom()))
   refreshTimer = window.setInterval(() => {
     if (!document.hidden) refreshAll()
   }, 30000)
@@ -638,7 +657,7 @@ onBeforeUnmount(() => {
   disposed = true
   chartMotionPreference.removeEventListener('change', updateChartMotion)
   window.clearInterval(refreshTimer)
-  window.removeEventListener('resize', resizeCharts)
+  chartObserver?.disconnect()
   Object.values(charts).forEach(c => c && c.dispose())
 })
 
@@ -1005,8 +1024,6 @@ function buildEmptyOption(text) {
 
 // ── 工具函数 ──
 
-function resizeCharts() { Object.values(charts).forEach(c => c && c.resize()) }
-
 function formatNumber(value) { return knownCount(value)?.toLocaleString('zh-CN') ?? '—' }
 
 function ratio(numerator, denominator) {
@@ -1033,38 +1050,27 @@ useResourceChanges({refresh:()=>refreshAll()})
 </script>
 
 <style scoped>
-.dashboard-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  padding: clamp(24px, 3vw, 44px);
-  border-radius: 18px;
-  background: #123b31;
-  color: #fff;
-}
-.dashboard-hero::before {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 0 0 0 48%;
-  background: linear-gradient(90deg, #123b31, #123b3170 37%, transparent 75%),
-    url('../assets/images/container-lock.webp') 70% 50% / cover;
-}
-.dashboard-hero-copy { position: relative; max-width: 72%; }
-.dashboard-hero h1 { color: white; font-size: clamp(27px, 2.5vw, 39px); font-weight: 650; letter-spacing: -.045em; line-height: 1.3; }
-.dashboard-hero p { margin: 7px 0 22px; color: #d7e8dd; font-size: 14px; line-height: 1.8; }
-.dashboard-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; }
-.dashboard-shortcuts a { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 7px 12px; border-radius: 8px; border: 1px solid #77988a; background: #193e34; color: white; font-size: 12px; }
-.dashboard-shortcuts a:hover { background: #31574a; }
-.dashboard-shortcuts a.dashboard-start { background: #d3f3ca; color: #153e31; border-color: transparent; font-weight: 650; }
-.dashboard-shortcuts a.dashboard-start:hover { background: #e7fbdf; }
-.dashboard-shortcuts a:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-.home-page > .collaboration-todos { margin: 0; }
-@media (max-width: 700px) {
-  .dashboard-hero { padding: 21px 18px; }
-  .dashboard-hero::before { inset-inline-start: 45%; opacity: .32; }
-  .dashboard-hero-copy { max-width: 100%; }
-  .dashboard-hero p { margin-bottom: 16px; font-size: 13px; }
+.dashboard-hero { position:relative; isolation:isolate; overflow:hidden; padding:clamp(22px,2.3vw,34px); border:1px solid var(--app-border); border-radius:var(--app-radius-lg); background:white; box-shadow:var(--app-shadow-sm); }
+.dashboard-hero::before { content:''; position:absolute; z-index:-1; inset:0 0 0 55%; background:linear-gradient(90deg,#fff 0%,#ffffff75 27%,transparent 60%),url('../assets/images/container-lock.webp') 68% 52%/cover; filter:grayscale(.92); }
+.dashboard-hero-copy { max-width:63%; }
+.dashboard-hero h1 { color:var(--app-text); font-size:clamp(28px,2.4vw,40px); font-weight:680; letter-spacing:-.045em; line-height:1.23; }
+.dashboard-hero p { margin:8px 0 18px; color:var(--app-text-secondary); font-size:13px; line-height:1.8; }
+.dashboard-shortcuts { display:flex; flex-wrap:wrap; gap:8px; }
+.dashboard-shortcuts a { display:inline-flex; align-items:center; gap:7px; min-height:36px; padding:6px 12px; border:1px solid var(--app-border); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:12px; font-weight:550; }
+.dashboard-shortcuts a:hover { border-color:var(--app-border-focus); color:var(--app-primary); }
+.dashboard-shortcuts .dashboard-start { background:var(--app-primary-deep); border-color:var(--app-primary-deep); color:white; }
+.dashboard-shortcuts .dashboard-start:hover { color:white; background:var(--app-primary); }
+.dashboard-shortcuts a:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+.dashboard-overview { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.08fr); align-items:start; gap:16px; }
+.dashboard-overview > * { min-width:0; }
+.dashboard-overview > .collaboration-todos { margin:0; }
+.dashboard-overview.with-history > .collaboration-todos { grid-column:1/-1; }
+.dashboard-overview .quality-overview,.dashboard-overview .history-overview { align-self:stretch; }
+@container dashboard (max-width:840px) { .dashboard-overview { grid-template-columns:minmax(0,1fr); } }
+@media (max-width:700px) {
+  .dashboard-hero { padding:20px; }
+  .dashboard-hero::before { display:none; }
+  .dashboard-hero-copy { max-width:none; }
 }
 .home-page > .dashboard-refresh-note { margin:0; }
 .home-page .hero-panel > .app-panel-title { font-size:16px; font-weight:600; margin-bottom:16px; }
@@ -1082,6 +1088,7 @@ useResourceChanges({refresh:()=>refreshAll()})
    ═══════════════════════════════════════════════════════ */
 
 .home-page {
+  container: dashboard / inline-size;
   display: flex;
   flex-direction: column;
   gap:18px;
