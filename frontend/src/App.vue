@@ -98,9 +98,6 @@ onErrorCaptured((err, instance, info) => {
 .global-error-bar :is(a,button,summary):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .global-navigation-error { background:var(--app-surface, #fff); border-bottom-color:var(--app-border); border-left:4px solid var(--app-primary); }
 .global-navigation-error > .el-icon { color:var(--app-primary); }
-.global-navigation-reload { margin-top:12px; }
-.global-navigation-reload summary { color:var(--app-primary); }
-.global-navigation-reload p { margin-top:8px; }
 .global-error-actions { display:flex; flex-wrap:wrap; gap:8px 16px; margin-top:10px; }
 .global-error-actions :is(button,a) { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; border:1px solid var(--app-border); border-radius:7px; padding:5px 10px; background:#fff; color:var(--app-primary); font:inherit; text-decoration:none; cursor:pointer; transition:background 180ms ease,transform 180ms ease; }
 .global-error-actions :is(button,a):hover { background:var(--app-primary-soft); }

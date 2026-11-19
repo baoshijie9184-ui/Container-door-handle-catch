@@ -14,7 +14,11 @@
       <div>
         <h1>{{ canViewHistoricalSummary ? '企业质量工作台' : '我的检测工作台' }}</h1>
       </div>
-      <router-link class="model-link" to="/models"><AppIcon name="Cpu" :size="17" />查看检测模型</router-link>
+      <nav class="shared-directories" aria-label="公共资料">
+        <router-link to="/employees"><AppIcon name="User" :size="17" />人员目录</router-link>
+        <router-link to="/devices"><AppIcon name="Monitor" :size="17" />设备目录</router-link>
+        <router-link to="/models"><AppIcon name="Cpu" :size="17" />检测模型</router-link>
+      </nav>
     </header>
     <nav class="action-deck" aria-label="工作台快捷入口">
       <router-link class="focus-action" :to="canViewHistoricalSummary ? { path: '/quality/queue', query: { queue: 'PENDING_REVIEW' } } : '/inspection/workbench'">
@@ -1042,8 +1046,9 @@ useResourceChanges({refresh:()=>refreshAll()})
 <style scoped>
 .dashboard-hero { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .dashboard-hero h1 { margin:0; color:var(--app-text); font-size:clamp(27px,2.2vw,35px); font-weight:680; line-height:1.24; letter-spacing:-.04em; }
-.model-link { display:inline-flex; flex:none; align-items:center; gap:8px; padding:8px 13px; border:1px solid var(--app-border-strong); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:13px; }
-.model-link:hover { color:var(--app-primary); border-color:var(--app-border-focus); }
+.shared-directories { display:flex; flex-wrap:wrap; gap:8px; }
+.shared-directories a { display:inline-flex; align-items:center; gap:6px; padding:8px 11px; border:1px solid var(--app-border-strong); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:13px; }
+.shared-directories a:hover, .shared-directories a:focus-visible { color:var(--app-primary); border-color:var(--app-border-focus); }
 .action-deck { display:grid; grid-template-columns:minmax(0,1.6fr) repeat(2,minmax(0,1fr)); gap:14px; }
 .action-deck a { display:flex; flex-direction:column; min-width:0; min-height:143px; padding:18px 22px; border-radius:var(--app-radius-lg); text-decoration:none; }
 .focus-action { position:relative; isolation:isolate; overflow:hidden; align-items:flex-start; justify-content:space-between; gap:9px; background:var(--app-primary-deep); color:white; }
@@ -1071,7 +1076,7 @@ useResourceChanges({refresh:()=>refreshAll()})
 @container dashboard (max-width:780px) { .dashboard-overview { grid-template-columns:minmax(0,1fr); } }
 @container dashboard (max-width:560px) {
   .dashboard-hero { align-items:flex-start; flex-wrap:wrap; gap:8px; }
-  .model-link { min-height:32px; }
+  .shared-directories a { min-height:32px; }
   .action-deck { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
   .action-deck a { min-height:112px; padding:14px; }
   .action-deck .focus-action { grid-column:1/-1; flex-direction:row; align-items:center; min-height:90px; }

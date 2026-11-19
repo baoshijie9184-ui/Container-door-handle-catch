@@ -274,7 +274,7 @@ router.afterEach((to, from, failure) => {
 router.onError((error, to, from) => {
   finishProgress()
   if (from?.meta?.title) document.title = systemPageTitle(from.meta.title)
-  recordNavigationFailure(to)
+  recordNavigationFailure(to, error)
 })
 
 export default router

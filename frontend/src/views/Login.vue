@@ -27,7 +27,7 @@
           <p id="login-remember-note" class="login-remember-note">仅记住用户名，不保存密码</p>
           <p v-if="!preferenceAvailable || !userStore.displayCacheAvailable" class="login-inline-note" role="status"><AppIcon name="Document" :size="14" />浏览器暂不能保存账号偏好，本次登录仍可继续</p>
           <el-button v-if="!loginAccepted" type="primary" :loading="loading" class="login-button" size="large" native-type="submit"><span>{{ loading ? '正在登录' : '登录系统' }}</span><AppIcon v-if="!loading" name="ArrowRight" :size="17" /></el-button>
-          <router-link v-else class="login-open-workspace" to="/home">{{ loading ? '正在打开工作空间' : '重新打开工作空间' }}<AppIcon name="ArrowRight" :size="17" /></router-link>
+          <a v-else class="login-open-workspace" :href="router.resolve('/home').href" @click.prevent="reloadRoute(router, '/home')">{{ loading ? '正在打开工作空间' : '重新打开工作空间' }}<AppIcon name="ArrowRight" :size="17" /></a>
         </el-form>
         <p class="login-card-footer"><AppIcon name="Lock" :size="14" />账号权限与操作记录随登录身份生效</p>
       </div>
@@ -49,6 +49,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { readAccountPreference, writeAccountPreference } from '@/utils/accountPreferences'
+import { isRouteAssetError, reloadRoute } from '@/utils/navigationFeedback'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -117,13 +118,20 @@ const handleLogin = async () => {
     await userStore.login({ username: loginForm.username, password: loginForm.password })
     if (!pageActive) return
     loginAccepted.value = true
+    loginForm.password = ''
     preferenceAvailable.value = writeAccountPreference('rememberedUser', rememberMe.value ? loginForm.username : null)
     if (preferenceAvailable.value && userStore.displayCacheAvailable) ElMessage.success('登录成功，欢迎回来')
     else ElMessage.warning('已登录，浏览器暂不能保存账号偏好，下次可能需要重新填写用户名')
     await router.push('/home')
   } catch (error) {
     if (!pageActive) return
-    loginError.value = loginAccepted.value ? '登录已完成，但工作空间暂未打开。请重新打开工作空间，不需要重复提交密码。' : error.message || '登录失败，请检查账号信息或稍后重试'
+    // Only this successful form submission gets one automatic recovery. A fresh
+    // document restores the cookie session and never enters this handler again.
+    if (loginAccepted.value && online.value && isRouteAssetError(error)) {
+      reloadRoute(router, '/home')
+      return
+    }
+    loginError.value = loginAccepted.value ? '已登录，请重新打开工作空间。' : error.message || '登录失败，请检查账号信息或稍后重试'
     await nextTick()
     loginErrorRef.value?.$el?.focus()
   } finally {
