@@ -47,6 +47,28 @@ async function verifySharedDirectories(page) {
   }
 }
 
+async function readDashboard(page) {
+  const card = page.locator('section[aria-labelledby="history-overview-title"]')
+  await card.getByText('查看年度登记明细').click()
+  const annual = await card.locator('tbody tr').allTextContents()
+  const counts = await card.locator('.history-metrics dd').allTextContents()
+  const snapshot = await page.evaluate(async () => {
+    async function read(path) {
+      const response = await fetch(path, { cache: 'no-store' })
+      const result = await response.json()
+      if (!response.ok || result.code !== 200) throw new Error('Dashboard verification request failed')
+      return result.data
+    }
+    const stats = await read('/api/dashboard/stats')
+    const tasks = await read('/api/detection/tasks?page=1&size=1')
+    return { history: stats.historicalSummary, visibleTasks: tasks.total }
+  })
+  assert.equal(annual.length, snapshot.history.yearlyTotals.length)
+  assert.ok(annual.length > 0)
+  assert.equal(counts[0].replace(/[^0-9]/g, ''), String(snapshot.history.imageCount))
+  return { annual, counts, ...snapshot }
+}
+
 async function exercise(browser) {
   const supervisorContext = await browser.newContext()
   const inspectorContext = await browser.newContext()
@@ -63,6 +85,11 @@ async function exercise(browser) {
   await checkHome(inspector, 'INSPECTOR')
   assert.deepEqual(recovered, { documents: 1, logins: 1 })
   await checkHome(supervisor, 'SUPERVISOR')
+  const { visibleTasks: enterprise, ...supervisorHistory } = await readDashboard(supervisor)
+  const { visibleTasks: personal, ...inspectorHistory } = await readDashboard(inspector)
+  assert.deepEqual(inspectorHistory, supervisorHistory)
+  assert.ok(Number.isInteger(personal) && personal >= 0 && personal <= enterprise)
+  console.log('PASS matching shared yearly totals; visible tasks supervisor=%d inspector=%d', enterprise, personal)
   await verifySharedDirectories(inspector)
   console.log('PASS separate role sessions, inspector directories, single-GET login recovery')
 

@@ -4,7 +4,6 @@ import com.ruanzhu.doorhandle.module.detection.dto.dashboard.HistoricalDetection
 import com.ruanzhu.doorhandle.module.detection.dto.dashboard.HistoricalDetectionSummary.YearTotal;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,7 +26,6 @@ public class HistoricalDetectionSummaryService {
     public HistoricalDetectionSummary summary() {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         accessPolicy.assertAuthenticated(authentication);
-        if (!accessPolicy.isAdmin(authentication)) throw new AccessDeniedException("历史累计仅限企业管理账号查看");
         // Legacy rows are aggregate records. Do not require image paths, rewrite totals,
         // or merge them into current task/approval/quality-workload counters.
         var total = jdbc.queryForObject("""

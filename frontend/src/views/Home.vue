@@ -12,7 +12,7 @@
     <template v-else>
     <header class="dashboard-hero">
       <div>
-        <h1>{{ canViewHistoricalSummary ? '企业质量工作台' : '我的检测工作台' }}</h1>
+        <h1>{{ isSupervisor ? '企业质量工作台' : '我的检测工作台' }}</h1>
       </div>
       <nav class="shared-directories" aria-label="公共资料">
         <router-link to="/employees"><AppIcon name="User" :size="17" />人员目录</router-link>
@@ -21,8 +21,8 @@
       </nav>
     </header>
     <nav class="action-deck" aria-label="工作台快捷入口">
-      <router-link class="focus-action" :to="canViewHistoricalSummary ? { path: '/quality/queue', query: { queue: 'PENDING_REVIEW' } } : '/inspection/workbench'">
-        <template v-if="canViewHistoricalSummary">
+      <router-link class="focus-action" :to="isSupervisor ? { path: '/quality/queue', query: { queue: 'PENDING_REVIEW' } } : '/inspection/workbench'">
+        <template v-if="isSupervisor">
           <span class="focus-stat">待人工复核<span><strong>{{ formatNumber(qualityWorkload?.pendingReviewCount) }}</strong>项</span></span>
           <span class="focus-cta">进入复核队列<AppIcon name="ArrowRight" :size="16" /></span>
         </template>
@@ -35,9 +35,9 @@
         <span class="desk-link-top"><AppIcon name="Picture" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
         <strong>浏览检测图片</strong>
       </router-link>
-      <router-link class="desk-link" :to="canViewHistoricalSummary ? '/inspection/workbench' : '/upload'">
-        <span class="desk-link-top"><AppIcon :name="canViewHistoricalSummary ? 'Search' : 'Upload'" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
-        <strong>{{ canViewHistoricalSummary ? '开始图像检测' : '上传采集图片' }}</strong>
+      <router-link class="desk-link" :to="isSupervisor ? '/inspection/workbench' : '/upload'">
+        <span class="desk-link-top"><AppIcon :name="isSupervisor ? 'Search' : 'Upload'" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
+        <strong>{{ isSupervisor ? '开始图像检测' : '上传采集图片' }}</strong>
       </router-link>
     </nav>
     <div role="status" class="dashboard-refresh-note">
@@ -48,7 +48,7 @@
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`未更新：${failedSections.join('、')}。显示上次数据或“—”。`" />
     </div>
-    <div class="dashboard-overview" :class="{ 'with-history': canViewHistoricalSummary && historicalSummary }">
+    <div class="dashboard-overview" :class="{ 'with-history': historicalSummary }">
       <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
         <header>
           <div class="quality-heading">
@@ -70,7 +70,7 @@
         <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新。' : '正在读取质量待办…' }}</p>
         <p v-else-if="failedSections.includes('质量待办')" class="quality-overview-note" role="status">刷新失败，显示上次数据。</p>
       </section>
-      <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
+      <HistoricalDetectionOverview v-if="historicalSummary" :summary="historicalSummary" />
       <CollaborationTodos />
     </div>
     <details class="dashboard-data-note count-scope">
@@ -542,7 +542,7 @@ function markSectionFailed(section) {
 
 const totalDetections = ref(null)
 const historicalSummary = ref(null)
-const canViewHistoricalSummary = computed(() => userStore.isAuthenticated && ['SUPERVISOR', 'ADMIN'].includes(userStore.role))
+const isSupervisor = computed(() => userStore.isAuthenticated && ['SUPERVISOR', 'ADMIN'].includes(userStore.role))
 const historicalAccountScope = () => JSON.stringify([userStore.identity?.userId, userStore.username, userStore.role, userStore.isAuthenticated])
 watch(historicalAccountScope, () => { historicalSummary.value = null }, { flush: 'sync' })
 const totalEmployees = ref(null)
@@ -703,7 +703,7 @@ async function fetchDashboardStats() {
     const s = res.data?.data || {}
     if (disposed) return
     totalDetections.value = knownCount(s.detectionCount)
-    if (owner === historicalAccountScope()) historicalSummary.value = canViewHistoricalSummary.value && s.historicalSummary && typeof s.historicalSummary === 'object' && !Array.isArray(s.historicalSummary) ? s.historicalSummary : null
+    if (owner === historicalAccountScope()) historicalSummary.value = userStore.isAuthenticated && s.historicalSummary && typeof s.historicalSummary === 'object' && !Array.isArray(s.historicalSummary) ? s.historicalSummary : null
     if (totalDetections.value === null) markSectionFailed('总览')
   } catch { /* 保留旧值，统一显示失败提示。 */ }
 }

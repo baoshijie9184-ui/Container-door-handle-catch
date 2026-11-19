@@ -2,7 +2,7 @@
   <section class="history-overview app-panel" aria-labelledby="history-overview-title">
     <header class="history-heading">
       <span class="history-icon"><AppIcon name="DataAnalysis" :size="21" /></span>
-      <div><h2 id="history-overview-title">检测数据总览</h2><p>{{ period }} · 历史登记数据</p></div>
+      <div><h2 id="history-overview-title">检测数据总览</h2><p>{{ period }} · 全员可见的历史汇总</p></div>
     </header>
     <dl class="history-metrics">
       <div class="history-volume"><dt>累计登记图片</dt><dd>{{ number(summary.imageCount) }}<small> 张</small></dd></div>
