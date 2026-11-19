@@ -5,6 +5,10 @@ import java.util.Set;
 import java.time.LocalDateTime;
 
 public interface ResourceAgentReadApi {
+    /** Same registered workforce totals as the personnel dashboard. No identifying fields. */
+    record EmployeeCounts(long total, long active, long vacation, long resigned) {}
+    EmployeeCounts employeeCounts(AgentActor actor);
+
     record DeviceView(String deviceId, String deviceCode, String status, String onlineStatus,
                       String plcStatus, String cameraStatus, String captureStatus) {}
     List<DeviceView> devices(AgentActor actor, int page, int size);

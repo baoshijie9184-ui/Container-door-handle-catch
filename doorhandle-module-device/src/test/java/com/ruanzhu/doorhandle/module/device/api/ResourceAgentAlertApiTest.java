@@ -10,6 +10,7 @@ import com.ruanzhu.doorhandle.module.device.entity.DeviceCaptureAlert;
 import com.ruanzhu.doorhandle.module.device.mapper.*;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
+import com.ruanzhu.doorhandle.module.device.service.EmployeeService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import java.util.List;
@@ -19,7 +20,7 @@ import static org.mockito.Mockito.*;
 class ResourceAgentAlertApiTest {
     final DeviceCaptureAlertMapper mapper=mock(DeviceCaptureAlertMapper.class);
     final DeviceMapper devices=mock(DeviceMapper.class);
-    final ResourceAgentReadApiImpl api=new ResourceAgentReadApiImpl(devices,mapper);
+    final ResourceAgentReadApiImpl api=new ResourceAgentReadApiImpl(devices,mapper,mock(EmployeeService.class));
     final AgentActor boss=new AgentActor(1,"boss",AgentActor.Role.SUPERVISOR);
     @BeforeAll static void metadata(){TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(),"alert-test"),DeviceCaptureAlert.class);}
     DeviceCaptureAlert row(long id){

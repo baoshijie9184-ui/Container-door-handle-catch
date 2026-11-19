@@ -19,6 +19,20 @@ class BusinessToolkitFactoryTest {
     private final AgentActor employee = new AgentActor(1, "alice", AgentActor.Role.INSPECTOR);
     private final AgentActor supervisor = new AgentActor(2, "boss", AgentActor.Role.SUPERVISOR);
 
+    @Test void personnelCountsUseTheRequestActorAndHaveNoCallerSuppliedScope() {
+        for (var actor : List.of(supervisor, employee)) {
+            var owners = RoleAgentCatalog.specialists(actor).stream()
+                    .filter(def -> def.tools().contains("get_employee_counts")).toList();
+            assertThat(owners).hasSize(1);
+            var tool = factory.create(actor, owners.get(0)).getTool("get_employee_counts");
+            assertThat(tool.getParameters().get("properties")).isEqualTo(Map.of());
+            when(resources.employeeCounts(actor)).thenReturn(new ResourceAgentReadApi.EmployeeCounts(9, 7, 0, 2));
+            var result = tool.callAsync(ToolCallParam.builder().input(Map.of()).build()).block();
+            assertThat(result.getOutput().toString()).contains("get_employee_counts", "vacation", "resigned");
+            tool.callAsync(ToolCallParam.builder().input(Map.of("userId", 1)).build()).block();
+            verify(resources, times(1)).employeeCounts(actor);
+        }
+    }
     @Test void allEightToolkitsHaveExactWhitelistsAndAreReadOnly() {
         for (var actor : List.of(employee, supervisor)) {
             for (var definition : RoleAgentCatalog.specialists(actor)) {

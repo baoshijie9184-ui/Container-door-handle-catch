@@ -8,7 +8,9 @@ import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceCaptureAlert;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper;
+import com.ruanzhu.doorhandle.module.device.service.EmployeeService;
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Objects;
 import org.springframework.stereotype.Service;
 import java.util.List;
@@ -17,8 +19,29 @@ import java.util.List;
 public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
     private final DeviceMapper mapper;
     private final DeviceCaptureAlertMapper alerts;
-    public ResourceAgentReadApiImpl(DeviceMapper mapper, DeviceCaptureAlertMapper alerts) {
-        this.mapper = mapper; this.alerts = alerts;
+    private final EmployeeService employees;
+
+    public ResourceAgentReadApiImpl(DeviceMapper mapper, DeviceCaptureAlertMapper alerts, EmployeeService employees) {
+        this.mapper = mapper;
+        this.alerts = alerts;
+        this.employees = employees;
+    }
+
+    @Override
+    public EmployeeCounts employeeCounts(AgentActor actor) {
+        Objects.requireNonNull(actor, "需要已认证的账号");
+        Map<String, Object> stats = employees.getEmployeeStats();
+        return new EmployeeCounts(count(stats, "total"), count(stats, "active"),
+                count(stats, "vacation"), count(stats, "resigned"));
+    }
+
+    private static long count(Map<String, Object> stats, String key) {
+        Object value = stats.get(key);
+        // Fresh MyBatis counts are Long; the cached JSON may decode small counts as Integer.
+        if ((value instanceof Long || value instanceof Integer) && ((Number) value).longValue() >= 0) {
+            return ((Number) value).longValue();
+        }
+        throw new IllegalStateException("人员统计缺失或格式异常");
     }
 
     @Override
