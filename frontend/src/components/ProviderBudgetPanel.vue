@@ -1,21 +1,28 @@
 <template>
   <section v-if="visible" class="operation-panel provider-budget" aria-labelledby="provider-budget-title">
-    <header class="budget-heading">
+    <header class="budget-heading budget-intro">
       <div><h2 id="provider-budget-title">{{ supervisor ? '厂家预算与员工限额' : '我的使用限额' }}</h2>
         <p class="operation-muted">百炼按模型扣 token，OpenAI 和 DeepSeek 分别共享各自的账户预算。</p></div>
-      <el-button :loading="loading" @click="load">刷新用量</el-button>
+      <div class="budget-tools">
+        <label v-if="supervisor" class="employee-picker">查看员工
+          <el-select v-model="employee" filterable remote clearable :remote-method="search" :disabled="saving" placeholder="输入账号查找员工" @visible-change="openSearch" @change="switchEmployee">
+            <el-option v-for="u in employees" :key="u.id" :value="u.id" :label="u.name"/>
+          </el-select>
+        </label>
+        <el-button :loading="loading" @click="load"><AppIcon v-if="!loading" name="Refresh" :size="15" />刷新用量</el-button>
+      </div>
     </header>
-    <label v-if="supervisor" class="employee-picker">查看员工
-      <el-select v-model="employee" filterable remote clearable :remote-method="search" :disabled="saving" placeholder="输入账号查找员工" @visible-change="openSearch" @change="switchEmployee">
-        <el-option v-for="u in employees" :key="u.id" :value="u.id" :label="u.name"/>
-      </el-select>
-    </label>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <p v-if="loading && !view" role="status">正在读取额度…</p>
     <template v-if="view">
+      <BailianBudgetTable v-if="bailianGroups.length" :groups="bailianGroups" :supervisor="supervisor"
+                          :employee="employee" @configure="edit" />
       <div class="budget-pools">
         <section v-for="group in sharedGroups" :key="group.key" class="pool-card">
-          <header><div><h3>{{ group.name }}</h3><small>{{ group.label }}</small></div><strong>{{ group.unit }}</strong></header>
+          <header class="pool-heading">
+            <span class="currency-mark" aria-hidden="true">{{ group.unit==='USD' ? '$' : '¥' }}</span>
+            <div><h3>{{ group.name }}</h3><small>{{ group.label }} · {{ group.unit }}</small></div>
+          </header>
           <p class="shared-models">{{ group.models.map(id => id.slice(id.indexOf(':') + 1)).join('、') }}</p>
           <div v-if="supervisor" class="balance-row"><span>厂家账面可用</span><b>{{ field(group.pool,'available','待登记') }}</b></div>
           <div v-if="!supervisor || employee" class="balance-row"><span>员工限额</span><b>{{ field(group.member,'limit','未分配') }}</b></div>
@@ -30,38 +37,7 @@
           </div>
         </section>
       </div>
-      <section v-if="bailianGroups.length" class="bailian-budget" aria-labelledby="bailian-budget-title">
-        <div class="budget-heading bailian-heading">
-          <div><h3 id="bailian-budget-title">阿里云百炼</h3>
-            <p class="operation-muted">{{ bailianGroups.length }} 个模型 · 额度按模型独立计算，单位为 token</p>
-          </div>
-          <label class="model-search">筛选模型<input v-model.trim="modelQuery" type="search" placeholder="输入模型名称"></label>
-        </div>
-        <div class="ledger-wrap" tabindex="0" role="region" aria-label="百炼各模型额度">
-          <table class="bailian-table">
-            <thead><tr><th scope="col">模型</th><th scope="col">{{ supervisor ? '厂家可用' : '我的可用' }}</th>
-              <th scope="col">已用</th><th scope="col">预留</th>
-              <th v-if="!supervisor || employee" scope="col">{{ supervisor ? '员工限额 / 可用' : '我的限额' }}</th>
-              <th v-if="supervisor" scope="col">管理</th></tr></thead>
-            <tbody><tr v-for="group in matchingBailian" :key="group.key">
-              <th scope="row">{{ group.label }}</th>
-              <td><b>{{ tokenField(supervisor ? group.pool : group.member, 'available', supervisor ? '待登记' : '未分配') }}</b>
-                <details v-if="supervisor && group.pool"><summary>预算明细</summary>
-                  <p>总额 {{ tokenField(group.pool, 'limit') }} · 期初已用 {{ tokenField(group.pool, 'openingUsed') }}</p>
-                </details></td>
-              <td>{{ tokenField(supervisor ? group.pool : group.member, 'spent') }}</td>
-              <td>{{ tokenField(supervisor ? group.pool : group.member, 'reserved') }}</td>
-              <td v-if="!supervisor || employee">{{ tokenField(group.member, 'limit', '未分配') }}<template v-if="supervisor && group.member"> / {{ tokenField(group.member, 'available') }}</template></td>
-              <td v-if="supervisor"><div class="row-actions">
-                <el-button size="small" @click="edit('NATIVE_POOL',group)">登记额度</el-button>
-                <el-button size="small" :disabled="!employee" @click="edit('NATIVE_MEMBER',group)">分配限额</el-button>
-              </div></td>
-            </tr></tbody>
-          </table>
-        </div>
-        <p v-if="!matchingBailian.length" role="status" class="operation-muted">没有匹配“{{ modelQuery }}”的百炼模型。</p>
-      </section>
-      <div class="budget-heading"><h3>调用流水</h3><el-switch v-model="pendingOnly" active-text="只看待核对" @change="load()"/></div>
+      <div class="budget-heading ledger-heading"><h3><AppIcon name="Tickets" :size="17" />调用流水</h3><el-switch v-model="pendingOnly" active-text="只看待核对" @change="load()"/></div>
       <p v-if="!view.usage.length" class="operation-muted">当前账号还没有按厂家计量的调用。</p>
       <div v-else class="ledger-wrap"><table><thead><tr><th>时间</th><th>模型</th><th>输入 / 输出 token</th><th>本次消耗</th><th>状态</th><th v-if="supervisor">核对</th></tr></thead>
         <tbody><tr v-for="row in view.usage" :key="row.attempt"><td>{{ utcDisplay(row.time) }}</td><td>{{ row.model }}</td>
@@ -99,6 +75,8 @@
 </template>
 <script setup>
 import { computed,onMounted,onBeforeUnmount,ref } from 'vue'
+import AppIcon from './AppIcon.vue'
+import BailianBudgetTable from './BailianBudgetTable.vue'
 import { captureAccountRequest } from '../api/request'
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { operationData,operationError,utcDisplay } from '../utils/qualityOperations'
@@ -115,7 +93,6 @@ const saving=ref(false),formError=ref(''),draft=ref({}),pending=ref(null)
 const titles={NATIVE_POOL:'登记厂家额度',NATIVE_MEMBER:'分配员工限额',NATIVE_RATE:'设置模型单价'}
 const statusLabels={NATIVE_RELEASE:'已释放',NATIVE_SETTLE:'已结算',IN_PROGRESS:'进行中',NEEDS_REVIEW:'待核对'}
 const priceFields=[{key:'input',label:'未缓存输入单价'},{key:'cached',label:'缓存输入单价'},{key:'output',label:'输出单价'}]
-const modelQuery=ref('')
 const names={openai:'OpenAI',dashscope:'阿里云百炼',deepseek:'DeepSeek'}
 const units={openai:'USD',dashscope:'TOKEN',deepseek:'CNY'}
 const scope=useAccountOperationScope(()=>{view.value=null;visible.value=false;reviewDialog.value=false;reviewRow.value=null;employee.value=null;selectedName.value='';employees.value=[];dialog.value=false;target.value=null;pending.value=null;error.value='';formError.value='';saving.value=false;emit('active',false)})
@@ -138,12 +115,6 @@ const groups=computed(()=>{
 })
 const sharedGroups=computed(()=>groups.value.filter(group=>group.vendor!=='dashscope'))
 const bailianGroups=computed(()=>groups.value.filter(group=>group.vendor==='dashscope'))
-const matchingBailian=computed(()=>bailianGroups.value.filter(group=>group.label.toLowerCase().includes(modelQuery.value.toLowerCase())))
-const tokens=new Intl.NumberFormat('zh-CN')
-function tokenField(account,key,empty='—'){
-  const value=account?.[key]
-  return value==null ? empty : tokens.format(BigInt(value))
-}
 function field(row,key,empty='—'){return row?.[key]??empty}
 async function load(append=false){
   append=append===true && !!view.value?.usage?.length && more.value
@@ -218,17 +189,44 @@ onMounted(()=>{
 onBeforeUnmount(()=>{window.removeEventListener('focus',onFocus);window.clearInterval(timer)})
 </script>
 <style scoped>
-.provider-budget{padding:22px;display:grid;gap:16px}.budget-heading,.pool-card header,.balance-row,.pool-actions{display:flex;align-items:center;justify-content:space-between;gap:10px}.budget-heading h2,.pool-card h3,.provider-budget h3,.provider-budget p{margin:0}.employee-picker{display:flex;align-items:center;gap:12px}.employee-picker .el-select{max-width:260px}.budget-pools{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(245px,100%),1fr));gap:12px}.pool-card{min-width:0;background:var(--app-surface-muted);border:1px solid var(--app-border);border-radius:10px;padding:16px;display:grid;align-content:start;gap:12px}.pool-card small,.pool-card dt,.pool-card details{color:var(--app-text-secondary)}.pool-card header strong{color:var(--app-primary)}.pool-card dl{display:flex;gap:16px;flex-wrap:wrap;margin:0}.pool-card dd{margin:0;font-variant-numeric:tabular-nums}.pool-card b{overflow-wrap:anywhere}.pool-actions{justify-content:flex-start;flex-wrap:wrap}.pool-actions :deep(.el-button){margin-left:0}.ledger-wrap{overflow:auto}.ledger-wrap table{width:100%;border-collapse:collapse}.ledger-wrap th,.ledger-wrap td{text-align:left;padding:10px;border-bottom:1px solid var(--app-border);font-variant-numeric:tabular-nums}.operation-form input{min-height:38px;border:1px solid var(--app-border);border-radius:6px;padding:0 10px;color:var(--app-text)}.provider-budget summary{cursor:pointer}.pool-card details p{margin-top:6px}
-.shared-models,.bailian-heading p{color:var(--app-text-secondary);overflow-wrap:anywhere}
-.bailian-budget{min-width:0;display:grid;gap:12px}
-.bailian-heading{flex-wrap:wrap}
-.model-search{display:flex;align-items:center;gap:8px;font-size:.875rem}
-.model-search input{min-height:38px;padding:0 10px;border:1px solid var(--app-border);border-radius:6px;background:var(--app-surface);color:inherit}
-.bailian-table{font-variant-numeric:tabular-nums}
-.bailian-table thead{background:var(--app-surface-muted)}
-.bailian-table tbody th{font-weight:600}
-.bailian-table td,.bailian-table th{white-space:nowrap}
-.bailian-table details{color:var(--app-text-secondary);font-size:.82rem}
-.row-actions{display:flex;gap:6px}.row-actions :deep(.el-button){margin:0}
-@media(max-width:600px){.model-search{flex-wrap:wrap}.model-search input{max-width:100%}.bailian-heading{align-items:flex-start}}
+.provider-budget { padding:clamp(14px,2vw,26px); display:grid; gap:22px; min-width:0; }
+.budget-heading,.budget-tools,.employee-picker,.pool-heading,.pool-actions,.ledger-heading h3 { display:flex; align-items:center; gap:10px; }
+.budget-heading { justify-content:space-between; flex-wrap:wrap; }
+.budget-intro { padding-bottom:18px; border-bottom:1px solid var(--app-border); }
+.budget-intro h2,.ledger-heading h3,.pool-heading h3,.shared-models { margin:0; }
+.budget-intro h2 { font-size:20px; line-height:1.45; }
+.budget-intro p { margin:4px 0 0; }
+.budget-tools { flex-wrap:wrap; }
+.budget-tools :deep(.el-button .el-icon) { margin-right:4px; }
+.employee-picker { color:var(--app-text-secondary); font-size:13px; }
+.employee-picker .el-select { width:170px; }
+.budget-pools { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr)); gap:14px; }
+.pool-card { min-width:0; padding:18px; border:1px solid var(--app-border); border-radius:12px;
+  background:linear-gradient(145deg,var(--app-primary-light),var(--app-surface) 60%); display:grid; align-content:start; gap:10px; }
+.currency-mark { display:grid; place-items:center; flex:none; width:34px; height:34px; border-radius:9px;
+  background:var(--app-primary-soft); color:var(--app-primary-deep); font-size:19px; font-weight:650; }
+.pool-heading h3 { font-size:16px; }
+.pool-card small,.pool-card dt,.pool-card details,.shared-models { color:var(--app-text-secondary); }
+.shared-models { font-size:12px; overflow-wrap:anywhere; }
+.balance-row { display:flex; align-items:baseline; justify-content:space-between; gap:10px; font-size:13px; color:var(--app-text-secondary); }
+.balance-row b { color:var(--app-text); font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.pool-card dl { display:flex; flex-wrap:wrap; gap:16px; margin:0; }
+.pool-card dd { margin:0; font-variant-numeric:tabular-nums; }
+.pool-card details { font-size:12px; }
+.pool-card details p { margin:6px 0 0; }
+.provider-budget summary { cursor:pointer; }
+.pool-actions { flex-wrap:wrap; }
+.pool-card .pool-actions { padding-top:10px; border-top:1px solid var(--app-border); }
+.pool-actions :deep(.el-button) { margin-left:0; }
+.ledger-heading h3 { font-size:16px; }
+.ledger-heading .el-icon { color:var(--app-primary); }
+.ledger-wrap { overflow:auto; }
+.ledger-wrap table { width:100%; border-collapse:collapse; }
+.ledger-wrap th,.ledger-wrap td { padding:10px; border-bottom:1px solid var(--app-border); text-align:left; font-variant-numeric:tabular-nums; }
+.operation-form input { min-height:38px; padding:0 10px; border:1px solid var(--app-border); border-radius:6px; color:var(--app-text); }
+@media(max-width:600px) {
+  .budget-tools { width:100%; justify-content:space-between; }
+  .employee-picker { flex:1; gap:6px; }
+  .employee-picker .el-select { width:125px; }
+}
 </style>
