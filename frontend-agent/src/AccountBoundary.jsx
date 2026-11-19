@@ -30,5 +30,8 @@ export function AccountBoundary({ children, loginHref }) {
     return()=>{alive=false;off();statusOff();signalOff();hub.dispose();globalThis.removeEventListener('doorhandle-account-recheck',check);globalThis.removeEventListener('focus',check)};
   },[]);
   if(!account.authenticated)return <main className="agent-account-gate"><h1>请确认当前登录身份</h1><p>{account.reason||'正在核对账号与登录上下文'}</p><a href={loginHref}>前往系统登录</a></main>;
-  return <React.Fragment key={account.epoch}><div className="agent-collaboration-status" role="status">{account.user?.username} · {status==='connected'?'修改通知已连接':status==='polling'?'当前使用定期核对 每30秒确认身份':status==='unavailable'?'实时通知暂不可用':'正在恢复修改通知'} <a href="/#/operations/audit">修改记录</a></div>{children}</React.Fragment>;
+  return <div key={account.epoch} className="agent-account-workspace">
+    <div className="agent-collaboration-status" role="status">{account.user?.username} · {status==='connected'?'修改通知已连接':status==='polling'?'当前使用定期核对 每30秒确认身份':status==='unavailable'?'实时通知暂不可用':'正在恢复修改通知'} <a href="/#/operations/audit">修改记录</a></div>
+    {children}
+  </div>;
 }

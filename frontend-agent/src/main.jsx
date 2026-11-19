@@ -95,13 +95,20 @@ function App() {
     transcriptRef.current?.focus({preventScroll:true});
   }
   useEffect(() => {
-    const resize = () => { if (window.innerWidth <= 900) { setSidebarOpen(false); setInfoOpen(false); } };
+    const compact = window.matchMedia('(max-width: 900px)');
+    const enterCompactLayout = event => {
+      if (event.matches) { setSidebarOpen(false); setInfoOpen(false); }
+    };
+    compact.addEventListener('change', enterCompactLayout);
+    return () => compact.removeEventListener('change', enterCompactLayout);
+  }, []);
+  useEffect(() => {
     const dismiss = event => { if(event.target?.closest?.('[role="dialog"]')||document.querySelector('.ant-modal-wrap:not([style*="display: none"])'))return; if (event.key === 'Escape') {
       if (infoOpen) { setInfoOpen(false); infoToggleRef.current?.focus(); }
       else if (sidebarOpen && window.innerWidth <= 900) closeSessionSidebar();
     } };
-    window.addEventListener('resize', resize); window.addEventListener('keydown', dismiss);
-    return () => { window.removeEventListener('resize', resize); window.removeEventListener('keydown', dismiss); };
+    window.addEventListener('keydown', dismiss);
+    return () => window.removeEventListener('keydown', dismiss);
   }, [infoOpen, sidebarOpen]);
   useEffect(() => {
     if (followTranscript.current && transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;

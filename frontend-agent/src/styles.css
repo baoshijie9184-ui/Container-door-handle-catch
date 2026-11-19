@@ -6,7 +6,15 @@ button, a { -webkit-tap-highlight-color: transparent; }
 a { color: #2563eb; text-decoration: none; }
 :focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
 [hidden] { display: none !important; }
-.agent-shell.ant-layout { display: grid; grid-template-columns: 0 minmax(0, 1fr) 0; height: 100vh; height: 100dvh; overflow: hidden; background: #fff; transition: grid-template-columns .22s ease; }
+.agent-account-workspace {
+  display: grid;
+  grid-template: auto minmax(0, 1fr) / minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+}
+.agent-account-workspace > .ant-app { min-height: 0; min-width: 0; }
+.agent-collaboration-status { overflow-wrap: anywhere; }
+.agent-shell.ant-layout { position: relative; display: grid; grid-template-columns: 0 minmax(0, 1fr) 0; height: 100%; overflow: hidden; background: #fff; transition: grid-template-columns .22s ease; }
 .agent-shell.with-sessions { grid-template-columns: 248px minmax(0,1fr) 0; }
 .agent-shell.with-info { grid-template-columns: 0 minmax(0, 1fr) 300px; }
 .agent-shell.with-sessions.with-info { grid-template-columns: 248px minmax(0,1fr) 300px; }
@@ -82,12 +90,12 @@ a { color: #2563eb; text-decoration: none; }
   .agent-shell.with-sessions { grid-template-columns: 236px minmax(0, 1fr) 0; }
   .agent-shell.with-sessions.with-info { grid-template-columns: 236px minmax(0, 1fr) 0; }
   .agent-shell.with-info { grid-template-columns: 56px minmax(0, 1fr) 0; }
-  .agent-info { position: fixed; right: 0; top: 0; bottom: 0; width: min(320px, 100vw); z-index: 30; box-shadow: -16px 0 50px #162d5020; }
+  .agent-info { position: absolute; right: 0; top: 0; bottom: 0; width: min(320px, 100vw); z-index: 30; box-shadow: -16px 0 50px #162d5020; }
 }
 @media (max-width: 900px) {
   .agent-shell.ant-layout, .agent-shell.with-sessions, .agent-shell.with-info, .agent-shell.with-sessions.with-info { grid-template-columns: 0 minmax(0, 1fr) 0; transition: none; }
-  .session-sidebar { position: fixed; top: 0; bottom: 0; left: 0; width: min(280px, calc(100vw - 52px)); z-index: 25; box-shadow: 12px 0 40px #162d5018; animation: result-in .2s ease; }
-  .sidebar-scrim { display: block; position: fixed; inset: 0; z-index: 24; border: 0; background: #162d5033; animation: result-in .2s ease; }
+  .session-sidebar { position: absolute; top: 0; bottom: 0; left: 0; width: min(280px, calc(100vw - 52px)); z-index: 25; box-shadow: 12px 0 40px #162d5018; animation: result-in .2s ease; }
+  .sidebar-scrim { display: block; position: absolute; inset: 0; z-index: 24; border: 0; background: #162d5033; animation: result-in .2s ease; }
   .session-toolbar { display: flex; }
   .agent-header { min-height: 68px; padding: 12px 16px; gap: 10px; }
   .bubble-list { padding: 20px 18px; }
