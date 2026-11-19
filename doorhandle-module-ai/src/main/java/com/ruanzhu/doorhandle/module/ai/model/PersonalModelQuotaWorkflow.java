@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.ai.model;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.*;
 import java.util.Map;
 import java.util.Set;
@@ -13,8 +14,11 @@ final class PersonalModelQuotaWorkflow {
             if(value==null||value.isBlank()||value.length()>500)throw new IllegalArgumentException("Invalid quota request reason");
         }
     }
+    // Version 1 readers require every field, including the nullable balances and cancel reason.
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     record DecisionV1(String decision,long actorUserId,String requestId,String requestSha256,String reason,
                       long expectedVersion,Long totalBefore,Long totalAfter) { }
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     record AuditV1(String modelId,long requestedTokens,String reason) { }
     record ApplicationDigest(String action,String modelId,long requestedTokens,String reason) { }
     record DecisionDigest(String action,String applicationId,long expectedVersion,String reason) { }

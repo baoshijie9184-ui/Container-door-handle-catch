@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.ai.model;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
@@ -35,6 +36,8 @@ public class PersonalModelQuotaService {
             return parser.getLongValue();
         }
     }
+    // The quota UI distinguishes an explicit null (no limit or block) from missing data.
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record MineModel(String modelId,String provider,String model,boolean configured,boolean hasPersonalQuota,
             Long totalTokens,long reservedTokens,long spentTokens,Long availableTokens,OffsetDateTime expiresAt,Long version,
             String enterpriseBlockedReason,String quotaId) {
@@ -43,6 +46,7 @@ public class PersonalModelQuotaService {
     public record Application(String id,long cursor,String modelId,long applicantUserId,long requestedTokens,String reason,
             String status,long version,OffsetDateTime createdAt,OffsetDateTime updatedAt,OffsetDateTime finishedAt,
             Long deciderUserId,String decisionReason) { }
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record Page(List<Application> items,Long nextCursor) { }
     private record Stored(long cursor,String id,long owner,String model,long requestedTokens,String requestHash,
             String status,long version,String payload,String result,Integer resultVersion,String resultHash,Long decider,

@@ -90,7 +90,7 @@
           <p class="llm-command-summary">{{ selectedApplication?.modelId }} · 申请追加 {{ quotaCount(selectedApplication?.requestedTokens) }} token</p>
           <p class="llm-reason">{{ selectedApplication?.reason }}</p>
           <p v-if="dialogMode === 'cancel'" class="operation-muted">确认取消这条尚未审批的申请？取消后如需额度，可重新提交新申请。</p>
-          <p v-else class="operation-muted">{{ draft.decision === 'APPROVE' ? '批准后追加该成员的个人额度，已有消耗与预留保持不变。' : '拒绝后保留申请与审批记录，成员可重新申请。' }}</p>
+          <p v-else-if="dialogMode === 'decision'" class="operation-muted">{{ draft.decision === 'APPROVE' ? '批准后追加该成员的个人额度，已有消耗与预留保持不变。' : '拒绝后保留申请与审批记录，成员可重新申请。' }}</p>
         </template>
         <label v-if="dialogMode !== 'cancel' && dialogMode !== 'view'">{{ dialogMode === 'apply' ? '申请说明' : '审批说明' }}<el-input v-model="draft.reason" type="textarea" :rows="4" maxlength="500" show-word-limit :disabled="locked" :placeholder="dialogMode === 'apply' ? '说明使用场景和预计用量' : '填写本次审批依据'" /></label>
         <el-alert v-if="formError" :title="formError" type="error" :closable="false" />
@@ -129,6 +129,7 @@ const route=useRoute(),quotaConflict=ref(false)
 const listScope = ref(supervisor.value&&route.query.scope==='team'?'team':'mine'), busy = ref(false), notice = ref('')
 const emptyList = (status = '') => ({ items: [], nextCursor: null, loading: false, error: '', loaded: false, status })
 const lists = reactive({ mine: emptyList(), team: emptyList('PENDING') })
+if (Object.hasOwn(quotaApplicationLabels, route.query.status)) lists[listScope.value].status = route.query.status
 const dialogVisible = ref(false), dialogMode = ref('apply'), selectedApplication = ref(null), formError = ref(''), command = ref(null)
 const draft = reactive({ modelId: '', requestedTokens: undefined, reason: '', decision: 'APPROVE' })
 const scope = useAccountOperationScope(() => {
@@ -144,7 +145,12 @@ const activeList = computed(() => lists[listScope.value])
 const {latest:applicationChanges}=useLatestChanges(computed(()=>activeList.value.items),'LLM_QUOTA_APPLICATION','LLM_QUOTA_APPLICATION','id')
 const refreshing = computed(() => modelsLoading.value || activeList.value.loading)
 const locked = computed(() => busy.value || !!command.value)
-const dialogTitle = computed(() => dialogMode.value === 'apply' ? '申请个人模型额度' : dialogMode.value === 'cancel' ? '取消额度申请' : draft.decision === 'APPROVE' ? '批准额度申请' : '拒绝额度申请')
+const dialogTitle = computed(() => {
+  if (dialogMode.value === 'view') return '额度申请详情'
+  if (dialogMode.value === 'apply') return '申请个人模型额度'
+  if (dialogMode.value === 'cancel') return '取消额度申请'
+  return draft.decision === 'APPROVE' ? '批准额度申请' : '拒绝额度申请'
+})
 const canSubmit = computed(() => {
   if(quotaConflict.value || dialogMode.value==='view')return false
   if (busy.value) return false
