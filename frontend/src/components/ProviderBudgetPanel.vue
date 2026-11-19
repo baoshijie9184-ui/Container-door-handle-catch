@@ -23,7 +23,18 @@
             <span class="currency-mark" aria-hidden="true">{{ group.unit==='USD' ? '$' : '¥' }}</span>
             <div><h3>{{ group.name }}</h3><small>{{ group.label }} · {{ group.unit }}</small></div>
           </header>
-          <p class="shared-models">{{ group.models.map(id => id.slice(id.indexOf(':') + 1)).join('、') }}</p>
+          <details v-if="group.registeredNames.length > 3" class="shared-models model-disclosure">
+            <summary>
+              <span class="model-preview">{{ group.registeredNames.slice(0, 3).join('、') }} 等</span>
+              <span class="model-list-title">本站登记</span>
+              {{ group.registeredNames.length }} 个模型
+            </summary>
+            <ul :aria-label="group.name + ' 登记模型'">
+              <li v-for="name in group.registeredNames" :key="name">{{ name }}</li>
+            </ul>
+            <p>实际可调用的模型由 {{ group.name }} 项目授权决定。</p>
+          </details>
+          <p v-else-if="group.registeredNames.length" class="shared-models">{{ group.registeredNames.join('、') }}</p>
           <div v-if="supervisor" class="balance-row"><span>厂家账面可用</span><b>{{ field(group.pool,'available','待登记') }}</b></div>
           <div v-if="!supervisor || employee" class="balance-row"><span>员工限额</span><b>{{ field(group.member,'limit','未分配') }}</b></div>
           <dl v-if="group.member"><div><dt>已用</dt><dd>{{ field(group.member,'spent') }}</dd></div>
@@ -100,13 +111,15 @@ const read=scope.channel(),staffRead=scope.channel()
 const employeeName=computed(()=>selectedName.value||String(employee.value||''))
 const groups=computed(()=>{
   const map=new Map()
-  const ids=[...props.models.map(m=>m.modelId),...(view.value?.accounts||[]).map(a=>a.key).filter(k=>k.includes(':'))]
+  const registered=new Set(props.models.map(m=>m.modelId))
+  const ids=[...registered,...(view.value?.accounts||[]).map(a=>a.key).filter(k=>k.includes(':'))]
   for(const id of new Set(ids)){
     const vendor=id.split(':')[0].replace('openai-official','openai')
     if(!names[vendor])continue
     const key=vendor==='dashscope'?id:vendor
-    if(!map.has(key))map.set(key,{key,vendor,name:names[vendor],unit:units[vendor],models:[]})
+    if(!map.has(key))map.set(key,{key,vendor,name:names[vendor],unit:units[vendor],models:[],registeredNames:[]})
     map.get(key).models.push(id)
+    if(registered.has(id))map.get(key).registeredNames.push(id.slice(id.indexOf(':')+1))
   }
   const accounts=view.value?.accounts||[]
   return [...map.values()].map(g=>({...g,label:g.vendor==='dashscope'?g.models[0].split(':')[1]:'账户内模型共享',
@@ -208,6 +221,12 @@ onBeforeUnmount(()=>{window.removeEventListener('focus',onFocus);window.clearInt
 .pool-heading h3 { font-size:16px; }
 .pool-card small,.pool-card dt,.pool-card details,.shared-models { color:var(--app-text-secondary); }
 .shared-models { font-size:12px; overflow-wrap:anywhere; }
+.model-disclosure summary { padding:4px 0; color:var(--app-primary-deep); }
+.model-disclosure summary:focus-visible { outline:2px solid var(--app-primary); outline-offset:2px; }
+.model-disclosure .model-list-title,.model-disclosure[open] .model-preview { display:none; }
+.model-disclosure[open] .model-list-title { display:inline; }
+.model-disclosure ul { display:flex; flex-wrap:wrap; gap:5px; list-style:none; padding:0; margin:6px 0; }
+.model-disclosure li { padding:2px 7px; border:1px solid var(--app-border); border-radius:5px; background:var(--app-surface); color:var(--app-text); }
 .balance-row { display:flex; align-items:baseline; justify-content:space-between; gap:10px; font-size:13px; color:var(--app-text-secondary); }
 .balance-row b { color:var(--app-text); font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .pool-card dl { display:flex; flex-wrap:wrap; gap:16px; margin:0; }

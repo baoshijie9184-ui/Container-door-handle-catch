@@ -432,6 +432,7 @@ agentscope:
       api-key: ${OPENAI_API_KEY:}
       base-url: ${AGENT_RESPONSES_BASE_URL:https://api.openai.com/v1}
       model: ${OPENAI_MODEL:gpt-4o-mini}
+      additional-models: ${OPENAI_ADDITIONAL_MODELS:}
   agui:
     path-prefix: ${AGENTSCOPE_AGUI_PATH_PREFIX:/agui}
     cors-enabled: ${AGENTSCOPE_AGUI_CORS_ENABLED:false}

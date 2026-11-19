@@ -20,9 +20,12 @@ AGENTSCOPE_AI_MODEL=dashscope:qwen-plus
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` / `DASHSCOPE_MODEL` | 百炼；兼容 Chat Completions 和原生端点按所选地址交由对应适配器处理 |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` | 独立 DeepSeek 凭据和 Chat Completions 设置，不复用百炼密钥 |
 | `OPENAI_API_KEY` / `AGENT_RESPONSES_BASE_URL` / `OPENAI_MODEL` | Responses 适配器；选择 ID 前缀是 `openai-official:`，不等于服务一定由 OpenAI 提供 |
+| `OPENAI_ADDITIONAL_MODELS` | 同一 Responses 连接登记的其他模型 ID，用逗号分隔，含主模型最多 16 个。额度页按模型设置单价，所有模型共享厂家美元预算和员工的 OpenAI 限额。 |
 | `AGENTSCOPE_AI_MODEL` | 环境配置模式下的默认模型选择 ID，须匹配已登记的供应商与模型 |
 
 环境配置变更通过受控发布注入并重启服务。不要将示例模型名、免费额度或历史备用顺序当作实际部署设置；以获准的配置版本和本次请求轨迹为准。
+
+8081 评审站预置的 OpenAI 模型用于检查目录和额度界面。正式接入请以该项目授权的模型填写清单。通过官方 `GET /v1/models` 核对清单需要密钥具备 `api.model.read` 权限。
 
 ## 版本化模型配置
 
