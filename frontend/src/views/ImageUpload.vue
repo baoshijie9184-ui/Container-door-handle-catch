@@ -5,15 +5,15 @@
         <span class="page-hero-label">Upload Workspace</span>
         <h1 class="page-hero-title">图片上传</h1>
         <p class="page-hero-text">
-          选择图片并核对采集信息。原图上传后，现有流程会自动提交检测；请到工作台核对实际进度与模型记录。
+          按文件夹上传采集原图。上传后自动提交检测，可到检测工作台查看进度。
         </p>
       </div>
     </PageHero>
 
     <ol class="upload-flow" aria-label="图片上传与检测步骤">
-      <li><span class="upload-flow-icon"><AppIcon name="Picture" :size="20" /></span><div><strong>1 选择图片</strong><p>选择文件夹并核对采集信息</p></div></li>
-      <li><span class="upload-flow-icon"><AppIcon name="Upload" :size="20" /></span><div><strong>2 上传原图</strong><p>核对上传进度及自动提交回执</p></div></li>
-      <li><span class="upload-flow-icon"><AppIcon name="Search" :size="20" /></span><div><strong>3 核对检测</strong><p><router-link to="/inspection/workbench">查看实际进度与模型记录</router-link></p></div></li>
+      <li :aria-current="uploadStep === 1 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Picture" :size="20" /></span><div><strong>1 选择图片</strong><p>选择文件夹并核对采集信息</p></div></li>
+      <li :aria-current="uploadStep === 2 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Upload" :size="20" /></span><div><strong>2 上传原图</strong><p>核对上传进度及自动提交回执</p></div></li>
+      <li :aria-current="uploadStep === 3 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Search" :size="20" /></span><div><strong>3 核对检测</strong><p><router-link to="/inspection/workbench">查看实际进度与模型记录</router-link></p></div></li>
     </ol>
 
     <!-- 断点续传提示卡片 -->
@@ -486,6 +486,12 @@ const handleFolderSelect = (event) => {
     fileSize: file.size
   }))
 }
+
+const uploadStep = computed(() => {
+  if (uploadingToOss.value) return 2
+  if (uploadAttempted.value) return 3
+  return folderInfo.imageCount && !missingCaptureFields.value.length ? 2 : 1
+})
 
 const handleUploadBatch = () => {
   if (uploadingToOss.value || uploadAttempted.value) return

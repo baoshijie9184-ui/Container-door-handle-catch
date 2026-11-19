@@ -3,16 +3,16 @@
     <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" :opened-version="collaborationOpenedTask?.version" :history-to="collaborationHistoryLink" @refresh="refreshCollaborationView" />
     <PageHero class="page-hero detection-hero command-panel">
       <div>
-        <span class="industrial-kicker">Detection Workspace</span>
         <h1 class="page-hero-title">{{ workspacePresentation.title }}</h1>
         <p class="page-hero-text">
           {{ workspacePresentation.description }}
         </p>
-        <div class="detection-flow-chips">
+        <nav class="detection-flow-chips" aria-label="检测相关页面">
           <router-link to="/upload"><AppIcon name="Upload" :size="14" />采集上传</router-link>
           <router-link to="/inspection/workbench"><AppIcon name="Picture" :size="14" />模型检测</router-link>
+          <router-link to="/inspection/history"><AppIcon name="Collection" :size="14" />检测记录</router-link>
           <router-link to="/quality/queue"><AppIcon name="CircleCheck" :size="14" />人工质检</router-link>
-        </div>
+        </nav>
       </div>
       <div class="hero-side-note">
         <strong><AppIcon name="DocumentChecked" :size="16" />保留检测依据</strong>

@@ -28,7 +28,7 @@ watch(() => [props.active, props.collapsed, activeGroup.value, mountedGroups.has
 </script>
 <style scoped>
 .nav-menu { width: 100%; border: 0; background: transparent; }
-.nav-menu :deep(.el-menu-item),.nav-menu :deep(.el-sub-menu__title) { position:relative; height:42px; line-height:42px; border-radius:8px; margin:3px 0; font-size:13px; color:var(--nav-label, var(--app-text-secondary)); transition:background var(--app-transition-fast),color var(--app-transition-fast); }
+.nav-menu :deep(.el-menu-item),.nav-menu :deep(.el-sub-menu__title) { position:relative; height:42px; line-height:42px; border-radius:8px; margin:3px 0; font-size:14px; color:var(--nav-label, var(--app-text-secondary)); transition:background var(--app-transition-fast),color var(--app-transition-fast); }
 .nav-menu :deep(.el-menu-item .el-icon),.nav-menu :deep(.el-sub-menu__title .el-icon) { font-size:17px; color:var(--nav-muted, var(--app-text-muted)); }
 .nav-menu :deep(.el-menu-item:hover),.nav-menu :deep(.el-sub-menu__title:hover) { background:var(--nav-hover, var(--app-surface-hover)); color:var(--nav-accent, var(--app-text)); }
 .nav-menu :deep(.el-menu-item.is-active) { background:var(--nav-selected, var(--app-primary-soft)); color:var(--nav-accent, var(--app-primary)); font-weight:650; }
@@ -36,7 +36,7 @@ watch(() => [props.active, props.collapsed, activeGroup.value, mountedGroups.has
 .nav-menu :deep(.el-menu-item.is-active .el-icon) { color: var(--nav-accent, var(--app-primary)); }
 .nav-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title),.nav-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title .el-icon) { color:var(--nav-accent, var(--app-primary)); }
 .nav-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) { font-weight:600; }
-.nav-menu :deep(.el-sub-menu .el-menu-item) { min-width:0; height:36px; line-height:36px; font-size:12px; }
+.nav-menu :deep(.el-sub-menu .el-menu-item) { min-width:0; height:36px; line-height:36px; font-size:13px; }
 .nav-menu :deep(.el-sub-menu .el-menu) { background: transparent; }
 .nav-menu :deep(.el-menu-item:focus-visible),.nav-menu :deep(.el-sub-menu__title:focus-visible) { outline:2px solid var(--nav-accent, var(--app-primary)); outline-offset:-2px; }
 @media(prefers-reduced-motion:reduce) { .nav-menu :deep(.el-menu-item),.nav-menu :deep(.el-sub-menu__title) { transition:none; } }

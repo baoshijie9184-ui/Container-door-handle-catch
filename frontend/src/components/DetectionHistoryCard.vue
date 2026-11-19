@@ -1,6 +1,8 @@
 <template>
   <article class="detection-history-card" :aria-label="`检测任务 ${task.taskId}`">
-    <header class="history-card-heading"><span class="history-card-symbol"><AppIcon name="Picture" :size="20" /></span><div><h3>{{ task.folderName || task.captureInfo?.imageFolderName || '检测任务' }}</h3><button type="button" class="history-task-link" @click="$emit('trace',task.taskId)">{{ task.taskId }}</button></div><StatusBadge domain="detection" :code="statusCode" /></header>
+    <header class="history-card-heading"><span class="history-card-symbol"><AppIcon name="Picture" :size="20" /></span><div><h3>{{ task.folderName || task.captureInfo?.imageFolderName || '检测任务' }}</h3><button type="button" class="history-task-link" @click="$emit('trace',task.taskId)">{{ task.taskId }}</button></div><StatusBadge domain="detection" :code="statusCode" />
+      <el-button type="primary" class="history-browse" @click="$emit('browse-images',task.taskId)"><AppIcon name="Picture" :size="15" />浏览图片</el-button>
+    </header>
     <div class="history-quality-states"><span>流转 <StatusBadge domain="flow" :code="task.flowStatus" /></span><span>复核 <StatusBadge domain="review" :code="task.reviewStatus" /></span><StatusBadge v-if="task.reviewConclusion" domain="reviewConclusion" :code="task.reviewConclusion" /></div>
     <dl class="history-image-counts"><div><dt>图片总数</dt><dd>{{ count(task.totalImages ?? task.imageCount) }}<small>张</small></dd></div><div><dt>检测成功图片</dt><dd>{{ count(task.successfulImages) }}<small>张</small></dd></div><div :data-attention="knownCount(task.failedImages)>0"><dt>检测失败图片</dt><dd>{{ count(task.failedImages) }}<small>张</small></dd></div></dl>
     <NoDetectionSummary v-if="task.result" :result="task.result" />
@@ -14,7 +16,7 @@
     <div v-if="previews.length" class="history-image-previews"><button v-for="(image,index) in previews.slice(0,6)" :key="index" type="button" :aria-label="`打开任务图片对照：${image.imageName || '预览 '+(index+1)}`" @click="$emit('browse-images',task.taskId,image.annotatedUrl || image.previewUrl)"><el-image :src="previewUrl(image)" :alt="image.imageName || '检测结果预览'" loading="lazy" fit="contain"><template #error><span class="history-preview-failure"><AppIcon name="Warning" :size="18" />预览未读取</span></template></el-image><span>{{ image.imageName || `预览 ${index+1}` }}</span></button></div>
     <p v-if="previews.length>6" class="history-card-note">展示本次读取预览中的前 6 张，点击「浏览图片」查看完整清单。</p>
     <p v-if="!previews.length" class="history-preview-state" :role="task.resultLoading ? 'status' : undefined"><AppIcon :name="task.resultLoading ? 'Connection' : 'Picture'" :size="18" />{{ task.resultLoading ? '正在读取结果详情与预览…' : '本次未读取到可展示预览，可打开追溯详情核对。' }}</p>
-    <footer class="history-card-actions"><el-button type="primary" size="small" @click="$emit('browse-images',task.taskId)"><AppIcon name="Picture" :size="15" />浏览图片</el-button><el-button type="primary" plain size="small" @click="$emit('trace',task.taskId)"><AppIcon name="Search" :size="15" />追溯详情</el-button><router-link class="history-report-link" :to="{path:'/quality/reports',query:{taskId:task.taskId}}"><AppIcon name="Document" :size="15" />编写报告草稿</router-link><a v-if="resultHref" :href="resultHref" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-label="查看本任务结果 JSON，新窗口打开">结果 JSON<AppIcon name="TopRight" :size="14" /></a></footer>
+    <footer class="history-card-actions"><el-button type="primary" plain size="small" @click="$emit('trace',task.taskId)"><AppIcon name="Search" :size="15" />追溯详情</el-button><router-link class="history-report-link" :to="{path:'/quality/reports',query:{taskId:task.taskId}}"><AppIcon name="Document" :size="15" />编写报告草稿</router-link><a v-if="resultHref" :href="resultHref" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-label="查看本任务结果 JSON，新窗口打开">结果 JSON<AppIcon name="TopRight" :size="14" /></a></footer>
     <details v-if="task.sourceOssPrefix || cached" class="history-local-details"><summary>存储资料与本机缓存</summary><p v-if="task.sourceOssPrefix">来源存储标识 <code>{{ task.sourceOssPrefix }}</code></p><template v-if="cached"><p>这里只清除本机任务缓存，后端记录继续保留，服务器检测不会被取消；重新查询可能再次缓存。</p><el-button type="danger" plain size="small" :disabled="cacheBusy" @click="$emit('remove-cache',task.taskId)"><AppIcon name="Delete" :size="14" />清除本机任务缓存</el-button></template></details>
   </article>
 </template>
@@ -51,6 +53,7 @@ const classCounts = computed(() => {
 .history-card-heading > div { flex:1; min-width:0; }
 .history-card-heading h3 { margin:0 0 6px; font-size:15px; font-weight:600; line-height:1.7; overflow-wrap:anywhere; }
 .history-card-heading > .business-status { flex-shrink:0; }
+.history-browse { flex:none; align-self:flex-start; }
 .history-task-link { max-width:100%; padding:0; border:0; background:none; text-align:left; color:var(--app-primary); font:inherit; font-size:11px; line-height:1.8; overflow-wrap:anywhere; cursor:pointer; }
 .history-quality-states { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; margin:15px 0; }
 .history-quality-states > span { display:inline-flex; align-items:center; gap:6px; color:var(--app-text-secondary); font-size:11px; line-height:1.8; }
@@ -89,5 +92,5 @@ const classCounts = computed(() => {
 .history-local-details p { margin:10px 0; overflow-wrap:anywhere; }
 .history-local-details code { display:block; margin-top:6px; font-size:11px; overflow-wrap:anywhere; }
 .detection-history-card :is(button,a,summary):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; border-radius:3px; }
-@media(max-width:640px) { .detection-history-card { padding:16px; } .history-card-heading { display:grid; grid-template-columns:36px minmax(0,1fr); gap:9px 11px; } .history-card-heading > .business-status { grid-column:2; justify-self:start; max-width:100%; margin-left:0; } .history-capture-fields { grid-template-columns:minmax(0,1fr); gap:12px; } }
+@media(max-width:640px) { .detection-history-card { padding:16px; } .history-card-heading { display:grid; grid-template-columns:36px minmax(0,1fr); gap:9px 11px; } .history-card-heading > .history-browse { grid-column:2; justify-self:start; } .history-card-heading > .business-status { grid-column:2; justify-self:start; max-width:100%; margin-left:0; } .history-capture-fields { grid-template-columns:minmax(0,1fr); gap:12px; } }
 </style>

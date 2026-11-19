@@ -19,9 +19,9 @@
     <div v-if="years.length" class="history-scroll" tabindex="0" role="region" :aria-label="measure.title + '，单位' + measure.unit">
       <ul class="year-chart">
         <li v-for="row in years" :key="row.year">
-          <strong>{{ number(row[measure.key]) }}</strong>
-          <span class="year-meter" aria-hidden="true"><i :style="{ height: barHeight(row[measure.key]) }" /></span>
           <span>{{ row.year }}</span>
+          <span class="year-meter" aria-hidden="true"><i :style="{ width: barWidth(row[measure.key]) }" /></span>
+          <strong>{{ number(row[measure.key]) }}</strong>
         </li>
       </ul>
     </div>
@@ -52,7 +52,7 @@ const years = computed(() => Array.isArray(props.summary.yearlyTotals)
   ? props.summary.yearlyTotals.filter(row => Number.isInteger(row?.year)).sort((a, b) => a.year - b.year)
   : [])
 const peak = computed(() => Math.max(0, ...years.value.map(row => knownCount(row[measure.value.key]) ?? 0)))
-const barHeight = value => peak.value ? ((knownCount(value) ?? 0) / peak.value * 100) + '%' : '0%'
+const barWidth = value => peak.value ? ((knownCount(value) ?? 0) / peak.value * 100) + '%' : '0%'
 const period = computed(() => {
   const first = String(props.summary.firstRecordedAt || '').match(/^\d{4}/)?.[0]
   const last = String(props.summary.lastRecordedAt || '').match(/^\d{4}/)?.[0]
@@ -79,11 +79,11 @@ const period = computed(() => {
 .history-switch button { border:0; border-radius:5px; padding:4px 10px; background:transparent; color:var(--app-text-secondary); font:inherit; font-size:12px; cursor:pointer; }
 .history-switch button[aria-pressed=true] { background:white; color:var(--app-primary-deep); font-weight:650; box-shadow:0 1px 4px #16345c20; }
 .history-scroll { overflow-x:auto; }
-.year-chart { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(60px,1fr); gap:4px; margin:0; padding:0; list-style:none; }
-.year-chart li { display:grid; grid-template-rows:auto 56px auto; gap:5px; text-align:center; font-size:11px; color:var(--app-text-muted); font-variant-numeric:tabular-nums; }
-.year-chart strong { color:var(--app-text-secondary); font-weight:550; }
-.year-meter { display:flex; align-items:end; justify-content:center; background:repeating-linear-gradient(to top,var(--app-border) 0 1px,transparent 1px 50%); }
-.year-meter i { width:55%; max-width:40px; background:linear-gradient(to top,var(--app-primary-active),var(--el-color-primary-light-3)); border-radius:4px 4px 0 0; }
+.year-chart { display:grid; gap:9px; margin:0; padding:3px 0; list-style:none; }
+.year-chart li { display:grid; align-items:center; grid-template-columns:4ch minmax(24px,1fr) minmax(7ch,auto); gap:12px; font-size:12px; color:var(--app-text-secondary); font-variant-numeric:tabular-nums; }
+.year-chart strong { justify-self:end; color:var(--app-text); font-weight:600; }
+.year-meter { display:block; height:7px; overflow:hidden; border-radius:3px; background:var(--app-primary-soft); }
+.year-meter i { display:block; height:100%; background:var(--app-primary); border-radius:inherit; }
 .history-details { margin-top:9px; font-size:12px; }
 .history-details summary { width:fit-content; padding:4px 0; color:var(--app-primary); cursor:pointer; }
 .history-details table { width:100%; border-collapse:collapse; white-space:nowrap; font-variant-numeric:tabular-nums; }

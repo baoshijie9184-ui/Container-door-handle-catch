@@ -16,13 +16,17 @@
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <p v-if="loading && !view" role="status">正在读取额度…</p>
     <template v-if="view">
+      <nav v-if="bailianGroups.length || sharedGroups.length" class="budget-jumps" aria-label="定位厂家额度">
+        <button v-if="bailianGroups.length" type="button" @click="focusPool('bailian-budget-title')">阿里云百炼 <small>token</small><AppIcon name="ArrowDown" :size="13" /></button>
+        <button v-for="group in sharedGroups" :key="group.key" type="button" @click="focusPool('budget-' + group.key)">{{ group.name }} <small>{{ group.unit }}</small><AppIcon name="ArrowDown" :size="13" /></button>
+      </nav>
       <BailianBudgetTable v-if="bailianGroups.length" :groups="bailianGroups" :supervisor="supervisor"
                           :employee="employee" @configure="edit" />
       <div class="budget-pools">
         <section v-for="group in sharedGroups" :key="group.key" class="pool-card">
           <header class="pool-heading">
             <span class="currency-mark" aria-hidden="true">{{ group.unit==='USD' ? '$' : '¥' }}</span>
-            <div><h3>{{ group.name }}</h3><small>{{ group.label }} · {{ group.unit }}</small></div>
+            <div><h3 :id="'budget-' + group.key" tabindex="-1">{{ group.name }}</h3><small>{{ group.label }} · {{ group.unit }}</small></div>
           </header>
           <details v-if="group.registeredNames.length > 3" class="shared-models model-disclosure">
             <summary>
@@ -169,6 +173,13 @@ function switchEmployee(id){
   view.value=null
   load()
 }
+function focusPool(id) {
+  const heading = document.getElementById(id)
+  if (!heading) return
+  heading.focus({ preventScroll: true })
+  heading.scrollIntoView({ block: 'start' })
+}
+
 function edit(kind,group){target.value=group;draft.value={kind,model:group.models[0]};loadForm();dialog.value=true}
 function loadForm(){
   const d=draft.value,g=target.value
@@ -220,6 +231,12 @@ onBeforeUnmount(()=>{window.removeEventListener('focus',onFocus);window.clearInt
 .budget-tools :deep(.el-button .el-icon) { margin-right:4px; }
 .employee-picker { color:var(--app-text-secondary); font-size:13px; }
 .employee-picker .el-select { width:170px; }
+.budget-jumps { display:flex; flex-wrap:wrap; gap:8px; }
+.budget-jumps button { display:inline-flex; align-items:center; gap:7px; min-height:36px; padding:6px 12px; background:white; border:1px solid var(--app-border-strong); border-radius:8px; color:var(--app-text); font:inherit; font-size:13px; cursor:pointer; }
+.budget-jumps button:hover { background:var(--app-primary-light); border-color:var(--app-border-focus); }
+.budget-jumps small { color:var(--app-text-secondary); font-size:12px; }
+.budget-jumps .el-icon { color:var(--app-primary); }
+.provider-budget :deep(h3[tabindex="-1"]) { scroll-margin-block-start:24px; }
 .budget-pools { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr)); gap:14px; }
 .pool-card { min-width:0; padding:18px; border:1px solid var(--app-border); border-radius:12px;
   background:linear-gradient(145deg,var(--app-primary-light),var(--app-surface) 60%); display:grid; align-content:start; gap:10px; }

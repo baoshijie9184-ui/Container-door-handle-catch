@@ -2,51 +2,42 @@
   <div class="home-page">
     <!-- ═══ 加载骨架屏 ═══ -->
     <template v-if="pageLoading">
-      <section class="hero-grid">
-        <div class="hero-panel app-panel" style="padding:28px">
-          <div class="skeleton skeleton-title" style="width:40%"></div>
-          <div class="skeleton skeleton-text" style="width:75%"></div>
-          <div class="skeleton skeleton-text" style="width:55%"></div>
-          <div style="display:flex;gap:12px;margin-top:24px">
-            <div class="skeleton" style="width:140px;height:40px;border-radius:10px"></div>
-            <div class="skeleton" style="width:140px;height:40px;border-radius:10px"></div>
-          </div>
-          <div class="hero-highlights">
-            <div class="skeleton skeleton-card"></div>
-            <div class="skeleton skeleton-card"></div>
-            <div class="skeleton skeleton-card"></div>
-          </div>
+      <div class="home-loading" role="status" aria-label="正在读取工作台">
+        <div class="skeleton skeleton-title"></div>
+        <div class="action-deck" aria-hidden="true">
+          <div v-for="i in 3" :key="i" class="skeleton"></div>
         </div>
-        <div class="status-panel app-panel" style="padding:28px">
-          <div class="skeleton skeleton-title" style="width:50%"></div>
-          <div class="skeleton skeleton-text" style="width:70%"></div>
-          <div v-for="i in 3" :key="i" style="margin-top:16px">
-            <div class="skeleton" style="height:60px;border-radius:16px"></div>
-          </div>
-        </div>
-      </section>
-      <section class="content-grid">
-        <div v-for="i in 7" :key="i" class="skeleton skeleton-chart" style="grid-column: span 4"></div>
-      </section>
+      </div>
     </template>
-
-    <!-- ═══ 真实内容 ═══ -->
     <template v-else>
     <header class="dashboard-hero">
-      <div class="dashboard-hero-copy">
-        <h1>{{ userStore.role === 'SUPERVISOR' ? '企业质量工作台' : '我的检测工作台' }}</h1>
-        <p>{{ userStore.role === 'SUPERVISOR' ? '查看企业检测与质量情况，安排复核、跟进异常和设备维护。' : '查看本人及分派任务，跟进检测结果、质检处理和工作记录。' }}</p>
-        <nav class="dashboard-shortcuts" aria-label="工作台快捷入口">
-          <router-link class="dashboard-start" to="/inspection/workbench"><AppIcon name="Search" :size="16" />开始图像检测</router-link>
-          <router-link to="/models"><AppIcon name="Tickets" :size="16" />管理检测模型</router-link>
-          <router-link to="/agent/chat"><AppIcon name="ChatDotRound" :size="16" />向 AI 助手提问</router-link>
-        </nav>
+      <div>
+        <h1>{{ canViewHistoricalSummary ? '企业质量工作台' : '我的检测工作台' }}</h1>
+        <p>{{ canViewHistoricalSummary ? '部门检测、质检待办与历史登记数据' : '查看分配给我的任务，提交检测并核对图片' }}</p>
       </div>
+      <router-link class="assistant-link" to="/agent/chat"><AppIcon name="ChatDotRound" :size="17" />向 AI 助手提问</router-link>
     </header>
+    <nav class="action-deck" aria-label="工作台快捷入口">
+      <router-link class="focus-action" :to="canViewHistoricalSummary ? { path: '/quality/queue', query: { queue: 'PENDING_REVIEW' } } : '/inspection/workbench'">
+        <span class="focus-stat">
+          {{ canViewHistoricalSummary ? '待人工复核' : '已分配工作单元' }}
+          <span><strong>{{ formatNumber(canViewHistoricalSummary ? qualityWorkload?.pendingReviewCount : workUnitSummary?.counts?.ASSIGNED) }}</strong>{{ canViewHistoricalSummary ? '项' : '个' }}</span>
+        </span>
+        <span class="focus-cta">{{ canViewHistoricalSummary ? '进入复核队列' : '开始图像检测' }}<AppIcon name="ArrowRight" :size="16" /></span>
+      </router-link>
+      <router-link class="desk-link" to="/inspection/history">
+        <span class="desk-link-top"><AppIcon name="Picture" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
+        <strong>浏览检测图片</strong><span>按检测记录逐张核对</span>
+      </router-link>
+      <router-link class="desk-link" :to="canViewHistoricalSummary ? '/inspection/workbench' : '/upload'">
+        <span class="desk-link-top"><AppIcon :name="canViewHistoricalSummary ? 'Search' : 'Upload'" :size="22" /><AppIcon name="ArrowRight" :size="15" /></span>
+        <strong>{{ canViewHistoricalSummary ? '开始图像检测' : '上传采集图片' }}</strong><span>{{ canViewHistoricalSummary ? '选择图片与检测模型' : '按文件夹提交原图' }}</span>
+      </router-link>
+    </nav>
     <div role="status" class="dashboard-refresh-note">
       <AppIcon name="Clock" :size="14" />
-      <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
-      <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }} UTC+8</span>
+      <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新' }}</span>
+      <span v-if="lastUpdated"> · 最近更新 {{ lastUpdated }} UTC+8</span>
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
     </div>
@@ -55,24 +46,27 @@
         <header>
           <div class="quality-heading">
             <span class="quality-heading-icon"><AppIcon name="DocumentChecked" :size="21" /></span>
-            <div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>当前账号可访问的任务 · 按处理状态</p></div>
+            <div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按处理状态查看任务</p></div>
           </div>
-          <router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />全部质检任务</router-link>
+          <router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />查看队列</router-link>
         </header>
-        <div class="quality-overview-grid">
+        <div v-if="qualityQueueEmpty" class="queue-empty">
+          <AppIcon name="CircleCheck" :size="25" /><div><strong>当前没有待处理的质检任务</strong><p>收到待复核、返工或异常任务后，会在这里按状态显示。</p></div>
+        </div>
+        <div v-else class="quality-overview-grid">
           <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="qualityWorkload?.[metric.key] > 0 ? metric.tone : 'neutral'">
             <span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="17" /></span>
             <span class="queue-metric"><small>{{ metric.label }}</small><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong></span>
-            <span v-if="qualityWorkload" class="queue-meter" aria-hidden="true"><i :style="{ width: queuePeak ? (qualityWorkload[metric.key] / queuePeak * 100) + '%' : '0%' }" /></span>
+            <AppIcon class="queue-chevron" name="ArrowRight" :size="13" />
           </router-link>
         </div>
         <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
-        <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '条形按本组最高值缩放，同一任务可能计入多个类别。' }}</p>
+        <p v-else-if="!qualityQueueEmpty || failedSections.includes('质量待办')" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '同一任务可计入多个状态。' }}</p>
       </section>
       <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
       <CollaborationTodos />
     </div>
-    <p class="dashboard-data-note">任务统计按当前账号可访问范围汇总；历史累计沿用历史登记数值，设备与人员为全部登记资料。“—”表示尚未读取、字段缺失或无法计算，不代表零。</p>
+    <p class="dashboard-data-note">任务按当前账号权限汇总，设备与人员按全部登记资料统计。缺失或无法计算的指标显示为“—”。</p>
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
       <div class="hero-panel app-panel command-panel">
@@ -481,7 +475,10 @@ const qualityMetrics = [
   { key:'failedCount',label:'检测异常',queue:'FAILED',icon:'Warning',tone:'danger' }
 ]
 
-const queuePeak = computed(() => qualityWorkload.value ? Math.max(0, ...Object.values(qualityWorkload.value)) : 0)
+
+const qualityQueueEmpty = computed(() =>
+  qualityWorkload.value && qualityMetrics.every(metric => qualityWorkload.value[metric.key] === 0)
+)
 
 async function fetchQualityWorkload() {
   try {
@@ -1043,28 +1040,45 @@ useResourceChanges({refresh:()=>refreshAll()})
 </script>
 
 <style scoped>
-.dashboard-hero { position:relative; isolation:isolate; overflow:hidden; padding:clamp(22px,2.3vw,34px); border:1px solid var(--app-border); border-radius:var(--app-radius-lg); background:white; box-shadow:var(--app-shadow-sm); }
-.dashboard-hero::before { content:''; position:absolute; z-index:-1; inset:0 0 0 55%; background:linear-gradient(90deg,#fff 0%,#ffffff75 27%,transparent 60%),url('../assets/images/container-lock.webp') 68% 52%/cover; filter:grayscale(1); }
-.dashboard-hero-copy { max-width:63%; }
-.dashboard-hero h1 { color:var(--app-text); font-size:clamp(28px,2.4vw,40px); font-weight:680; letter-spacing:-.045em; line-height:1.23; }
-.dashboard-hero p { margin:8px 0 18px; color:var(--app-text-secondary); font-size:13px; line-height:1.8; }
-.dashboard-shortcuts { display:flex; flex-wrap:wrap; gap:8px; }
-.dashboard-shortcuts a { display:inline-flex; align-items:center; gap:7px; min-height:36px; padding:6px 12px; border:1px solid var(--app-border); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:12px; font-weight:550; }
-.dashboard-shortcuts a:hover { border-color:var(--app-border-focus); color:var(--app-primary); }
-.dashboard-shortcuts .dashboard-start { background:var(--app-primary-deep); border-color:var(--app-primary-deep); color:white; }
-.dashboard-shortcuts .dashboard-start:hover { color:white; background:var(--app-primary); }
-.dashboard-shortcuts a:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
-.dashboard-overview { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.08fr); align-items:start; gap:16px; }
+.dashboard-hero { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.dashboard-hero h1 { margin:0; color:var(--app-text); font-size:clamp(27px,2.2vw,35px); font-weight:680; line-height:1.24; letter-spacing:-.04em; }
+.dashboard-hero p { margin:6px 0 0; color:var(--app-text-secondary); font-size:14px; line-height:1.6; }
+.assistant-link { display:inline-flex; flex:none; align-items:center; gap:8px; padding:8px 13px; border:1px solid var(--app-border-strong); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:13px; }
+.assistant-link:hover { color:var(--app-primary); border-color:var(--app-border-focus); }
+.action-deck { display:grid; grid-template-columns:minmax(0,1.6fr) repeat(2,minmax(0,1fr)); gap:14px; }
+.action-deck a { display:flex; flex-direction:column; min-width:0; min-height:143px; padding:18px 22px; border-radius:var(--app-radius-lg); text-decoration:none; }
+.focus-action { position:relative; isolation:isolate; overflow:hidden; align-items:flex-start; justify-content:space-between; gap:9px; background:var(--app-primary-deep); color:white; }
+.focus-action::before { content:''; position:absolute; z-index:-1; inset:0; background:linear-gradient(95deg,#132e51 11%,#163d69ef 42%,#204d7e55 100%),url('../assets/images/container-lock.webp') 73% 58% / cover; }
+.focus-stat { font-size:13px; font-weight:550; }
+.focus-stat > span { display:flex; align-items:baseline; gap:6px; font-size:12px; }
+.focus-stat strong { font-size:clamp(30px,2.7vw,42px); font-variant-numeric:tabular-nums; font-weight:650; letter-spacing:-.045em; line-height:1.25; }
+.focus-cta { display:inline-flex; align-items:center; gap:12px; min-height:30px; padding:3px 10px; border-radius:5px; background:white; color:var(--app-primary-deep); font-size:13px; font-weight:600; }
+.focus-action:hover .focus-cta { background:var(--app-primary-soft); }
+.desk-link { justify-content:flex-end; align-items:flex-start; border:1px solid var(--app-border); background:white; color:var(--app-text); }
+.desk-link:hover { background:var(--app-primary-light); border-color:var(--app-border-focus); }
+.desk-link-top { display:flex; width:100%; align-items:center; justify-content:space-between; margin-bottom:auto; color:var(--app-primary); }
+.desk-link-top > :last-child { color:var(--app-text-muted); }
+.desk-link strong { margin:14px 0 2px; font-size:18px; font-weight:640; }
+.desk-link > span:last-child { font-size:13px; color:var(--app-text-secondary); }
+.home-loading .skeleton-title { width:35%; height:32px; margin-bottom:25px; }
+.home-loading .action-deck > div { height:143px; }
+.dashboard-overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:16px; }
 .dashboard-overview > * { min-width:0; }
 .dashboard-overview > .collaboration-todos { margin:0; }
 .dashboard-overview.with-history > .collaboration-todos { grid-column:1/-1; }
 .dashboard-overview .quality-overview,.dashboard-overview .history-overview { align-self:stretch; }
-@container dashboard (max-width:840px) { .dashboard-overview { grid-template-columns:minmax(0,1fr); } }
-@media (max-width:700px) {
-  .dashboard-hero { padding:20px; }
-  .dashboard-hero::before { display:none; }
-  .dashboard-hero-copy { max-width:none; }
+@container dashboard (max-width:780px) { .dashboard-overview { grid-template-columns:minmax(0,1fr); } }
+@container dashboard (max-width:560px) {
+  .dashboard-hero { align-items:flex-start; flex-wrap:wrap; gap:8px; }
+  .assistant-link { min-height:32px; }
+  .action-deck { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  .action-deck a { min-height:112px; padding:14px; }
+  .action-deck .focus-action { grid-column:1/-1; flex-direction:row; align-items:center; min-height:90px; }
+  .desk-link strong { font-size:16px; margin-top:9px; }
 }
+.queue-empty { display:flex; align-items:flex-start; gap:12px; padding:19px 16px; border-radius:9px; background:var(--app-primary-light); color:var(--app-primary-deep); }
+.queue-empty strong { font-size:15px; }
+.queue-empty p { margin:6px 0 0; color:var(--app-text-secondary); font-size:13px; line-height:1.75; }
 .home-page > .dashboard-refresh-note { margin:0; }
 .home-page .hero-panel > .app-panel-title { font-size:16px; font-weight:600; margin-bottom:16px; }
 .home-page .hero-panel .hero-telemetry { margin:0 0 20px; gap:12px; }

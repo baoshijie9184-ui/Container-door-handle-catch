@@ -2,7 +2,7 @@
   <section class="bailian-budget" aria-labelledby="bailian-budget-title">
     <header class="section-title">
       <span class="section-icon"><AppIcon name="Collection" :size="19" /></span>
-      <div><h3 id="bailian-budget-title">阿里云百炼</h3><p>{{ supervisor ? '厂家预算' : '我的限额' }} · 每个模型独立核算</p></div>
+      <div><h3 id="bailian-budget-title" tabindex="-1">阿里云百炼</h3><p>{{ supervisor ? '厂家预算' : '我的限额' }} · 每个模型独立核算</p></div>
     </header>
 
     <div class="quota-stats" role="group" aria-label="按额度状态筛选模型">
