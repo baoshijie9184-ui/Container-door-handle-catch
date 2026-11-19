@@ -62,7 +62,7 @@ class RagKnowledgeServiceTest {
 
         assertThat(context).contains("业务预置数据");
         assertThat(context).contains("APP_BUSINESS_SEED_ENABLED");
-        assertThat(context).contains("Jenkins/ECS");
+        assertThat(context).contains("本机部署回执");
     }
 
     @Test
