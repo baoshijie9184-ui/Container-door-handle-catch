@@ -33,6 +33,7 @@
 </template>
 
 <script setup>
+import { employeeTypeLabel } from '@/utils/employeeNumbers'
 import { computed, getCurrentInstance, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { captureAccountRequest } from '../api/request'
 const request=captureAccountRequest()
@@ -56,7 +57,6 @@ const ready=computed(()=>supervisor.value && person.value && !personError.value 
 const canPrepare=action=>!!ready.value && (action==='ASSIGN' ? optionsLoaded.value&&!optionsError.value : assignedLoaded.value&&!assignedError.value)
 const id=value=>typeof value==='number'&&Number.isSafeInteger(value)&&value>0?String(value):typeof value==='string'&&/^[1-9]\d*$/.test(value)?value:''
 const selectedDevice=computed(()=>deviceOptions.value.find(device=>id(device.id)===selectedDeviceId.value) || null)
-const employeeTypeLabel=value=>({DETECTION:'门把手检测人员',COLLECTION:'门把手图片采集人员',MAINTENANCE:'设备维护人员'})[value] || value || '岗位未记录'
 const deviceTypeLabel=value=>({DETECTION:'图像检测设备',IMAGE_CAPTURE:'图片采集设备'})[value] || value || '类型未记录'
 const deviceLabel=device=>`${device?.deviceCode || '编号未记录'} · ${device?.modelName || '型号未记录'}`
 const current=(version,personId,actorId)=>!disposed && visible.value && version===generation && employeeId.value===personId && actor.value===actorId

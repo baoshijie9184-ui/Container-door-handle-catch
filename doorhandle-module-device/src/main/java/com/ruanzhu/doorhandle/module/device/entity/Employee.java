@@ -50,7 +50,7 @@ public class Employee {
     private Long departmentId;
 
     /**
-     * 员工类型：DETECTION-门把手检测人员，COLLECTION-门把手图片采集人员，MAINTENANCE-设备维修人员
+     * 员工类型：SUPERVISOR-主管，DETECTION-门把手检测人员，COLLECTION-门把手图片采集人员，MAINTENANCE-设备维修人员
      */
     @TableField("employee_type")
     private String employeeType;

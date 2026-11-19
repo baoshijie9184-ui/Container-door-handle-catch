@@ -12,16 +12,20 @@
           <div class="managed-form-section-heading"><AppIcon name="User" :size="19" /><div><h2 id="employee-identity-heading">身份与联系方式</h2><p>员工编号用于识别业务人员；登记姓名不作为账号授权依据。</p></div></div>
           <div class="device-form-grid">
             <el-form-item label="姓名" prop="name"><el-input v-model="employeeForm.name" placeholder="填写业务人员姓名" maxlength="20" show-word-limit /></el-form-item>
-            <el-form-item label="员工编号" prop="employeeNumber"><el-input v-model="employeeForm.employeeNumber" placeholder="填写员工登记编号" aria-describedby="employee-number-help" /><p id="employee-number-help" class="managed-field-help">编号是否重复以保存时的服务端校验为准。</p></el-form-item>
+            <el-form-item label="人员业务岗位" prop="employeeType"><el-select v-model="employeeForm.employeeType" @change="changeNumberPrefix" popper-class="business-select-popper" placeholder="选择业务岗位"><el-option v-for="item in employeeTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+            <el-form-item label="员工编号" prop="employeeNumber">
+              <el-input v-model="serial" placeholder="填写序号，如 0001" :disabled="!numberPrefix" :maxlength="46">
+                <template v-if="numberPrefix" #prepend>{{ numberPrefix }}-</template>
+              </el-input>
+            </el-form-item>
             <el-form-item label="联系方式" prop="contact"><el-input v-model="employeeForm.contact" placeholder="填写手机号或邮箱" autocomplete="off" aria-describedby="employee-contact-help" /><p id="employee-contact-help" class="managed-field-help">用于业务联系，不会创建登录账号。</p></el-form-item>
             <el-form-item label="性别"><el-select v-model="employeeForm.gender" popper-class="business-select-popper" placeholder="选择已登记性别"><el-option label="男" value="男" /><el-option label="女" value="女" /></el-select></el-form-item>
           </div>
         </section>
         <section class="managed-form-section" aria-labelledby="employee-position-heading">
-          <div class="managed-form-section-heading"><AppIcon name="Collection" :size="19" /><div><h2 id="employee-position-heading">部门与业务岗位</h2><p>业务岗位参与设备分配校验，不授予登录角色或主管权限。</p></div></div>
+          <div class="managed-form-section-heading"><AppIcon name="Collection" :size="19" /><div><h2 id="employee-position-heading">部门与任职信息</h2><p>业务岗位参与设备分配校验，不授予登录角色或主管权限。</p></div></div>
           <div class="device-form-grid">
             <el-form-item label="部门 / 班组" prop="departmentId"><el-select v-model="departmentModel" popper-class="business-select-popper" :disabled="departmentLoading || !departmentsLoaded || !!departmentError" :loading="departmentLoading" filterable placeholder="选择已有部门或班组"><el-option v-if="departmentModel && !departments.some(item=>resourceId(item.id)===departmentModel)" :value="departmentModel" :label="`原登记 ${employeeForm.department || departmentModel}（待核对）`" disabled /><el-option v-for="item in departments" :key="item.id" :label="item.name || '部门名称未记录'" :value="resourceId(item.id)" /></el-select><p class="managed-field-help">{{ departmentLoading ? '正在读取部门' : departmentsLoaded ? `本次读取 ${departments.length} 项，搜索仅在已读取项内进行` : '部门候选尚未读取' }}<router-link v-if="supervisor" :to="{name:'organization'}">维护部门</router-link></p></el-form-item>
-            <el-form-item label="人员业务岗位" prop="employeeType"><el-select v-model="employeeForm.employeeType" popper-class="business-select-popper" placeholder="选择业务岗位"><el-option v-for="item in employeeTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
             <el-form-item label="入职日期"><el-date-picker v-model="hireDateModel" popper-class="business-date-popper" type="date" placeholder="选择入职日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" /><p v-if="legacyHireDateText" class="managed-field-help">原登记：{{ legacyHireDateText }}。保持原文，选择日期后替换。</p><p v-else class="managed-field-help">保存日历日期，不按时区转换日期。</p></el-form-item>
             <el-form-item label="在岗状态" prop="status"><el-select v-model="employeeForm.status" popper-class="business-select-popper" placeholder="选择在岗状态"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select><p class="managed-field-help">已有分配设备时，改为非在岗状态需先完成设备归还。</p></el-form-item>
           </div>
@@ -34,6 +38,7 @@
   </div>
 </template>
 <script setup>
+import { employeeTypeOptions, employeeNumberPrefix, employeeNumberSuffix, employeeNumberFor } from '@/utils/employeeNumbers'
 import { ref,computed,watch,onBeforeUnmount,nextTick } from 'vue'
 import { captureAccountRequest } from '../../api/request'
 const request=captureAccountRequest()
@@ -53,6 +58,14 @@ let departmentVersion=0,pageActive=true
 const departmentModel=computed({get:()=>resourceId(employeeForm.departmentId),set:value=>{employeeForm.departmentId=value || null;const department=departments.value.find(item=>resourceId(item.id)===value);if(department)employeeForm.department=department.name}})
 const legacyHireDateText=computed(()=>legacyHireDate(employeeForm.hireDate))
 const hireDateModel=computed({get:()=>isCalendarHireDate(employeeForm.hireDate)?employeeForm.hireDate:null,set:value=>setHireDateSelection(employeeForm,value)})
+const numberPrefix = computed(() => employeeNumberPrefix(employeeForm.employeeType))
+const serial = computed({
+  get: () => numberPrefix.value ? employeeNumberSuffix(employeeForm.employeeNumber) : employeeForm.employeeNumber,
+  set: value => { employeeForm.employeeNumber = employeeNumberFor(employeeForm.employeeType, value) }
+})
+function changeNumberPrefix() {
+  employeeForm.employeeNumber = employeeNumberFor(employeeForm.employeeType, employeeForm.employeeNumber)
+}
 const validateEmployeeNumber=uniqueValidator('employeeNumber','/api/employees/check-number','employeeNumber','该员工编号')
 const validateDepartment=(_rule,value,callback)=>{
   if(!value)return callback()
@@ -116,12 +129,6 @@ const rules = {
     { required: true, message: '请选择状态', trigger: 'change' }
   ]
 }
-
-const employeeTypeOptions = [
-  { value: 'DETECTION', label: '门把手检测人员' },
-  { value: 'COLLECTION', label: '门把手图片采集人员' },
-  { value: 'MAINTENANCE', label: '设备维护人员' }
-]
 
 const statusOptions = [
   { value: 'ACTIVE', label: '在岗' },

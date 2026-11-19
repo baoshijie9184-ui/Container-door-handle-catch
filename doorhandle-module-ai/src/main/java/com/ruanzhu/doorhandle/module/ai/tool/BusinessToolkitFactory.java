@@ -144,7 +144,7 @@ public class BusinessToolkitFactory {
                 case "get_task_detail" -> "按 taskId 一次查询授权任务的处理状态、进度、缺陷总数、当前复核状态、复核结论及任务记录中的设备名称。同一任务当前复核情况无需再查询质检历史列表；不含六分类分布或实时设备状态";
                 case "get_my_work_metrics", "get_department_work_metrics" -> "按任务创建时间统计最近 days 天的任务数、图片数和缺陷数量；缺陷数量不能当作缺陷图片数计算不良率";
                 case "get_my_quality_records", "get_quality_records" -> "分页查询有复核状态的质检记录，包含历史记录，不等同于待办队列";
-                case "find_employees_by_name" -> "按完整姓名查询人员登记资料，返回员工编号、部门、岗位、在岗状态及入职日期。两种账号都可查询。每页 10 条；total=0 表示未查到同名记录，多人同名时按员工编号分别列出。DETECTION=检测、COLLECTION=采集、MAINTENANCE=维修；ACTIVE=在岗、VACATION=休假、RESIGNED=离职。";
+                case "find_employees_by_name" -> "按完整姓名查询人员登记资料，返回员工编号、部门、岗位、在岗状态及入职日期。两种账号都可查询。每页 10 条；total=0 表示未查到同名记录，多人同名时按员工编号分别列出。SUPERVISOR=主管、DETECTION=检测、COLLECTION=采集、MAINTENANCE=维修；ACTIVE=在岗、VACATION=休假、RESIGNED=离职。";
                 case "get_employee_counts" -> "读取人员管理页当前登记人数。total 为全部登记员工（含离职），active 为在岗，vacation 为休假，resigned 为离职。问有多少员工时回答登记总数并列出三种状态。此工具只返回总体人数。查某个人时用 find_employees_by_name。";
                 case "list_devices" -> "主管分页查询设备在线及 PLC、相机、采集状态";
                 case "list_device_alerts" -> "主管按状态、级别、设备主键查询数据库最新入库的采集告警摘要，默认 OPEN 未处理、级别 ALL。按主键降序游标分页；有更多时用 nextCursor 作为下一次 beforeId，保持其他筛选一致。只读，不确认或关闭告警；不返回自由文本说明、运行快照、文件路径或人员备注。结果是 queriedAt 时的记录，不代表设备当前仍故障或已修复，不能从一页记录推断总数。";

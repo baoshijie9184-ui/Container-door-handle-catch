@@ -165,6 +165,7 @@
 </template>
 
 <script setup>
+import { employeeTypeLabel as getEmployeeTypeName } from '@/utils/employeeNumbers'
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { captureAccountRequest } from '../../api/request'
@@ -206,17 +207,6 @@ const collectionLoading = ref(false)
 const loadError = ref(''), deviceError = ref(''), collectionError = ref(''), devicesKnown = ref(false)
 
 const assignmentPanel = ref(null)
-
-const employeeTypeOptions = [
-  { value: 'DETECTION', label: '门把手检测人员' },
-  { value: 'COLLECTION', label: '门把手图片采集人员' },
-  { value: 'MAINTENANCE', label: '设备维护人员' }
-]
-
-const getEmployeeTypeName = (type) => {
-  const option = employeeTypeOptions.find(opt => opt.value === type)
-  return option ? option.label : type
-}
 
 const getEmployeeTypeTag = (type) => {
   if (type === 'DETECTION') return 'primary'

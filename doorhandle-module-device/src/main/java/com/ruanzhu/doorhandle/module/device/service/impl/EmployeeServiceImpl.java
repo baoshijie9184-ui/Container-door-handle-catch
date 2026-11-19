@@ -10,6 +10,7 @@ import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
 import com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper;
 import com.ruanzhu.doorhandle.module.device.service.DeviceUsageRecordService;
 import com.ruanzhu.doorhandle.module.device.service.EmployeeService;
+import com.ruanzhu.doorhandle.module.device.service.EmployeeNumbers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -22,6 +23,7 @@ import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 员工服务实现类
@@ -108,6 +110,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="add",resource="arg0.id",version="arg0.version",supervisorOnly=true)
     public boolean add(Employee employee) {
         validateHireDate(employee, null);
+        employee.setEmployeeNumber(EmployeeNumbers.forPosition(employee.getEmployeeType(), employee.getEmployeeNumber()));
         employee.setVersion(0);
         normalizeDepartment(employee);
         // 设置创建时间和更新时间
@@ -131,6 +134,12 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
             throw new com.ruanzhu.doorhandle.common.BusinessException(404, "员工不存在");
         }
         validateHireDate(employee, existing.getHireDate());
+        String position = employee.getEmployeeType() == null ? existing.getEmployeeType() : employee.getEmployeeType();
+        String number = employee.getEmployeeNumber() == null ? existing.getEmployeeNumber() : employee.getEmployeeNumber();
+        if (!Objects.equals(position, existing.getEmployeeType())
+                || !Objects.equals(number, existing.getEmployeeNumber())) {
+            employee.setEmployeeNumber(EmployeeNumbers.forPosition(position, number));
+        }
         if (employee.getDepartmentId() == null && employee.getDepartment() == null) {
             employee.setDepartmentId(existing.getDepartmentId());
             employee.setDepartment(existing.getDepartment());
@@ -309,6 +318,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
         stats.put("total", total);
 
         // 各类型员工数量
+        stats.put("supervisor", count(new LambdaQueryWrapper<Employee>().eq(Employee::getEmployeeType, "SUPERVISOR")));
         LambdaQueryWrapper<Employee> collectionWrapper = new LambdaQueryWrapper<>();
         collectionWrapper.eq(Employee::getEmployeeType, "COLLECTION");
         long collection = count(collectionWrapper);

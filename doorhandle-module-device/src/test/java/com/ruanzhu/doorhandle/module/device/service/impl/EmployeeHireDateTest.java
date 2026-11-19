@@ -45,7 +45,10 @@ class EmployeeHireDateTest {
 
     @Test void newCalendarDateRetainsExistingJsonValue() throws Exception {
         Employee employee = new ObjectMapper().readValue("{\"hireDate\":\"2020-02-29\"}", Employee.class);
+        employee.setEmployeeType("DETECTION");
+        employee.setEmployeeNumber("EMP-0011");
         assertThat(service.add(employee)).isTrue();
+        assertThat(employee.getEmployeeNumber()).isEqualTo("DET-0011");
         assertThat(employee.getHireDate()).isEqualTo("2020-02-29");
         verify(service).save(employee);
     }
@@ -92,6 +95,22 @@ class EmployeeHireDateTest {
             assertThat(update.getHireDate()).isNull();
         }
         verify(service, times(2)).updateById(any(Employee.class));
+    }
+
+    @Test void roleChangeUsesTheExistingSerialAndPartialUpdatesKeepHistoricalNumbers() {
+        var existing = employee(null);
+        existing.setEmployeeNumber("EMP-0011");
+        existing.setEmployeeType("DETECTION");
+        when(mapper.selectById(11L)).thenReturn(existing);
+        for (String[] role : new String[][] {{"SUPERVISOR","SUP"},{"COLLECTION","COL"},{"MAINTENANCE","MNT"}}) {
+            var update = employee(null);
+            update.setEmployeeType(role[0]);
+            assertThat(service.update(update)).isTrue();
+            assertThat(update.getEmployeeNumber()).isEqualTo(role[1] + "-0011");
+        }
+        var partial = employee(null);
+        assertThat(service.update(partial)).isTrue();
+        assertThat(partial.getEmployeeNumber()).isNull();
     }
 
     private Employee employee(String date) {

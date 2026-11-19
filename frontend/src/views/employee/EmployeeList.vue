@@ -79,6 +79,7 @@
 </template>
 
 <script setup>
+import { employeeTypeOptions, employeeTypeLabel as getEmployeeTypeName } from '@/utils/employeeNumbers'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -140,26 +141,11 @@ async function fetchEmployeeStats() {
 
 const assignmentPanel = ref(null)
 
-const employeeTypeOptions = [
-  { value: 'DETECTION', label: '门把手检测人员' },
-  { value: 'COLLECTION', label: '门把手图片采集人员' },
-  { value: 'MAINTENANCE', label: '设备维护人员' }
-]
-
 const statusOptions = [
   { value: 'ACTIVE', label: '在岗' },
   { value: 'RESIGNED', label: '离职' },
   { value: 'VACATION', label: '休假' }
 ]
-
-const getEmployeeTypeName = (type) => {
-  const typeMap = {
-    DETECTION: '门把手检测人员',
-    COLLECTION: '门把手图片采集人员',
-    MAINTENANCE: '设备维护人员'
-  }
-  return typeMap[type] || type || '类型未记录'
-}
 
 const getStatusName = (status) => {
   const statusMap = {

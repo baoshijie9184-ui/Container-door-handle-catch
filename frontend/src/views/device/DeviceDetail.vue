@@ -135,6 +135,7 @@
 </template>
 
 <script setup>
+import { employeeTypeLabel as getEmployeeTypeName } from '@/utils/employeeNumbers'
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {beijingDateTime} from '@/utils/beijingTime'
@@ -180,12 +181,6 @@ const deviceTypeOptions = [
   { value: 'DETECTION', label: '图像检测设备' }
 ]
 
-const employeeTypeOptions = [
-  { value: 'DETECTION', label: '门把手检测人员' },
-  { value: 'COLLECTION', label: '门把手图片采集人员' },
-  { value: 'MAINTENANCE', label: '设备维护人员' }
-]
-
 const getDeviceTypeName = (type) => {
   const option = deviceTypeOptions.find(opt => opt.value === type)
   return option ? option.label : type
@@ -201,11 +196,6 @@ const getStatusName = status => status === '空闲' ? '未使用' : statusPresen
 
 const statusSummary = computed(() => statusPresentation('device', device.value?.status))
 const statusIconClass = computed(() => statusSummary.value.tone === 'progress' ? 'primary' : statusSummary.value.tone)
-
-const getEmployeeTypeName = (type) => {
-  const option = employeeTypeOptions.find(opt => opt.value === type)
-  return option ? option.label : type
-}
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '—'
