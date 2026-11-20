@@ -520,10 +520,10 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="reviewDialogVisible" :append-to-body="!!boardRequest" class="quality-operation-dialog" :title="boardRequest ? '核对模型结果' : '人工复核'" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
-      <QualityTaskContext :task="reviewTask" operation="review" />
+    <el-dialog v-model="reviewDialogVisible" :top="boardRequest ? '5vh' : undefined" :append-to-body="!!boardRequest" class="quality-operation-dialog" :title="boardRequest ? '核对模型结果' : '人工复核'" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
+      <QualityTaskContext :compact="!!boardRequest" :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
-      <div v-if="reviewImages"><ModelMaintenanceSummary :summary="reviewImages.maintenance" />
+      <div v-if="reviewImages" :class="{'board-review-evidence':boardRequest}"><ModelMaintenanceSummary :summary="reviewImages.maintenance" />
       <EvidenceComparison edit-annotations :task-id="reviewTask?.taskId" :maintenance="reviewImages.maintenance" :defects="reviewImages.defects" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
       <div v-else class="quality-feedback-note" role="status"><AppIcon name="Picture" :size="16" />{{ reviewImageError || '正在读取本次任务的原图与标注图…' }}
         <el-button v-if="reviewImageError" link type="primary" @click="reviewImageAttempt++">重新读取图片</el-button>
@@ -572,7 +572,7 @@
     </el-dialog>
 
     <el-dialog v-model="assignmentDialogVisible" :append-to-body="!!boardRequest" class="quality-operation-dialog" :title="boardRequest ? (assignmentTask?.assignee ? '改派校验任务' : '分派校验任务') : '分派质检任务'" width="min(640px, 96vw)" :close-on-click-modal="!assignmentSubmitting" :close-on-press-escape="!assignmentSubmitting" :show-close="!assignmentSubmitting">
-      <QualityTaskContext :task="assignmentTask" operation="assignment" />
+      <QualityTaskContext :compact="!!boardRequest" :task="assignmentTask" operation="assignment" />
       <el-form :model="assignmentForm" label-position="top" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment||assignmentTask?.mutationConflicted">
         <el-form-item label="质检站点">
           <el-input v-model="assignmentForm.qualityStation" aria-label="例如：质检站-1 / 产线A复核位" placeholder="例如：质检站-1 / 产线A复核位" />
@@ -1444,6 +1444,8 @@ async function validateCollaborationAccess(){
 
 <style scoped>
 .board-task-dialogs{display:contents}
+.board-review-evidence{display:flex;flex-direction:column;gap:12px;min-width:0}
+.board-review-evidence > .evidence-comparison{order:-1}
 .image-detection-container {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

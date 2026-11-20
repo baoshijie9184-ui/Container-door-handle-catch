@@ -1,5 +1,9 @@
 <template>
-  <section v-if="task" class="quality-task-context" aria-label="当前质检任务">
+  <section v-if="task && compact" class="board-context" aria-label="当前校验任务">
+    <header><strong>{{ folderName }}</strong><span>{{ value('assignee') || '待分派' }}</span><StatusBadge domain="flow" :code="value('flowStatus')" /></header>
+    <details><summary>任务信息</summary><div>任务号 {{ task.taskId }}<span v-if="value('dueAt')"> · 截止 {{ deadline }}</span></div></details>
+  </section>
+  <section v-else-if="task" class="quality-task-context" aria-label="当前质检任务">
     <header><span class="quality-context-icon"><AppIcon :name="operationIcon" :size="20" /></span><div><small>当前任务</small><strong>{{ task.taskId || '任务编号未记录' }}</strong></div><StatusBadge domain="flow" :code="value('flowStatus')" /></header>
     <dl><div><dt>责任人</dt><dd>{{ value('assignee') || '未记录责任人' }}</dd></div><div><dt>截止时间</dt><dd>{{ deadline }}</dd></div><div><dt>人工复核</dt><dd><StatusBadge domain="review" :code="value('reviewStatus')" /></dd></div><div><dt>已记录的确认缺陷数</dt><dd>{{ confirmedDefects }}</dd></div></dl>
     <p>{{ operationNote }}</p>
@@ -11,9 +15,11 @@ import { computed } from 'vue'
 import AppIcon from './AppIcon.vue'
 import StatusBadge from './StatusBadge.vue'
 import { qualityReviewCountText } from '@/utils/qualityRecords'
+import { recordFolderLabel } from '@/utils/imageFolderLabel'
 import { beijingDateTime } from '@/utils/beijingTime'
-const props=defineProps({task:Object,operation:{type:String,default:'review'}})
+const props=defineProps({task:Object,compact:Boolean,operation:{type:String,default:'review'}})
 const value = key => props.task?.[key] ?? props.task?.result?.[key]
+const folderName=computed(()=>recordFolderLabel({folder:value('imageFolderName'),prefix:value('sourceOssPrefix'),taskType:value('taskType')}))
 const deadline=computed(()=>{const due=value('dueAt');return due?beijingDateTime(due)||'时间未记录':'未记录截止时间'})
 const confirmedDefects=computed(()=>qualityReviewCountText(value('reviewStatus'),value('confirmedDefectCount')))
 const operationIcon=computed(()=>({review:'Search',assignment:'User',disposition:'DocumentChecked',rework:'Edit'})[props.operation]||'Tickets')
@@ -26,6 +32,11 @@ const operationNote=computed(()=>({
 </script>
 
 <style scoped>
+.board-context{margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--app-border)}
+.board-context header{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px}
+.board-context strong{font-size:16px;overflow-wrap:anywhere}.board-context span,.board-context details{color:var(--app-text-secondary);font-size:13px}
+.board-context details{margin-top:6px;overflow-wrap:anywhere}.board-context summary{width:fit-content;cursor:pointer}
+
 .quality-task-context { margin-bottom:20px; padding:16px; border:1px solid var(--app-border); border-radius:10px; background:var(--app-primary-light); }
 .quality-task-context header { display:flex; align-items:flex-start; flex-wrap:wrap; gap:10px; }
 .quality-context-icon { display:grid; place-items:center; flex:0 0 36px; height:36px; width:36px; border-radius:9px; color:var(--app-primary); background:var(--app-primary-soft); }

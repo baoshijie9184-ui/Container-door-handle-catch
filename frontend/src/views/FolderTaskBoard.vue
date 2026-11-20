@@ -71,7 +71,7 @@
           </template>
         </template></el-table-column>
         <el-table-column v-if="!uploadsOnly && !verificationList" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
-        <el-table-column v-if="!uploadsOnly && taskList!=='detection'" :label="verificationList ? '校验员工' : '质检员工'" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交复核' : '受派质检' }}</small></template></el-table-column>
+        <el-table-column v-if="!uploadsOnly && taskList!=='detection'" label="校验员工" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交校验' : '受派校验' }}</small></template></el-table-column>
         <el-table-column label="操作" min-width="245"><template #default="{row}">
           <div class="row-actions">
             <template v-if="uploadsOnly">
@@ -102,7 +102,7 @@
           </div>
         </template></el-table-column>
       </el-table>
-      <footer><span>{{ loading ? '正在读取…' : '共 '+total+' 项' }}</span><el-pagination v-if="total" layout="prev, pager, next" :pager-count="5" :page-size="20" :total="total" :current-page="page" @current-change="turn"/></footer>
+      <footer><span>{{ loading ? '正在读取…' : '共 '+total+' 项' }}</span><el-pagination v-if="total>20" layout="prev, pager, next" :pager-count="5" :page-size="20" :total="total" :current-page="page" @current-change="turn"/></footer>
     </section>
     <TaskDialogs v-if="activeAction" :key="activeAction.action + ':' + activeAction.taskId" :board-request="activeAction" @dismiss="closeAction" />
     <el-dialog v-model="dialog" :title="target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
@@ -155,8 +155,9 @@ const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && employeeInbo
 const directory=computed(()=>typeof route.query.directory==='string' ? route.query.directory : '')
 const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校验中',DONE:'完成',FAILED:'异常'}
 const detectionPhases={'':'全部',UPLOADING:'待上传确认',READY:'待检测',DETECTING:'检测中',FAILED:'检测失败',CANCELLED:'已取消',MODEL_DONE:'已检测'}
+const inboxPhases={'':'全部待办',READY:'待启动检测',FAILED:'待重试检测',VERIFYING:'待核对结果'}
 const verificationPhases={'':'全部',WAITING_CHECK:'待校验',VERIFYING:'校验中',CHECKED:'已校验',FOLLOW_UP:'待跟进'}
-const listPhases=computed(()=>verificationList.value ? verificationPhases : taskList.value==='detection' ? detectionPhases : phases)
+const listPhases=computed(()=>verificationList.value ? verificationPhases : taskList.value==='detection' ? detectionPhases : inbox.value ? inboxPhases : phases)
 const phase=computed(()=>Object.hasOwn(listPhases.value,route.query.phase) ? route.query.phase : '')
 const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.keyword : '')
 const assignedTaskId=computed(()=>!uploadsOnly.value && typeof route.query.assignedTaskId==='string' ? route.query.assignedTaskId : '')
@@ -204,7 +205,8 @@ async function load(quiet=false){
     if(generation!==read)return
     const lastPage=Math.max(1,Math.ceil(result.total/20))
     if(!activeAction.value && page.value>lastPage){
-      await router.replace({path:route.path,query:{...route.query,page:lastPage===1 ? undefined : String(lastPage)}})
+      const scope=!uploadsOnly.value && !supervisor.value ? {inbox:inbox.value ? '1' : '0'} : {}
+      await router.replace({path:route.path,query:{...route.query,...scope,page:lastPage===1 ? undefined : String(lastPage)}})
       return
     }
     rows.value=result.items;total.value=result.total;error.value=''
