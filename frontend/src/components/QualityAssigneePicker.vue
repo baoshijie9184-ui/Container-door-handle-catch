@@ -2,7 +2,7 @@
   <div class="assignee-picker">
     <el-select :model-value="userId ?? undefined" :disabled="disabled" filterable remote clearable :remote-method="queueSearch" :loading="loading"
       :placeholder="modelValue ? '原责任人 ' + modelValue + '，请重新选择账号' : '搜索并选择员工账号'"
-      aria-label="质检责任人账号" @change="choose" @visible-change="opened">
+      :aria-label="accountLabel" @change="choose" @visible-change="opened">
       <el-option v-for="option in options" :key="option.userId" :value="option.userId" :label="option.username + ' · ID ' + option.userId" />
     </el-select>
     <span v-if="userId && revision" class="assignee-proof"><el-icon><User /></el-icon>账号 ID {{ userId }} · 已固定快照</span>
@@ -14,7 +14,7 @@ import { ref,watch,onBeforeUnmount } from 'vue'
 import { User } from '@element-plus/icons-vue'
 import { captureAccountRequest } from '@/api/request'
 const request=captureAccountRequest()
-const props=defineProps({modelValue:String,userId:[String,Number],revision:String,disabled:Boolean})
+const props=defineProps({modelValue:String,userId:[String,Number],revision:String,disabled:Boolean,accountLabel:{type:String,default:'质检责任人账号'}})
 const emit=defineEmits(['update:modelValue','update:userId','update:revision'])
 const options=ref([]),loading=ref(false),error=ref('')
 let generation=0

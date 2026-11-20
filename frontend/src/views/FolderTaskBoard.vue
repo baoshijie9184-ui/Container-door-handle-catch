@@ -59,11 +59,15 @@
         <el-table-column label="操作" min-width="215"><template #default="{row}">
           <div class="row-actions">
             <template v-if="uploadsOnly">
-              <template v-if="Number(row.canReadTask)">
-              <router-link :to="{ path: '/inspection/history', query: { taskId: row.taskId, boardAction: 'images' } }">查看原图</router-link>
-              <router-link :to="{ path: '/inspection/tasks', query: isOssFolder(row) ? { directory: row.prefix } : { keyword: row.taskId } }">{{ isOssFolder(row) ? '同目录任务' : '查看任务' }}</router-link>
+              <router-link v-if="Number(row.canReadTask)" :to="{ path: '/inspection/history', query: { taskId: row.taskId, boardAction: 'images' } }">查看原图</router-link>
+              <template v-if="supervisor">
+                <el-button size="small" type="primary" :disabled="Boolean(dispatchUnavailable(row))" @click="openNew({ upload: row })">派发检测任务</el-button>
+                <small v-if="dispatchUnavailable(row)" class="dispatch-reason">{{ dispatchUnavailable(row) }}</small>
               </template>
-              <router-link v-if="row.creator" :to="{path:'/inspection/uploads/all',query:{uploader:row.creator}}">此人上传</router-link>
+              <template v-else>
+                <router-link v-if="Number(row.canReadTask)" :to="{ path: '/inspection/tasks', query: isOssFolder(row) ? { directory: row.prefix } : { keyword: row.taskId } }">{{ isOssFolder(row) ? '同目录任务' : '查看任务' }}</router-link>
+                <router-link v-if="row.creator" :to="{path:'/inspection/uploads/all',query:{uploader:row.creator}}">此人上传</router-link>
+              </template>
             </template>
             <template v-else>
             <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.phase)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.phase==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
@@ -71,16 +75,19 @@
             <router-link v-if="supervisor && canReview(row)" :to="quality(row,'assign')">分派质检</router-link>
             <router-link v-if="canReview(row) && (supervisor || row.qualityAssignee===user.username)" :to="quality(row,'review')">核对模型结果</router-link>
             <router-link :to="quality(row,'trace')">任务详情</router-link>
+            <button v-if="supervisor && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
             </template>
-            <button v-if="supervisor && isOssFolder(row)" @click="openNew(row.prefix)">以此目录派单</button>
           </div>
         </template></el-table-column>
       </el-table>
       <footer><span>{{ loading ? '正在读取…' : '共 '+total+' 项' }}</span><el-pagination v-if="total" layout="prev, pager, next" :pager-count="5" :page-size="20" :total="total" :current-page="page" @current-change="turn"/></footer>
     </section>
-    <el-dialog v-model="dialog" :title="target?'改派检测员工':'新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false">
+    <el-dialog v-model="dialog" :title="target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false">
       <el-form label-position="top" @submit.prevent>
-        <el-form-item v-if="!target" label="原图文件夹">
+        <el-form-item v-if="sourceUpload" label="原图文件夹">
+          <strong>{{ recordFolderLabel(sourceUpload) }}</strong>
+        </el-form-item>
+        <el-form-item v-else-if="!target" label="原图文件夹">
           <div class="folder-field">
             <div class="folder-status">
               <button v-if="folder && folder!=='detection/'" type="button" @click="browse(parentFolder)">上一级</button>
@@ -96,10 +103,10 @@
             <el-alert v-if="folderError" type="error" :title="folderError" :closable="false"/>
           </div>
         </el-form-item>
-        <el-form-item label="检测员工工号"><QualityAssigneePicker v-model="recipient.username" v-model:user-id="recipient.userId" v-model:revision="recipient.revision" :disabled="busy"/></el-form-item>
+        <el-form-item label="检测员工工号"><QualityAssigneePicker v-model="recipient.username" v-model:user-id="recipient.userId" v-model:revision="recipient.revision" account-label="检测员工工号" :disabled="busy"/></el-form-item>
         <el-alert v-if="saveError" type="error" :title="saveError" :closable="false"/>
       </el-form>
-      <template #footer><el-button :disabled="busy" @click="dialog=false">取消</el-button><el-button type="primary" :loading="busy" :disabled="!recipient.userId || (!target && (!ready || !folderImages || folder!==pathInput))" @click="save">确认派发</el-button></template>
+      <template #footer><el-button :disabled="busy" @click="dialog=false">取消</el-button><el-button type="primary" :loading="busy" :disabled="!canSubmit" @click="save">确认派发</el-button></template>
     </el-dialog>
   </main>
 </template>
@@ -124,8 +131,10 @@ const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.k
 const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number(route.query.page)>0 ? Number(route.query.page) : 1)
 const query=ref(''),uploaderInput=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
 const dialog=ref(false),target=ref(null),recipient=ref({}),busy=ref(false),saveError=ref(''),requestId=ref('')
+const sourceUpload=ref(null)
 const folder=ref('detection/'),pathInput=ref(''),children=ref([]),next=ref(null),folderImages=ref(0),folderError=ref(''),browsing=ref(false),ready=ref(false)
 const editingPath=ref(false)
+const canSubmit=computed(()=>Boolean(recipient.value.userId && (target.value || sourceUpload.value || (ready.value && folderImages.value && folder.value===pathInput.value))))
 const folderChoices=computed(()=>{
   const counts=new Map()
   const choices=children.value.map(path=>{
@@ -175,17 +184,25 @@ function searchColleague(){
 function search(){changeFilters({keyword:query.value.trim() || undefined,uploader:uploadsOnly.value && uploadScope.value==='team' ? uploaderInput.value.trim() || undefined : undefined,page:undefined})}
 function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undefined : String(value)})}
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
+function dispatchUnavailable(row){
+  if(Number(row.uploadPending))return '等待上传确认'
+  if(!isOssFolder(row))return '未关联可派发的原图目录'
+  return ''
+}
 function togglePath(){
   pathInput.value=folder.value
   editingPath.value=!editingPath.value
 }
 const canReview=row=>row.phase==='VERIFYING' && ['PENDING_REVIEW','REVIEWING'].includes(row.flow) && row.reviewStatus==='PENDING'
 const quality=(row,action)=>({path:'/quality/queue',query:{taskId:row.taskId,boardAction:action}})
-function openNew(prefix=''){
+function openNew({prefix='',upload=null}={}){
+  if(upload && dispatchUnavailable(upload))return
+  sourceUpload.value=upload
   editingPath.value=false
-  target.value=null;recipient.value={};requestId.value=crypto.randomUUID();saveError.value='';dialog.value=true;browse(prefix)
+  target.value=null;recipient.value={};requestId.value=crypto.randomUUID();saveError.value='';dialog.value=true
+  if(!upload)browse(prefix)
 }
-function openAssign(row){target.value=row;recipient.value={};saveError.value='';dialog.value=true}
+function openAssign(row){sourceUpload.value=null;target.value=row;recipient.value={};saveError.value='';dialog.value=true}
 async function browse(value,marker){
   const generation=++folderRead
   const path=value.trim() ? value.trim().replace(/\/?$/,'/') : ''
@@ -197,12 +214,12 @@ async function browse(value,marker){
   }catch(e){if(generation===folderRead)folderError.value=message(e)}finally{if(generation===folderRead)browsing.value=false}
 }
 async function save(){
-  if(busy.value)return
+  if(busy.value || !canSubmit.value)return
   busy.value=true;saveError.value=''
   try{
     let taskId=target.value?.taskId
     if(taskId)data(await api.post(url+'/'+taskId+'/assign',{version:target.value.assignmentVersion,recipient:recipient.value}))
-    else taskId=data(await api.post(url,{requestId:requestId.value,prefix:folder.value,recipient:recipient.value},{timeout:60000}))
+    else taskId=data(await api.post(url,{requestId:requestId.value,prefix:sourceUpload.value?.prefix ?? folder.value,recipient:recipient.value},{timeout:60000}))
     dialog.value=false;ElMessage.success('任务已派发')
     const destination={path:'/inspection/tasks',query:{keyword:taskId}}
     if(router.resolve(destination).fullPath===route.fullPath)await load()
@@ -226,6 +243,7 @@ onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
 <style scoped>
 .person-label{color:var(--app-text-secondary)}
+.row-actions .dispatch-reason{flex-basis:100%;white-space:normal}
 .folder-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .folder-metadata{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 12px;color:var(--app-text-secondary);font-size:12px}
 .folder-metadata summary{cursor:pointer}.folder-metadata code{overflow-wrap:anywhere}
