@@ -20,7 +20,7 @@
           <el-button native-type="submit" :disabled="!uploaderInput.trim()">查他人上传</el-button>
         </form>
       </div>
-      <div v-if="directory" class="directory-filter"><span>原图目录 <strong>{{ directory }}</strong></span><el-button link @click="changeFilters({ directory: undefined, page: undefined })">清除目录筛选</el-button></div>
+      <div v-if="directory" class="directory-filter"><span>图片文件夹 <strong>{{ imageFolderLabel(directory) }}</strong></span><el-button link @click="changeFilters({ directory: undefined, page: undefined })">清除目录筛选</el-button></div>
       <div v-if="!supervisor && !uploadsOnly" class="inbox-scope"><el-checkbox :model-value="inbox" @change="value => changeFilters({ inbox: value ? '1' : undefined, page: undefined })">只看待我处理</el-checkbox></div>
       <div class="board-toolbar"><div v-if="!uploadsOnly || supervisor || uploadScope==='mine'" class="phases" aria-label="按任务阶段筛选">
         <button v-for="(label,key) in phases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
@@ -32,9 +32,12 @@
       <el-alert v-if="error" :title="error" type="error" :closable="false"/>
       <el-table :data="rows" v-loading="loading" row-key="taskId" empty-text="当前筛选下没有任务">
         <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
-        <el-table-column :label="uploadsOnly ? '图片文件夹 / 原图位置' : '任务 / 原图目录'" min-width="224"><template #default="{row}">
-          <strong>{{ row.folder || row.taskId }}</strong><small v-if="!uploadsOnly || row.prefix" :title="row.prefix">{{ prefixLabel(row) }}</small>
-          <small v-if="uploadsOnly">{{ row.totalImages ?? '—' }} 张 · {{ row.taskId }}</small>
+        <el-table-column label="图片文件夹" min-width="195"><template #default="{row}">
+          <strong class="folder-name" :title="recordFolderLabel(row)">{{ recordFolderLabel(row) }}</strong>
+          <div v-if="uploadsOnly" class="folder-metadata">
+            <span>{{ row.totalImages ?? '—' }} 张图片</span>
+            <details><summary>任务号</summary><code>{{ row.taskId }}</code></details>
+          </div>
         </template></el-table-column>
         <el-table-column v-if="uploadsOnly" label="上传人" min-width="150"><template #default="{row}">
           <div><span class="person-label">工号：</span>{{ row.creator || '未关联' }}</div>
@@ -77,11 +80,16 @@
     </section>
     <el-dialog v-model="dialog" :title="target?'改派检测员工':'新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false">
       <el-form label-position="top" @submit.prevent>
-        <el-form-item v-if="!target" label="OSS 原图文件夹">
-          <div class="folder-field"><div class="path-bar"><el-input v-model="pathInput" aria-label="OSS 目录路径" placeholder="detection/…/" @keyup.enter="browse(pathInput)"/><el-button @click="browse(pathInput)">打开目录</el-button></div>
-            <div class="folder-status"><button v-if="folder!=='detection/'" type="button" @click="browse(parentFolder)">上一级</button><span>{{ folder }}</span></div>
+        <el-form-item v-if="!target" label="原图文件夹">
+          <div class="folder-field">
+            <div class="folder-status">
+              <button v-if="folder && folder!=='detection/'" type="button" @click="browse(parentFolder)">上一级</button>
+              <strong>{{ imageFolderLabel(folder) || '图片上传' }}</strong>
+              <button type="button" :aria-expanded="editingPath" @click="togglePath">{{ editingPath ? '收起路径' : '输入路径' }}</button>
+            </div>
+            <div v-if="editingPath" class="path-bar"><el-input v-model="pathInput" aria-label="OSS 目录路径" placeholder="detection/…/" @keyup.enter="browse(pathInput)"/><el-button @click="browse(pathInput)">打开目录</el-button></div>
             <div v-loading="browsing" class="folder-children">
-              <button v-for="child in children" :key="child" type="button" @click="browse(child)"><AppIcon name="FolderOpened" :size="15"/>{{ child.slice(folder.length,-1) }}</button>
+              <button v-for="child in folderChoices" :key="child.path" type="button" @click="browse(child.path)"><AppIcon name="FolderOpened" :size="15"/>{{ child.label }}</button>
               <button v-if="next" type="button" @click="browse(folder,next)">更多目录</button>
               <span v-if="!browsing && ready">本目录{{ folderImages ? '已找到 '+folderImages+' 张图片' : '当前尚未找到图片' }}</span>
             </div>
@@ -100,6 +108,7 @@ import {computed,onBeforeUnmount,onMounted,ref,watch} from 'vue'
 import {useRoute,useRouter} from 'vue-router'
 import {ElMessage} from 'element-plus'
 import {captureAccountRequest} from '@/api/request'
+import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import {useUserStore} from '@/stores/user'
 const user=useUserStore(),supervisor=computed(()=>user.role==='SUPERVISOR'),api=captureAccountRequest()
@@ -116,6 +125,21 @@ const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number
 const query=ref(''),uploaderInput=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
 const dialog=ref(false),target=ref(null),recipient=ref({}),busy=ref(false),saveError=ref(''),requestId=ref('')
 const folder=ref('detection/'),pathInput=ref(''),children=ref([]),next=ref(null),folderImages=ref(0),folderError=ref(''),browsing=ref(false),ready=ref(false)
+const editingPath=ref(false)
+const folderChoices=computed(()=>{
+  const counts=new Map()
+  const choices=children.value.map(path=>{
+    const leaf=path.slice(folder.value.length,-1)
+    const label=/^originals?$/i.test(leaf) ? '原图' : imageFolderLabel(path)
+    counts.set(label,(counts.get(label) || 0)+1)
+    return {path,label,leaf}
+  })
+  return choices.map(({path,label,leaf})=>{
+    if(counts.get(label)===1)return {path,label}
+    const suffix=leaf.match(/_det_(\d{8}_\d{6}_[a-f0-9]{8})$/i)
+    return {path,label:suffix ? label+' · '+suffix[1] : leaf}
+  })
+})
 const parentFolder=computed(()=>folder.value.replace(/[^/]+\/$/,''))
 let read=0,folderRead=0,timer
 const url='/api/detection/board'
@@ -151,13 +175,14 @@ function searchColleague(){
 function search(){changeFilters({keyword:query.value.trim() || undefined,uploader:uploadsOnly.value && uploadScope.value==='team' ? uploaderInput.value.trim() || undefined : undefined,page:undefined})}
 function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undefined : String(value)})}
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
-function prefixLabel(row){
-  if(isOssFolder(row) && !row.prefix.startsWith('detection/图片上传/'))return 'OSS 历史原图目录'
-  return row.prefix || '目录未记录'
+function togglePath(){
+  pathInput.value=folder.value
+  editingPath.value=!editingPath.value
 }
 const canReview=row=>row.phase==='VERIFYING' && ['PENDING_REVIEW','REVIEWING'].includes(row.flow) && row.reviewStatus==='PENDING'
 const quality=(row,action)=>({path:'/quality/queue',query:{taskId:row.taskId,boardAction:action}})
 function openNew(prefix=''){
+  editingPath.value=false
   target.value=null;recipient.value={};requestId.value=crypto.randomUUID();saveError.value='';dialog.value=true;browse(prefix)
 }
 function openAssign(row){target.value=row;recipient.value={};saveError.value='';dialog.value=true}
@@ -167,7 +192,7 @@ async function browse(value,marker){
   if(!marker){pathInput.value=path;folder.value=path;children.value=[];folderImages.value=0;next.value=null}
   browsing.value=true;ready.value=false;folderError.value=''
   try{const result=data(await api.get(url+'/folders',{params:{prefix:path || undefined,marker}}));if(generation!==folderRead)return
-    if(!marker){folder.value=result.prefix;pathInput.value=result.prefix}
+    if(!marker){folder.value=result.prefix;pathInput.value=result.prefix;editingPath.value=false}
     children.value.push(...result.folders);next.value=result.next;folderImages.value+=result.imagesOnPage;ready.value=true
   }catch(e){if(generation===folderRead)folderError.value=message(e)}finally{if(generation===folderRead)browsing.value=false}
 }
@@ -201,6 +226,10 @@ onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
 <style scoped>
 .person-label{color:var(--app-text-secondary)}
+.folder-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.folder-metadata{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 12px;color:var(--app-text-secondary);font-size:12px}
+.folder-metadata summary{cursor:pointer}.folder-metadata code{overflow-wrap:anywhere}
+.folder-status strong{color:var(--app-text)}.folder-status button:last-child{margin-left:auto}
 .upload-navigation{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0 16px;padding:0 16px;border-bottom:1px solid var(--app-border)}
 .upload-scopes{display:flex;gap:20px}.upload-scopes a{padding:13px 3px 10px;border-bottom:3px solid transparent;text-decoration:none;color:var(--app-text-secondary);font-weight:600}.upload-scopes a[aria-current=page]{border-color:var(--app-primary);color:var(--app-primary)}
 .colleague-search{display:flex;align-items:center;gap:8px;width:290px;max-width:100%;padding:5px 0}.colleague-search .el-input{min-width:0}
