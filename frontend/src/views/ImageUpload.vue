@@ -145,7 +145,7 @@
               <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="例如 批次A" />
             </el-form-item>
           </div>
-          <p v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">候选仅含已加载人员和设备。采集登记不影响账号或分派。</p>
+          <p v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">上传目录：图片上传 / {{ userStore.role==='SUPERVISOR' ? '主管上传' : '员工上传' }} / {{ userStore.identity?.employeeNumber || '账号绑定工号' }}</p>
 
           <p v-if="folderInfo.imageCount" class="upload-readiness" :data-ready="!missingCaptureFields.length"><AppIcon :name="missingCaptureFields.length ? 'Warning' : 'CircleCheck'" :size="16" />{{ missingCaptureFields.length ? '还需补全：'+missingCaptureFields.join('、') : '采集信息已填写，请核对后上传' }}</p>
           <el-button

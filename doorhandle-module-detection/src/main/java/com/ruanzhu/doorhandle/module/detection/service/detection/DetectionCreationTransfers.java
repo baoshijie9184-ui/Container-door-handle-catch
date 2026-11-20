@@ -19,9 +19,9 @@ public final class DetectionCreationTransfers {
     public DetectionCreationTransfers(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json,OssStorageService oss,OperationsAuditApi audit){this.jdbc=jdbc;this.persistence=new DetectionCreationPersistence(jdbc,json);this.tx=new TransactionTemplate(manager);tx.setTimeout(10);this.json=json;this.oss=oss;this.audit=audit;}
     public void schema(){persistence.validateSchema();}
     /** Caller owns the creation job transaction. PREPARING legacy commands may be initialized before first transfer. */
-    public void prepare(AgentActor actor,String command,String task,String request,DetectionCreationApi.Preview preview){
+    public void prepare(AgentActor actor,String command,String task,String request,DetectionCreationApi.Preview preview,String prefix){
         if(!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()||!oss.isConfigured())throw new IllegalStateException("批准传输清单需要就绪的存储及事务");
-        String bucket=oss.getBucketName(),prefix=oss.normalizeBasePrefix()+"/agent-approved/"+actor.userId()+"/"+task+"/Original/";
+        String bucket=oss.getBucketName();
         var targets=targets(prefix,preview);String fingerprint=hash(write(List.of(bucket,prefix,targets)));
         if(jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.bucketName',?,'$.sourcePrefix',?,'$.manifestSha256',?) WHERE kind='DETECTION_CREATION' AND workflow_id=CONCAT('det-create:',?) AND owner_user_id=? AND status='PREPARING' AND JSON_TYPE(JSON_EXTRACT(payload_json,'$.manifestSha256'))='NULL'",bucket,prefix,fingerprint,command,actor.userId())!=1)throw new IllegalStateException("传输清单不能被替换");
         for(var target:targets)persistence.insertTransfer(command,actor.userId(),target.index(),target.file(),target.key(),target.sha256(),target.bytes(),target.contentType());

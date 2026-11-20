@@ -26,7 +26,9 @@ def create_oss_bucket(settings: KafkaWorkerSettings) -> Any:
     import oss2
 
     auth = oss2.Auth(settings.oss_access_key_id, settings.oss_access_key_secret)
-    return oss2.Bucket(auth, settings.oss_endpoint, settings.oss_bucket)
+    proxy = os.getenv("DETECTION_OSS_PROXY")
+    return oss2.Bucket(auth, settings.oss_endpoint, settings.oss_bucket,
+                       proxies={"https": proxy, "http": proxy} if proxy else None)
 
 
 def folder_source_bucket(fallback):
@@ -78,7 +80,8 @@ def process_folder(task, bucket, detector, expected_model_id, heartbeat, progres
             raise ValueError("目录清单无效")
         reader = folder_source_bucket(bucket)
         root = os.getenv("FOLDER_RESULTS_DIR")
-        uploader = OssResultUploader(LocalFolderResults(root, prefix) if root else bucket)
+        uploader = OssResultUploader(LocalFolderResults(root, prefix) if root else bucket,
+                                     write_prefix=None if root else os.getenv("DETECTION_OSS_WRITE_PREFIX"))
         for index, key in enumerate(task.original_keys, 1):
             name = key.removeprefix(task.source_prefix)
             if not key.startswith(task.source_prefix) or "/" in name or chr(92) in name or not name.lower().endswith((".jpg",".jpeg",".png",".bmp")):
@@ -296,7 +299,7 @@ def process_created_event(
     expected_model_id: Optional[int] = None,
     on_progress: Optional[Callable[[], None]] = None,
 ) -> DetectionTaskFinishedEvent:
-    uploader = OssResultUploader(bucket)
+    uploader = OssResultUploader(bucket, write_prefix=os.getenv("DETECTION_OSS_WRITE_PREFIX"))
     threshold = float(task.threshold) if task.threshold is not None else 0.5
     started_at = datetime.now(BUSINESS_TIMEZONE).isoformat()
     if expected_model_id is not None and task.model_id != expected_model_id:

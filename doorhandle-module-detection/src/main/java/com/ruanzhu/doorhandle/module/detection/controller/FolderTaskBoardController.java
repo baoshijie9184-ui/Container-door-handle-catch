@@ -21,7 +21,7 @@ public class FolderTaskBoardController {
         return Result.success(board.list(phase,keyword,inbox,page,size));
     }
     @GetMapping("/folders")
-    public Result<FolderTaskBoard.Folder> folders(@RequestParam(defaultValue="detection/") String prefix,@RequestParam(required=false) String marker) {
+    public Result<FolderTaskBoard.Folder> folders(@RequestParam(required=false) String prefix,@RequestParam(required=false) String marker) {
         return Result.success(board.folders(prefix,marker));
     }
     @PostMapping

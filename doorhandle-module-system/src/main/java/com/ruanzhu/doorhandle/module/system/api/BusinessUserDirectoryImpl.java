@@ -19,6 +19,7 @@ public class BusinessUserDirectoryImpl implements BusinessUserDirectory,com.ruan
             return new Identity(current.user().getId(),current.user().getUsername(),"SUPERVISOR".equals(current.role()));
         }catch(org.springframework.security.core.AuthenticationException denied){throw new SecurityException("当前账号不具备业务操作资格",denied);}
     }
+    @Override public String employeeNumber(long userId) { return eligibility.employeeNumber(userId); }
     @Override public Identity authenticated() {
         var authentication=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         if(authentication==null || !authentication.isAuthenticated()

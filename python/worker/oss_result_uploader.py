@@ -4,18 +4,25 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 
 class OssResultUploader:
-    def __init__(self, bucket: Any) -> None:
+    def __init__(self, bucket: Any, write_prefix=None) -> None:
         self.bucket = bucket
+        self.write_prefix = write_prefix
+
+    def _put(self, key, content):
+        if self.write_prefix and (not self.write_prefix.endswith("/") or not key.startswith(self.write_prefix)
+                                  or any(part in (".", "..") for part in key.split("/"))):
+            raise ValueError("结果超出已配置的 OSS 写入目录")
+        self.bucket.put_object(key, content)
 
     def upload_preview_image(self, key: str, image: Any) -> str:
         buffer = BytesIO()
         image.save(buffer, format="JPEG", quality=92, subsampling=0)
-        self.bucket.put_object(key, buffer.getvalue())
+        self._put(key, buffer.getvalue())
         return key
 
     def upload_json(self, key: str, payload: Dict[str, Any]) -> str:
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-        self.bucket.put_object(key, body)
+        self._put(key, body)
         return key
 
     def upload_detection_results(

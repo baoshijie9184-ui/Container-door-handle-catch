@@ -3,6 +3,8 @@ package com.ruanzhu.doorhandle.contracts.security;
 /** 业务写操作重新核对账号；身份只能由服务端认证上下文传入。 */
 public interface BusinessUserDirectory {
     record Identity(long userId, String username, boolean supervisor) {}
+    /** The personnel directory owns the canonical employee number of an account. */
+    default String employeeNumber(long userId) { throw new IllegalStateException("当前账号未接入人员名册"); }
     Identity current(long userId, String username);
     /** Refresh and retain the actual actor role for a sensitive business transaction. */
     default Identity lockCurrent(long userId, String username) { throw new SecurityException("业务身份确认锁未接入"); }

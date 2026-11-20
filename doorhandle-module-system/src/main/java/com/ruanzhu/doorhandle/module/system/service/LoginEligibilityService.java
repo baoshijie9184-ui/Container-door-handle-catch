@@ -38,22 +38,38 @@ public class LoginEligibilityService {
         requirePersonnel(id,role,false);
     }
     private void requirePersonnel(long id,String role,boolean lock){
-        var binding=lock?bindings.selectLockedById(id):bindings.selectById(id);
-        if(binding==null||binding.getEmployeeId()==null){
+        var employee=boundEmployee(id,lock);
+        if(employee==null){
             if(!"SUPERVISOR".equals(role))denied();
         }else{
-            EmployeeDirectoryApi.EmployeeIdentity employee;
-            if(lock){
-                try{employee=employees.lock(binding.getEmployeeId());}
-                catch(com.ruanzhu.doorhandle.common.BusinessException unavailable){if(unavailable.getCode()!=404)throw unavailable;denied();return;}
-            }else{
-                var found=employees.findAll(List.of(binding.getEmployeeId()));
-                employee=found.stream().filter(e->Objects.equals(e.id(),binding.getEmployeeId())).findFirst().orElse(null);
-            }
-            if(employee==null||!"ACTIVE".equals(employee.status())||
+            if(!"ACTIVE".equals(employee.status())||
                     (!"DETECTION".equals(employee.employeeType())&& !"SUPERVISOR".equals(employee.employeeType())))denied();
             if("INSPECTOR".equals(role)&&!"DETECTION".equals(employee.employeeType()))denied();
         }
+    }
+    public String employeeNumber(long userId){
+        var employee=boundEmployee(userId,false);
+        if(employee==null || employee.employeeNumber()==null || employee.employeeNumber().isBlank())
+            throw new com.ruanzhu.doorhandle.common.BusinessException(409,"请先为上传账号绑定人员工号");
+        return employee.employeeNumber();
+    }
+    private EmployeeDirectoryApi.EmployeeIdentity boundEmployee(long id,boolean lock){
+        var binding=lock?bindings.selectLockedById(id):bindings.selectById(id);
+        if(binding==null || binding.getEmployeeId()==null)return null;
+        if(lock){
+            try{
+                var employee=employees.lock(binding.getEmployeeId());
+                if(employee==null)denied();
+                return employee;
+            }
+            catch(com.ruanzhu.doorhandle.common.BusinessException unavailable){
+                if(unavailable.getCode()!=404)throw unavailable;
+                throw new DisabledException("绑定的人员不存在");
+            }
+        }
+        return employees.findAll(List.of(binding.getEmployeeId())).stream()
+            .filter(e->Objects.equals(e.id(),binding.getEmployeeId())).findFirst()
+            .orElseThrow(()->new DisabledException("绑定的人员不存在"));
     }
     public String role(User user){
         String value=user.getRole();

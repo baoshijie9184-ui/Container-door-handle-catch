@@ -1,9 +1,22 @@
-# Historical sources are read through the review relay. Folder outputs stay on this review volume.
+# Provider values are read from the same private file as the main monolith.
+x-shared-oss: &shared-oss
+  ALIYUN_OSS_ENDPOINT: ${REVIEW_ALIYUN_OSS_ENDPOINT:?Load the shared OSS connection}
+  ALIYUN_OSS_BUCKET: ${REVIEW_ALIYUN_OSS_BUCKET:?Load the shared OSS connection}
+  ALIYUN_OSS_ACCESS_KEY_ID: ${REVIEW_ALIYUN_OSS_ACCESS_KEY_ID:?Load the shared OSS connection}
+  ALIYUN_OSS_ACCESS_KEY_SECRET: ${REVIEW_ALIYUN_OSS_ACCESS_KEY_SECRET:?Load the shared OSS connection}
+  ALIYUN_OSS_PREVIEW_ENDPOINT: ${REVIEW_ALIYUN_OSS_ENDPOINT}
+  ALIYUN_OSS_PREVIEW_BUCKETNAME: ${REVIEW_ALIYUN_OSS_BUCKET}
+  ALIYUN_OSS_PREVIEW_ACCESSKEYID: ${REVIEW_ALIYUN_OSS_ACCESS_KEY_ID}
+  ALIYUN_OSS_PREVIEW_ACCESSKEYSECRET: ${REVIEW_ALIYUN_OSS_ACCESS_KEY_SECRET}
 services:
-  detection-worker:
-    env_file:
-      - ${REVIEW_OSS_PREVIEW_ENV:?Set the private preview connection file}
+  nginx:
     environment:
+      OSS_UPLOAD_HOST: ${REVIEW_OSS_UPLOAD_HOST:?Use the shared bucket host}
+  detection-worker:
+    environment:
+      <<: *shared-oss
+      DETECTION_OSS_PROXY: http://${REVIEW_BRIDGE_GATEWAY:?Set review gateway}:${REVIEW_OPENAI_RELAY_PORT:-17898}
+      DETECTION_OSS_WRITE_PREFIX: detection/图片上传/
       FOLDER_SOURCE_PROXY: http://${REVIEW_BRIDGE_GATEWAY:?Set review gateway}:${REVIEW_OPENAI_RELAY_PORT:-17898}
       FOLDER_RESULTS_DIR: /var/lib/doorhandle/folder-results
     volumes:
@@ -11,10 +24,12 @@ services:
   backend:
     volumes:
       - folder-results:/var/lib/doorhandle/folder-results:ro
-    env_file:
-      - ${REVIEW_OSS_PREVIEW_ENV:?Set the private preview connection file}
     environment:
+      <<: *shared-oss
       FOLDER_RESULTS_DIR: /var/lib/doorhandle/folder-results
+      ALIYUN_OSS_WRITEPREFIX: detection/图片上传/
+      ALIYUN_OSS_PROXYHOST: ${REVIEW_BRIDGE_GATEWAY:?Set the review bridge gateway}
+      ALIYUN_OSS_PROXYPORT: ${REVIEW_OPENAI_RELAY_PORT:-17898}
       ALIYUN_OSS_PREVIEW_PROXYHOST: ${REVIEW_BRIDGE_GATEWAY:?Set the review bridge gateway}
       ALIYUN_OSS_PREVIEW_PROXYPORT: ${REVIEW_OPENAI_RELAY_PORT:-17898}
 

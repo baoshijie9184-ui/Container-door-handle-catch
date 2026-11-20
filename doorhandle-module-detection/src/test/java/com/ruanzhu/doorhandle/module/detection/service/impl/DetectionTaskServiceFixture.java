@@ -71,6 +71,7 @@ final class DetectionTaskServiceFixture {
         ReflectionTestUtils.setField(service, "maxImageBytes", 10L * 1024L * 1024L);
         var assignmentUsers = Mockito.mock(com.ruanzhu.doorhandle.contracts.agent.AgentUserDirectory.class);
         var actors = Mockito.mock(com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.class);
+        Mockito.lenient().when(actors.employeeNumber(1L)).thenReturn("SUP-0001");
         Mockito.lenient().when(actors.authenticated()).thenReturn(
                 new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(1,"admin",true));
         Mockito.lenient().when(assignmentUsers.inspector("qa-user")).thenReturn(

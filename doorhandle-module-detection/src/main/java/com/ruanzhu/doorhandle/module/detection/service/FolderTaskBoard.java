@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import com.ruanzhu.doorhandle.module.detection.service.detection.UploadFolders;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.*;
@@ -28,6 +29,7 @@ public class FolderTaskBoard {
     private final DetectionTaskAccessPolicy access;
     private final BusinessUserDirectory users;
     private final AgentUserDirectory employees;
+    private final com.ruanzhu.doorhandle.module.infra.service.OssStorageService uploadStorage;
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
 
     private static final String PHASE = """
@@ -99,7 +101,11 @@ public class FolderTaskBoard {
         catch (com.aliyun.oss.ClientException | IllegalStateException e) { throw new BusinessException(503,"无法连接 OSS 图片目录"); }
     }
     public Folder folders(String prefix,String marker) {
-        supervisor(); validatePrefix(prefix);
+        supervisor();
+        String root=UploadFolders.root(uploadStorage.normalizeBasePrefix());
+        if(prefix==null) prefix=root;
+        validatePrefix(prefix);
+        if(root.equals(prefix)) return new Folder(root,List.of(root+UploadFolders.SUPERVISORS+"/",root+UploadFolders.STAFF+"/"),0,null);
         if(marker!=null && (!marker.startsWith(prefix)||marker.length()>1024)) throw bad("目录分页位置无效");
         var list=objects(prefix,marker);
         var folders=list.getCommonPrefixes().stream().filter(path->{

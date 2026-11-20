@@ -33,7 +33,7 @@ public class OssStorageServiceImpl implements OssStorageService {
 
     @Override
     public URL generatePutUrl(String objectKey, String contentType, Duration duration) {
-        ensureConfigured();
+        ensureWritable(objectKey);
         GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(
                 ossProperties.getBucketName(),
                 objectKey,
@@ -79,7 +79,7 @@ public class OssStorageServiceImpl implements OssStorageService {
 
     @Override
     public void putObject(String objectKey, InputStream content, long contentLength, String contentType) {
-        ensureConfigured();
+        ensureWritable(objectKey);
         ObjectMetadata metadata = new ObjectMetadata();
         metadata.setContentLength(contentLength);
         if (org.springframework.util.StringUtils.hasText(contentType)) {
@@ -97,7 +97,7 @@ public class OssStorageServiceImpl implements OssStorageService {
         }catch(java.io.IOException error){throw new BusinessException("业务图片内容暂不可读取");}
     }
     @Override public PutReceipt putApprovedObject(String objectKey,InputStream content,long contentLength,String contentType,String commandId,String fileId,String sha256){
-        ensureConfigured();
+        ensureWritable(objectKey);
         if(objectKey==null||objectKey.isBlank()||objectKey.length()>1024||objectKey.chars().anyMatch(Character::isISOControl)||contentLength<1||contentLength>26214400||commandId==null||!commandId.matches("[a-f0-9-]{36}")||fileId==null||!fileId.matches("[a-f0-9-]{36}")||sha256==null||!sha256.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("批准上传参数无效");
         var metadata=new ObjectMetadata();metadata.setContentLength(contentLength);metadata.setContentType(contentType);
         metadata.setHeader("x-oss-forbid-overwrite","true");metadata.addUserMetadata("doorhandle-command",commandId);metadata.addUserMetadata("doorhandle-file",fileId);metadata.addUserMetadata("doorhandle-sha256",sha256);
@@ -117,7 +117,7 @@ public class OssStorageServiceImpl implements OssStorageService {
         catch(java.io.IOException|java.security.NoSuchAlgorithmException error){throw new BusinessException("对象内容核对未完成");}
     }
     private synchronized OSS approvedWriteClient(){
-        if(approvedWriteClient==null){var config=new com.aliyun.oss.ClientBuilderConfiguration();config.setMaxErrorRetry(0);config.setConnectionTimeout(5000);config.setConnectionRequestTimeout(5000);config.setSocketTimeout(15000);config.setRequestTimeoutEnabled(true);config.setRequestTimeout(60000);
+        if(approvedWriteClient==null){var config=connection();config.setMaxErrorRetry(0);config.setConnectionTimeout(5000);config.setConnectionRequestTimeout(5000);config.setSocketTimeout(15000);config.setRequestTimeoutEnabled(true);config.setRequestTimeout(60000);
             approvedWriteClient=new OSSClientBuilder().build(ossProperties.getEndpoint(),ossProperties.getAccessKeyId(),ossProperties.getAccessKeySecret(),config);
         }return approvedWriteClient;
     }
@@ -128,6 +128,23 @@ public class OssStorageServiceImpl implements OssStorageService {
             ossClient.shutdown();
         }
         if(approvedWriteClient!=null)approvedWriteClient.shutdown();
+    }
+
+    private void ensureWritable(String key) {
+        ensureConfigured();
+        String prefix=ossProperties.getWritePrefix();
+        if (StringUtils.hasText(prefix) && (key == null || !key.startsWith(prefix) || !prefix.endsWith("/")
+                || java.util.Arrays.stream(key.split("/")).anyMatch(part -> part.equals("..") || part.equals("."))))
+            throw new BusinessException(403, "当前环境仅允许写入已配置的上传目录");
+    }
+
+    private com.aliyun.oss.ClientBuilderConfiguration connection() {
+        var config=new com.aliyun.oss.ClientBuilderConfiguration();
+        if(StringUtils.hasText(ossProperties.getProxyHost())){
+            config.setProxyHost(ossProperties.getProxyHost());
+            config.setProxyPort(ossProperties.getProxyPort());
+        }
+        return config;
     }
 
     private void ensureConfigured() {
@@ -141,7 +158,7 @@ public class OssStorageServiceImpl implements OssStorageService {
             ossClient = new OSSClientBuilder().build(
                     ossProperties.getEndpoint(),
                     ossProperties.getAccessKeyId(),
-                    ossProperties.getAccessKeySecret()
+                    ossProperties.getAccessKeySecret(), connection()
             );
         }
         return ossClient;

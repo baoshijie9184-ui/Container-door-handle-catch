@@ -191,3 +191,17 @@ def test_folder_detection_keeps_originals_and_reports_real_progress(tmp_path, mo
     assert json.loads((location/'detection_results.json').read_text())['failedImages']==['bad.jpg']
     assert (location/'good.jpg').is_file()
     assert not (location/'bad.jpg').exists()
+
+
+def test_review_writes_only_under_new_upload_root():
+    import pytest
+    from unittest.mock import Mock
+    from oss_result_uploader import OssResultUploader
+    root = "detection/图片上传/"
+    bucket = Mock()
+    out = OssResultUploader(bucket, write_prefix=root)
+    out.upload_json(root+"员工上传/DET-0001/批次/Result/detection_results.json", {})
+    for key in ("detection/历史/Result/a.json", root+"../历史/a.json"):
+        with pytest.raises(ValueError):
+            out.upload_json(key,{})
+    assert bucket.put_object.call_count == 1

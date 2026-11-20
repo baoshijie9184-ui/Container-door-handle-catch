@@ -37,6 +37,7 @@ import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionNotificationPort;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskDispatchService;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
+import com.ruanzhu.doorhandle.module.detection.service.detection.UploadFolders;
 import com.ruanzhu.doorhandle.module.model.service.ModelService;
 import com.ruanzhu.doorhandle.module.infra.service.OssStorageService;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
@@ -205,12 +206,17 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         String taskId = buildTaskId();
         LocalDateTime now = LocalDateTime.now();
         DetectionCaptureInfo captureInfo = normalizeCaptureInfo(request.getCaptureInfo());
-        String uploadPrefix = buildUploadPrefix(captureInfo);
+        var uploader = assignmentActors.authenticated();
+        String uploadPrefix = UploadFolders.batch(ossStorageService.normalizeBasePrefix(), uploader.supervisor(),
+                assignmentActors.employeeNumber(uploader.userId()), captureInfo.getImageFolderName(), taskId);
         List<String> originalKeys = new ArrayList<>();
         List<DetectionUploadUrlItem> uploadUrls = new ArrayList<>();
+        var uniqueKeys = new java.util.HashSet<String>();
         for (int i = 0; i < request.getFiles().size(); i++) {
             DetectionUploadFileRequest file = request.getFiles().get(i);
             String objectKey = uploadPrefix + buildObjectName(file);
+            if (objectKey.getBytes(StandardCharsets.UTF_8).length>1023) throw new BusinessException(400,"图片路径过长，请缩短文件名或目录名");
+            if (!uniqueKeys.add(objectKey)) throw new BusinessException(400,"图片在本批次中的路径重复，请调整重名文件");
             originalKeys.add(objectKey);
             URL putUrl = ossStorageService.generatePutUrl(
                     objectKey,
@@ -1807,18 +1813,6 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                                     .eq(DetectionTask::getDispositionStatus, "PENDING"))));
             default -> throw new BusinessException("不支持的质检队列: " + queue);
         }
-    }
-
-    private String buildUploadPrefix(DetectionCaptureInfo captureInfo) {
-        return String.join("/",
-                ossStorageService.normalizeBasePrefix(),
-                captureInfo.getCaptureDate(),
-                captureInfo.getRegion(),
-                captureInfo.getCollector(),
-                captureInfo.getDeviceName(),
-                captureInfo.getImageFolderName(),
-                "Original"
-        ) + "/";
     }
 
     private void validateUploadFiles(List<DetectionUploadFileRequest> files) {

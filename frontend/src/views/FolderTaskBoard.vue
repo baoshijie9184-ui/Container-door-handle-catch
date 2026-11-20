@@ -83,16 +83,17 @@ function search(){keyword.value=query.value.trim();page.value=1;load()}
 function turn(value){page.value=value;load()}
 const canReview=row=>row.phase==='VERIFYING' && ['PENDING_REVIEW','REVIEWING'].includes(row.flow) && row.reviewStatus==='PENDING'
 const quality=(row,action)=>({path:'/quality/queue',query:{taskId:row.taskId,boardAction:action}})
-function openNew(prefix='detection/'){
+function openNew(prefix=''){
   target.value=null;recipient.value={};requestId.value=crypto.randomUUID();saveError.value='';dialog.value=true;browse(prefix)
 }
 function openAssign(row){target.value=row;recipient.value={};saveError.value='';dialog.value=true}
 async function browse(value,marker){
   const generation=++folderRead
-  const path=value.trim().replace(/\/?$/,'/')
+  const path=value.trim() ? value.trim().replace(/\/?$/,'/') : ''
   if(!marker){pathInput.value=path;folder.value=path;children.value=[];folderImages.value=0;next.value=null}
   browsing.value=true;ready.value=false;folderError.value=''
-  try{const result=data(await api.get(url+'/folders',{params:{prefix:path,marker}}));if(generation!==folderRead)return
+  try{const result=data(await api.get(url+'/folders',{params:{prefix:path || undefined,marker}}));if(generation!==folderRead)return
+    if(!marker){folder.value=result.prefix;pathInput.value=result.prefix}
     children.value.push(...result.folders);next.value=result.next;folderImages.value+=result.imagesOnPage;ready.value=true
   }catch(e){if(generation===folderRead)folderError.value=message(e)}finally{if(generation===folderRead)browsing.value=false}
 }

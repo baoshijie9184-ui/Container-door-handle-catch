@@ -107,7 +107,7 @@ public class DetectionCreationService implements DetectionCreationApi {
         if(pending>=16)throw new IllegalStateException("本人未完成的检测创建命令已达上限，请先核对已有任务");
         String command=UUID.randomUUID().toString(),task="det_"+UUID.randomUUID().toString().replace("-",""),dispatch=UUID.randomUUID().toString();
         persistence.insertJob(command,actor.userId(),actor.username(),actor.role().name(),requestId,proposalId,task,dispatch,approved.sessionId(),body,digest);
-        if(transfers!=null)transfers.prepare(actor,command,task,requestId,approved);
+        if(transfers!=null)transfers.prepare(actor,command,task,requestId,approved,uploadFolder(actor,task,approved));
         audit(actor,task,requestId,"CREATE_APPROVED","PREPARING");return new Receipt(command,task,dispatch,"PREPARING");
     }
     @Override public Optional<Receipt> receipt(AgentActor actor,String requestId){current(actor);token(requestId);var rows=jdbc.queryForList("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.owner_user_id=? AND w.request_id=?",actor.userId(),requestId);if(rows.isEmpty())return Optional.empty();var row=rows.get(0);assertReadable(actor,decode(row));return Optional.of(receipt(row));}
@@ -132,7 +132,10 @@ public class DetectionCreationService implements DetectionCreationApi {
                 var actor=new AgentActor(((Number)job.get("actor_user_id")).longValue(),(String)job.get("actor_username"),AgentActor.Role.valueOf((String)job.get("actor_role")));
                 // Recording an immutable target is not permission to transfer; current identity is checked after claim.
                 // Do not let a revoked legacy owner block all other owners at the head of the preparation queue.
-                transfers.prepare(actor,(String)job.get("command_id"),(String)job.get("task_id"),(String)job.get("request_id"),decode(job));job=jdbc.queryForMap("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.id=?",job.get("id"));
+                var approved=decode(job);
+                String taskId=(String)job.get("task_id");
+                transfers.prepare(actor,(String)job.get("command_id"),taskId,(String)job.get("request_id"),approved,uploadFolder(actor,taskId,approved));
+                job=jdbc.queryForMap("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.id=?",job.get("id"));
             }
             jdbc.update("UPDATE workflow_instance SET status='UPLOADING',claim_token=?,lease_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE),fence=fence+1,updated_at=UTC_TIMESTAMP(6)"+(transfers!=null?",revision=revision+1":"")+" WHERE kind='DETECTION_CREATION' AND id=? AND status='PREPARING'",owner,job.get("id"));job.put("owner_token",owner);return job;});
         if(row==null)return;
@@ -141,12 +144,15 @@ public class DetectionCreationService implements DetectionCreationApi {
             tx.executeWithoutResult(status->markReview(row,"TRANSFER_OR_COMMIT_UNCONFIRMED"));
         }
     }
+    private String uploadFolder(AgentActor actor,String taskId,Preview approved){
+        return UploadFolders.batch(oss.normalizeBasePrefix(),actor.supervisor(),users.employeeNumber(actor.userId()),approved.capture().imageFolderName(),taskId);
+    }
     private void transfer(Map<String,Object> row){
         var approved=decode(row);var actor=current(new AgentActor(((Number)row.get("actor_user_id")).longValue(),(String)row.get("actor_username"),AgentActor.Role.valueOf((String)row.get("actor_role"))));
         revalidate(actor,approved);
         if(!oss.isConfigured())throw new IllegalStateException("OSS 未配置");
         var manifest=transfers==null?null:transfers.manifest(row,approved);
-        String prefix=manifest==null?oss.normalizeBasePrefix()+"/agent-approved/"+actor.userId()+"/"+row.get("task_id")+"/Original/":manifest.prefix();
+        String prefix=manifest==null?uploadFolder(actor,(String)row.get("task_id"),approved):manifest.prefix();
         var keys=new ArrayList<String>();
         for(var file:approved.images()){
             if(jdbc.update("UPDATE workflow_instance SET lease_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE),updated_at=UTC_TIMESTAMP(6) WHERE kind='DETECTION_CREATION' AND id=? AND claim_token=? AND status='UPLOADING' AND lease_expires_at>UTC_TIMESTAMP(6)",row.get("id"),row.get("owner_token"))!=1)throw new IllegalStateException("创建命令执行权已失效");

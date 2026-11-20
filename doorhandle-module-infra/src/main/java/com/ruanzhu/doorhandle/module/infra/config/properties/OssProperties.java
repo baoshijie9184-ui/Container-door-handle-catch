@@ -13,5 +13,6 @@ public class OssProperties extends OssConnectionProperties {
     private OssConnectionProperties preview;
     private Integer uploadUrlExpireMinutes = 15;
     private Integer previewUrlExpireMinutes = 30;
+    private String writePrefix;
     private String basePrefix = "detection";
 }
