@@ -1,5 +1,6 @@
 <template>
-  <div class="page-shell image-detection-container">
+  <div :class="boardRequest ? 'board-task-dialogs' : 'page-shell image-detection-container'">
+    <template v-if="!boardRequest">
     <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" :opened-version="collaborationOpenedTask?.version" :history-to="collaborationHistoryLink" @refresh="refreshCollaborationView" />
     <PageHero class="page-hero detection-hero command-panel">
       <div>
@@ -510,8 +511,16 @@
         </el-card>
       </el-tab-pane>
     </el-tabs>
+    </template>
+    <el-dialog v-if="boardRequest && openingBoardDialog" :model-value="true" append-to-body title="读取任务" width="min(420px, 95vw)" @update:model-value="emit('dismiss')">
+      <p :role="boardReadError ? 'alert' : 'status'">{{ boardReadError || '正在读取所选任务…' }}</p>
+      <template #footer>
+        <el-button @click="emit('dismiss')">返回列表</el-button>
+        <el-button v-if="boardReadError" type="primary" @click="openBoardRequest">重新读取</el-button>
+      </template>
+    </el-dialog>
 
-    <el-dialog v-model="reviewDialogVisible" class="quality-operation-dialog" title="人工复核" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
+    <el-dialog v-model="reviewDialogVisible" :append-to-body="!!boardRequest" class="quality-operation-dialog" :title="boardRequest ? '核对模型结果' : '人工复核'" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
       <QualityTaskContext :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
       <div v-if="reviewImages"><ModelMaintenanceSummary :summary="reviewImages.maintenance" />
@@ -562,7 +571,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="assignmentDialogVisible" class="quality-operation-dialog" title="分派质检任务" width="min(640px, 96vw)" :close-on-click-modal="!assignmentSubmitting" :close-on-press-escape="!assignmentSubmitting" :show-close="!assignmentSubmitting">
+    <el-dialog v-model="assignmentDialogVisible" :append-to-body="!!boardRequest" class="quality-operation-dialog" :title="boardRequest ? (assignmentTask?.assignee ? '改派校验任务' : '分派校验任务') : '分派质检任务'" width="min(640px, 96vw)" :close-on-click-modal="!assignmentSubmitting" :close-on-press-escape="!assignmentSubmitting" :show-close="!assignmentSubmitting">
       <QualityTaskContext :task="assignmentTask" operation="assignment" />
       <el-form :model="assignmentForm" label-position="top" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment||assignmentTask?.mutationConflicted">
         <el-form-item label="质检站点">
@@ -755,6 +764,8 @@ import TaskResultSnapshot from '../components/TaskResultSnapshot.vue'
 import {taskExecutionCode,taskExecutionLogs} from '../utils/taskExecutionPresentation'
 import '@/assets/task-trace-dialog.css'
 
+const props=defineProps({boardRequest:Object})
+const emit=defineEmits(['dismiss'])
 const userStore = useUserStore()
 const businessTraceScope = computed(() => userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权查看的业务范围')
 const taskStore = useTaskStore()
@@ -1268,7 +1279,40 @@ const readTrace = async (taskId) => {
   }
 }
 
+// Board dialogs use the same forms, access checks and mutations as the workbench.
+const openingBoardDialog=ref(false), boardReadError=ref('')
+const requestedDialogVisible=computed(()=>{
+  if(!props.boardRequest)return false
+  if(props.boardRequest.action==='assign')return assignmentDialogVisible.value
+  if(props.boardRequest.action==='review')return reviewDialogVisible.value
+  return traceDialogVisible.value
+})
+watch(requestedDialogVisible,(open,wasOpen)=>{
+  if(wasOpen && !open && detectionPageActive)emit('dismiss')
+})
+async function openBoardRequest() {
+  const {action,taskId}=props.boardRequest
+  if(action==='images')return openImageBrowser(taskId)
+  if(action==='trace')return openTraceDialog(taskId)
+  openingBoardDialog.value=true
+  boardReadError.value=''
+  const owner=accountSession.stamp()
+  try {
+    const response=await captureAccountRequest().get('/api/detection/tasks/'+encodeURIComponent(taskId))
+    if(!detectionPageActive || !accountSession.current(owner))return
+    const row=response.data?.data
+    if(response.data?.code!==200 || row?.taskId!==taskId)throw Error()
+    if(action==='assign')openAssignmentDialog(row)
+    else openReviewDialog(row)
+    if(requestedDialogVisible.value)openingBoardDialog.value=false
+    else boardReadError.value='任务状态或权限已变化，请返回列表查看最新进度。'
+  } catch {
+    if(detectionPageActive && accountSession.current(owner))boardReadError.value='暂时无法读取这项任务，请重试。'
+  }
+}
+
 onMounted(async () => {
+  if(props.boardRequest){await openBoardRequest();return}
   const initialNavigation = route.fullPath
   const routeTab = String(route.query.tab || route.meta?.detectionTab || '')
   if (validTabs.includes(routeTab)) {
@@ -1337,11 +1381,12 @@ onBeforeUnmount(() => {
   traceReadController?.abort()
   // 不再停止轮询 — 轮询在 store 中，切换页面后继续
   // 只保存当前状态
-  saveTaskList()
+  if(!props.boardRequest)saveTaskList()
 })
 const collaborationEditing=computed(()=>reviewDialogVisible.value||assignmentDialogVisible.value||dispositionDialogVisible.value||reworkDialogVisible.value||reviewSubmitting.value||assignmentSubmitting.value||dispositionSubmitting.value||reworkSubmitting.value)
 async function refreshCollaborationView(){
   if(collaborationEditing.value)return false
+  if(props.boardRequest)return true
   let updated=true
   if(activeTab.value==='history'){await refreshHistory();updated=!historyError.value}
   else if(activeTab.value==='quality'){await loadQualityQueue(qualityQueuePage.value);updated=!qualityQueueError.value}
@@ -1365,6 +1410,7 @@ function discardInaccessibleTasks({requestedIds,missingIds,isCurrent}) {
   if(isCurrent()&&accountSession.current(account))taskStore.forgetTaskAccess(ids,account)
 }
 const { latest:taskChanges } = useLatestChanges(computed(() => {
+  if(props.boardRequest)return []
   const rows=activeTab.value==='history'?historyRecords.value:activeTab.value==='quality'?qualityQueueRecords.value
     :activeTab.value==='work-order-trace'?(workOrderTraceReport.value?.records||[])
       :activeTab.value==='batch-trace'?(batchTraceReport.value?.records||[]):filteredTaskList.value.filter(task=>resourceVersion(task)!==null)
@@ -1397,6 +1443,7 @@ async function validateCollaborationAccess(){
 </script>
 
 <style scoped>
+.board-task-dialogs{display:contents}
 .image-detection-container {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

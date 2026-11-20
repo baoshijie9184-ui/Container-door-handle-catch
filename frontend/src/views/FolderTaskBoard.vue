@@ -28,7 +28,13 @@
         </form>
       </div>
       <div v-if="directory" class="directory-filter"><span>图片文件夹 <strong>{{ imageFolderLabel(directory) }}</strong></span><el-button link @click="changeFilters({ directory: undefined, page: undefined })">清除目录筛选</el-button></div>
-      <div v-if="!supervisor && !uploadsOnly" class="inbox-scope"><el-checkbox :model-value="inbox" @change="value => changeFilters({ inbox: value ? '1' : undefined, page: undefined })">只看待我处理</el-checkbox></div>
+      <div v-if="!supervisor && !uploadsOnly" class="upload-navigation">
+        <nav class="upload-scopes" aria-label="我的任务范围">
+          <router-link v-for="scope in employeeScopes" :key="scope.value" :to="employeeScopeLink(scope.value)" custom v-slot="{ href, navigate }">
+            <a :href="href" :aria-current="inbox === scope.value ? 'page' : 'false'" @click="navigate">{{ scope.label }}</a>
+          </router-link>
+        </nav>
+      </div>
       <div class="board-toolbar"><div v-if="!uploadsOnly || supervisor || uploadScope==='mine'" class="phases" aria-label="按任务阶段筛选">
         <button v-for="(label,key) in listPhases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
       </div><form @submit.prevent="search">
@@ -38,7 +44,7 @@
       </form></div>
       <el-alert v-if="error" :title="error" type="error" :closable="false"/>
       <el-table :data="rows" v-loading="loading" row-key="taskId" empty-text="当前筛选下没有任务">
-        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
+        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="inbox && !keyword && !phase">当前没有待你处理的任务。<router-link :to="employeeScopeLink(false)">查看全部任务</router-link></template><template v-else-if="taskList==='detection' && keyword">当前没有符合条件的检测任务。<router-link :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
         <el-table-column label="图片文件夹" min-width="195"><template #default="{row}">
           <strong class="folder-name" :title="recordFolderLabel(row)">{{ recordFolderLabel(row) }}</strong>
           <div v-if="uploadsOnly" class="folder-metadata">
@@ -66,10 +72,10 @@
         </template></el-table-column>
         <el-table-column v-if="!uploadsOnly && !verificationList" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
         <el-table-column v-if="!uploadsOnly && taskList!=='detection'" :label="verificationList ? '校验员工' : '质检员工'" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交复核' : '受派质检' }}</small></template></el-table-column>
-        <el-table-column label="操作" min-width="215"><template #default="{row}">
+        <el-table-column label="操作" min-width="245"><template #default="{row}">
           <div class="row-actions">
             <template v-if="uploadsOnly">
-              <router-link v-if="previewTaskId(row)" :to="{ path: '/inspection/history', query: { taskId: previewTaskId(row), boardAction: 'images' } }">查看原图</router-link>
+              <router-link v-if="previewTaskId(row)" :to="actionLink(previewTaskId(row), 'images')">查看原图</router-link>
               <el-button v-else link disabled>查看原图</el-button>
               <template v-if="supervisor">
                 <el-button size="small" type="primary" :disabled="Boolean(dispatchUnavailable(row))" @click="openNew({ upload: row })">派发检测任务</el-button>
@@ -84,9 +90,12 @@
             <template v-else>
             <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.modelStatus)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.modelStatus==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
             <el-button v-if="supervisor && row.taskType==='OSS_FOLDER' && row.phase==='READY'" size="small" @click="openAssign(row)">改派检测</el-button>
-            <router-link v-if="supervisor && canReview(row)" :to="quality(row,'assign')">{{ verificationList ? '分派校验任务' : '分派质检' }}</router-link>
-            <router-link v-if="canReview(row) && (supervisor || row.qualityAssignee===user.username)" :to="quality(row,'review')">核对模型结果</router-link>
-            <router-link :to="quality(row,'trace')">任务详情</router-link>
+            <template v-if="canReview(row)">
+              <router-link v-if="supervisor && !row.qualityAssignee" class="next-action" :to="actionLink(row.taskId,'assign')">分派校验任务</router-link>
+              <router-link v-if="supervisor || row.qualityAssignee===user.username" :class="{ 'next-action': !!row.qualityAssignee }" :to="actionLink(row.taskId,'review')">核对模型结果</router-link>
+              <router-link v-if="supervisor && row.qualityAssignee" :to="actionLink(row.taskId,'assign')">改派校验</router-link>
+            </template>
+            <router-link :to="actionLink(row.taskId,'trace')">任务详情</router-link>
             <button v-if="taskList==='detection' && row.taskType!=='OSS_FOLDER' && row.modelStatus!=='UPLOADING' && isOssFolder(row)" @click="openNew({ upload:row })">派发检测任务</button>
             <button v-else-if="supervisor && !taskList && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
             </template>
@@ -95,7 +104,8 @@
       </el-table>
       <footer><span>{{ loading ? '正在读取…' : '共 '+total+' 项' }}</span><el-pagination v-if="total" layout="prev, pager, next" :pager-count="5" :page-size="20" :total="total" :current-page="page" @current-change="turn"/></footer>
     </section>
-    <el-dialog v-model="dialog" :title="target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false">
+    <TaskDialogs v-if="activeAction" :key="activeAction.action + ':' + activeAction.taskId" :board-request="activeAction" @dismiss="closeAction" />
+    <el-dialog v-model="dialog" :title="target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
       <el-form label-position="top" @submit.prevent>
         <el-form-item v-if="sourceUpload" label="原图文件夹">
           <strong>{{ recordFolderLabel(sourceUpload) }}</strong>
@@ -124,13 +134,16 @@
   </main>
 </template>
 <script setup>
-import {computed,onBeforeUnmount,onMounted,ref,watch} from 'vue'
+import {computed,defineAsyncComponent,onBeforeUnmount,onMounted,ref,watch} from 'vue'
 import {useRoute,useRouter} from 'vue-router'
 import {ElMessage} from 'element-plus'
 import {captureAccountRequest} from '@/api/request'
 import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
+import {boardDialog,employeeInbox,listLocation} from '@/utils/taskBoardNavigation'
 import {useUserStore} from '@/stores/user'
+const TaskDialogs=defineAsyncComponent(()=>import('./ImageDetection.vue'))
+const employeeScopes=[{value:true,label:'待我处理'},{value:false,label:'全部任务'}]
 const user=useUserStore(),supervisor=computed(()=>user.role==='SUPERVISOR'),api=captureAccountRequest()
 const router=useRouter(),route=useRoute()
 const uploadScope=computed(()=>route.meta.uploadScope)
@@ -138,7 +151,7 @@ const uploadsOnly=computed(()=>Boolean(uploadScope.value))
 const boardTitle=computed(()=>supervisor.value ? '任务总表' : '我的任务')
 const taskList=computed(()=>route.meta.taskList)
 const verificationList=computed(()=>taskList.value==='verification')
-const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && route.query.inbox==='1')
+const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && employeeInbox(route.query))
 const directory=computed(()=>typeof route.query.directory==='string' ? route.query.directory : '')
 const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校验中',DONE:'完成',FAILED:'异常'}
 const detectionPhases={'':'全部',UPLOADING:'待上传确认',READY:'待检测',DETECTING:'检测中',FAILED:'检测失败',CANCELLED:'已取消',MODEL_DONE:'已检测'}
@@ -188,10 +201,20 @@ async function load(quiet=false){
       params.taskList=taskList.value
     }
     const result=data(await api.get(uploadsOnly.value ? url+'/uploads' : url,{params}))
-    if(generation===read){rows.value=result.items;total.value=result.total;error.value=''}
+    if(generation!==read)return
+    const lastPage=Math.max(1,Math.ceil(result.total/20))
+    if(!activeAction.value && page.value>lastPage){
+      await router.replace({path:route.path,query:{...route.query,page:lastPage===1 ? undefined : String(lastPage)}})
+      return
+    }
+    rows.value=result.items;total.value=result.total;error.value=''
   }catch(e){if(generation===read)error.value=message(e)}finally{if(generation===read)loading.value=false}
 }
-function changeFilters(values){return router.push({path:route.path,query:{...route.query,...values}})}
+function changeFilters(values){
+  const scope=!uploadsOnly.value && !supervisor.value ? {inbox:inbox.value ? '1' : '0'} : {}
+  return router.push({path:route.path,query:{...route.query,...scope,...values}})
+}
+function employeeScopeLink(pending){return {path:'/inspection/tasks',query:{inbox:pending ? '1' : '0'}}}
 function filter(key){changeFilters({phase:key || undefined,page:undefined})}
 function searchColleague(){
   const uploader=uploaderInput.value.trim()
@@ -222,7 +245,19 @@ function togglePath(){
   editingPath.value=!editingPath.value
 }
 const canReview=row=>row.phase==='VERIFYING' && ['PENDING_REVIEW','REVIEWING'].includes(row.flow) && row.reviewStatus==='PENDING'
-const quality=(row,action)=>({path:'/quality/queue',query:{taskId:row.taskId,boardAction:action}})
+const activeAction=computed(()=>boardDialog(route.query,supervisor.value,uploadsOnly.value))
+const listPath=computed(()=>router.resolve(listLocation(route)).fullPath)
+function actionLink(taskId,action){
+  return {path:route.path,query:{...route.query,taskId,boardAction:action},hash:route.hash}
+}
+function closeAction(){
+  if(!activeAction.value)return
+  if(router.options.history.state.back===listPath.value)router.back()
+  else router.replace(listLocation(route))
+}
+watch(activeAction,(current,previous)=>{
+  if(!current && previous && (uploadsOnly.value || taskList.value || route.name==='folderTaskBoard'))load(true)
+})
 function openNew({prefix='',upload=null}={}){
   if(upload && dispatchUnavailable(upload))return
   sourceUpload.value=upload
@@ -248,8 +283,8 @@ async function save(){
     let taskId=target.value?.taskId
     if(taskId)data(await api.post(url+'/'+taskId+'/assign',{version:target.value.assignmentVersion,recipient:recipient.value}))
     else taskId=data(await api.post(url,{requestId:requestId.value,prefix:sourceUpload.value?.prefix ?? folder.value,recipient:recipient.value},{timeout:60000}))
-    dialog.value=false;ElMessage.success('任务已派发')
-    const destination={path:taskList.value==='detection' ? route.path : '/inspection/tasks',query:{keyword:taskId}}
+    dialog.value=false;ElMessage.success('检测任务已派发给 '+recipient.value.username)
+    const destination={path:'/inspection/tasks/detection',query:{keyword:taskId}}
     if(router.resolve(destination).fullPath===route.fullPath)await load()
     else await router.push(destination)
   }catch(e){saveError.value=message(e)}finally{busy.value=false}
@@ -260,12 +295,12 @@ async function start(row){
   try{data(await api.post(url+'/'+row.taskId+'/start',null,{params:{version:row.assignmentVersion}}));ElMessage.success('模型检测已提交');await load()}
   catch(e){ElMessage.error(message(e));await load()}finally{busy.value=false}
 }
-watch(()=>route.fullPath,()=>{
+watch(listPath,()=>{
   if(route.name!=='folderTaskBoard' && !uploadsOnly.value && !taskList.value)return
   query.value=assignedTaskId.value || keyword.value;uploaderInput.value=uploadScope.value==='team' && typeof route.query.uploader==='string' ? route.query.uploader : ''
   dialog.value=false;rows.value=[];total.value=0;error.value='';load()
 },{immediate:true})
-onMounted(()=>{timer=setInterval(()=>{if(!document.hidden&&!dialog.value&&!busy.value&&!loading.value)load(true)},6000)})
+onMounted(()=>{timer=setInterval(()=>{if(!document.hidden&&!dialog.value&&!activeAction.value&&!busy.value&&!loading.value)load(true)},6000)})
 watch(()=>user.accountContext,()=>{read++;folderRead++;rows.value=[];total.value=0;dialog.value=false})
 onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
@@ -281,5 +316,7 @@ onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 .colleague-search{display:flex;align-items:center;gap:8px;width:290px;max-width:100%;padding:5px 0}.colleague-search .el-input{min-width:0}
 .board-toolbar form:has(input[aria-label="上传人工号"]){flex:1 1 400px;max-width:620px;flex-wrap:wrap}.board-toolbar form:has(input[aria-label="上传人工号"]) .el-input{flex:1 1 165px}
 .board-links,.board-links a,.directory-filter{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.board-links a{min-height:32px;padding:0 10px;color:var(--app-primary);text-decoration:none}.board-links a:hover,.row-actions a:hover{text-decoration:underline}.directory-filter{padding:12px 15px;background:var(--app-primary-soft);overflow-wrap:anywhere;font-size:13px}
-.inbox-scope{padding:5px 15px 0}.task-board{display:grid;gap:18px;color:var(--app-text);min-width:0}.board-heading,.board-toolbar,.board-panel footer,.path-bar,.folder-status,.row-actions,.phases,.board-toolbar form{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.board-heading,.board-toolbar,.board-panel footer{justify-content:space-between}.board-heading h1{margin:0;font-size:28px}.board-heading p,.folder-status,.board-panel small,.board-panel footer>span{color:var(--app-text-secondary);font-size:12px}.board-heading p{margin:6px 0 0}.board-panel{min-width:0;border:1px solid var(--app-border);border-radius:12px;background:white;overflow:hidden}.board-toolbar,.board-panel footer{padding:15px}.board-toolbar form{flex-wrap:nowrap;max-width:100%}.board-panel small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phases{gap:3px}.phases button,.row-actions button:not(.el-button),.folder-status button,.folder-children button{border:0;cursor:pointer;background:transparent;color:var(--app-primary);font:inherit}.phases button{padding:7px 10px;border-radius:6px;color:var(--app-text-secondary)}.phases button[aria-pressed=true]{background:var(--app-primary-soft);color:var(--app-primary);font-weight:650}.phase{font-size:13px}.phase[data-phase=DETECTING],.phase[data-phase=DONE]{color:#2156af}.phase[data-phase=VERIFYING]{color:#895005}.phase[data-phase=FAILED]{color:#a53d32}.board-panel progress{display:block;height:5px;width:100px;max-width:100%;margin-top:5px;accent-color:#2866da}.row-actions{gap:7px 12px}.row-actions a,.row-actions button:not(.el-button){color:var(--app-primary);text-decoration:none;font-size:13px;padding:0}.folder-field,.path-bar,.folder-children{width:100%}.path-bar{flex-wrap:nowrap}.folder-status{margin:8px 0;overflow-wrap:anywhere;line-height:1.4}.folder-children{display:grid;max-height:190px;overflow:auto;background:var(--app-surface-muted);padding:6px;border-radius:6px;min-height:36px}.folder-children button{display:flex;align-items:center;gap:7px;padding:5px;text-align:left}.folder-children span{font-size:12px}.board-panel footer{border-top:1px solid var(--app-border)}
+.task-board{display:grid;gap:18px;color:var(--app-text);min-width:0}.board-heading,.board-toolbar,.board-panel footer,.path-bar,.folder-status,.row-actions,.phases,.board-toolbar form{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.board-heading,.board-toolbar,.board-panel footer{justify-content:space-between}.board-heading h1{margin:0;font-size:28px}.board-heading p,.folder-status,.board-panel small,.board-panel footer>span{color:var(--app-text-secondary);font-size:12px}.board-heading p{margin:6px 0 0}.board-panel{min-width:0;border:1px solid var(--app-border);border-radius:12px;background:white;overflow:hidden}.board-toolbar,.board-panel footer{padding:15px}.board-toolbar form{flex-wrap:nowrap;max-width:100%}.board-panel small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phases{gap:3px}.phases button,.row-actions button:not(.el-button),.folder-status button,.folder-children button{border:0;cursor:pointer;background:transparent;color:var(--app-primary);font:inherit}.phases button{padding:7px 10px;border-radius:6px;color:var(--app-text-secondary)}.phases button[aria-pressed=true]{background:var(--app-primary-soft);color:var(--app-primary);font-weight:650}.phase{font-size:13px}.phase[data-phase=DETECTING],.phase[data-phase=DONE]{color:#2156af}.phase[data-phase=VERIFYING]{color:#895005}.phase[data-phase=FAILED]{color:#a53d32}.board-panel progress{display:block;height:5px;width:100px;max-width:100%;margin-top:5px;accent-color:#2866da}.row-actions{gap:7px 12px}.row-actions a,.row-actions button:not(.el-button){color:var(--app-primary);text-decoration:none;font-size:13px;padding:0}.folder-field,.path-bar,.folder-children{width:100%}.path-bar{flex-wrap:nowrap}.folder-status{margin:8px 0;overflow-wrap:anywhere;line-height:1.4}.folder-children{display:grid;max-height:190px;overflow:auto;background:var(--app-surface-muted);padding:6px;border-radius:6px;min-height:36px}.folder-children button{display:flex;align-items:center;gap:7px;padding:5px;text-align:left}.folder-children span{font-size:12px}.board-panel footer{border-top:1px solid var(--app-border)}
+.row-actions a.next-action{display:inline-flex;align-items:center;min-height:28px;padding:0 9px;border-radius:5px;background:var(--app-primary-soft);color:var(--app-primary);font-weight:650}
+.row-actions a:focus-visible,.upload-scopes a:focus-visible{outline:2px solid var(--app-primary);outline-offset:2px}
 </style>

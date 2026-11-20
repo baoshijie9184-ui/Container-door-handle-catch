@@ -9,7 +9,7 @@
           <router-link to="/inspection/tasks/detection"><AppIcon name="Tickets" :size="17" />检测任务列表</router-link>
           <router-link to="/inspection/tasks/verification"><AppIcon name="CircleCheck" :size="17" />校验任务列表</router-link>
         </template>
-        <router-link v-else :to="folderInbox ? '/inspection/tasks?inbox=1' : '/inspection/tasks'"><AppIcon name="Tickets" :size="17" />我的任务<b v-if="folderInbox">{{ folderInbox }} 待办</b></router-link>
+        <router-link v-else to="/inspection/tasks?inbox=1"><AppIcon name="Tickets" :size="17" />我的待办<b v-if="folderInbox">{{ folderInbox }} 项</b></router-link>
         <router-link to="/inspection/uploads/mine"><AppIcon name="FolderOpened" :size="17" />我的上传记录</router-link>
         <router-link to="/employees"><AppIcon name="User" :size="17" />人员目录</router-link>
         <router-link to="/devices"><AppIcon name="Monitor" :size="17" />设备目录</router-link>
