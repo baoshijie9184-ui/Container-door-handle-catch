@@ -29,6 +29,11 @@ const routes = [
         meta: { title: '图像检测', requiresAuth: true, hidden: true, detectionTab: 'workspace' }
       },
       {
+        path: 'inspection/uploads', name: 'imageUploadRecords',
+        component: () => import('../views/FolderTaskBoard.vue'),
+        meta: { title: '图片上传记录', requiresAuth: true }
+      },
+      {
         path: 'inspection/tasks', name: 'folderTaskBoard',
         component: () => import('../views/FolderTaskBoard.vue'),
         meta: { title: '任务总表', requiresAuth: true }

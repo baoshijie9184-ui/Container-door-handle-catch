@@ -1,6 +1,7 @@
 // Presentation metadata only: route guards and API permissions remain authoritative.
 const sections = [
   ['/inspection/tasks', '任务列表', 'Tickets', '检测业务'],
+  ['/inspection/uploads', '图片上传记录', 'FolderOpened', '检测业务'],
   ['/inspection/history', '检测记录', 'DocumentCopy', '检测业务'],
   ['/inspection', '检测工作台', 'Picture', '检测业务'],
   ['/quality/queue', '质检队列', 'CircleCheck', '质量管理'],

@@ -49,14 +49,21 @@ public class FolderTaskBoard {
         w.assigned_user_name AS detector,w.version AS assignmentVersion,
         CASE WHEN w.submitted_at IS NOT NULL AND t.status IN ('COMPLETED','PARTIAL_FAILED') THEN w.assigned_user_name END AS detectionOperator,
         CASE WHEN w.assignee_user_id=CAST(:actor AS CHAR) THEN 1 ELSE 0 END AS mine,
-        t.created_at AS createdAt
+        t.created_at AS createdAt, t.created_by AS creator,
+        DATE_FORMAT(t.created_at,'%Y-%m-%d %H:%i:%s') AS registeredAt
         """;
 
-    public Map<String,Object> list(String phase, String keyword, boolean inbox, int page, int size) {
+    public Map<String,Object> list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, int page, int size) {
         var actor = users.authenticated();
         var scope = access.currentSqlScope("t.");
         var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId());
         String where = " WHERE ("+scope.predicate()+" OR w.assignee_user_id=CAST(:actor AS CHAR))";
+        if (uploadsOnly) where += " AND t.task_type IN ('BATCH','SINGLE','BATCH_DIRECT')";
+        if (directory != null && !directory.isBlank()) {
+            validatePrefix(directory);
+            where += " AND BINARY t.source_oss_prefix=BINARY :directory";
+            args.addValue("directory",directory);
+        }
         if(inbox) {
             where += """
               AND ((w.assignee_user_id=CAST(:actor AS CHAR) AND t.status IN ('READY','FAILED'))
@@ -71,7 +78,7 @@ public class FolderTaskBoard {
         }
         if (keyword != null && !keyword.isBlank()) {
             if(keyword.length()>255) throw bad("搜索内容过长");
-            where+=" AND (LOCATE(:q,t.task_id)>0 OR LOCATE(:q,t.image_folder_name)>0 OR LOCATE(:q,t.source_oss_prefix)>0 OR LOCATE(:q,w.assigned_user_name)>0 OR LOCATE(:q,t.assignee)>0 OR LOCATE(:q,t.reviewer)>0)";
+            where+=" AND (LOCATE(:q,t.task_id)>0 OR LOCATE(:q,t.image_folder_name)>0 OR LOCATE(:q,t.source_oss_prefix)>0 OR LOCATE(:q,t.created_by)>0 OR LOCATE(:q,w.assigned_user_name)>0 OR LOCATE(:q,t.assignee)>0 OR LOCATE(:q,t.reviewer)>0)";
             args.addValue("q",keyword.strip());
         }
         long count = db.queryForObject("SELECT COUNT(*)"+SOURCE+where,args,Long.class);

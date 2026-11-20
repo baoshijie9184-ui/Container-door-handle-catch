@@ -17,8 +17,9 @@ public class FolderTaskBoardController {
     private final FolderTaskBoard board;
     @GetMapping
     public Result<Map<String,Object>> list(@RequestParam(required=false) String phase,@RequestParam(required=false) String keyword,
-            @RequestParam(defaultValue="false") boolean inbox,@RequestParam(defaultValue="1") @Min(1) int page,@RequestParam(defaultValue="20") @Min(1) @Max(100) int size){
-        return Result.success(board.list(phase,keyword,inbox,page,size));
+            @RequestParam(required=false) String directory, @RequestParam(defaultValue="false") boolean inbox, @RequestParam(defaultValue="false") boolean uploadsOnly,
+            @RequestParam(defaultValue="1") @Min(1) int page,@RequestParam(defaultValue="20") @Min(1) @Max(100) int size){
+        return Result.success(board.list(phase,keyword,directory,inbox,uploadsOnly,page,size));
     }
     @GetMapping("/folders")
     public Result<FolderTaskBoard.Folder> folders(@RequestParam(required=false) String prefix,@RequestParam(required=false) String marker) {

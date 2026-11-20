@@ -1,6 +1,8 @@
 <template>
   <div class="page-shell upload-container">
-    <PageHero title="图片上传" />
+    <PageHero title="图片上传">
+      <template #actions><router-link to="/inspection/uploads" class="upload-next-link"><AppIcon name="FolderOpened" :size="17" />图片上传记录</router-link></template>
+    </PageHero>
 
     <ol class="upload-flow" aria-label="图片上传与检测步骤">
       <li :aria-current="uploadStep === 1 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Picture" :size="20" /></span><div><strong>1 选择图片</strong></div></li>
@@ -159,7 +161,7 @@
             <el-icon><UploadFilled /></el-icon>
             {{ uploadingToOss ? '正在上传原图…' : uploadAttempted ? '本次上传已发起' : '上传原图并提交检测' }}
           </el-button>
-          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><strong>请在上传历史核对本次结果</strong><p>已保留本次选择。新建任务请重新选择文件夹。</p><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
+          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><router-link to="/inspection/uploads">查看图片上传记录</router-link><p>已保留本次选择。新建任务请重新选择文件夹。</p><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
 
           <Transition name="upload-feedback"><div v-if="uploadingTask" class="upload-progress-card">
             <div class="upload-progress-header">
@@ -180,7 +182,7 @@
       <el-card class="upload-card history-card" shadow="never">
         <template #header>
           <div class="card-title-row">
-            <span>上传历史</span>
+            <span>最近任务</span>
             <el-badge v-if="taskList.length" :value="taskList.length"  />
             <el-button size="small" link :loading="refreshing || historyLoading" @click="refreshHistory" title="刷新上传历史" aria-label="刷新上传历史">
               <template #icon><el-icon><Refresh /></el-icon></template>
@@ -231,7 +233,7 @@
           />
           </label>
         </div>
-        <p class="upload-history-cache-note">仅筛选已加载记录。清除缓存只影响本机，服务器任务和原图仍保留。</p>
+        <p class="upload-history-cache-note">仅筛选已加载任务。<router-link to="/inspection/uploads">查询全部图片上传记录</router-link></p>
         <div class="upload-history-scope"><span>{{ historyLoading ? '正在核对上传记录…' : `已加载 ${taskList.length} 条，当前匹配 ${uploadHistory.length} 条` }}</span><el-button v-if="hasHistoryFilters" link size="small" @click="resetHistoryFilters">清空筛选</el-button></div>
         <el-alert v-if="historyError && uploadHistory.length" :title="historyError + '；以下为先前已加载的记录，请刷新核对。'" type="error" show-icon :closable="false" />
         <CollectionEmptyState

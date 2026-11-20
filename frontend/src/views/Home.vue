@@ -6,6 +6,7 @@
       </div>
       <nav class="shared-directories" aria-label="公共资料">
         <router-link :to="!isSupervisor && folderInbox ? '/inspection/tasks?inbox=1' : '/inspection/tasks'"><AppIcon name="Tickets" :size="17" />{{ isSupervisor ? '任务总表' : '我的任务' }}<b v-if="!isSupervisor && folderInbox">{{ folderInbox }} 待办</b></router-link>
+        <router-link to="/inspection/uploads"><AppIcon name="FolderOpened" :size="17" />图片上传记录</router-link>
         <router-link to="/employees"><AppIcon name="User" :size="17" />人员目录</router-link>
         <router-link to="/devices"><AppIcon name="Monitor" :size="17" />设备目录</router-link>
         <router-link to="/models"><AppIcon name="Cpu" :size="17" />检测模型</router-link>

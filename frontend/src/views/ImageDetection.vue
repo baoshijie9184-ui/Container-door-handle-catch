@@ -1302,6 +1302,7 @@ onMounted(async () => {
     selectedTaskId.value = String(queryTaskId)
     const action=route.query.boardAction
     if (action==='trace') openTraceDialog(String(queryTaskId))
+    if (action==='images') openImageBrowser(String(queryTaskId))
     if (action==='assign' || action==='review') {
       try {
         const response=await captureAccountRequest().get('/api/detection/tasks/'+encodeURIComponent(queryTaskId))
