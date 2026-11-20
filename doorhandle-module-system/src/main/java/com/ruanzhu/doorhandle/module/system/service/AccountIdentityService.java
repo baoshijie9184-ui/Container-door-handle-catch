@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeDirectoryApi;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeAccountNumbers;
+import com.ruanzhu.doorhandle.contracts.organization.EmployeeNumberDirectory.EmployeeLabel;
 import com.ruanzhu.doorhandle.module.system.dto.AccountIdentity;
 import com.ruanzhu.doorhandle.module.system.entity.*;
 import com.ruanzhu.doorhandle.module.system.mapper.*;
@@ -110,7 +111,8 @@ public class AccountIdentityService implements EmployeeAccountNumbers {
         if (!ids.isEmpty() && !usernames.isEmpty()) query.or();
         if (!usernames.isEmpty()) query.in(User::getUsername,usernames);
         return identities(users.selectList(query)).stream().filter(row -> row.employeeNumber()!=null)
-                .map(row -> new BoundAccount(row.userId(),row.username(),row.employeeNumber())).toList();
+                .map(row -> new BoundAccount(row.userId(), row.username(),
+                        new EmployeeLabel(row.employeeNumber(), row.employeeName()))).toList();
     }
 
     private List<AccountIdentity> identities(List<User> accounts) {

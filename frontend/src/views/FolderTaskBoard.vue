@@ -36,8 +36,12 @@
           <strong>{{ row.folder || row.taskId }}</strong><small v-if="!uploadsOnly || row.prefix" :title="row.prefix">{{ prefixLabel(row) }}</small>
           <small v-if="uploadsOnly">{{ row.totalImages ?? '—' }} 张 · {{ row.taskId }}</small>
         </template></el-table-column>
-        <el-table-column v-if="uploadsOnly" label="上传人工号 / 登记时间" min-width="154"><template #default="{row}">
-          {{ row.creator || '工号未关联' }}<small>{{ row.registeredAt || '—' }}</small>
+        <el-table-column v-if="uploadsOnly" label="上传人" min-width="150"><template #default="{row}">
+          <div><span class="person-label">工号：</span>{{ row.creator || '未关联' }}</div>
+          <div><span class="person-label">姓名：</span>{{ row.creatorName || '—' }}</div>
+        </template></el-table-column>
+        <el-table-column v-if="uploadsOnly" label="登记时间" min-width="155"><template #default="{row}">
+          {{ row.registeredAt || '—' }}
         </template></el-table-column>
         <el-table-column :label="uploadsOnly ? '记录状态' : '进度'" min-width="140"><template #default="{row}">
           <template v-if="uploadsOnly && (Number(row.uploadPending) || !Number(row.canReadTask))">{{ Number(row.uploadPending) ? '上传待确认' : '已登记' }}</template>
@@ -196,6 +200,7 @@ watch(()=>user.accountContext,()=>{read++;folderRead++;rows.value=[];total.value
 onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
 <style scoped>
+.person-label{color:var(--app-text-secondary)}
 .upload-navigation{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0 16px;padding:0 16px;border-bottom:1px solid var(--app-border)}
 .upload-scopes{display:flex;gap:20px}.upload-scopes a{padding:13px 3px 10px;border-bottom:3px solid transparent;text-decoration:none;color:var(--app-text-secondary);font-weight:600}.upload-scopes a[aria-current=page]{border-color:var(--app-primary);color:var(--app-primary)}
 .colleague-search{display:flex;align-items:center;gap:8px;width:290px;max-width:100%;padding:5px 0}.colleague-search .el-input{min-width:0}

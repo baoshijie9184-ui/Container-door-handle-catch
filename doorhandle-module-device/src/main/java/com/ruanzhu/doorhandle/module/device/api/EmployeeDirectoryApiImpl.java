@@ -15,11 +15,13 @@ import java.util.List;
 public class EmployeeDirectoryApiImpl implements EmployeeDirectoryApi, EmployeeNumberDirectory {
     private final EmployeeMapper employees;
     public EmployeeDirectoryApiImpl(EmployeeMapper employees) { this.employees = employees; }
-    public List<String> existingNumbers(Collection<String> numbers) {
+    @Override
+    public List<EmployeeLabel> findByNumbers(Collection<String> numbers) {
         if (numbers.isEmpty()) return List.of();
         if (numbers.size()>100) throw new IllegalArgumentException("员工查询最多 100 项");
-        return employees.selectList(new LambdaQueryWrapper<Employee>().select(Employee::getEmployeeNumber)
-                .in(Employee::getEmployeeNumber,numbers)).stream().map(Employee::getEmployeeNumber).toList();
+        return employees.selectList(new LambdaQueryWrapper<Employee>().select(Employee::getEmployeeNumber, Employee::getName)
+                .in(Employee::getEmployeeNumber,numbers)).stream()
+                .map(employee -> new EmployeeLabel(employee.getEmployeeNumber(), employee.getName())).toList();
     }
     public List<EmployeeIdentity> findAll(Collection<Long> ids) {
         if (ids.isEmpty()) return List.of();

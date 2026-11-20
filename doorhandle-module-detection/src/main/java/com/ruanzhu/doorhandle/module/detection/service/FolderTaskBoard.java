@@ -5,6 +5,7 @@ import com.ruanzhu.doorhandle.contracts.agent.AgentUserDirectory;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeAccountNumbers;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeNumberDirectory;
+import com.ruanzhu.doorhandle.contracts.organization.EmployeeNumberDirectory.EmployeeLabel;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskServiceImpl;
 import com.ruanzhu.doorhandle.module.infra.service.OssPreviewStorage;
@@ -104,10 +105,10 @@ public class FolderTaskBoard {
         if (uploader != null && !uploader.isBlank()) {
             if (uploader.length()>64) throw bad("上传账号过长");
             String name = uploader.strip();
-            var numbers=personnel.existingNumbers(List.of(name));
-            if (numbers.isEmpty()) return new PageRows(0,List.of());
-            String number=numbers.get(0);
-            var owner=staff.resolve(List.of(),List.of(number)).stream().filter(a->number.equals(a.employeeNumber())).findFirst();
+            var matches=personnel.findByNumbers(List.of(name));
+            if (matches.isEmpty()) return new PageRows(0,List.of());
+            String number=matches.get(0).employeeNumber();
+            var owner=staff.resolve(List.of(),List.of(number)).stream().filter(a->number.equals(a.employee().employeeNumber())).findFirst();
             where += " AND (t.created_user_id=:uploaderId OR (t.created_user_id IS NULL AND BINARY t.created_by=BINARY :number))";
             args.addValue("number",number).addValue("uploaderId",owner.map(EmployeeAccountNumbers.BoundAccount::userId).orElse(null));
         }
@@ -137,18 +138,20 @@ public class FolderTaskBoard {
             if (row.get("recordedId") instanceof Number id) ids.add(id.longValue());
             else if (row.get("recordedName") instanceof String name) names.add(name);
         }
-        var byId=new HashMap<Long,String>();
-        var byName=new HashMap<String,String>();
+        var byId=new HashMap<Long,EmployeeLabel>();
+        var byName=new HashMap<String,EmployeeLabel>();
         for (var person:staff.resolve(ids,names)) {
-            byId.put(person.userId(),person.employeeNumber());
-            byName.put(person.username(),person.employeeNumber());
+            byId.put(person.userId(),person.employee());
+            byName.put(person.username(),person.employee());
         }
         names.removeAll(byName.keySet());
-        for (var number:personnel.existingNumbers(names)) byName.put(number,number);
+        for (var employee:personnel.findByNumbers(names)) byName.put(employee.employeeNumber(),employee);
         for (var row:result.items()) {
             var id=row.remove("recordedId");
             var name=row.remove("recordedName");
-            row.put("creator",id instanceof Number n ? byId.get(n.longValue()) : byName.get(name));
+            var uploaderLabel=id instanceof Number n ? byId.get(n.longValue()) : byName.get(name);
+            row.put("creator",uploaderLabel == null ? null : uploaderLabel.employeeNumber());
+            row.put("creatorName",uploaderLabel == null ? null : uploaderLabel.name());
         }
         return result;
     }
