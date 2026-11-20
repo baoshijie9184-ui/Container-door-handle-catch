@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeDirectoryApi;
+import com.ruanzhu.doorhandle.contracts.organization.EmployeeAccountNumbers;
 import com.ruanzhu.doorhandle.module.system.dto.AccountIdentity;
 import com.ruanzhu.doorhandle.module.system.entity.*;
 import com.ruanzhu.doorhandle.module.system.mapper.*;
@@ -17,7 +18,7 @@ import java.util.stream.Collectors;
 
 /** 系统模块拥有账号关联；员工事实通过跨模块门面实时读取，不缓存权限身份。 */
 @Service
-public class AccountIdentityService {
+public class AccountIdentityService implements EmployeeAccountNumbers {
     private final UserMapper users;
     private final AccountEmployeeBindingMapper bindings;
     private final OrganizationBindingAuditStore audits;
@@ -101,6 +102,17 @@ public class AccountIdentityService {
             throw new AccessDeniedException("当前账号没有组织管理权限");
         return user;
     }
+    @Override
+    public List<BoundAccount> resolve(Collection<Long> ids, Collection<String> usernames) {
+        if (ids.isEmpty() && usernames.isEmpty()) return List.of();
+        var query = new LambdaQueryWrapper<User>().select(User::getId,User::getUsername,User::getRole);
+        if (!ids.isEmpty()) query.in(User::getId,ids);
+        if (!ids.isEmpty() && !usernames.isEmpty()) query.or();
+        if (!usernames.isEmpty()) query.in(User::getUsername,usernames);
+        return identities(users.selectList(query)).stream().filter(row -> row.employeeNumber()!=null)
+                .map(row -> new BoundAccount(row.userId(),row.username(),row.employeeNumber())).toList();
+    }
+
     private List<AccountIdentity> identities(List<User> accounts) {
         if (accounts.isEmpty()) return List.of();
         var links = bindings.selectByUserIds(accounts.stream().map(User::getId).toList()).stream()

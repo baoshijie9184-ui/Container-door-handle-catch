@@ -184,7 +184,7 @@ const navGroups = [
     icon: Picture,
     items: [
       { path: '/inspection/tasks', label: '任务列表', desc: 'OSS 文件夹、检测派单与质检进度' },
-      { path: '/inspection/uploads', label: '图片上传记录', desc: '按批次查原图、上传账号和关联任务' },
+      { path: '/inspection/uploads', label: '图片上传记录', desc: '我的上传、按工号查询和批次原图' },
       { path: '/upload', label: '图像采集上传', desc: '原图入库与任务创建' },
       { path: '/inspection/workbench', label: '检测工作台', desc: '模型推理与任务执行' },
       { path: '/inspection/history', label: '检测记录', desc: '历史结果与报告' }

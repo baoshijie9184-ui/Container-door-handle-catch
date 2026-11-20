@@ -8,32 +8,47 @@
       </nav>
     </header>
     <section class="board-panel" aria-label="任务列表">
+      <nav v-if="uploadsOnly" class="upload-scopes" aria-label="上传记录范围">
+        <router-link v-for="item in uploadScopes" :key="item.value" :to="{path:'/inspection/uploads',query:{scope:item.value}}"
+          :aria-current="uploadScope===item.value ? 'page' : undefined">{{ item.label }}</router-link>
+      </nav>
       <div v-if="directory" class="directory-filter"><span>原图目录 <strong>{{ directory }}</strong></span><el-button link @click="changeFilters({ directory: undefined, page: undefined })">清除目录筛选</el-button></div>
       <div v-if="!supervisor && !uploadsOnly" class="inbox-scope"><el-checkbox :model-value="inbox" @change="value => changeFilters({ inbox: value ? '1' : undefined, page: undefined })">只看待我处理</el-checkbox></div>
-      <div class="board-toolbar"><div class="phases" aria-label="按任务阶段筛选">
+      <div class="board-toolbar"><div v-if="!uploadsOnly || supervisor || uploadScope==='mine'" class="phases" aria-label="按任务阶段筛选">
         <button v-for="(label,key) in phases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
-      </div><form @submit.prevent="search"><el-input v-model="query" maxlength="255" :placeholder="uploadsOnly ? '搜文件夹、任务或上传账号' : '搜目录、任务或工号'" aria-label="搜索任务" clearable @clear="search"/><el-button native-type="submit">查询</el-button></form></div>
+      </div><form @submit.prevent="search">
+        <el-input v-if="uploadsOnly && uploadScope==='team'" v-model="uploaderInput" maxlength="50" placeholder="上传人工号" aria-label="上传人工号" clearable @clear="search"/>
+        <el-input v-model="query" maxlength="255" :placeholder="uploadsOnly ? '搜文件夹或任务号' : '搜目录、任务或工号'" aria-label="搜索任务" clearable @clear="search"/>
+        <el-button native-type="submit">查询</el-button>
+      </form></div>
       <el-alert v-if="error" :title="error" type="error" :closable="false"/>
       <el-table :data="rows" v-loading="loading" row-key="taskId" empty-text="当前筛选下没有任务">
+        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link :to="{path:'/inspection/uploads',query:{scope:'team'}}">查看全部上传</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
         <el-table-column :label="uploadsOnly ? '图片文件夹 / 原图位置' : '任务 / 原图目录'" min-width="224"><template #default="{row}">
-          <strong>{{ row.folder || row.taskId }}</strong><small :title="row.prefix">{{ row.prefix || '目录未记录' }}</small>
-          <small v-if="uploadsOnly">{{ row.totalImages ?? '—' }} 张 · {{ row.modelStatus==='UPLOADING' ? '上传待确认' : row.taskId }}</small>
+          <strong>{{ row.folder || row.taskId }}</strong><small v-if="!uploadsOnly || row.prefix" :title="row.prefix">{{ prefixLabel(row) }}</small>
+          <small v-if="uploadsOnly">{{ row.totalImages ?? '—' }} 张 · {{ row.taskId }}</small>
         </template></el-table-column>
-        <el-table-column v-if="uploadsOnly" label="上传账号 / 登记时间" min-width="154"><template #default="{row}">
-          {{ row.creator || '未记录' }}<small>{{ row.registeredAt || '—' }}</small>
+        <el-table-column v-if="uploadsOnly" label="上传人工号 / 登记时间" min-width="154"><template #default="{row}">
+          {{ row.creator || '工号未关联' }}<small>{{ row.registeredAt || '—' }}</small>
         </template></el-table-column>
-        <el-table-column label="进度" min-width="140"><template #default="{row}">
+        <el-table-column :label="uploadsOnly ? '记录状态' : '进度'" min-width="140"><template #default="{row}">
+          <template v-if="uploadsOnly && (Number(row.uploadPending) || !Number(row.canReadTask))">{{ Number(row.uploadPending) ? '上传待确认' : '已登记' }}</template>
+          <template v-else>
           <b class="phase" :data-phase="row.phase">{{ phases[row.phase] }}</b>
           <small>模型已处理 {{ row.processedImages ?? 0 }} / {{ row.totalImages ?? '—' }} 张<span v-if="row.failedImages"> · {{ row.failedImages }} 张失败</span></small>
           <progress v-if="row.totalImages" :value="row.processedImages || 0" :max="row.totalImages" aria-label="模型图片处理进度"/>
+          </template>
         </template></el-table-column>
         <el-table-column v-if="!uploadsOnly" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
         <el-table-column v-if="!uploadsOnly" label="质检员工" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交复核' : '受派质检' }}</small></template></el-table-column>
         <el-table-column label="操作" min-width="215"><template #default="{row}">
           <div class="row-actions">
             <template v-if="uploadsOnly">
+              <template v-if="Number(row.canReadTask)">
               <router-link :to="{ path: '/inspection/history', query: { taskId: row.taskId, boardAction: 'images' } }">查看原图</router-link>
               <router-link :to="{ path: '/inspection/tasks', query: isOssFolder(row) ? { directory: row.prefix } : { keyword: row.taskId } }">{{ isOssFolder(row) ? '同目录任务' : '查看任务' }}</router-link>
+              </template>
+              <router-link v-if="row.creator" :to="{path:'/inspection/uploads',query:{scope:'team',uploader:row.creator}}">此人上传</router-link>
             </template>
             <template v-else>
             <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.phase)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.phase==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
@@ -78,6 +93,8 @@ import {useUserStore} from '@/stores/user'
 const user=useUserStore(),supervisor=computed(()=>user.role==='SUPERVISOR'),api=captureAccountRequest()
 const router=useRouter(),route=useRoute()
 const uploadsOnly=computed(()=>route.name==='imageUploadRecords')
+const uploadScopes=[{value:'mine',label:'我的上传'},{value:'team',label:'全部上传'}]
+const uploadScope=computed(()=>uploadScopes.some(item=>item.value===route.query.scope) ? route.query.scope : supervisor.value ? 'team' : 'mine')
 const boardTitle=computed(()=>supervisor.value ? '任务总表' : '我的任务')
 const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && route.query.inbox==='1')
 const directory=computed(()=>typeof route.query.directory==='string' ? route.query.directory : '')
@@ -85,7 +102,7 @@ const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校
 const phase=computed(()=>Object.hasOwn(phases,route.query.phase) ? route.query.phase : '')
 const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.keyword : '')
 const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number(route.query.page)>0 ? Number(route.query.page) : 1)
-const query=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
+const query=ref(''),uploaderInput=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
 const dialog=ref(false),target=ref(null),recipient=ref({}),busy=ref(false),saveError=ref(''),requestId=ref('')
 const folder=ref('detection/'),pathInput=ref(''),children=ref([]),next=ref(null),folderImages=ref(0),folderError=ref(''),browsing=ref(false),ready=ref(false)
 const parentFolder=computed(()=>folder.value.replace(/[^/]+\/$/,''))
@@ -96,15 +113,28 @@ const message=e=>e.response?.data?.message || e.message || '操作失败，请�
 async function load(quiet=false){
   const generation=++read
   if(!quiet)loading.value=true
-  try{const result=data(await api.get(url,{params:{page:page.value,size:20,inbox:inbox.value,uploadsOnly:uploadsOnly.value,keyword:keyword.value,directory:directory.value || undefined,phase:phase.value}}))
+  try{
+    const params={page:page.value,size:20,keyword:keyword.value,phase:phase.value}
+    if(uploadsOnly.value){
+      params.scope=uploadScope.value
+      if(uploadScope.value==='team' && typeof route.query.uploader==='string')params.uploader=route.query.uploader
+    } else {
+      params.inbox=inbox.value
+      params.directory=directory.value || undefined
+    }
+    const result=data(await api.get(uploadsOnly.value ? url+'/uploads' : url,{params}))
     if(generation===read){rows.value=result.items;total.value=result.total;error.value=''}
   }catch(e){if(generation===read)error.value=message(e)}finally{if(generation===read)loading.value=false}
 }
 function changeFilters(values){return router.push({path:route.path,query:{...route.query,...values}})}
 function filter(key){changeFilters({phase:key || undefined,page:undefined})}
-function search(){changeFilters({keyword:query.value.trim() || undefined,page:undefined})}
+function search(){changeFilters({keyword:query.value.trim() || undefined,uploader:uploadsOnly.value && uploadScope.value==='team' ? uploaderInput.value.trim() || undefined : undefined,page:undefined})}
 function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undefined : String(value)})}
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
+function prefixLabel(row){
+  if(isOssFolder(row) && !row.prefix.startsWith('detection/图片上传/'))return 'OSS 历史原图目录'
+  return row.prefix || '目录未记录'
+}
 const canReview=row=>row.phase==='VERIFYING' && ['PENDING_REVIEW','REVIEWING'].includes(row.flow) && row.reviewStatus==='PENDING'
 const quality=(row,action)=>({path:'/quality/queue',query:{taskId:row.taskId,boardAction:action}})
 function openNew(prefix=''){
@@ -142,13 +172,16 @@ async function start(row){
 }
 watch(()=>route.fullPath,()=>{
   if(!['folderTaskBoard','imageUploadRecords'].includes(route.name))return
-  query.value=keyword.value;dialog.value=false;rows.value=[];total.value=0;error.value='';load()
+  query.value=keyword.value;uploaderInput.value=typeof route.query.uploader==='string' ? route.query.uploader : ''
+  dialog.value=false;rows.value=[];total.value=0;error.value='';load()
 },{immediate:true})
 onMounted(()=>{timer=setInterval(()=>{if(!document.hidden&&!dialog.value&&!busy.value&&!loading.value)load(true)},6000)})
 watch(()=>user.accountContext,()=>{read++;folderRead++;rows.value=[];total.value=0;dialog.value=false})
 onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
 <style scoped>
+.upload-scopes{display:flex;gap:20px;padding:0 16px;border-bottom:1px solid var(--app-border)}.upload-scopes a{padding:13px 3px 10px;border-bottom:3px solid transparent;text-decoration:none;color:var(--app-text-secondary);font-weight:600}.upload-scopes a[aria-current=page]{border-color:var(--app-primary);color:var(--app-primary)}
+.board-toolbar form:has(input[aria-label="上传人工号"]){flex:1 1 400px;max-width:620px;flex-wrap:wrap}.board-toolbar form:has(input[aria-label="上传人工号"]) .el-input{flex:1 1 165px}
 .board-links,.board-links a,.directory-filter{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.board-links a{min-height:32px;padding:0 10px;color:var(--app-primary);text-decoration:none}.board-links a:hover,.row-actions a:hover{text-decoration:underline}.directory-filter{padding:12px 15px;background:var(--app-primary-soft);overflow-wrap:anywhere;font-size:13px}
 .inbox-scope{padding:5px 15px 0}.task-board{display:grid;gap:18px;color:var(--app-text);min-width:0}.board-heading,.board-toolbar,.board-panel footer,.path-bar,.folder-status,.row-actions,.phases,.board-toolbar form{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.board-heading,.board-toolbar,.board-panel footer{justify-content:space-between}.board-heading h1{margin:0;font-size:28px}.board-heading p,.folder-status,.board-panel small,.board-panel footer>span{color:var(--app-text-secondary);font-size:12px}.board-heading p{margin:6px 0 0}.board-panel{min-width:0;border:1px solid var(--app-border);border-radius:12px;background:white;overflow:hidden}.board-toolbar,.board-panel footer{padding:15px}.board-toolbar form{flex-wrap:nowrap;max-width:100%}.board-panel small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phases{gap:3px}.phases button,.row-actions button:not(.el-button),.folder-status button,.folder-children button{border:0;cursor:pointer;background:transparent;color:var(--app-primary);font:inherit}.phases button{padding:7px 10px;border-radius:6px;color:var(--app-text-secondary)}.phases button[aria-pressed=true]{background:var(--app-primary-soft);color:var(--app-primary);font-weight:650}.phase{font-size:13px}.phase[data-phase=DETECTING],.phase[data-phase=DONE]{color:#2156af}.phase[data-phase=VERIFYING]{color:#895005}.phase[data-phase=FAILED]{color:#a53d32}.board-panel progress{display:block;height:5px;width:100px;max-width:100%;margin-top:5px;accent-color:#2866da}.row-actions{gap:7px 12px}.row-actions a,.row-actions button:not(.el-button){color:var(--app-primary);text-decoration:none;font-size:13px;padding:0}.folder-field,.path-bar,.folder-children{width:100%}.path-bar{flex-wrap:nowrap}.folder-status{margin:8px 0;overflow-wrap:anywhere;line-height:1.4}.folder-children{display:grid;max-height:190px;overflow:auto;background:var(--app-surface-muted);padding:6px;border-radius:6px;min-height:36px}.folder-children button{display:flex;align-items:center;gap:7px;padding:5px;text-align:left}.folder-children span{font-size:12px}.board-panel footer{border-top:1px solid var(--app-border)}
 </style>

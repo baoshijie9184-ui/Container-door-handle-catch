@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.detection.service;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.AgentUserDirectory;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
+import com.ruanzhu.doorhandle.contracts.organization.EmployeeAccountNumbers;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskServiceImpl;
 import com.ruanzhu.doorhandle.module.infra.service.OssPreviewStorage;
@@ -28,6 +29,7 @@ public class FolderTaskBoard {
     private final DetectionTaskServiceImpl detection;
     private final DetectionTaskAccessPolicy access;
     private final BusinessUserDirectory users;
+    private final EmployeeAccountNumbers staff;
     private final AgentUserDirectory employees;
     private final com.ruanzhu.doorhandle.module.infra.service.OssStorageService uploadStorage;
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
@@ -41,6 +43,7 @@ public class FolderTaskBoard {
              ELSE 'DETECTING' END
         """;
     private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
+    private static final String UPLOAD_TYPES = "t.task_type IN ('BATCH','SINGLE','BATCH_DIRECT')";
     private static final String COLUMNS = """
         t.task_id AS taskId,t.task_type AS taskType,t.image_folder_name AS folder,t.source_oss_prefix AS prefix,
         t.model_version AS model,t.status AS modelStatus,t.flow_status AS flow,t.review_status AS reviewStatus,
@@ -53,12 +56,12 @@ public class FolderTaskBoard {
         DATE_FORMAT(t.created_at,'%Y-%m-%d %H:%i:%s') AS registeredAt
         """;
 
-    public Map<String,Object> list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, int page, int size) {
+    public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, int page, int size) {
         var actor = users.authenticated();
         var scope = access.currentSqlScope("t.");
         var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId());
         String where = " WHERE ("+scope.predicate()+" OR w.assignee_user_id=CAST(:actor AS CHAR))";
-        if (uploadsOnly) where += " AND t.task_type IN ('BATCH','SINGLE','BATCH_DIRECT')";
+        if (uploadsOnly) where += " AND "+UPLOAD_TYPES;
         if (directory != null && !directory.isBlank()) {
             validatePrefix(directory);
             where += " AND BINARY t.source_oss_prefix=BINARY :directory";
@@ -81,11 +84,76 @@ public class FolderTaskBoard {
             where+=" AND (LOCATE(:q,t.task_id)>0 OR LOCATE(:q,t.image_folder_name)>0 OR LOCATE(:q,t.source_oss_prefix)>0 OR LOCATE(:q,t.created_by)>0 OR LOCATE(:q,w.assigned_user_name)>0 OR LOCATE(:q,t.assignee)>0 OR LOCATE(:q,t.reviewer)>0)";
             args.addValue("q",keyword.strip());
         }
-        long count = db.queryForObject("SELECT COUNT(*)"+SOURCE+where,args,Long.class);
+        return readPage(COLUMNS+", "+PHASE+" AS phase",SOURCE,where,args,page,size);
+    }
+
+    public PageRows uploads(String scope, String uploader, String keyword, String phase, int page, int size) {
+        var actor = users.authenticated();
+        if (scope == null) scope = actor.supervisor() ? "team" : "mine";
+        if (!Set.of("mine","team").contains(scope)) throw bad("未知上传记录范围");
+        var taskScope = access.currentSqlScope("t.");
+        String readable = "("+taskScope.predicate()+")";
+        var args = new MapSqlParameterSource(taskScope.parameters());
+        String where = " WHERE "+UPLOAD_TYPES;
+        if (scope.equals("mine")) {
+            where += " AND (t.created_user_id=:ownerId OR (t.created_user_id IS NULL AND BINARY t.created_by=BINARY :ownerName))";
+            args.addValue("ownerId",actor.userId()).addValue("ownerName",actor.username());
+        }
+        if (uploader != null && !uploader.isBlank()) {
+            if (uploader.length()>64) throw bad("上传账号过长");
+            String name = uploader.strip();
+            var owner=staff.resolve(List.of(),List.of(name)).stream().filter(a->name.equalsIgnoreCase(a.employeeNumber())).findFirst();
+            if (owner.isEmpty()) return new PageRows(0,List.of());
+            where += " AND (t.created_user_id=:uploaderId OR (t.created_user_id IS NULL AND BINARY t.created_by=BINARY :uploader))";
+            args.addValue("uploader",owner.get().username()).addValue("uploaderId",owner.get().userId());
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            if (keyword.length()>255) throw bad("搜索内容过长");
+            where += " AND (LOCATE(:q,t.task_id)>0 OR LOCATE(:q,t.image_folder_name)>0 OR LOCATE(:q,t.created_by)>0 OR ("+readable+" AND LOCATE(:q,t.source_oss_prefix)>0))";
+            args.addValue("q",keyword.strip());
+        }
+        if (phase != null && !phase.isBlank()) {
+            if (!Set.of("READY","DETECTING","VERIFYING","DONE","FAILED").contains(phase)) throw bad("未知任务阶段");
+            where += " AND "+readable+" AND ("+PHASE+")=:phase";
+            args.addValue("phase",phase);
+        }
+        // Shared rows expose upload registration only. Folder paths and processing data follow task read access.
+        String permitted = "CASE WHEN "+readable+" THEN ";
+        String columns = """
+            t.task_id AS taskId,t.image_folder_name AS folder,t.created_by AS recordedName,t.created_user_id AS recordedId,t.total_images AS totalImages,
+            DATE_FORMAT(t.created_at,'%Y-%m-%d %H:%i:%s') AS registeredAt,
+            (t.status='UPLOADING') AS uploadPending,
+            """+permitted+"1 ELSE 0 END AS canReadTask, "
+            +permitted+"t.source_oss_prefix END AS prefix, "+permitted+PHASE+" END AS phase, "
+            +permitted+"t.processed_images END AS processedImages, "+permitted+"t.failed_images END AS failedImages";
+        var result=readPage(columns," FROM detection_task t",where,args,page,size);
+        var ids=new HashSet<Long>();
+        var names=new HashSet<String>();
+        for (var row:result.items()) {
+            if (row.get("recordedId") instanceof Number id) ids.add(id.longValue());
+            else if (row.get("recordedName") instanceof String name) names.add(name);
+        }
+        var byId=new HashMap<Long,String>();
+        var byName=new HashMap<String,String>();
+        for (var person:staff.resolve(ids,names)) {
+            byId.put(person.userId(),person.employeeNumber());
+            byName.put(person.username(),person.employeeNumber());
+        }
+        for (var row:result.items()) {
+            var id=row.remove("recordedId");
+            var name=row.remove("recordedName");
+            row.put("creator",id instanceof Number n ? byId.get(n.longValue()) : byName.get(name));
+        }
+        return result;
+    }
+
+    public record PageRows(long total, List<Map<String,Object>> items) {}
+    private PageRows readPage(String columns, String from, String where, MapSqlParameterSource args, int page, int size) {
+        long count = db.queryForObject("SELECT COUNT(*)"+from+where,args,Long.class);
         args.addValue("size",size).addValue("offset",((long)page-1)*size);
-        var rows=db.queryForList("SELECT "+COLUMNS+", "+PHASE+" AS phase"+SOURCE+where+
+        var rows=db.queryForList("SELECT "+columns+from+where+
             " ORDER BY t.created_at DESC,t.id DESC LIMIT :size OFFSET :offset",args);
-        return Map.of("total",count,"items",rows);
+        return new PageRows(count,rows);
     }
 
     private void supervisor() {

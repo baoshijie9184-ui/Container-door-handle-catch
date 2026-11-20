@@ -7,7 +7,6 @@ import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
-import java.util.Map;
 
 @RestController
 @Validated
@@ -16,10 +15,16 @@ import java.util.Map;
 public class FolderTaskBoardController {
     private final FolderTaskBoard board;
     @GetMapping
-    public Result<Map<String,Object>> list(@RequestParam(required=false) String phase,@RequestParam(required=false) String keyword,
+    public Result<FolderTaskBoard.PageRows> list(@RequestParam(required=false) String phase,@RequestParam(required=false) String keyword,
             @RequestParam(required=false) String directory, @RequestParam(defaultValue="false") boolean inbox, @RequestParam(defaultValue="false") boolean uploadsOnly,
             @RequestParam(defaultValue="1") @Min(1) int page,@RequestParam(defaultValue="20") @Min(1) @Max(100) int size){
         return Result.success(board.list(phase,keyword,directory,inbox,uploadsOnly,page,size));
+    }
+    @GetMapping("/uploads")
+    public Result<FolderTaskBoard.PageRows> uploads(@RequestParam(required=false) String scope, @RequestParam(required=false) String uploader,
+            @RequestParam(required=false) String keyword, @RequestParam(required=false) String phase,
+            @RequestParam(defaultValue="1") @Min(1) int page, @RequestParam(defaultValue="20") @Min(1) @Max(100) int size) {
+        return Result.success(board.uploads(scope,uploader,keyword,phase,page,size));
     }
     @GetMapping("/folders")
     public Result<FolderTaskBoard.Folder> folders(@RequestParam(required=false) String prefix,@RequestParam(required=false) String marker) {

@@ -233,7 +233,7 @@
           />
           </label>
         </div>
-        <p class="upload-history-cache-note">仅筛选已加载任务。<router-link to="/inspection/uploads">查询全部图片上传记录</router-link></p>
+        <p class="upload-history-cache-note">仅筛选已加载任务。<router-link :to="{path:'/inspection/uploads',query:{scope:'team'}}">查询全部图片上传记录</router-link></p>
         <div class="upload-history-scope"><span>{{ historyLoading ? '正在核对上传记录…' : `已加载 ${taskList.length} 条，当前匹配 ${uploadHistory.length} 条` }}</span><el-button v-if="hasHistoryFilters" link size="small" @click="resetHistoryFilters">清空筛选</el-button></div>
         <el-alert v-if="historyError && uploadHistory.length" :title="historyError + '；以下为先前已加载的记录，请刷新核对。'" type="error" show-icon :closable="false" />
         <CollectionEmptyState
