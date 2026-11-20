@@ -10,10 +10,16 @@
       </nav>
     </header>
     <section class="board-panel" aria-label="任务列表">
-      <nav v-if="uploadsOnly" class="upload-scopes" aria-label="上传记录范围">
-        <router-link to="/inspection/uploads/mine">我的上传</router-link>
-        <router-link to="/inspection/uploads/all">全部上传</router-link>
-      </nav>
+      <div v-if="uploadsOnly" class="upload-navigation">
+        <nav class="upload-scopes" aria-label="上传记录范围">
+          <router-link to="/inspection/uploads/mine">我的上传</router-link>
+          <router-link to="/inspection/uploads/all">全部上传</router-link>
+        </nav>
+        <form v-if="uploadScope==='mine'" class="colleague-search" role="search" aria-label="查他人上传" @submit.prevent="searchColleague">
+          <el-input v-model="uploaderInput" maxlength="50" placeholder="输入员工工号" aria-label="上传人工号" clearable/>
+          <el-button native-type="submit" :disabled="!uploaderInput.trim()">查他人上传</el-button>
+        </form>
+      </div>
       <div v-if="directory" class="directory-filter"><span>原图目录 <strong>{{ directory }}</strong></span><el-button link @click="changeFilters({ directory: undefined, page: undefined })">清除目录筛选</el-button></div>
       <div v-if="!supervisor && !uploadsOnly" class="inbox-scope"><el-checkbox :model-value="inbox" @change="value => changeFilters({ inbox: value ? '1' : undefined, page: undefined })">只看待我处理</el-checkbox></div>
       <div class="board-toolbar"><div v-if="!uploadsOnly || supervisor || uploadScope==='mine'" class="phases" aria-label="按任务阶段筛选">
@@ -129,6 +135,15 @@ async function load(quiet=false){
 }
 function changeFilters(values){return router.push({path:route.path,query:{...route.query,...values}})}
 function filter(key){changeFilters({phase:key || undefined,page:undefined})}
+function searchColleague(){
+  const uploader=uploaderInput.value.trim()
+  if(!uploader)return
+  if(uploader===user.username){
+    uploaderInput.value=''
+    return router.push({path:'/inspection/uploads/mine'})
+  }
+  return router.push({path:'/inspection/uploads/all',query:{uploader}})
+}
 function search(){changeFilters({keyword:query.value.trim() || undefined,uploader:uploadsOnly.value && uploadScope.value==='team' ? uploaderInput.value.trim() || undefined : undefined,page:undefined})}
 function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undefined : String(value)})}
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
@@ -173,7 +188,7 @@ async function start(row){
 }
 watch(()=>route.fullPath,()=>{
   if(route.name!=='folderTaskBoard' && !uploadsOnly.value)return
-  query.value=keyword.value;uploaderInput.value=typeof route.query.uploader==='string' ? route.query.uploader : ''
+  query.value=keyword.value;uploaderInput.value=uploadScope.value==='team' && typeof route.query.uploader==='string' ? route.query.uploader : ''
   dialog.value=false;rows.value=[];total.value=0;error.value='';load()
 },{immediate:true})
 onMounted(()=>{timer=setInterval(()=>{if(!document.hidden&&!dialog.value&&!busy.value&&!loading.value)load(true)},6000)})
@@ -181,7 +196,9 @@ watch(()=>user.accountContext,()=>{read++;folderRead++;rows.value=[];total.value
 onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
 <style scoped>
-.upload-scopes{display:flex;gap:20px;padding:0 16px;border-bottom:1px solid var(--app-border)}.upload-scopes a{padding:13px 3px 10px;border-bottom:3px solid transparent;text-decoration:none;color:var(--app-text-secondary);font-weight:600}.upload-scopes a[aria-current=page]{border-color:var(--app-primary);color:var(--app-primary)}
+.upload-navigation{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0 16px;padding:0 16px;border-bottom:1px solid var(--app-border)}
+.upload-scopes{display:flex;gap:20px}.upload-scopes a{padding:13px 3px 10px;border-bottom:3px solid transparent;text-decoration:none;color:var(--app-text-secondary);font-weight:600}.upload-scopes a[aria-current=page]{border-color:var(--app-primary);color:var(--app-primary)}
+.colleague-search{display:flex;align-items:center;gap:8px;width:290px;max-width:100%;padding:5px 0}.colleague-search .el-input{min-width:0}
 .board-toolbar form:has(input[aria-label="上传人工号"]){flex:1 1 400px;max-width:620px;flex-wrap:wrap}.board-toolbar form:has(input[aria-label="上传人工号"]) .el-input{flex:1 1 165px}
 .board-links,.board-links a,.directory-filter{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.board-links a{min-height:32px;padding:0 10px;color:var(--app-primary);text-decoration:none}.board-links a:hover,.row-actions a:hover{text-decoration:underline}.directory-filter{padding:12px 15px;background:var(--app-primary-soft);overflow-wrap:anywhere;font-size:13px}
 .inbox-scope{padding:5px 15px 0}.task-board{display:grid;gap:18px;color:var(--app-text);min-width:0}.board-heading,.board-toolbar,.board-panel footer,.path-bar,.folder-status,.row-actions,.phases,.board-toolbar form{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.board-heading,.board-toolbar,.board-panel footer{justify-content:space-between}.board-heading h1{margin:0;font-size:28px}.board-heading p,.folder-status,.board-panel small,.board-panel footer>span{color:var(--app-text-secondary);font-size:12px}.board-heading p{margin:6px 0 0}.board-panel{min-width:0;border:1px solid var(--app-border);border-radius:12px;background:white;overflow:hidden}.board-toolbar,.board-panel footer{padding:15px}.board-toolbar form{flex-wrap:nowrap;max-width:100%}.board-panel small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phases{gap:3px}.phases button,.row-actions button:not(.el-button),.folder-status button,.folder-children button{border:0;cursor:pointer;background:transparent;color:var(--app-primary);font:inherit}.phases button{padding:7px 10px;border-radius:6px;color:var(--app-text-secondary)}.phases button[aria-pressed=true]{background:var(--app-primary-soft);color:var(--app-primary);font-weight:650}.phase{font-size:13px}.phase[data-phase=DETECTING],.phase[data-phase=DONE]{color:#2156af}.phase[data-phase=VERIFYING]{color:#895005}.phase[data-phase=FAILED]{color:#a53d32}.board-panel progress{display:block;height:5px;width:100px;max-width:100%;margin-top:5px;accent-color:#2866da}.row-actions{gap:7px 12px}.row-actions a,.row-actions button:not(.el-button){color:var(--app-primary);text-decoration:none;font-size:13px;padding:0}.folder-field,.path-bar,.folder-children{width:100%}.path-bar{flex-wrap:nowrap}.folder-status{margin:8px 0;overflow-wrap:anywhere;line-height:1.4}.folder-children{display:grid;max-height:190px;overflow:auto;background:var(--app-surface-muted);padding:6px;border-radius:6px;min-height:36px}.folder-children button{display:flex;align-items:center;gap:7px;padding:5px;text-align:left}.folder-children span{font-size:12px}.board-panel footer{border-top:1px solid var(--app-border)}
