@@ -1,16 +1,18 @@
 <template>
   <main class="task-board">
-    <header class="board-heading"><div><h1>{{ uploadsOnly ? '图片上传记录' : boardTitle }}</h1></div>
+    <header class="board-heading"><div><h1>{{ uploadsOnly ? route.meta.title : boardTitle }}</h1></div>
       <nav class="board-links" aria-label="相关操作">
         <router-link v-if="uploadsOnly" to="/upload"><AppIcon name="Upload" :size="16"/>上传图片</router-link>
-        <router-link :to="uploadsOnly ? '/inspection/tasks' : '/inspection/uploads'"><AppIcon :name="uploadsOnly ? 'Tickets' : 'FolderOpened'" :size="16"/>{{ uploadsOnly ? boardTitle : '图片上传记录' }}</router-link>
+        <router-link v-if="uploadsOnly" to="/inspection/tasks"><AppIcon name="Tickets" :size="16"/>{{ boardTitle }}</router-link>
+        <router-link v-else-if="supervisor" to="/inspection/uploads/all"><AppIcon name="FolderOpened" :size="16"/>全部上传记录</router-link>
+        <router-link v-else to="/inspection/uploads/mine"><AppIcon name="FolderOpened" :size="16"/>我的上传记录</router-link>
         <el-button v-if="supervisor && !uploadsOnly" type="primary" @click="openNew()"><AppIcon name="Plus"/>新建文件夹任务</el-button>
       </nav>
     </header>
     <section class="board-panel" aria-label="任务列表">
       <nav v-if="uploadsOnly" class="upload-scopes" aria-label="上传记录范围">
-        <router-link v-for="item in uploadScopes" :key="item.value" :to="{path:'/inspection/uploads',query:{scope:item.value}}"
-          :aria-current="uploadScope===item.value ? 'page' : undefined">{{ item.label }}</router-link>
+        <router-link to="/inspection/uploads/mine">我的上传</router-link>
+        <router-link to="/inspection/uploads/all">全部上传</router-link>
       </nav>
       <div v-if="directory" class="directory-filter"><span>原图目录 <strong>{{ directory }}</strong></span><el-button link @click="changeFilters({ directory: undefined, page: undefined })">清除目录筛选</el-button></div>
       <div v-if="!supervisor && !uploadsOnly" class="inbox-scope"><el-checkbox :model-value="inbox" @change="value => changeFilters({ inbox: value ? '1' : undefined, page: undefined })">只看待我处理</el-checkbox></div>
@@ -23,7 +25,7 @@
       </form></div>
       <el-alert v-if="error" :title="error" type="error" :closable="false"/>
       <el-table :data="rows" v-loading="loading" row-key="taskId" empty-text="当前筛选下没有任务">
-        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link :to="{path:'/inspection/uploads',query:{scope:'team'}}">查看全部上传</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
+        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
         <el-table-column :label="uploadsOnly ? '图片文件夹 / 原图位置' : '任务 / 原图目录'" min-width="224"><template #default="{row}">
           <strong>{{ row.folder || row.taskId }}</strong><small v-if="!uploadsOnly || row.prefix" :title="row.prefix">{{ prefixLabel(row) }}</small>
           <small v-if="uploadsOnly">{{ row.totalImages ?? '—' }} 张 · {{ row.taskId }}</small>
@@ -48,7 +50,7 @@
               <router-link :to="{ path: '/inspection/history', query: { taskId: row.taskId, boardAction: 'images' } }">查看原图</router-link>
               <router-link :to="{ path: '/inspection/tasks', query: isOssFolder(row) ? { directory: row.prefix } : { keyword: row.taskId } }">{{ isOssFolder(row) ? '同目录任务' : '查看任务' }}</router-link>
               </template>
-              <router-link v-if="row.creator" :to="{path:'/inspection/uploads',query:{scope:'team',uploader:row.creator}}">此人上传</router-link>
+              <router-link v-if="row.creator" :to="{path:'/inspection/uploads/all',query:{uploader:row.creator}}">此人上传</router-link>
             </template>
             <template v-else>
             <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.phase)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.phase==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
@@ -92,9 +94,8 @@ import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import {useUserStore} from '@/stores/user'
 const user=useUserStore(),supervisor=computed(()=>user.role==='SUPERVISOR'),api=captureAccountRequest()
 const router=useRouter(),route=useRoute()
-const uploadsOnly=computed(()=>route.name==='imageUploadRecords')
-const uploadScopes=[{value:'mine',label:'我的上传'},{value:'team',label:'全部上传'}]
-const uploadScope=computed(()=>uploadScopes.some(item=>item.value===route.query.scope) ? route.query.scope : supervisor.value ? 'team' : 'mine')
+const uploadScope=computed(()=>route.meta.uploadScope)
+const uploadsOnly=computed(()=>Boolean(uploadScope.value))
 const boardTitle=computed(()=>supervisor.value ? '任务总表' : '我的任务')
 const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && route.query.inbox==='1')
 const directory=computed(()=>typeof route.query.directory==='string' ? route.query.directory : '')
@@ -171,7 +172,7 @@ async function start(row){
   catch(e){ElMessage.error(message(e));await load()}finally{busy.value=false}
 }
 watch(()=>route.fullPath,()=>{
-  if(!['folderTaskBoard','imageUploadRecords'].includes(route.name))return
+  if(route.name!=='folderTaskBoard' && !uploadsOnly.value)return
   query.value=keyword.value;uploaderInput.value=typeof route.query.uploader==='string' ? route.query.uploader : ''
   dialog.value=false;rows.value=[];total.value=0;error.value='';load()
 },{immediate:true})

@@ -31,7 +31,22 @@ const routes = [
       {
         path: 'inspection/uploads', name: 'imageUploadRecords',
         component: () => import('../views/FolderTaskBoard.vue'),
+        beforeEnter: to => {
+          const { scope, ...query } = to.query
+          const mine = scope === 'mine' || (scope !== 'team' && useUserStore().role !== 'SUPERVISOR')
+          return { name: mine ? 'myUploadRecords' : 'allUploadRecords', query, hash: to.hash, replace: true }
+        },
         meta: { title: '图片上传记录', requiresAuth: true }
+      },
+      {
+        path: 'inspection/uploads/mine', name: 'myUploadRecords',
+        component: () => import('../views/FolderTaskBoard.vue'),
+        meta: { title: '我的上传记录', requiresAuth: true, uploadScope: 'mine' }
+      },
+      {
+        path: 'inspection/uploads/all', name: 'allUploadRecords',
+        component: () => import('../views/FolderTaskBoard.vue'),
+        meta: { title: '全部上传记录', requiresAuth: true, uploadScope: 'team' }
       },
       {
         path: 'inspection/tasks', name: 'folderTaskBoard',
