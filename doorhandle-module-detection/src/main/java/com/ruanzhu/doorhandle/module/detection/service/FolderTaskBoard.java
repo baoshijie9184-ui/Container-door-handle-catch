@@ -37,17 +37,9 @@ public class FolderTaskBoard {
     private final com.ruanzhu.doorhandle.module.infra.service.OssStorageService uploadStorage;
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
 
-    private static final String PHASE = """
-        CASE WHEN t.status IN ('FAILED','CANCELLED') THEN 'FAILED'
-             WHEN t.flow_status IN ('RECHECK_REQUIRED','REWORK_REQUIRED','HOLD') OR (t.flow_status='CONFIRMED' AND t.review_conclusion='NEEDS_RECHECK') THEN 'VERIFYING'
-             WHEN t.reviewed_at IS NOT NULL AND t.review_status='REVIEWED' THEN 'DONE'
-             WHEN t.status IN ('COMPLETED','PARTIAL_FAILED') THEN 'VERIFYING'
-             WHEN t.status IN ('READY','UPLOADING','UPLOADED','PENDING') THEN 'READY'
-             ELSE 'DETECTING' END
-        """;
     private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
     private static final String UPLOAD_TYPES = "t.task_type IN ('BATCH','SINGLE','BATCH_DIRECT')";
-    private static final Set<String> BOARD_PHASES = Set.of("READY","DETECTING","VERIFYING","DONE","FAILED");
+    private static final Set<String> BOARD_PHASES = Set.of("READY","DETECTING","VERIFYING","DONE","FAILED","MODEL_DONE");
     private static final Map<String,Set<String>> SUPERVISOR_LISTS = Map.of(
             "detection", Set.of("UPLOADING","READY","DETECTING","FAILED","CANCELLED","MODEL_DONE"),
             "verification", Set.of("WAITING_CHECK","VERIFYING","CHECKED","FOLLOW_UP"));
@@ -63,6 +55,13 @@ public class FolderTaskBoard {
              WHEN t.status IN ('FAILED','CANCELLED','UPLOADING') THEN t.status
              WHEN t.status IN ('READY','UPLOADED','PENDING') THEN 'READY'
              ELSE 'DETECTING' END
+        """;
+    // Aggregate filters and the two supervisor lists use the same stage evidence.
+    private static final String PHASE = "CASE (" + LIST_PHASE + ") " + """
+        WHEN 'WAITING_CHECK' THEN 'VERIFYING' WHEN 'FOLLOW_UP' THEN 'VERIFYING'
+        WHEN 'CHECKED' THEN 'DONE' WHEN 'UPLOADING' THEN 'READY' WHEN 'CANCELLED' THEN 'FAILED'
+        WHEN 'MODEL_DONE' THEN 'MODEL_DONE' WHEN 'VERIFYING' THEN 'VERIFYING'
+        WHEN 'READY' THEN 'READY' WHEN 'FAILED' THEN 'FAILED' ELSE 'DETECTING' END
         """;
     private static final String COLUMNS = """
         t.task_id AS taskId,t.task_type AS taskType,t.image_folder_name AS folder,t.source_oss_prefix AS prefix,
@@ -81,7 +80,7 @@ public class FolderTaskBoard {
         var scope = access.currentSqlScope("t.");
         var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId());
         String where = " WHERE ("+scope.predicate()+" OR w.assignee_user_id=CAST(:actor AS CHAR))";
-        String columns = COLUMNS+", "+PHASE+" AS phase";
+        String columns = COLUMNS+", "+PHASE+" AS phase, "+LIST_PHASE+" AS listPhase";
         String filterPhase = PHASE;
         Set<String> allowedPhases = BOARD_PHASES;
         if (taskList != null) {
@@ -89,7 +88,6 @@ public class FolderTaskBoard {
             allowedPhases = SUPERVISOR_LISTS.get(taskList);
             if (allowedPhases == null) throw bad("未知任务列表");
             filterPhase = LIST_PHASE;
-            columns += ", "+LIST_PHASE+" AS listPhase";
             where += " AND ("+LIST_PHASE+") IN (:listPhases)";
             args.addValue("listPhases", allowedPhases);
         }
@@ -107,6 +105,7 @@ public class FolderTaskBoard {
             where += """
               AND ((w.assignee_user_id=CAST(:actor AS CHAR) AND t.status IN ('READY','FAILED'))
                 OR (t.assignee=:username AND (t.assignee_user_id IS NULL OR t.assignee_user_id=:actor)
+                AND t.status IN ('COMPLETED','PARTIAL_FAILED')
                 AND t.flow_status IN ('PENDING_REVIEW','REVIEWING') AND t.review_status='PENDING'))
               """;
             args.addValue("username",actor.username());
@@ -151,7 +150,7 @@ public class FolderTaskBoard {
             args.addValue("q",keyword.strip());
         }
         if (phase != null && !phase.isBlank()) {
-            if (!Set.of("READY","DETECTING","VERIFYING","DONE","FAILED").contains(phase)) throw bad("未知任务阶段");
+            if (!BOARD_PHASES.contains(phase)) throw bad("未知任务阶段");
             where += " AND "+readable+" AND ("+PHASE+")=:phase";
             args.addValue("phase",phase);
         }
@@ -163,6 +162,8 @@ public class FolderTaskBoard {
             (t.status='UPLOADING') AS uploadPending,
             """+permitted+"1 ELSE 0 END AS canReadTask, "
             +permitted+"t.source_oss_prefix END AS prefix, "+permitted+PHASE+" END AS phase, "
+            +permitted+LIST_PHASE+" END AS listPhase, "+permitted+"t.status END AS modelStatus, "
+            +permitted+"t.review_status END AS reviewStatus, "
             +permitted+"t.processed_images END AS processedImages, "+permitted+"t.failed_images END AS failedImages";
         var result=readPage(columns," FROM detection_task t",where,args,page,size);
         var ids=new HashSet<Long>();

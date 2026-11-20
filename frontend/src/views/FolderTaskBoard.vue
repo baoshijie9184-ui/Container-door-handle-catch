@@ -59,19 +59,28 @@
         <el-table-column v-if="uploadsOnly" label="登记时间" min-width="155"><template #default="{row}">
           {{ row.registeredAt || '—' }}
         </template></el-table-column>
-        <el-table-column :label="verificationList ? '校验状态' : uploadsOnly ? '记录状态' : '进度'" min-width="140"><template #default="{row}">
-          <template v-if="uploadsOnly && (Number(row.uploadPending) || !Number(row.canReadTask))">{{ Number(row.uploadPending) ? '上传待确认' : '已登记' }}</template>
+        <el-table-column v-if="uploadsOnly" label="记录状态" min-width="145"><template #default="{row}">
+          <template v-if="Number(row.uploadPending)">上传待确认</template>
+          <template v-else-if="!Number(row.canReadTask)">已登记</template>
           <template v-else>
-          <b class="phase" :data-phase="row.listPhase || row.phase">{{ listPhases[row.listPhase || row.phase] }}</b>
-          <template v-if="!verificationList">
-          <small>模型已处理 {{ row.processedImages ?? 0 }} / {{ row.totalImages ?? '—' }} 张<span v-if="row.failedImages"> · {{ row.failedImages }} 张失败</span></small>
-          <progress v-if="row.totalImages" :value="row.processedImages || 0" :max="row.totalImages" aria-label="模型图片处理进度"/>
-          </template>
-          <small v-else-if="row.totalImages != null">{{ row.totalImages }} 张图片</small>
+            <strong>{{ modelStep(row) }}</strong>
+            <small>{{ humanStep(row) }}</small>
+            <small v-if="row.totalImages != null">已处理 {{ row.processedImages ?? '—' }} / {{ row.totalImages }} 张<span v-if="row.failedImages"> · {{ row.failedImages }} 张失败</span></small>
+            <progress v-if="row.totalImages && ['QUEUED','DETECTING','RUNNING'].includes(row.modelStatus)" :value="row.processedImages" :max="row.totalImages" aria-label="模型图片处理进度"/>
           </template>
         </template></el-table-column>
-        <el-table-column v-if="!uploadsOnly && !verificationList" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
-        <el-table-column v-if="!uploadsOnly && taskList!=='detection'" label="校验员工" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交校验' : '受派校验' }}</small></template></el-table-column>
+        <el-table-column v-if="!uploadsOnly" label="模型检测" min-width="148"><template #default="{row}">
+          <strong class="phase" :data-phase="row.modelStatus">{{ modelStep(row) }}</strong>
+          <small v-if="row.totalImages != null">已处理 {{ row.processedImages ?? '—' }} / {{ row.totalImages }} 张<span v-if="row.failedImages"> · {{ row.failedImages }} 张失败</span></small>
+          <progress v-if="row.totalImages && ['QUEUED','DETECTING','RUNNING'].includes(row.modelStatus)" :value="row.processedImages" :max="row.totalImages" aria-label="模型图片处理进度"/>
+          <small v-if="!taskList && (row.detectionOperator || row.detector)">{{ row.detectionOperator ? '执行工号' : '受派工号' }} {{ row.detectionOperator || row.detector }}</small>
+        </template></el-table-column>
+        <el-table-column v-if="!uploadsOnly && taskList!=='detection'" label="人工校验" min-width="145"><template #default="{row}">
+          <strong class="phase" :data-phase="row.listPhase">{{ humanStep(row) }}</strong>
+          <small v-if="!taskList && (row.qualityOperator || row.qualityAssignee)">{{ row.qualityOperator ? '校验工号' : '受派工号' }} {{ row.qualityOperator || row.qualityAssignee }}</small>
+        </template></el-table-column>
+        <el-table-column v-if="taskList==='detection'" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
+        <el-table-column v-if="verificationList" label="校验员工" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交校验' : '受派校验' }}</small></template></el-table-column>
         <el-table-column label="操作" min-width="245"><template #default="{row}">
           <div class="row-actions">
             <template v-if="uploadsOnly">
@@ -140,6 +149,7 @@ import {ElMessage} from 'element-plus'
 import {captureAccountRequest} from '@/api/request'
 import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
+import {humanStep,modelStep,canReview} from '@/utils/taskBoardStages'
 import {boardDialog,employeeInbox,listLocation} from '@/utils/taskBoardNavigation'
 import {useUserStore} from '@/stores/user'
 const TaskDialogs=defineAsyncComponent(()=>import('./ImageDetection.vue'))
@@ -153,7 +163,7 @@ const taskList=computed(()=>route.meta.taskList)
 const verificationList=computed(()=>taskList.value==='verification')
 const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && employeeInbox(route.query))
 const directory=computed(()=>typeof route.query.directory==='string' ? route.query.directory : '')
-const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校验中',DONE:'完成',FAILED:'异常'}
+const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校验环节',DONE:'校验完成',FAILED:'异常',MODEL_DONE:'仅有检测结果'}
 const detectionPhases={'':'全部',UPLOADING:'待上传确认',READY:'待检测',DETECTING:'检测中',FAILED:'检测失败',CANCELLED:'已取消',MODEL_DONE:'已检测'}
 const inboxPhases={'':'全部待办',READY:'待启动检测',FAILED:'待重试检测',VERIFYING:'待核对结果'}
 const verificationPhases={'':'全部',WAITING_CHECK:'待校验',VERIFYING:'校验中',CHECKED:'已校验',FOLLOW_UP:'待跟进'}
@@ -246,7 +256,6 @@ function togglePath(){
   pathInput.value=folder.value
   editingPath.value=!editingPath.value
 }
-const canReview=row=>row.phase==='VERIFYING' && ['PENDING_REVIEW','REVIEWING'].includes(row.flow) && row.reviewStatus==='PENDING'
 const activeAction=computed(()=>boardDialog(route.query,supervisor.value,uploadsOnly.value))
 const listPath=computed(()=>router.resolve(listLocation(route)).fullPath)
 function actionLink(taskId,action){
