@@ -17,8 +17,9 @@ public class FolderTaskBoardController {
     @GetMapping
     public Result<FolderTaskBoard.PageRows> list(@RequestParam(required=false) String phase,@RequestParam(required=false) String keyword,
             @RequestParam(required=false) String directory, @RequestParam(defaultValue="false") boolean inbox, @RequestParam(defaultValue="false") boolean uploadsOnly,
+            @RequestParam(required=false) String assignedTaskId,
             @RequestParam(defaultValue="1") @Min(1) int page,@RequestParam(defaultValue="20") @Min(1) @Max(100) int size){
-        return Result.success(board.list(phase,keyword,directory,inbox,uploadsOnly,page,size));
+        return Result.success(board.list(phase,keyword,directory,inbox,uploadsOnly,assignedTaskId,page,size));
     }
     @GetMapping("/uploads")
     public Result<FolderTaskBoard.PageRows> uploads(@RequestParam(required=false) String scope, @RequestParam(required=false) String uploader,

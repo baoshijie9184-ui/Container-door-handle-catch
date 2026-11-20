@@ -59,11 +59,15 @@ public class FolderTaskBoard {
         DATE_FORMAT(t.created_at,'%Y-%m-%d %H:%i:%s') AS registeredAt
         """;
 
-    public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, int page, int size) {
+    public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, String assignedTaskId, int page, int size) {
         var actor = users.authenticated();
         var scope = access.currentSqlScope("t.");
         var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId());
         String where = " WHERE ("+scope.predicate()+" OR w.assignee_user_id=CAST(:actor AS CHAR))";
+        if (assignedTaskId != null) {
+            where += " AND t.task_id=:assignedTaskId AND w.assignee_user_id=CAST(:actor AS CHAR)";
+            args.addValue("assignedTaskId",assignedTaskId);
+        }
         if (uploadsOnly) where += " AND "+UPLOAD_TYPES;
         if (directory != null && !directory.isBlank()) {
             validatePrefix(directory);
@@ -153,7 +157,34 @@ public class FolderTaskBoard {
             row.put("creator",uploaderLabel == null ? null : uploaderLabel.employeeNumber());
             row.put("creatorName",uploaderLabel == null ? null : uploaderLabel.name());
         }
+        if (!actor.supervisor() && !result.items().isEmpty()) addMyDetectionTasks(result.items(), actor.userId());
         return result;
+    }
+
+    private void addMyDetectionTasks(List<Map<String,Object>> uploads, long userId) {
+        var byUploadId = new HashMap<String,Map<String,Object>>();
+        for (var upload : uploads) byUploadId.put((String) upload.get("taskId"), upload);
+        // Folder dispatch uses the full, case-sensitive OSS prefix. Only the signed-in detector's work is eligible.
+        String sql = """
+            SELECT uploadId, detectionId, detectionStatus FROM (
+                SELECT u.task_id AS uploadId, f.task_id AS detectionId, f.status AS detectionStatus,
+                       ROW_NUMBER() OVER (PARTITION BY u.task_id ORDER BY
+                           CASE WHEN f.status IN ('READY','FAILED') THEN 0
+                                WHEN f.status IN ('COMPLETED','PARTIAL_FAILED','CANCELLED') THEN 2 ELSE 1 END,
+                           f.created_at DESC, f.id DESC) AS priority
+                FROM detection_work_unit w
+                JOIN detection_task f ON w.work_unit_id=f.task_id COLLATE utf8mb4_0900_ai_ci AND f.task_type='OSS_FOLDER'
+                JOIN detection_task u ON BINARY u.source_oss_prefix=BINARY f.source_oss_prefix
+                WHERE w.strategy='OSS_FOLDER' AND w.assignee_user_id=:employeeId
+                  AND u.task_id IN (:uploads) AND u.source_oss_prefix<>''
+            ) candidates WHERE priority=1
+            """;
+        var params = new MapSqlParameterSource("employeeId", Long.toString(userId)).addValue("uploads", byUploadId.keySet());
+        for (var task : db.queryForList(sql, params)) {
+            var upload = byUploadId.get(task.get("uploadId"));
+            upload.put("myDetectionTaskId", task.get("detectionId"));
+            upload.put("myDetectionStatus", task.get("detectionStatus"));
+        }
     }
 
     public record PageRows(long total, List<Map<String,Object>> items) {}

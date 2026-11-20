@@ -59,18 +59,20 @@
         <el-table-column label="操作" min-width="215"><template #default="{row}">
           <div class="row-actions">
             <template v-if="uploadsOnly">
-              <router-link v-if="Number(row.canReadTask)" :to="{ path: '/inspection/history', query: { taskId: row.taskId, boardAction: 'images' } }">查看原图</router-link>
+              <router-link v-if="previewTaskId(row)" :to="{ path: '/inspection/history', query: { taskId: previewTaskId(row), boardAction: 'images' } }">查看原图</router-link>
+              <el-button v-else link disabled>查看原图</el-button>
               <template v-if="supervisor">
                 <el-button size="small" type="primary" :disabled="Boolean(dispatchUnavailable(row))" @click="openNew({ upload: row })">派发检测任务</el-button>
                 <small v-if="dispatchUnavailable(row)" class="dispatch-reason">{{ dispatchUnavailable(row) }}</small>
               </template>
               <template v-else>
-                <router-link v-if="Number(row.canReadTask)" :to="{ path: '/inspection/tasks', query: isOssFolder(row) ? { directory: row.prefix } : { keyword: row.taskId } }">{{ isOssFolder(row) ? '同目录任务' : '查看任务' }}</router-link>
-                <router-link v-if="row.creator" :to="{path:'/inspection/uploads/all',query:{uploader:row.creator}}">此人上传</router-link>
+                <el-button size="small" type="primary" :disabled="Boolean(detectionUnavailable(row))"
+                  @click="router.push({ path:'/inspection/tasks', query:{ assignedTaskId:row.myDetectionTaskId } })">去完成检测任务</el-button>
+                <small v-if="detectionUnavailable(row)" class="dispatch-reason">{{ detectionUnavailable(row) }}</small>
               </template>
             </template>
             <template v-else>
-            <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.phase)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.phase==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
+            <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.modelStatus)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.modelStatus==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
             <el-button v-if="supervisor && row.taskType==='OSS_FOLDER' && row.phase==='READY'" size="small" @click="openAssign(row)">改派检测</el-button>
             <router-link v-if="supervisor && canReview(row)" :to="quality(row,'assign')">分派质检</router-link>
             <router-link v-if="canReview(row) && (supervisor || row.qualityAssignee===user.username)" :to="quality(row,'review')">核对模型结果</router-link>
@@ -128,6 +130,7 @@ const directory=computed(()=>typeof route.query.directory==='string' ? route.que
 const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校验中',DONE:'完成',FAILED:'异常'}
 const phase=computed(()=>Object.hasOwn(phases,route.query.phase) ? route.query.phase : '')
 const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.keyword : '')
+const assignedTaskId=computed(()=>!uploadsOnly.value && typeof route.query.assignedTaskId==='string' ? route.query.assignedTaskId : '')
 const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number(route.query.page)>0 ? Number(route.query.page) : 1)
 const query=ref(''),uploaderInput=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
 const dialog=ref(false),target=ref(null),recipient=ref({}),busy=ref(false),saveError=ref(''),requestId=ref('')
@@ -165,6 +168,7 @@ async function load(quiet=false){
     } else {
       params.inbox=inbox.value
       params.directory=directory.value || undefined
+      params.assignedTaskId=assignedTaskId.value || undefined
     }
     const result=data(await api.get(uploadsOnly.value ? url+'/uploads' : url,{params}))
     if(generation===read){rows.value=result.items;total.value=result.total;error.value=''}
@@ -181,9 +185,16 @@ function searchColleague(){
   }
   return router.push({path:'/inspection/uploads/all',query:{uploader}})
 }
-function search(){changeFilters({keyword:query.value.trim() || undefined,uploader:uploadsOnly.value && uploadScope.value==='team' ? uploaderInput.value.trim() || undefined : undefined,page:undefined})}
+function search(){changeFilters({keyword:query.value.trim() || undefined,assignedTaskId:undefined,uploader:uploadsOnly.value && uploadScope.value==='team' ? uploaderInput.value.trim() || undefined : undefined,page:undefined})}
 function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undefined : String(value)})}
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
+function previewTaskId(row){return Number(row.canReadTask) ? row.taskId : row.myDetectionTaskId}
+function detectionUnavailable(row){
+  if(!row.myDetectionTaskId)return '未分派给我'
+  if(row.myDetectionStatus==='CANCELLED')return '检测任务已取消'
+  if(['COMPLETED','PARTIAL_FAILED'].includes(row.myDetectionStatus))return '本次模型检测已结束'
+  return ''
+}
 function dispatchUnavailable(row){
   if(Number(row.uploadPending))return '等待上传确认'
   if(!isOssFolder(row))return '未关联可派发的原图目录'
@@ -234,7 +245,7 @@ async function start(row){
 }
 watch(()=>route.fullPath,()=>{
   if(route.name!=='folderTaskBoard' && !uploadsOnly.value)return
-  query.value=keyword.value;uploaderInput.value=uploadScope.value==='team' && typeof route.query.uploader==='string' ? route.query.uploader : ''
+  query.value=assignedTaskId.value || keyword.value;uploaderInput.value=uploadScope.value==='team' && typeof route.query.uploader==='string' ? route.query.uploader : ''
   dialog.value=false;rows.value=[];total.value=0;error.value='';load()
 },{immediate:true})
 onMounted(()=>{timer=setInterval(()=>{if(!document.hidden&&!dialog.value&&!busy.value&&!loading.value)load(true)},6000)})
