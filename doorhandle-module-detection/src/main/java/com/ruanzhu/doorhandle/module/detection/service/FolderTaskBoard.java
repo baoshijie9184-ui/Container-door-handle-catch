@@ -47,6 +47,23 @@ public class FolderTaskBoard {
         """;
     private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
     private static final String UPLOAD_TYPES = "t.task_type IN ('BATCH','SINGLE','BATCH_DIRECT')";
+    private static final Set<String> BOARD_PHASES = Set.of("READY","DETECTING","VERIFYING","DONE","FAILED");
+    private static final Map<String,Set<String>> SUPERVISOR_LISTS = Map.of(
+            "detection", Set.of("UPLOADING","READY","DETECTING","FAILED","CANCELLED","MODEL_DONE"),
+            "verification", Set.of("WAITING_CHECK","VERIFYING","CHECKED","FOLLOW_UP"));
+    // Older completed runs can have no verification record. They remain in the detection list.
+    private static final String LIST_PHASE = """
+        CASE WHEN t.status IN ('COMPLETED','PARTIAL_FAILED') THEN CASE
+                  WHEN t.flow_status IN ('RECHECK_REQUIRED','REWORK_REQUIRED','HOLD')
+                       OR (t.flow_status='CONFIRMED' AND t.review_conclusion='NEEDS_RECHECK') THEN 'FOLLOW_UP'
+                  WHEN t.review_status='REVIEWED' OR t.reviewed_at IS NOT NULL THEN 'CHECKED'
+                  WHEN t.flow_status='REVIEWING' THEN 'VERIFYING'
+                  WHEN t.review_status='PENDING' OR t.flow_status='PENDING_REVIEW' THEN 'WAITING_CHECK'
+                  ELSE 'MODEL_DONE' END
+             WHEN t.status IN ('FAILED','CANCELLED','UPLOADING') THEN t.status
+             WHEN t.status IN ('READY','UPLOADED','PENDING') THEN 'READY'
+             ELSE 'DETECTING' END
+        """;
     private static final String COLUMNS = """
         t.task_id AS taskId,t.task_type AS taskType,t.image_folder_name AS folder,t.source_oss_prefix AS prefix,
         t.model_version AS model,t.status AS modelStatus,t.flow_status AS flow,t.review_status AS reviewStatus,
@@ -59,11 +76,23 @@ public class FolderTaskBoard {
         DATE_FORMAT(t.created_at,'%Y-%m-%d %H:%i:%s') AS registeredAt
         """;
 
-    public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, String assignedTaskId, int page, int size) {
+    public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, String assignedTaskId, String taskList, int page, int size) {
         var actor = users.authenticated();
         var scope = access.currentSqlScope("t.");
         var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId());
         String where = " WHERE ("+scope.predicate()+" OR w.assignee_user_id=CAST(:actor AS CHAR))";
+        String columns = COLUMNS+", "+PHASE+" AS phase";
+        String filterPhase = PHASE;
+        Set<String> allowedPhases = BOARD_PHASES;
+        if (taskList != null) {
+            if (!actor.supervisor()) throw new BusinessException(403,"仅主管可查看企业任务列表");
+            allowedPhases = SUPERVISOR_LISTS.get(taskList);
+            if (allowedPhases == null) throw bad("未知任务列表");
+            filterPhase = LIST_PHASE;
+            columns += ", "+LIST_PHASE+" AS listPhase";
+            where += " AND ("+LIST_PHASE+") IN (:listPhases)";
+            args.addValue("listPhases", allowedPhases);
+        }
         if (assignedTaskId != null) {
             where += " AND t.task_id=:assignedTaskId AND w.assignee_user_id=CAST(:actor AS CHAR)";
             args.addValue("assignedTaskId",assignedTaskId);
@@ -83,15 +112,15 @@ public class FolderTaskBoard {
             args.addValue("username",actor.username());
         }
         if (phase != null && !phase.isBlank()) {
-            if (!Set.of("READY","DETECTING","VERIFYING","DONE","FAILED").contains(phase)) throw bad("未知任务阶段");
-            where += " AND ("+PHASE+")=:phase"; args.addValue("phase",phase);
+            if (!allowedPhases.contains(phase)) throw bad("未知任务阶段");
+            where += " AND ("+filterPhase+")=:phase"; args.addValue("phase",phase);
         }
         if (keyword != null && !keyword.isBlank()) {
             if(keyword.length()>255) throw bad("搜索内容过长");
             where+=" AND (LOCATE(:q,t.task_id)>0 OR LOCATE(:q,t.image_folder_name)>0 OR LOCATE(:q,t.source_oss_prefix)>0 OR LOCATE(:q,t.created_by)>0 OR LOCATE(:q,w.assigned_user_name)>0 OR LOCATE(:q,t.assignee)>0 OR LOCATE(:q,t.reviewer)>0)";
             args.addValue("q",keyword.strip());
         }
-        return readPage(COLUMNS+", "+PHASE+" AS phase",SOURCE,where,args,page,size);
+        return readPage(columns,SOURCE,where,args,page,size);
     }
 
     public PageRows uploads(String scope, String uploader, String keyword, String phase, int page, int size) {

@@ -183,7 +183,9 @@ const navGroups = [
     label: '检测业务',
     icon: Picture,
     items: [
-      { path: '/inspection/tasks', label: '任务列表', desc: 'OSS 文件夹、检测派单与质检进度' },
+      { path: '/inspection/tasks', label: '任务列表', desc: '本人及受派任务', inspectorOnly: true },
+      { path: '/inspection/tasks/detection', label: '检测任务列表', desc: '检测派单与模型进度', supervisorOnly: true },
+      { path: '/inspection/tasks/verification', label: '校验任务列表', desc: '分派校验与核对检测结果', supervisorOnly: true },
       { path: '/upload', label: '图像采集上传', desc: '原图入库与任务创建' },
       { path: '/inspection/uploads/mine', label: '我的上传记录', desc: '查看本人上传的图片批次' },
       { path: '/inspection/uploads/all', label: '全部上传记录', desc: '按员工工号查找上传记录' },
@@ -245,7 +247,10 @@ const navGroups = [
   }
 ]
 
-const visibleNavGroups = computed(()=>navGroups.map(group=>({...group,items:group.items.filter(item=>!item.supervisorOnly || ['SUPERVISOR','ADMIN'].includes(userStore.role))})).filter(group=>group.items.length))
+const visibleNavGroups = computed(()=>{
+  const supervisor=['SUPERVISOR','ADMIN'].includes(userStore.role)
+  return navGroups.map(group=>({...group,items:group.items.filter(item=>supervisor ? !item.inspectorOnly : !item.supervisorOnly)})).filter(group=>group.items.length)
+})
 const menuTitleMap = navGroups
   .flatMap(group => group.items.map(item => [item.path, { ...item, group: group.label }]))
   .reduce((map, [path, item]) => {

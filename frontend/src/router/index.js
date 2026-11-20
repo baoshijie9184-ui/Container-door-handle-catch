@@ -54,6 +54,16 @@ const routes = [
         meta: { title: '任务总表', requiresAuth: true }
       },
       {
+        path: 'inspection/tasks/detection', name: 'supervisorDetectionTasks',
+        component: () => import('../views/FolderTaskBoard.vue'),
+        meta: { title: '检测任务列表', requiresAuth: true, supervisorOnly: true, taskList: 'detection' }
+      },
+      {
+        path: 'inspection/tasks/verification', name: 'supervisorVerificationTasks',
+        component: () => import('../views/FolderTaskBoard.vue'),
+        meta: { title: '校验任务列表', requiresAuth: true, supervisorOnly: true, taskList: 'verification' }
+      },
+      {
         path: 'inspection/workbench',
         name: 'inspectionWorkbench',
         component: () => import('../views/ImageDetection.vue'),

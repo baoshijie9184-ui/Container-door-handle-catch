@@ -1,15 +1,22 @@
 <template>
   <main class="task-board">
-    <header class="board-heading"><div><h1>{{ uploadsOnly ? route.meta.title : boardTitle }}</h1></div>
+    <header class="board-heading"><div><h1>{{ uploadsOnly || taskList ? route.meta.title : boardTitle }}</h1></div>
       <nav class="board-links" aria-label="相关操作">
         <router-link v-if="uploadsOnly" to="/upload"><AppIcon name="Upload" :size="16"/>上传图片</router-link>
         <router-link v-if="uploadsOnly" to="/inspection/tasks"><AppIcon name="Tickets" :size="16"/>{{ boardTitle }}</router-link>
         <router-link v-else-if="supervisor" to="/inspection/uploads/all"><AppIcon name="FolderOpened" :size="16"/>全部上传记录</router-link>
         <router-link v-else to="/inspection/uploads/mine"><AppIcon name="FolderOpened" :size="16"/>我的上传记录</router-link>
-        <el-button v-if="supervisor && !uploadsOnly" type="primary" @click="openNew()"><AppIcon name="Plus"/>新建文件夹任务</el-button>
+        <el-button v-if="supervisor && !uploadsOnly && !verificationList" type="primary" @click="openNew()"><AppIcon name="Plus"/>新建文件夹任务</el-button>
       </nav>
     </header>
     <section class="board-panel" aria-label="任务列表">
+      <div v-if="supervisor && !uploadsOnly" class="upload-navigation">
+        <nav class="upload-scopes" aria-label="主管任务列表">
+          <router-link to="/inspection/tasks/detection">检测任务列表</router-link>
+          <router-link to="/inspection/tasks/verification">校验任务列表</router-link>
+          <router-link to="/inspection/tasks">任务总表</router-link>
+        </nav>
+      </div>
       <div v-if="uploadsOnly" class="upload-navigation">
         <nav class="upload-scopes" aria-label="上传记录范围">
           <router-link to="/inspection/uploads/mine">我的上传</router-link>
@@ -23,7 +30,7 @@
       <div v-if="directory" class="directory-filter"><span>图片文件夹 <strong>{{ imageFolderLabel(directory) }}</strong></span><el-button link @click="changeFilters({ directory: undefined, page: undefined })">清除目录筛选</el-button></div>
       <div v-if="!supervisor && !uploadsOnly" class="inbox-scope"><el-checkbox :model-value="inbox" @change="value => changeFilters({ inbox: value ? '1' : undefined, page: undefined })">只看待我处理</el-checkbox></div>
       <div class="board-toolbar"><div v-if="!uploadsOnly || supervisor || uploadScope==='mine'" class="phases" aria-label="按任务阶段筛选">
-        <button v-for="(label,key) in phases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
+        <button v-for="(label,key) in listPhases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
       </div><form @submit.prevent="search">
         <el-input v-if="uploadsOnly && uploadScope==='team'" v-model="uploaderInput" maxlength="50" placeholder="上传人工号" aria-label="上传人工号" clearable @clear="search"/>
         <el-input v-model="query" maxlength="255" :placeholder="uploadsOnly ? '搜文件夹或任务号' : '搜目录、任务或工号'" aria-label="搜索任务" clearable @clear="search"/>
@@ -46,16 +53,19 @@
         <el-table-column v-if="uploadsOnly" label="登记时间" min-width="155"><template #default="{row}">
           {{ row.registeredAt || '—' }}
         </template></el-table-column>
-        <el-table-column :label="uploadsOnly ? '记录状态' : '进度'" min-width="140"><template #default="{row}">
+        <el-table-column :label="verificationList ? '校验状态' : uploadsOnly ? '记录状态' : '进度'" min-width="140"><template #default="{row}">
           <template v-if="uploadsOnly && (Number(row.uploadPending) || !Number(row.canReadTask))">{{ Number(row.uploadPending) ? '上传待确认' : '已登记' }}</template>
           <template v-else>
-          <b class="phase" :data-phase="row.phase">{{ phases[row.phase] }}</b>
+          <b class="phase" :data-phase="row.listPhase || row.phase">{{ listPhases[row.listPhase || row.phase] }}</b>
+          <template v-if="!verificationList">
           <small>模型已处理 {{ row.processedImages ?? 0 }} / {{ row.totalImages ?? '—' }} 张<span v-if="row.failedImages"> · {{ row.failedImages }} 张失败</span></small>
           <progress v-if="row.totalImages" :value="row.processedImages || 0" :max="row.totalImages" aria-label="模型图片处理进度"/>
           </template>
+          <small v-else-if="row.totalImages != null">{{ row.totalImages }} 张图片</small>
+          </template>
         </template></el-table-column>
-        <el-table-column v-if="!uploadsOnly" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
-        <el-table-column v-if="!uploadsOnly" label="质检员工" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交复核' : '受派质检' }}</small></template></el-table-column>
+        <el-table-column v-if="!uploadsOnly && !verificationList" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
+        <el-table-column v-if="!uploadsOnly && taskList!=='detection'" :label="verificationList ? '校验员工' : '质检员工'" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交复核' : '受派质检' }}</small></template></el-table-column>
         <el-table-column label="操作" min-width="215"><template #default="{row}">
           <div class="row-actions">
             <template v-if="uploadsOnly">
@@ -74,10 +84,11 @@
             <template v-else>
             <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.modelStatus)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.modelStatus==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
             <el-button v-if="supervisor && row.taskType==='OSS_FOLDER' && row.phase==='READY'" size="small" @click="openAssign(row)">改派检测</el-button>
-            <router-link v-if="supervisor && canReview(row)" :to="quality(row,'assign')">分派质检</router-link>
+            <router-link v-if="supervisor && canReview(row)" :to="quality(row,'assign')">{{ verificationList ? '分派校验任务' : '分派质检' }}</router-link>
             <router-link v-if="canReview(row) && (supervisor || row.qualityAssignee===user.username)" :to="quality(row,'review')">核对模型结果</router-link>
             <router-link :to="quality(row,'trace')">任务详情</router-link>
-            <button v-if="supervisor && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
+            <button v-if="taskList==='detection' && row.taskType!=='OSS_FOLDER' && row.modelStatus!=='UPLOADING' && isOssFolder(row)" @click="openNew({ upload:row })">派发检测任务</button>
+            <button v-else-if="supervisor && !taskList && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
             </template>
           </div>
         </template></el-table-column>
@@ -125,10 +136,15 @@ const router=useRouter(),route=useRoute()
 const uploadScope=computed(()=>route.meta.uploadScope)
 const uploadsOnly=computed(()=>Boolean(uploadScope.value))
 const boardTitle=computed(()=>supervisor.value ? '任务总表' : '我的任务')
+const taskList=computed(()=>route.meta.taskList)
+const verificationList=computed(()=>taskList.value==='verification')
 const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && route.query.inbox==='1')
 const directory=computed(()=>typeof route.query.directory==='string' ? route.query.directory : '')
 const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校验中',DONE:'完成',FAILED:'异常'}
-const phase=computed(()=>Object.hasOwn(phases,route.query.phase) ? route.query.phase : '')
+const detectionPhases={'':'全部',UPLOADING:'待上传确认',READY:'待检测',DETECTING:'检测中',FAILED:'检测失败',CANCELLED:'已取消',MODEL_DONE:'已检测'}
+const verificationPhases={'':'全部',WAITING_CHECK:'待校验',VERIFYING:'校验中',CHECKED:'已校验',FOLLOW_UP:'待跟进'}
+const listPhases=computed(()=>verificationList.value ? verificationPhases : taskList.value==='detection' ? detectionPhases : phases)
+const phase=computed(()=>Object.hasOwn(listPhases.value,route.query.phase) ? route.query.phase : '')
 const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.keyword : '')
 const assignedTaskId=computed(()=>!uploadsOnly.value && typeof route.query.assignedTaskId==='string' ? route.query.assignedTaskId : '')
 const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number(route.query.page)>0 ? Number(route.query.page) : 1)
@@ -169,6 +185,7 @@ async function load(quiet=false){
       params.inbox=inbox.value
       params.directory=directory.value || undefined
       params.assignedTaskId=assignedTaskId.value || undefined
+      params.taskList=taskList.value
     }
     const result=data(await api.get(uploadsOnly.value ? url+'/uploads' : url,{params}))
     if(generation===read){rows.value=result.items;total.value=result.total;error.value=''}
@@ -232,7 +249,7 @@ async function save(){
     if(taskId)data(await api.post(url+'/'+taskId+'/assign',{version:target.value.assignmentVersion,recipient:recipient.value}))
     else taskId=data(await api.post(url,{requestId:requestId.value,prefix:sourceUpload.value?.prefix ?? folder.value,recipient:recipient.value},{timeout:60000}))
     dialog.value=false;ElMessage.success('任务已派发')
-    const destination={path:'/inspection/tasks',query:{keyword:taskId}}
+    const destination={path:taskList.value==='detection' ? route.path : '/inspection/tasks',query:{keyword:taskId}}
     if(router.resolve(destination).fullPath===route.fullPath)await load()
     else await router.push(destination)
   }catch(e){saveError.value=message(e)}finally{busy.value=false}
@@ -244,7 +261,7 @@ async function start(row){
   catch(e){ElMessage.error(message(e));await load()}finally{busy.value=false}
 }
 watch(()=>route.fullPath,()=>{
-  if(route.name!=='folderTaskBoard' && !uploadsOnly.value)return
+  if(route.name!=='folderTaskBoard' && !uploadsOnly.value && !taskList.value)return
   query.value=assignedTaskId.value || keyword.value;uploaderInput.value=uploadScope.value==='team' && typeof route.query.uploader==='string' ? route.query.uploader : ''
   dialog.value=false;rows.value=[];total.value=0;error.value='';load()
 },{immediate:true})

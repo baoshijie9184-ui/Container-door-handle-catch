@@ -1,6 +1,8 @@
 // The visible navigation groups are the source of pages for the current account.
 const keywords = {
   '/inspection/tasks': '任务总表 我的任务 接单 派发检测 质检任务 OSS 文件夹 进度',
+  '/inspection/tasks/detection': '任务总表 派发检测 模型检测 进度 改派检测',
+  '/inspection/tasks/verification': '任务总表 质检任务 复核 校验 派发校验 核对模型结果',
   '/inspection/uploads/mine': '我的上传 个人上传记录 我上传的图片 我的上传历史 本人上传',
   '/inspection/uploads/all': '图片上传记录 全部上传 按工号查询 上传历史 已上传图片 OSS 原图文件夹 上传批次 上传人',
   '/upload': '批量上传 上传图片 上传文件夹 图像采集 创建任务',
