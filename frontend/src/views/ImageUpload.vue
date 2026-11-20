@@ -112,7 +112,7 @@
                 <el-option
                   v-for="emp in employeeList"
                   :key="emp.id"
-                  :value="emp.name"
+                  :value="emp.employeeNumber"
                   :label="`${emp.name} (${emp.employeeNumber || ''})`"
                 >
                   <span>{{ emp.name }}</span>
@@ -465,7 +465,9 @@ const handleFolderSelect = (event) => {
   folderInfo.imageCount = imageFiles.length
   folderInfo.captureDate = autoParse ? (dirSegments[0] || '') : ''
   folderInfo.region = autoParse ? (dirSegments[1] || '') : ''
-  folderInfo.collector = autoParse ? (dirSegments[2] || '') : ''
+  const collectorField = autoParse ? dirSegments[2] : ''
+  const candidates = employeeList.value.filter(person => person.employeeNumber===collectorField || person.name===collectorField)
+  folderInfo.collector = candidates.length===1 ? candidates[0].employeeNumber : ''
   folderInfo.deviceName = autoParse ? (dirSegments[3] || '') : ''
   folderInfo.imageFolderName = autoParse ? (dirSegments[4] || '') : ''
 

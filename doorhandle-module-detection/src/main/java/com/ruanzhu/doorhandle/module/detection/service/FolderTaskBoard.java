@@ -4,6 +4,7 @@ import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.AgentUserDirectory;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeAccountNumbers;
+import com.ruanzhu.doorhandle.contracts.organization.EmployeeNumberDirectory;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskServiceImpl;
 import com.ruanzhu.doorhandle.module.infra.service.OssPreviewStorage;
@@ -30,6 +31,7 @@ public class FolderTaskBoard {
     private final DetectionTaskAccessPolicy access;
     private final BusinessUserDirectory users;
     private final EmployeeAccountNumbers staff;
+    private final EmployeeNumberDirectory personnel;
     private final AgentUserDirectory employees;
     private final com.ruanzhu.doorhandle.module.infra.service.OssStorageService uploadStorage;
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
@@ -102,10 +104,12 @@ public class FolderTaskBoard {
         if (uploader != null && !uploader.isBlank()) {
             if (uploader.length()>64) throw bad("上传账号过长");
             String name = uploader.strip();
-            var owner=staff.resolve(List.of(),List.of(name)).stream().filter(a->name.equalsIgnoreCase(a.employeeNumber())).findFirst();
-            if (owner.isEmpty()) return new PageRows(0,List.of());
-            where += " AND (t.created_user_id=:uploaderId OR (t.created_user_id IS NULL AND BINARY t.created_by=BINARY :uploader))";
-            args.addValue("uploader",owner.get().username()).addValue("uploaderId",owner.get().userId());
+            var numbers=personnel.existingNumbers(List.of(name));
+            if (numbers.isEmpty()) return new PageRows(0,List.of());
+            String number=numbers.get(0);
+            var owner=staff.resolve(List.of(),List.of(number)).stream().filter(a->number.equals(a.employeeNumber())).findFirst();
+            where += " AND (t.created_user_id=:uploaderId OR (t.created_user_id IS NULL AND BINARY t.created_by=BINARY :number))";
+            args.addValue("number",number).addValue("uploaderId",owner.map(EmployeeAccountNumbers.BoundAccount::userId).orElse(null));
         }
         if (keyword != null && !keyword.isBlank()) {
             if (keyword.length()>255) throw bad("搜索内容过长");
@@ -139,6 +143,8 @@ public class FolderTaskBoard {
             byId.put(person.userId(),person.employeeNumber());
             byName.put(person.username(),person.employeeNumber());
         }
+        names.removeAll(byName.keySet());
+        for (var number:personnel.existingNumbers(names)) byName.put(number,number);
         for (var row:result.items()) {
             var id=row.remove("recordedId");
             var name=row.remove("recordedName");

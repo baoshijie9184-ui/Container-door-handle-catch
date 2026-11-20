@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.device.api;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeDirectoryApi;
+import com.ruanzhu.doorhandle.contracts.organization.EmployeeNumberDirectory;
 import com.ruanzhu.doorhandle.module.device.entity.Employee;
 import com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper;
 import org.springframework.stereotype.Service;
@@ -11,9 +12,15 @@ import java.util.Collection;
 import java.util.List;
 
 @Service
-public class EmployeeDirectoryApiImpl implements EmployeeDirectoryApi {
+public class EmployeeDirectoryApiImpl implements EmployeeDirectoryApi, EmployeeNumberDirectory {
     private final EmployeeMapper employees;
     public EmployeeDirectoryApiImpl(EmployeeMapper employees) { this.employees = employees; }
+    public List<String> existingNumbers(Collection<String> numbers) {
+        if (numbers.isEmpty()) return List.of();
+        if (numbers.size()>100) throw new IllegalArgumentException("员工查询最多 100 项");
+        return employees.selectList(new LambdaQueryWrapper<Employee>().select(Employee::getEmployeeNumber)
+                .in(Employee::getEmployeeNumber,numbers)).stream().map(Employee::getEmployeeNumber).toList();
+    }
     public List<EmployeeIdentity> findAll(Collection<Long> ids) {
         if (ids.isEmpty()) return List.of();
         if (ids.size() > 100) throw new IllegalArgumentException("员工查询最多 100 项");
