@@ -11,12 +11,12 @@
       </nav>
     </header>
     <section class="action-deck" aria-label="工作台快捷入口">
-      <router-link class="focus-action" :to="isSupervisor ? { path:'/quality/queue', query:{queue:'PENDING_REVIEW'} } : {path:'/inspection/tasks',query:{inbox:'1'}}">
+      <router-link class="focus-action" :to="isSupervisor ? { path:'/quality/queue', query:{queue:'PENDING_REVIEW'} } : {path:'/inspection/tasks',query:{inbox:'1',kind:nextInboxKind}}">
         <span class="focus-stat">{{ isSupervisor ? '待人工复核' : '我的待办' }}<span><strong>{{ formatNumber(isSupervisor ? qualityWorkload?.pendingReviewCount : folderInbox) }}</strong>项</span></span>
-        <span class="focus-cta">{{ isSupervisor ? '进入复核队列' : '处理受派任务' }}<AppIcon name="ArrowRight" :size="16" /></span>
+        <span class="focus-cta">{{ isSupervisor ? '进入复核队列' : (nextInboxKind==='detection' ? '去处理检测' : nextInboxKind==='verification' ? '去校验结果' : '查看我的待办') }}<AppIcon name="ArrowRight" :size="16" /></span>
       </router-link>
       <div class="work-entry">
-        <InspectionFlowNav overview />
+        <InspectionFlowNav overview :counts="inboxCounts" />
         <div class="work-tools">
           <router-link to="/inspection/history"><AppIcon name="Picture" :size="15" />检测记录</router-link>
           <router-link to="/quality/reports"><AppIcon name="DocumentChecked" :size="15" />质检报告</router-link>
@@ -654,12 +654,26 @@ onBeforeUnmount(() => {
 
 // ── 数据获取 ──
 
-const folderInbox=ref(null)
+const inboxCounts=ref({})
+const folderInbox=computed(()=>{
+  const {detection,verification}=inboxCounts.value
+  return Number.isSafeInteger(detection) && Number.isSafeInteger(verification) ? detection+verification : null
+})
+const nextInboxKind=computed(()=>{
+  const {detection,verification}=inboxCounts.value
+  if(detection>0 && verification===0)return 'detection'
+  if(verification>0 && detection===0)return 'verification'
+  return undefined
+})
 async function readFolderInbox(){
   if(isSupervisor.value)return
-  try {const r=await request.get('/api/detection/board',{params:{inbox:true,size:1}})
-    if(!disposed && r.data?.code===200)folderInbox.value=r.data.data.total
-  }catch{folderInbox.value=null}
+  const counts=await Promise.all(['detection','verification'].map(async kind=>{
+    try {
+      const response=await request.get('/api/detection/board',{params:{inbox:true,inboxKind:kind,size:1}})
+      return [kind,response.data?.code===200 ? response.data.data.total : null]
+    } catch {return [kind,null]}
+  }))
+  if(!disposed)inboxCounts.value=Object.fromEntries(counts)
 }
 async function refreshAll() {
   if (refreshing.value || disposed) return

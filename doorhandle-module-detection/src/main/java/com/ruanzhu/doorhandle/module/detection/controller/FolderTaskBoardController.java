@@ -22,10 +22,10 @@ public class FolderTaskBoardController {
         return Result.success(board.list(phase,keyword,directory,inbox,uploadsOnly,assignedTaskId,taskList,inboxKind,page,size));
     }
     @GetMapping("/uploads")
-    public Result<FolderTaskBoard.PageRows> uploads(@RequestParam(required=false) String scope, @RequestParam(required=false) String uploader,
+    public Result<FolderTaskBoard.PageRows> uploads(@RequestParam(required=false) String scope, @RequestParam(required=false) String uploader, @RequestParam(defaultValue="false") boolean awaitingDispatch,
             @RequestParam(required=false) String keyword, @RequestParam(required=false) String phase,
             @RequestParam(defaultValue="1") @Min(1) int page, @RequestParam(defaultValue="20") @Min(1) @Max(100) int size) {
-        return Result.success(board.uploads(scope,uploader,keyword,phase,page,size));
+        return Result.success(board.uploads(scope,uploader,keyword,phase,awaitingDispatch,page,size));
     }
     @GetMapping("/{id}/folder-metadata")
     public Result<java.util.Map<String,Object>> folderMetadata(@PathVariable String id) {

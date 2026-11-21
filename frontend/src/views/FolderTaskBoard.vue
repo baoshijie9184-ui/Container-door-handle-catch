@@ -11,6 +11,7 @@
     <section class="board-panel" :aria-label="uploadsOnly ? '上传记录' : '任务列表'">
       <div v-if="uploadsOnly" class="upload-navigation">
         <nav class="upload-scopes" aria-label="上传记录范围">
+          <router-link v-if="supervisor" to="/inspection/uploads/dispatch">待派检测</router-link>
           <router-link to="/inspection/uploads/mine">我的上传</router-link>
           <router-link to="/inspection/uploads/all">全部上传</router-link>
         </nav>
@@ -23,11 +24,11 @@
       <div v-if="!supervisor && !uploadsOnly" class="upload-navigation">
         <nav class="upload-scopes" aria-label="我的任务范围">
           <router-link v-for="scope in employeeScopes" :key="scope.value" :to="employeeScopeLink(scope.value)" custom v-slot="{ href, navigate }">
-            <a :href="href" :aria-current="!inboxKind && inbox === scope.value ? 'page' : 'false'" @click="navigate">{{ scope.label }}</a>
+            <a :href="href" :aria-current="inbox === scope.value ? 'page' : 'false'" @click="navigate">{{ scope.label }}</a>
           </router-link>
         </nav>
       </div>
-      <div class="board-toolbar"><div v-if="(!uploadsOnly || supervisor || uploadScope==='mine') && inboxKind!=='verification'" class="phases" aria-label="按任务阶段筛选">
+      <div class="board-toolbar"><div v-if="(!uploadsOnly || supervisor || uploadScope==='mine') && !awaitingDispatch && inboxKind!=='verification'" class="phases" aria-label="按任务阶段筛选">
         <button v-for="(label,key) in listPhases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
       </div><form @submit.prevent="search">
         <el-input v-if="uploadsOnly && uploadScope==='team'" v-model="uploaderInput" maxlength="50" placeholder="上传人工号" aria-label="上传人工号" clearable @clear="search"/>
@@ -36,7 +37,7 @@
       </form></div>
       <el-alert v-if="error" :title="error" type="error" :closable="false"/>
       <el-table :data="rows" v-loading="loading" row-key="taskId" empty-text="当前筛选下没有任务">
-        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="inbox && !keyword && !phase">{{ inboxKind==='detection' ? '当前没有待你启动或重试的检测。' : inboxKind==='verification' ? '当前没有分派给你的待校验结果。' : '当前没有待你处理的任务。' }}<router-link :to="employeeScopeLink(false)">查看全部任务</router-link></template><template v-else-if="taskList==='detection' && keyword">当前没有符合条件的检测任务。<router-link :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
+        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="awaitingDispatch">没有符合条件的待派文件夹。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="inbox && !keyword && !phase">{{ inboxKind==='detection' ? '当前没有待你启动或重试的检测。' : inboxKind==='verification' ? '当前没有分派给你的待校验结果。' : '当前没有待你处理的任务。' }}<router-link :to="employeeScopeLink(false)">查看全部任务</router-link></template><template v-else-if="taskList==='detection' && keyword">当前没有符合条件的检测任务。<router-link :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
         <el-table-column label="图片文件夹" min-width="195"><template #default="{row}">
           <strong class="folder-name" :title="recordFolderLabel(row)">{{ recordFolderLabel(row) }}</strong>
           <div class="folder-metadata">
@@ -51,7 +52,7 @@
         <el-table-column v-if="uploadsOnly" label="登记时间" min-width="155"><template #default="{row}">
           {{ row.registeredAt || '—' }}
         </template></el-table-column>
-        <el-table-column v-if="uploadsOnly" label="记录状态" min-width="145"><template #default="{row}">
+        <el-table-column v-if="uploadsOnly && !awaitingDispatch" label="批次处理状态" min-width="145"><template #default="{row}">
           <template v-if="Number(row.uploadPending)">上传待确认</template>
           <template v-else-if="!Number(row.canReadTask)">已登记</template>
           <template v-else>
@@ -79,7 +80,9 @@
               <router-link v-if="previewTaskId(row)" :to="actionLink(previewTaskId(row), 'images')">查看原图</router-link>
               <el-button v-else link disabled>查看原图</el-button>
               <template v-if="supervisor">
-                <el-button size="small" type="primary" :disabled="Boolean(dispatchUnavailable(row))" @click="openNew({ upload: row })">派发检测任务</el-button>
+                <el-button v-if="!dispatchUnavailable(row)" size="small" :type="awaitingDispatch ? 'primary' : 'default'" @click="openNew({ upload: row })">派发检测任务</el-button>
+                <router-link v-if="!awaitingDispatch && row.taskType!=='SINGLE' && ['WAITING_CHECK','VERIFYING'].includes(row.listPhase)" class="next-action"
+                  :to="{path:'/inspection/tasks/verification',query:{keyword:row.taskId}}">前往校验</router-link>
                 <small v-if="dispatchUnavailable(row)" class="dispatch-reason">{{ dispatchUnavailable(row) }}</small>
               </template>
               <template v-else>
@@ -98,8 +101,8 @@
               <router-link v-if="supervisor || row.qualityAssignee===user.username" :class="{ 'next-action': !!row.qualityAssignee }" :to="actionLink(row.taskId,'review')">核对模型结果</router-link>
               <router-link v-if="supervisor && row.qualityAssignee" :to="actionLink(row.taskId,'assign')">改派校验</router-link>
             </template>
-            <button v-if="taskList==='detection' && row.taskType!=='OSS_FOLDER' && row.modelStatus!=='UPLOADING' && isOssFolder(row)" @click="openNew({ upload:row })">派发检测任务</button>
-            <button v-else-if="supervisor && !taskList && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
+            <button v-if="taskList==='detection' && !['SINGLE','OSS_FOLDER'].includes(row.taskType) && row.modelStatus!=='UPLOADING' && isOssFolder(row)" @click="openNew({ upload:row })">派发检测任务</button>
+            <button v-else-if="supervisor && !taskList && row.taskType!=='SINGLE' && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
             <router-link :to="actionLink(row.taskId,'trace')">任务详情</router-link>
             </template>
           </div>
@@ -154,6 +157,7 @@ const employeeScopes=[{value:true,label:'待我处理'},{value:false,label:'全�
 const user=useUserStore(),supervisor=computed(()=>user.role==='SUPERVISOR'),api=captureAccountRequest()
 const router=useRouter(),route=useRoute()
 const uploadScope=computed(()=>route.meta.uploadScope)
+const awaitingDispatch=computed(()=>Boolean(route.meta.awaitingDispatch))
 const uploadsOnly=computed(()=>Boolean(uploadScope.value))
 const boardTitle=computed(()=>supervisor.value ? '任务总表' : '我的任务')
 const taskList=computed(()=>route.meta.taskList)
@@ -204,6 +208,7 @@ async function load(quiet=false){
     const params={page:page.value,size:20,keyword:keyword.value,phase:phase.value}
     if(uploadsOnly.value){
       params.scope=uploadScope.value
+      if(awaitingDispatch.value)params.awaitingDispatch=true
       if(uploadScope.value==='team' && typeof route.query.uploader==='string')params.uploader=route.query.uploader
     } else {
       params.inbox=inbox.value
@@ -243,6 +248,7 @@ function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undef
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
 function previewTaskId(row){return Number(row.canReadTask) ? row.taskId : row.myDetectionTaskId}
 function dispatchUnavailable(row){
+  if(row.taskType==='SINGLE')return '单图测试'
   if(Number(row.uploadPending))return '等待上传确认'
   if(!isOssFolder(row))return '未关联可派发的原图目录'
   return ''

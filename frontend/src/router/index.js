@@ -39,6 +39,11 @@ const routes = [
         meta: { title: '图片上传记录', requiresAuth: true }
       },
       {
+        path: 'inspection/uploads/dispatch', name: 'awaitingDetectionDispatch',
+        component: () => import('../views/FolderTaskBoard.vue'),
+        meta: { title:'待派检测的文件夹', requiresAuth:true, supervisorOnly:true, uploadScope:'team', awaitingDispatch:true }
+      },
+      {
         path: 'inspection/uploads/mine', name: 'myUploadRecords',
         component: () => import('../views/FolderTaskBoard.vue'),
         meta: { title: '我的上传记录', requiresAuth: true, uploadScope: 'mine' }

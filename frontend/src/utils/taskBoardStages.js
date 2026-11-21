@@ -2,6 +2,9 @@ import { statusPresentation } from './statusPresentation.js'
 import { QUALITY_READY_STATUSES } from './qualityWorkflow.js'
 
 export function modelStep(row) {
+  if (QUALITY_READY_STATUSES.includes(row.modelStatus) && Number(row.totalImages) > 0 && Number(row.failedImages) === Number(row.totalImages)) {
+    return '全部图片检测失败'
+  }
   if (row.modelStatus === 'READY') return '待启动检测'
   return statusPresentation('detection', row.modelStatus || 'UNKNOWN').label
 }

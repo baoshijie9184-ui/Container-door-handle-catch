@@ -83,6 +83,7 @@ public class FolderTaskBoard {
         String columns = COLUMNS+", "+PHASE+" AS phase, "+LIST_PHASE+" AS listPhase";
         String filterPhase = PHASE;
         Set<String> allowedPhases = BOARD_PHASES;
+        if (taskList != null || inbox) where += " AND " + BusinessDetectionTasks.filter("t.");
         if (taskList != null) {
             if (!actor.supervisor()) throw new BusinessException(403,"仅主管可查看企业任务列表");
             allowedPhases = SUPERVISOR_LISTS.get(taskList);
@@ -126,7 +127,7 @@ public class FolderTaskBoard {
         return readPage(columns,SOURCE,where,args,page,size);
     }
 
-    public PageRows uploads(String scope, String uploader, String keyword, String phase, int page, int size) {
+    public PageRows uploads(String scope, String uploader, String keyword, String phase, boolean awaitingDispatch, int page, int size) {
         var actor = users.authenticated();
         if (scope == null) scope = actor.supervisor() ? "team" : "mine";
         if (!Set.of("mine","team").contains(scope)) throw bad("未知上传记录范围");
@@ -134,6 +135,15 @@ public class FolderTaskBoard {
         String readable = "("+taskScope.predicate()+")";
         var args = new MapSqlParameterSource(taskScope.parameters());
         String where = " WHERE "+UPLOAD_TYPES;
+        if (awaitingDispatch) {
+            if (!actor.supervisor()) throw new BusinessException(403,"仅主管可查看待派文件夹");
+            where += " AND "+BusinessDetectionTasks.filter("t.")+"""
+                 AND t.status NOT IN ('UPLOADING','CANCELLED') AND t.total_images>0
+                 AND t.source_oss_prefix LIKE 'detection/%/'
+                 AND NOT EXISTS (SELECT 1 FROM detection_task f WHERE f.task_type='OSS_FOLDER'
+                     AND f.status <> 'CANCELLED' AND BINARY f.source_oss_prefix=BINARY t.source_oss_prefix)
+                """;
+        }
         if (scope.equals("mine")) {
             where += " AND (t.created_user_id=:ownerId OR (t.created_user_id IS NULL AND BINARY t.created_by=BINARY :ownerName))";
             args.addValue("ownerId",actor.userId()).addValue("ownerName",actor.username());
@@ -161,7 +171,7 @@ public class FolderTaskBoard {
         // Shared rows expose upload registration only. Folder paths and processing data follow task read access.
         String permitted = "CASE WHEN "+readable+" THEN ";
         String columns = """
-            t.task_id AS taskId,t.image_folder_name AS folder,t.created_by AS recordedName,t.created_user_id AS recordedId,t.total_images AS totalImages,
+            t.task_id AS taskId,t.task_type AS taskType,t.image_folder_name AS folder,t.created_by AS recordedName,t.created_user_id AS recordedId,t.total_images AS totalImages,
             DATE_FORMAT(t.created_at,'%Y-%m-%d %H:%i:%s') AS registeredAt,
             (t.status='UPLOADING') AS uploadPending,
             """+permitted+"1 ELSE 0 END AS canReadTask, "

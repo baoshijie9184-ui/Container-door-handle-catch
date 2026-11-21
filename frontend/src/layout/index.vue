@@ -187,6 +187,7 @@ const navGroups = [
       { path: '/inspection/uploads/mine', label: '我的上传记录', desc: '查看本人上传的图片批次' },
       { path: '/inspection/uploads/all', label: '全部上传记录', desc: '按员工工号查找上传记录' },
       { path: '/inspection/tasks', label: '我的任务', desc: '受派检测和人工校验', inspectorOnly: true },
+      { path: '/inspection/uploads/dispatch', label: '待派检测', desc: '选择文件夹派发检测任务', supervisorOnly: true },
       { path: '/inspection/tasks/detection', label: '检测任务列表', desc: '检测派单与模型进度', supervisorOnly: true },
       { path: '/inspection/tasks/verification', label: '校验任务列表', desc: '分派校验与核对检测结果', supervisorOnly: true },
       { path: '/inspection/history', label: '检测记录', desc: '历史结果与报告' },

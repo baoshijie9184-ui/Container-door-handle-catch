@@ -32,7 +32,7 @@ const actions = {
 export function inspectionActions(supervisor) {
   const upload = { key:'upload', label:'上传图片', icon:'Upload', path:'/upload' }
   const records = { key:'records', label:supervisor ? '派发检测' : '上传记录', icon:'FolderOpened',
-    path:supervisor ? '/inspection/uploads/all' : '/inspection/uploads/mine' }
+    path:supervisor ? '/inspection/uploads/dispatch' : '/inspection/uploads/mine' }
   const detection = { key:'detection', label:supervisor ? '跟进检测' : '待我检测', icon:'Tickets',
     path:supervisor ? '/inspection/tasks/detection' : '/inspection/tasks',
     query:supervisor ? undefined : {inbox:'1',kind:'detection'} }

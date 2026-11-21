@@ -21,3 +21,9 @@ test('the recorded model outcome and human review are independent for each batch
     assert.equal(canReview(row),actionable)
   }
 })
+
+test('历史批次已结束但全部图片失败时显示实际图片结果',async()=>{
+  const {modelStep}=await importFrontendModule('src','utils','taskBoardStages.js')
+  assert.equal(modelStep({modelStatus:'COMPLETED',totalImages:1,failedImages:1}),'全部图片检测失败')
+  assert.equal(modelStep({modelStatus:'COMPLETED',totalImages:0,failedImages:0}),'检测完成')
+})

@@ -21,7 +21,7 @@ test('常用操作按角色和实际菜单过滤，支持用户常用的动作�
 test('主管按上传、派单、检测、校验导航，员工优先进入本人分阶段的待办',async()=>{
   const {inspectionActions,actionLocation}=await actions
   const supervisor=inspectionActions(true),employee=inspectionActions(false)
-  assert.deepEqual(supervisor.map(a=>a.path),['/upload','/inspection/uploads/all','/inspection/tasks/detection','/inspection/tasks/verification'])
+  assert.deepEqual(supervisor.map(a=>a.path),['/upload','/inspection/uploads/dispatch','/inspection/tasks/detection','/inspection/tasks/verification'])
   assert.deepEqual(employee.slice(0,2).map(actionLocation),['detection','verification'].map(kind=>({path:'/inspection/tasks',query:{inbox:'1',kind}})))
   assert.deepEqual(employee.slice(2).map(a=>a.path),['/upload','/inspection/uploads/mine'])
 })
