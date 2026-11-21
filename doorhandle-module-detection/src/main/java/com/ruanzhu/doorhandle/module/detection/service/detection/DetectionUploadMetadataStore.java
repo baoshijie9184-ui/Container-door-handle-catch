@@ -8,6 +8,8 @@ import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionCaptureInfo;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionUploadFileRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionUploadMetadata;
+import com.ruanzhu.doorhandle.module.infra.service.OssStorageService;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -15,17 +17,23 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
 @Repository
 @RequiredArgsConstructor
+@Slf4j
 public class DetectionUploadMetadataStore {
     private static final int MAX_BYTES = 256 * 1024;
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
+    private final OssStorageService oss;
+
+    public record Registered(JsonNode document, boolean storedInOss) {}
+    private record Snapshot(String contents, boolean storedInOss) {}
 
     public void save(String taskId, DetectionCaptureInfo capture, List<DetectionUploadFileRequest> files,
                      DetectionUploadMetadata metadata) {
@@ -40,17 +48,42 @@ public class DetectionUploadMetadataStore {
     }
 
     /** Call only after the task or its assigned upload source has been authorized. */
-    public JsonNode read(String taskId) {
-        var rows = jdbc.queryForList("""
-                SELECT payload_json FROM runtime_state
-                WHERE namespace='DETECTION_UPLOAD_METADATA' AND owner_id=0 AND scope_key=?
-                """, String.class, taskId);
-        if (rows.isEmpty()) return null;
+    public Registered read(String taskId) {
+        var snapshot = load(taskId, false);
+        if (snapshot == null) return null;
         try {
-            return json.readTree(rows.get(0));
+            return new Registered(json.readTree(snapshot.contents()), snapshot.storedInOss());
         } catch (JsonProcessingException invalid) {
             throw new BusinessException(500, "已登记的元数据暂不可读取");
         }
+    }
+
+    /** The upload confirmation transaction retains the same task and JSON for a retry. */
+    public void storeInOss(String taskId, String originalPrefix) {
+        var snapshot = load(taskId, true);
+        if (snapshot == null || snapshot.storedInOss()) return;
+        String key = UploadFolders.metadataKey(originalPrefix);
+        byte[] bytes = snapshot.contents().getBytes(StandardCharsets.UTF_8);
+        try {
+            oss.putObject(key, new ByteArrayInputStream(bytes), bytes.length, "application/json");
+        } catch (RuntimeException failure) {
+            log.warn("OSS metadata write failed for task {} ({})", taskId, failure.getClass().getSimpleName());
+            throw new BusinessException(503, "元数据文件暂未保存到 OSS，请重试上传确认");
+        }
+        jdbc.update("""
+                UPDATE runtime_state SET state_code='OSS_STORED',updated_at=UTC_TIMESTAMP(6)
+                WHERE namespace='DETECTION_UPLOAD_METADATA' AND owner_id=0 AND scope_key=?
+                """, taskId);
+    }
+
+    private Snapshot load(String taskId, boolean lock) {
+        var rows = jdbc.query("""
+                SELECT payload_json, state_code FROM runtime_state
+                WHERE namespace='DETECTION_UPLOAD_METADATA' AND owner_id=0 AND scope_key=?
+                """ + (lock ? " FOR UPDATE" : ""),
+                (row, index) -> new Snapshot(row.getString("payload_json"), "OSS_STORED".equals(row.getString("state_code"))),
+                taskId);
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
     ObjectNode document(DetectionCaptureInfo capture, List<DetectionUploadFileRequest> files,

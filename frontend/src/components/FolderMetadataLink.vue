@@ -38,6 +38,7 @@
       <dl class="metadata-fields metadata-source">
         <div class="full"><dt>任务编号</dt><dd><code>{{ metadata.taskId }}</code></dd></div>
         <div v-if="Number(metadata.canReadTask)" class="full"><dt>{{ metadata.prefix?.startsWith('detection/') ? 'OSS 原图目录' : '原图存储路径' }}</dt><dd><code>{{ metadata.prefix || '未登记' }}</code></dd></div>
+        <div v-if="metadata.metadataOssKey" class="full"><dt>OSS 元数据文件</dt><dd><code>{{ metadata.metadataOssKey }}</code></dd></div>
       </dl>
     </template>
     <template v-if="metadata && Number(metadata.canReadTask)" #footer>

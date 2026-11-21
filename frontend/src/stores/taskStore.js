@@ -43,8 +43,15 @@ export const useTaskStore = defineStore('task', () => {
   let saveTimer = null
   let pendingSave = false
 
-  const saveTaskList = (stamp=accountSession.stamp()) => {
+  const saveTaskList = (stamp=accountSession.stamp(), { immediate=false }={}) => {
     if(!accountSession.current(stamp))return
+    if (immediate) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+      pendingSave = false
+      doSave(stamp)
+      return
+    }
     // 如果已有定时器等待，标记为待保存即可
     if (saveTimer) {
       pendingSave = true
@@ -88,6 +95,7 @@ export const useTaskStore = defineStore('task', () => {
         message: t.message,
         error: t.error,
         uploadedFiles: t.uploadedFiles,
+        uploadConfirmation: t.uploadConfirmation,
         logs: t.logs,
         captureInfo: t.captureInfo,
         sourceOssPrefix: t.sourceOssPrefix || ''
@@ -109,7 +117,7 @@ export const useTaskStore = defineStore('task', () => {
   const getResumeTaskList = () => {
     const tasks = loadTaskList()
     return tasks
-      .filter(t => t.stage === 'uploading')
+      .filter(t => t.stage === 'uploading' && !t.uploadConfirmation)
       .map(t => {
         const fileState = loadFileState(t.taskId)
         const ci = t.captureInfo
@@ -254,6 +262,9 @@ export const useTaskStore = defineStore('task', () => {
 
   // 任务状态详情（进度条下方一行展示）
   const taskStatusDetail = (task) => {
+    if (task.stage === 'uploading' && task.uploadConfirmation) {
+      return { text: [task.message, task.error].filter(Boolean).join('，'), type: 'warn' }
+    }
     if (task.error) return { text: task.error, type: 'error' }
     const uploading = task.stage === 'uploading'
     const done = task.stage === 'completed' || task.stage === 'uploaded' || task.stage === 'queued' || task.stage === 'detecting'

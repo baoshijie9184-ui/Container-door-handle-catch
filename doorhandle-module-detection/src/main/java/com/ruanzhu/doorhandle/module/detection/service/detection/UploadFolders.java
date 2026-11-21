@@ -11,6 +11,13 @@ public final class UploadFolders {
 
     public static String root(String base) { return base + "/" + ROOT + "/"; }
 
+    public static String metadataKey(String originalPrefix) {
+        if (originalPrefix == null || !originalPrefix.endsWith("/Original/")) {
+            throw new BusinessException(409, "原图目录不完整，暂无法保存元数据文件");
+        }
+        return originalPrefix + "metadata.json";
+    }
+
     public static String batch(String base, boolean supervisor, String employeeNumber, String batchName, String taskId) {
         if (employeeNumber == null || !employeeNumber.matches("[\\p{L}\\p{N}_-]{1,50}"))
             throw new BusinessException(409, "上传账号缺少可用于 OSS 目录的有效工号，请核对人员绑定");

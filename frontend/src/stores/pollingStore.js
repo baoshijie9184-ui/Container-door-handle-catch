@@ -322,7 +322,7 @@ export const usePollingStore = defineStore('polling', () => {
             updatedAt: bt.updatedAt,
             createdAt: bt.createdAt || existing.createdAt,
             finishedAt: bt.finishedAt || existing.finishedAt,
-            message: bt.message || existing.message,
+            message: existing.uploadConfirmation && stage === 'uploading' ? existing.message : (bt.message || existing.message),
             error: bt.errorMessage || existing.error,
             batchNo: bt.batchNo || existing.batchNo || '',
             workOrderNo: bt.workOrderNo || existing.workOrderNo || '',

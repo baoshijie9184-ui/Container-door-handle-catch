@@ -298,6 +298,9 @@
             </div>
             <!-- 操作按钮 -->
             <div class="history-item-actions">
+              <el-button v-if="task.stage === 'uploading' && task.uploadConfirmation" link type="primary"
+                :loading="uploadingToOss && activeUploadTaskId===task.taskId" :disabled="uploadingToOss"
+                @click="uploadStore.retryUploadConfirmation(task.taskId)">重试上传确认</el-button>
               <router-link
                 v-if="task.stage === 'uploaded' || task.stage === 'queued' || task.stage === 'detecting' || task.stage === 'completed'"
                 :to="assignedTrace(task.taskId)"

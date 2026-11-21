@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import request from '../api/request'
 import { accountSession } from '../utils/accountContext'
 import { resourceVersion, mutationHeaders, responseResourceVersion } from '../utils/mutationVersion'
+import { createUiRequestId } from '../utils/requestIdentity'
 import { ElMessage } from 'element-plus'
 import { useTaskStore } from './taskStore'
 import { usePollingStore } from './pollingStore'
@@ -10,6 +11,66 @@ import { usePollingStore } from './pollingStore'
 export const useUploadStore = defineStore('upload', () => {
   const uploadingToOss = ref(false)
   const activeUploadTaskId = ref(null)
+
+  accountSession.onReset(() => { uploadingToOss.value=false; activeUploadTaskId.value=null })
+
+  async function confirmUpload(taskId, account) {
+    accountSession.assert(account)
+    const taskStore = useTaskStore()
+    const task = taskStore.taskList.find(item => item.taskId===taskId)
+    const command = task?.uploadConfirmation
+    if (!command || !task.uploadedFiles?.length) return
+    taskStore.updateTask(taskId,{message:'正在保存批次资料并确认上传'})
+    try {
+      const response = await request.post(`/api/detection/tasks/${taskId}/mark-uploaded`, {
+        uploadedFiles:task.uploadedFiles.map(({fileName,objectKey})=>({fileName,objectKey}))
+      },{_accountStamp:account,timeout:70000,headers:mutationHeaders(command.version,command.requestId)})
+      accountSession.assert(account)
+      if (response.data?.code!==200) throw new Error(response.data?.message || '上传确认尚未完成')
+      const version = responseResourceVersion(response) ?? resourceVersion(task)
+      taskStore.updateTask(taskId,{version,mutationVersion:version,stage:'queued',progressPercent:40,
+        message:`已提交 ${task.uploadedFiles.length} 张原图检测`})
+      taskStore.updateTask(taskId,{uploadConfirmation:null})
+      taskStore.removeFileState(taskId,account)
+      taskStore.saveTaskList(account,{immediate:true})
+      usePollingStore().ensurePolling()
+      ElMessage.success(`上传已确认，共 ${task.uploadedFiles.length} 张原图`)
+    } catch (error) {
+      if (!accountSession.current(account)) return
+      taskStore.updateTask(taskId,{message:error.response?.data?.message || error.message || '上传确认尚未完成'})
+      taskStore.saveTaskList(account,{immediate:true})
+      ElMessage.warning('原图已上传，请从此批次重试上传确认')
+    }
+  }
+
+  async function finishTransfer(taskId, uploadedFiles, failedCount, version, account) {
+    const taskStore = useTaskStore()
+    const error = failedCount ? `${failedCount} 张原图上传失败` : ''
+    if (!uploadedFiles.length) {
+      taskStore.updateTask(taskId,{error,message:'尚无成功上传的原图，请续传'})
+      taskStore.saveTaskList(account,{immediate:true})
+      ElMessage.warning('尚无成功上传的原图，请续传')
+      return
+    }
+    const uploadConfirmation={version,requestId:createUiRequestId()}
+    taskStore.updateTask(taskId,{uploadedFiles,uploadConfirmation,error})
+    taskStore.pushTaskLog(taskId,`已上传 ${uploadedFiles.length} 张原图${failedCount ? `，${failedCount} 张失败` : ''}。`)
+    taskStore.saveTaskList(account,{immediate:true})
+    await confirmUpload(taskId,account)
+  }
+
+  async function retryUploadConfirmation(taskId) {
+    if (uploadingToOss.value) return
+    const account=accountSession.stamp()
+    accountSession.assert(account)
+    uploadingToOss.value=true
+    activeUploadTaskId.value=taskId
+    try {
+      await confirmUpload(taskId,account)
+    } finally {
+      if(accountSession.current(account)) { uploadingToOss.value=false; activeUploadTaskId.value=null }
+    }
+  }
 
   // ==================== OSS 上传（可跨页面继续执行） ====================
 
@@ -21,7 +82,6 @@ export const useUploadStore = defineStore('upload', () => {
     // captureInfo: { captureDate, region, collector, deviceName, imageFolderName, imageCount, folderLabel }
 
     const taskStore = useTaskStore()
-    const pollingStore = usePollingStore()
 
     if (!filesData.length) {
       ElMessage.error('请先选择图片文件夹')
@@ -71,7 +131,6 @@ export const useUploadStore = defineStore('upload', () => {
       taskStore.pushTaskLog(taskData.taskId, `开始上传 ${captureInfo.imageCount} 张原图到 OSS。`)
 
       const uploadedFiles = []
-      const failedFiles = []
       const totalCount = taskData.uploadUrls.length
       const completedFileNames = []
       const failedFileNameList = []
@@ -87,16 +146,13 @@ export const useUploadStore = defineStore('upload', () => {
       // 并发上传池：同时上传 CONCURRENCY 个文件
       const CONCURRENCY = 10
       let nextIndex = 0
-      let completedCount = 0
 
       const uploadOne = async (i) => {
         if(!current())return
         const uploadItem = taskData.uploadUrls[i]
         const item = filesData[i]
         if (!item) {
-          failedFiles.push({ fileName: uploadItem?.fileName || `索引${i}`, reason: '前端文件数据缺失' })
           failedFileNameList.push(uploadItem?.fileName || `索引${i}`)
-          completedCount++
           return
         }
 
@@ -115,12 +171,10 @@ export const useUploadStore = defineStore('upload', () => {
           if(!current())return
           const status = err.response?.status || '无响应'
           console.error(`[上传失败] ${uploadItem.fileName}: HTTP ${status}`, err.message)
-          failedFiles.push({ fileName: uploadItem.fileName, reason: err.message || '上传失败' })
           failedFileNameList.push(uploadItem.fileName)
         }
 
         if(!current())return
-        completedCount++
         const totalDone = completedFileNames.length + failedFileNameList.length
         const progressPercent = Math.round(2 + (totalDone / totalCount) * 31)
         const failInfo = failedFileNameList.length > 0 ? `，${failedFileNameList.length} 张失败` : ''
@@ -148,34 +202,7 @@ export const useUploadStore = defineStore('upload', () => {
       await Promise.all(workers)
       accountSession.assert(account)
 
-      // 上传完成，清理文件级状态
-      taskStore.removeFileState(taskData.taskId,account)
-
-      const allSuccess = failedFiles.length === 0
-      taskStore.updateTask(taskData.taskId, {
-        stage: 'queued',
-        message: allSuccess
-          ? `全部 ${uploadedFiles.length} 张原图已上传完成，正在自动提交检测。`
-          : `上传完成：成功 ${uploadedFiles.length} 张，失败 ${failedFiles.length} 张，正在提交可用图片检测。`,
-        progressPercent: 40,
-        uploadedFiles,
-        error: allSuccess ? '' : `${failedFiles.length} 张图片上传失败`
-      })
-      taskStore.pushTaskLog(taskData.taskId,
-        allSuccess
-          ? `原图上传完成，共 ${uploadedFiles.length} 张。`
-          : `原图上传完成：成功 ${uploadedFiles.length} 张，失败 ${failedFiles.length} 张。`
-      )
-      ElMessage.success(allSuccess
-        ? `OSS 上传完成，共 ${uploadedFiles.length} 张`
-        : `OSS 上传完成：成功 ${uploadedFiles.length} 张，失败 ${failedFiles.length} 张`)
-      taskStore.saveTaskList(account)
-      pollingStore.ensurePolling()
-
-      // 通知后端标记上传完成并自动提交检测调度（异步，不阻塞）
-      request.post(`/api/detection/tasks/${taskData.taskId}/mark-uploaded`, {
-        uploadedFiles: uploadedFiles.map(f => ({ fileName: f.fileName, objectKey: f.objectKey }))
-      },{_accountStamp:account,headers:mutationHeaders(uploadVersion)}).then(response=>{if(current()){const version=responseResourceVersion(response);if(version!==null)taskStore.updateTask(taskData.taskId,{version,mutationVersion:version});taskStore.saveTaskList(account)}}).catch(err => {if(current())console.error('标记上传完成失败:', err)})
+      await finishTransfer(taskData.taskId,uploadedFiles,failedFileNameList.length,uploadVersion,account)
     } catch (error) {
       if(!current())return
       console.error('上传 OSS 失败:', error)
@@ -192,7 +219,6 @@ export const useUploadStore = defineStore('upload', () => {
     accountSession.assert(account)
     // remainingFilesData: [{ file: File, fileName, contentType, relativePath }]
     const taskStore = useTaskStore()
-    const pollingStore = usePollingStore()
 
     if (!remainingFilesData.length) {
       ElMessage.warning('没有需要续传的文件')
@@ -230,14 +256,12 @@ export const useUploadStore = defineStore('upload', () => {
       const totalCount = resumeData.uploadUrls.length
       const prevUploaded = existingTask.uploadedFiles || []
       const prevCompleted = prevUploaded.map(f => f.fileName)
-      const prevFailed = taskStore.loadFileState(taskId)?.failed || []
 
       taskStore.pushTaskLog(taskId, `续传开始，剩余 ${totalCount} 张待上传。`)
 
       const uploadedFiles = [...prevUploaded]
-      const failedFiles = []
       const completedFileNames = [...prevCompleted]
-      const failedFileNameList = [...prevFailed]
+      const failedFileNameList = []
 
       taskStore.saveFileState(taskId, {
         total: existingTask.imageCount,
@@ -303,33 +327,7 @@ export const useUploadStore = defineStore('upload', () => {
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, totalCount) }, () => worker()))
       accountSession.assert(account)
 
-      taskStore.removeFileState(taskId,account)
-
-      const allSuccess = failedFileNameList.length === 0
-      taskStore.updateTask(taskId, {
-        stage: 'queued',
-        message: allSuccess
-          ? `全部 ${uploadedFiles.length} 张原图已上传完成，正在自动提交检测。`
-          : `上传完成：成功 ${uploadedFiles.length} 张，失败 ${failedFileNameList.length} 张，正在提交可用图片检测。`,
-        progressPercent: 40,
-        uploadedFiles,
-        error: allSuccess ? '' : `${failedFileNameList.length} 张图片上传失败`
-      })
-      taskStore.pushTaskLog(taskId,
-        allSuccess
-          ? `续传完成，共 ${uploadedFiles.length} 张原图已上传。`
-          : `续传完成：成功 ${uploadedFiles.length} 张，失败 ${failedFileNameList.length} 张。`
-      )
-      ElMessage.success(allSuccess
-        ? `续传完成，共 ${uploadedFiles.length} 张`
-        : `续传完成：成功 ${uploadedFiles.length} 张，失败 ${failedFileNameList.length} 张`)
-      taskStore.saveTaskList(account)
-      pollingStore.ensurePolling()
-
-      // 通知后端标记上传完成并自动提交检测调度（异步，不阻塞）
-      request.post(`/api/detection/tasks/${taskId}/mark-uploaded`, {
-        uploadedFiles: uploadedFiles.map(f => ({ fileName: f.fileName, objectKey: f.objectKey }))
-      },{_accountStamp:account,headers:mutationHeaders(uploadVersion)}).then(response=>{if(current()){const version=responseResourceVersion(response);if(version!==null)taskStore.updateTask(taskId,{version,mutationVersion:version});taskStore.saveTaskList(account)}}).catch(err => {if(current())console.error('标记上传完成失败:', err)})
+      await finishTransfer(taskId,uploadedFiles,failedFileNameList.length,uploadVersion,account)
     } catch (error) {
       if(!current())return
       console.error('续传失败:', error)
@@ -343,6 +341,7 @@ export const useUploadStore = defineStore('upload', () => {
     uploadingToOss,
     activeUploadTaskId,
     uploadBatchToOss,
-    resumeUploadToOss
+    resumeUploadToOss,
+    retryUploadConfirmation
   }
 })

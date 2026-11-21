@@ -269,7 +269,10 @@ public class FolderTaskBoard {
         String metadataTaskId = (String) row.remove("metadataTaskId");
         if (metadataTaskId != null) {
             var metadata = uploadMetadata.read(metadataTaskId);
-            if (metadata != null) row.put("metadataJson", metadata);
+            if (metadata != null) {
+                row.put("metadataJson", metadata.document());
+                if (metadata.storedInOss()) row.put("metadataOssKey", UploadFolders.metadataKey((String) row.get("prefix")));
+            }
         }
         row.put("folder",shortName((String) row.get("folder")));
         row.put("uploadFolder",shortName((String) row.get("uploadFolder")));

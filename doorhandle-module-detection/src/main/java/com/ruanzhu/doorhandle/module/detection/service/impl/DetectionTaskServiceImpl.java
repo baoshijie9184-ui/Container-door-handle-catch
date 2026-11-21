@@ -124,6 +124,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
             "image/jpeg", "image/png", "image/bmp", "image/x-ms-bmp", "application/octet-stream"
     );
     private static final Set<String> SUPPORTED_UPLOAD_IMAGE_EXTENSIONS = Set.of(".jpg", ".jpeg", ".png", ".bmp");
+    private static final Set<String> AFTER_UPLOAD = Set.of("UPLOADED", "QUEUED", "DETECTING", "RUNNING", "COMPLETED", "PARTIAL_FAILED");
 
     private final DetectionTaskMapper detectionTaskMapper;
     private final ModelInfoMapper modelInfoMapper;
@@ -333,6 +334,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
         if ("OSS_FOLDER".equals(task.getTaskType())) throw new BusinessException(409, "请由受派员工从任务列表启动检测");
         if (!Set.of("UPLOADING", "FAILED").contains(task.getStatus())) {
+            if (AFTER_UPLOAD.contains(task.getStatus())) storeUploadMetadata(task);
             return buildProgressResponse(task, "任务已进入检测阶段");
         }
         if (request == null || request.getUploadedFiles() == null || request.getUploadedFiles().isEmpty()) {
@@ -360,6 +362,8 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
             return buildProgressResponse(getTask(taskId), "任务已进入检测阶段");
         }
 
+        storeUploadMetadata(task);
+
         task.setOriginalImageKeysJson(uploadedKeysJson);
         task.setModelId(modelId);
         task.setModelVersion(modelVersion);
@@ -375,6 +379,12 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
         dispatch(task);
         return buildProgressResponse(task, "原图上传完成，已开始提交远程检测任务");
+    }
+
+    private void storeUploadMetadata(DetectionTask task) {
+        if (uploadMetadata != null) {
+            uploadMetadata.storeInOss(task.getTaskId(), task.getSourceOssPrefix());
+        }
     }
 
     @Override

@@ -5,18 +5,63 @@ import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionCaptureInfo;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionUploadFileRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionUploadMetadata;
+import com.ruanzhu.doorhandle.module.infra.service.OssStorageService;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.sql.ResultSet;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class DetectionUploadMetadataStoreTest {
-    private final DetectionUploadMetadataStore store = new DetectionUploadMetadataStore(mock(JdbcTemplate.class), new ObjectMapper());
+    private final JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    private final OssStorageService oss = mock(OssStorageService.class);
+    private final DetectionUploadMetadataStore store = new DetectionUploadMetadataStore(jdbc, new ObjectMapper(), oss);
+
+    @Test
+    void savesTheRegisteredJsonNextToImagesAndOnlyMarksAConfirmedWrite() throws Exception {
+        String taskId = "det_1";
+        String prefix = "detection/图片上传/主管上传/SUP-0001/车门_det_1/Original/";
+        String contents = "{\"schemaVersion\":1,\"notes\":\"原图资料\"}";
+        long length = contents.getBytes(StandardCharsets.UTF_8).length;
+        var row = mock(ResultSet.class);
+        when(row.getString("payload_json")).thenReturn(contents);
+        when(row.getString("state_code")).thenReturn(null, null, "OSS_STORED");
+        when(jdbc.query(contains("FOR UPDATE"), org.mockito.ArgumentMatchers.<RowMapper<Object>>any(), eq(taskId)))
+                .thenAnswer(call -> {
+                    RowMapper<?> mapper = call.getArgument(1);
+                    return List.of(mapper.mapRow(row, 0));
+                });
+        doAnswer(call -> {
+            throw new IllegalStateException("OSS unavailable");
+        }).doAnswer(call -> {
+            InputStream input = call.getArgument(1);
+            assertEquals(contents, new String(input.readAllBytes(), StandardCharsets.UTF_8));
+            return null;
+        }).when(oss).putObject(eq(prefix + "metadata.json"), any(InputStream.class), eq(length), eq("application/json"));
+
+        assertEquals(503, assertThrows(BusinessException.class, () -> store.storeInOss(taskId, prefix)).getCode());
+        verify(jdbc, never()).update(contains("OSS_STORED"), eq(taskId));
+        store.storeInOss(taskId, prefix);
+        store.storeInOss(taskId, prefix);
+        verify(jdbc, times(1)).update(contains("OSS_STORED"), eq(taskId));
+        verify(oss, times(2)).putObject(eq(prefix + "metadata.json"), any(InputStream.class), eq(length), eq("application/json"));
+    }
 
     @Test
     void snapshotUsesRegisteredFieldsAndListsImagesEvenWithoutTheirOwnNotes() {
