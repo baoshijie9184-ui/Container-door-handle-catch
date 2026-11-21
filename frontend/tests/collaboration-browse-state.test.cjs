@@ -208,14 +208,14 @@ test('resource shrink clears exactly A rows and owned cache while B draft, zero 
   let saved=0
   const forgetTaskAccess=new Function('env',`let saveTimer=null,pendingSave=true;const {accountSession,cache,taskList,selectedTaskId,saveTaskList}=env;${storeCode.slice(start,end)};return forgetTaskAccess`)(
     {accountSession,cache,taskList,selectedTaskId,saveTaskList:owner=>{saved++;cache.writeTasks(taskList.value,owner)}})
-  const affectedLists=['forgetHistoryTasks','forgetQualityTasks','forgetTraceTasks']
+  const affectedLists=['forgetHistoryTasks','forgetTraceTasks']
   const lists=affectedLists.map(()=>({value:[...rows]})),draft={taskId:'B',text:'未提交内容',expectedVersion:'0',requestId:'original-b-command'},before=JSON.stringify(draft)
   let invalidated=0
   const env={accountSession,pollingStore:{invalidateTaskReads:()=>invalidated++},taskStore:{forgetTaskAccess}}
   for(const [index,name] of affectedLists.entries())env[name]=ids=>{lists[index].value=lists[index].value.filter(row=>!ids.includes(row.taskId))}
   const page=readFrontendFile('src','views','ImageDetection.vue'),pageStart=page.indexOf('function discardInaccessibleTasks('),pageEnd=page.indexOf('\nconst { latest:taskChanges }',pageStart)
   assert.ok(pageStart>0&&pageEnd>pageStart)
-  const discard=new Function('env',`const {accountSession,pollingStore,taskStore,forgetHistoryTasks,forgetQualityTasks,forgetTraceTasks}=env;${page.slice(pageStart,pageEnd)};return discardInaccessibleTasks`)(env)
+  const discard=new Function('env',`const {accountSession,pollingStore,taskStore,forgetHistoryTasks,forgetTraceTasks}=env;${page.slice(pageStart,pageEnd)};return discardInaccessibleTasks`)(env)
   discard({requestedIds:['A','B'],missingIds:['A','not-requested'],isCurrent:()=>true})
   assert.equal(invalidated,1);assert.equal(JSON.stringify(draft),before);assert.equal(selectedTaskId.value,'B')
   for(const list of [...lists,taskList])assert.deepEqual(list.value.map(row=>row.taskId),['B','local-pending'])
