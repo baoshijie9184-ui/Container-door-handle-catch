@@ -21,4 +21,7 @@ test('registered names take precedence and legacy, unnamed and shared records ha
   assert.equal(recordFolderLabel({ prefix:'C:\\旧设备\\上传\\夜班\\' }), '夜班')
   assert.equal(recordFolderLabel({ folder:'员工目录/班次乙', prefix:null }), '班次乙')
   assert.equal(recordFolderLabel({ folder:null, prefix:null }), '未命名文件夹')
+  assert.equal(recordFolderLabel({ folderName:'上海市 / 检测组 / 早班' }), '早班')
+  assert.equal(recordFolderLabel({ captureInfo:{imageFolderName:'晚班'},folderName:'旧名' }), '晚班')
+  assert.equal(recordFolderLabel({ sourceOssPrefix:'detection/旧数据/夜班/Original/' }), '夜班')
 })

@@ -27,6 +27,10 @@ public class FolderTaskBoardController {
             @RequestParam(defaultValue="1") @Min(1) int page, @RequestParam(defaultValue="20") @Min(1) @Max(100) int size) {
         return Result.success(board.uploads(scope,uploader,keyword,phase,page,size));
     }
+    @GetMapping("/{id}/folder-metadata")
+    public Result<java.util.Map<String,Object>> folderMetadata(@PathVariable String id) {
+        return Result.success(board.folderMetadata(id));
+    }
     @GetMapping("/folders")
     public Result<FolderTaskBoard.Folder> folders(@RequestParam(required=false) String prefix,@RequestParam(required=false) String marker) {
         return Result.success(board.folders(prefix,marker));

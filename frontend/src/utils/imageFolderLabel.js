@@ -1,6 +1,6 @@
 // Only the display label drops the storage hierarchy. Navigation keeps the original key.
 export function imageFolderLabel(path) {
-  const parts = String(path ?? '').split(/[\\/]+/).filter(Boolean)
+  const parts = String(path ?? '').split(/[\\/]+/).map(part => part.trim()).filter(Boolean)
   if (parts.length > 1 && /^originals?$/i.test(parts.at(-1))) parts.pop()
   const leaf = parts.at(-1) || ''
   if (parts.at(-4) === '图片上传' && ['主管上传', '员工上传'].includes(parts.at(-3))) {
@@ -10,7 +10,8 @@ export function imageFolderLabel(path) {
 }
 
 export function recordFolderLabel(row) {
-  const storageName = imageFolderLabel(row.prefix)
+  const storageName = imageFolderLabel(row.prefix || row.sourceOssPrefix)
   if (row.taskType === 'OSS_FOLDER' && storageName) return storageName
-  return imageFolderLabel(row.folder) || storageName || '未命名文件夹'
+  return imageFolderLabel(row.captureInfo?.imageFolderName || row.imageFolderName || row.folder)
+    || imageFolderLabel(row.folderName) || storageName || '未命名文件夹'
 }

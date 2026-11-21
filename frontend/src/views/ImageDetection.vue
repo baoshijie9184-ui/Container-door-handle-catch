@@ -206,10 +206,10 @@
                 <div class="task-item-main">
                   <div class="task-item-taskid">
                     <span class="taskid-label">任务ID</span>
-                    <code class="taskid-value">{{ task.taskId }}</code>
+                    <code class="taskid-value">{{ task.taskId }}</code><FolderMetadataLink :task-id="task.taskId" />
                   </div>
-                  <button type="button" class="task-item-row1 task-item-toggle" :aria-expanded="selectedTaskId===task.taskId" :aria-controls="'workbench-task-detail-'+task.taskId" :aria-label="(selectedTaskId===task.taskId?'收起':'展开')+'任务详情：'+(task.folderName || task.taskId)" @click="selectedTaskId = selectedTaskId === task.taskId ? null : task.taskId">
-                    <span class="task-item-folder">{{ task.folderName || '检测任务' }}</span>
+                  <button type="button" class="task-item-row1 task-item-toggle" :aria-expanded="selectedTaskId===task.taskId" :aria-controls="'workbench-task-detail-'+task.taskId" :aria-label="(selectedTaskId===task.taskId?'收起':'展开')+'任务详情：'+recordFolderLabel(task)" @click="selectedTaskId = selectedTaskId === task.taskId ? null : task.taskId">
+                    <span class="task-item-folder">{{ recordFolderLabel(task) }}</span>
                     <StatusBadge domain="detection" :code="taskExecutionCode(task)" />
                     <el-icon
                       class="task-expand-icon"
@@ -768,6 +768,8 @@ import { useDetectionHistory } from '../composables/useDetectionHistory'
 import { useQualityReportDownloads } from '../composables/useQualityReportDownloads'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import TaskTracePanel from '../components/TaskTracePanel.vue'
+import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
+import { recordFolderLabel } from '@/utils/imageFolderLabel'
 import SingleModelComparison from '../components/SingleModelComparison.vue'
 import SingleDetectionEvidence from '../components/SingleDetectionEvidence.vue'
 import TaskExecutionProgress from '../components/TaskExecutionProgress.vue'

@@ -22,7 +22,7 @@
       <div v-if="matches.length" class="selected-image-manifest" tabindex="0" role="region" :aria-label="(query.trim() ? '本次所选图片匹配文件清单' : '本次所选图片完整文件清单')+'，可使用方向键滚动'">
         <ol><li v-for="entry in matches" :key="entry.key">
           <button type="button" @click="openViewer(entry.key)">
-            <span class="manifest-file"><strong>{{ entry.name }}</strong><span v-if="entry.path && entry.path!==entry.name">{{ entry.path }}</span></span>
+            <span class="manifest-file"><strong>{{ entry.name }}</strong></span>
             <small :title="entry.bytes===null ? undefined : entry.bytes+' 字节'">{{ byteLabel(entry.bytes) }}</small>
           </button>
         </li></ol>
@@ -35,7 +35,7 @@
              append-to-body destroy-on-close class="local-image-dialog" @opened="pager?.focus()">
     <template v-if="viewerOpen && current">
       <div class="local-image-toolbar">
-        <el-select-v2 v-model="viewIndex" :options="viewerOptions" filterable
+        <el-select-v2 v-model="viewIndex" :options="viewerOptions" filterable :filter-method="filterViewer" @visible-change="visible => { if (!visible) filterViewer('') }"
                       aria-label="按文件名或路径跳转" placeholder="按文件名或路径跳转" />
         <ImageListNavigation ref="pager" :index="viewIndex" :total="entries.length" @select="viewIndex = $event" />
       </div>
@@ -45,7 +45,9 @@
                @error="onViewError" />
           <p v-else role="status"><AppIcon name="Warning" :size="22" />无法预览此文件</p>
         </div>
-        <figcaption><strong>{{ current.name }}</strong><span>{{ current.path || current.name }} · {{ byteLabel(current.bytes) }}</span></figcaption>
+        <figcaption><strong>{{ current.name }}</strong><span>{{ byteLabel(current.bytes) }}</span>
+          <details :key="current.key"><summary>图片元数据</summary><small>相对路径：{{ current.path || current.name }}</small></details>
+        </figcaption>
       </figure>
     </template>
   </el-dialog>
@@ -74,7 +76,11 @@ const pager = ref(null)
 const viewUrl = ref('')
 const viewFailed = ref(false)
 const current = computed(() => viewerOpen.value ? entries.value[viewIndex.value] : null)
-const viewerOptions = computed(() => entries.value.map(entry => ({ value: entry.key, label: entry.path || entry.name })))
+const viewerQuery = ref('')
+function filterViewer(value) { viewerQuery.value = value.trim().toLowerCase() }
+const viewerOptions = computed(() => entries.value.filter(entry =>
+  !viewerQuery.value || (entry.name+' '+entry.path).toLowerCase().includes(viewerQuery.value)
+).map(entry => ({ value:entry.key, label:(entry.key+1)+' · '+entry.name })))
 
 function openViewer(index) {
   viewIndex.value = index

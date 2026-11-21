@@ -9,7 +9,7 @@
         <li v-for="item in visible" :key="item.key" class="collection-record">
           <article :aria-label="'采集任务 ' + item.record.taskId">
             <header class="collection-record-heading">
-              <div><AppIcon name="Picture" :size="18" /><h4>{{ text(item.record.folderName) || item.record.taskId }}</h4></div>
+              <div><AppIcon name="Picture" :size="18" /><h4>{{ recordFolderLabel(item.record) }}</h4></div>
               <StatusBadge domain="detection" :code="item.record.status" />
               <router-link class="collection-record-open" :aria-label="'查看任务 ' + item.record.taskId + ' 的检测记录'" :to="{path:'/inspection/history',query:{keyword:item.record.taskId}}"><AppIcon name="Search" :size="15" />查看检测记录</router-link>
             </header>
@@ -20,7 +20,7 @@
               <div><dt>{{ counterpart === 'collector' ? '采集人登记' : '设备登记' }}</dt><dd>{{ text(counterpart === 'collector' ? item.record.collector : item.record.deviceName) || '未记录' }}</dd></div>
               <div><dt>任务登记图片数</dt><dd>{{ count(item.record.totalImages) }}</dd></div>
             </dl>
-            <details class="collection-record-source"><summary>任务编号与存储登记</summary><dl><dt>任务编号</dt><dd>{{ item.record.taskId }}</dd><dt>存储登记</dt><dd>{{ text(item.record.sourceOssPrefix) || '本条未返回存储登记' }}</dd></dl><p>此处展示已读取的登记资料，图片与结果在检测记录中核对。</p></details>
+            <details class="collection-record-source"><summary>文件夹元数据</summary><dl><dt>任务编号</dt><dd>{{ item.record.taskId }}</dd><dt>存储登记</dt><dd>{{ text(item.record.sourceOssPrefix) || '本条未返回存储登记' }}</dd></dl><p>此处展示已读取的登记资料，图片与结果在检测记录中核对。</p></details>
           </article>
         </li>
       </ol>
@@ -30,6 +30,7 @@
 </template>
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { recordFolderLabel } from '@/utils/imageFolderLabel'
 import AppIcon from './AppIcon.vue'
 import StatusBadge from './StatusBadge.vue'
 import { beijingDateTime } from '@/utils/beijingTime'

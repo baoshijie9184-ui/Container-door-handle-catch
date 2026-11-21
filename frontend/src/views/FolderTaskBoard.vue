@@ -47,9 +47,9 @@
         <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="inbox && !keyword && !phase">当前没有待你处理的任务。<router-link :to="employeeScopeLink(false)">查看全部任务</router-link></template><template v-else-if="taskList==='detection' && keyword">当前没有符合条件的检测任务。<router-link :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
         <el-table-column label="图片文件夹" min-width="195"><template #default="{row}">
           <strong class="folder-name" :title="recordFolderLabel(row)">{{ recordFolderLabel(row) }}</strong>
-          <div v-if="uploadsOnly" class="folder-metadata">
-            <span>{{ row.totalImages ?? '—' }} 张图片</span>
-            <details><summary>任务号</summary><code>{{ row.taskId }}</code></details>
+          <div class="folder-metadata">
+            <span v-if="uploadsOnly">{{ row.totalImages ?? '—' }} 张图片</span>
+            <FolderMetadataLink :task-id="row.taskId" />
           </div>
         </template></el-table-column>
         <el-table-column v-if="uploadsOnly" label="上传人" min-width="150"><template #default="{row}">
@@ -117,7 +117,7 @@
     <el-dialog v-model="dialog" :title="target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
       <el-form label-position="top" @submit.prevent>
         <el-form-item v-if="sourceUpload" label="原图文件夹">
-          <strong>{{ recordFolderLabel(sourceUpload) }}</strong>
+          <strong>{{ recordFolderLabel(sourceUpload) }}</strong><FolderMetadataLink :task-id="sourceUpload.taskId" />
         </el-form-item>
         <el-form-item v-else-if="!target" label="原图文件夹">
           <div class="folder-field">
@@ -132,6 +132,7 @@
               <button v-if="next" type="button" @click="browse(folder,next)">更多目录</button>
               <span v-if="!browsing && ready">本目录{{ folderImages ? '已找到 '+folderImages+' 张图片' : '当前尚未找到图片' }}</span>
             </div>
+            <details v-if="ready && !browsing" class="picked-folder-metadata" :key="folder"><summary>文件夹元数据</summary><dl><dt>OSS 目录</dt><dd><code>{{ folder }}</code></dd></dl></details>
             <el-alert v-if="folderError" type="error" :title="folderError" :closable="false"/>
           </div>
         </el-form-item>
@@ -148,6 +149,7 @@ import {useRoute,useRouter} from 'vue-router'
 import {ElMessage} from 'element-plus'
 import {captureAccountRequest} from '@/api/request'
 import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
+import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import {humanStep,modelStep,canReview} from '@/utils/taskBoardStages'
 import {boardDialog,employeeInbox,listLocation} from '@/utils/taskBoardNavigation'
@@ -320,7 +322,7 @@ onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 .row-actions .dispatch-reason{flex-basis:100%;white-space:normal}
 .folder-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .folder-metadata{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 12px;color:var(--app-text-secondary);font-size:12px}
-.folder-metadata summary{cursor:pointer}.folder-metadata code{overflow-wrap:anywhere}
+.picked-folder-metadata {font-size:12px}.picked-folder-metadata summary{cursor:pointer;color:var(--app-primary)}.picked-folder-metadata dd{margin:3px 0;overflow-wrap:anywhere}
 .folder-status strong{color:var(--app-text)}.folder-status button:last-child{margin-left:auto}
 .upload-navigation{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0 16px;padding:0 16px;border-bottom:1px solid var(--app-border)}
 .upload-scopes{display:flex;gap:20px}.upload-scopes a{padding:13px 3px 10px;border-bottom:3px solid transparent;text-decoration:none;color:var(--app-text-secondary);font-weight:600}.upload-scopes a[aria-current=page]{border-color:var(--app-primary);color:var(--app-primary)}

@@ -24,7 +24,7 @@
           <div>
             <strong>检测到未完成的上传任务</strong>
             <div style="margin-top: 4px; font-size: 13px; color: #5b6475;">
-              「{{ resumeTaskInfo.folderName }}」
+              「{{ recordFolderLabel(resumeTaskInfo) }}」
               已完成 {{ resumeTaskInfo.uploadedCount }}/{{ resumeTaskInfo.totalCount }} 张，
               {{ resumeTaskInfo.failedCount > 0 ? `失败 ${resumeTaskInfo.failedCount} 张，` : '' }}
               请重新选择同一文件夹继续上传。
@@ -72,7 +72,7 @@
               选择图片文件夹
             </el-button>
 
-            <dl class="folder-summary" v-if="folderInfo.imageCount"><div><dt>所选文件夹层级</dt><dd>{{ folderInfo.name }}</dd></div><div><dt>图片数量</dt><dd>{{ folderInfo.imageCount }} 张</dd></div></dl>
+            <dl class="folder-summary" v-if="folderInfo.imageCount"><div><dt>图片文件夹</dt><dd>{{ folderInfo.imageFolderName || imageFolderLabel(folderInfo.name) || '未命名文件夹' }}</dd></div><div><dt>图片数量</dt><dd>{{ folderInfo.imageCount }} 张</dd></div></dl>
             <p v-if="selectionNotice" class="upload-selection-note">{{ selectionNotice }}</p>
 
             <el-alert
@@ -85,7 +85,7 @@
             <SelectedImageFiles v-if="folderInfo.files.length" :files="folderInfo.files" :scope-key="accountScope()" />
           </div>
 
-          <div v-if="folderInfo.imageCount" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading" aria-describedby="upload-capture-scope">
+          <div v-if="folderInfo.imageCount" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading">
             <h2 id="upload-capture-heading" class="capture-meta-heading"><AppIcon name="Document" :size="17" />采集信息</h2>
             <el-form-item label="采集日期" required>
               <el-date-picker
@@ -151,7 +151,12 @@
               <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="例如 批次A" />
             </el-form-item>
           </div>
-          <p v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">上传目录：图片上传 / {{ userStore.role==='SUPERVISOR' ? '主管上传' : '员工上传' }} / {{ userStore.identity?.employeeNumber || '账号绑定工号' }}</p>
+          <details v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">
+            <summary>文件夹元数据</summary>
+            <dl class="folder-summary"><div><dt>本地所选目录</dt><dd>{{ folderInfo.name || '未提供' }}</dd></div>
+              <div><dt>计划上传位置</dt><dd>图片上传 / {{ userStore.role==='SUPERVISOR' ? '主管上传' : '员工上传' }} / {{ userStore.identity?.employeeNumber || '账号绑定工号' }}</dd></div>
+            </dl>
+          </details>
 
           <p v-if="folderInfo.imageCount" class="upload-readiness" :data-ready="!missingCaptureFields.length"><AppIcon :name="missingCaptureFields.length ? 'Warning' : 'CircleCheck'" :size="16" />{{ missingCaptureFields.length ? '还需补全：'+missingCaptureFields.join('、') : '采集信息已填写，请核对后上传' }}</p>
           <el-button
@@ -169,7 +174,7 @@
 
           <Transition name="upload-feedback"><div v-if="uploadingTask" class="upload-progress-card">
             <div class="upload-progress-header">
-              <span>{{ uploadingTask.folderName }}</span>
+              <span>{{ recordFolderLabel(uploadingTask) }}</span>
               <span>{{ uploadingTask.imageCount }} 张</span>
             </div>
             <el-progress
@@ -263,8 +268,8 @@
             </div>
             <!-- 第一行：名称 + 数量 + 状态 -->
             <div class="history-item-row1">
-              <span class="history-item-folder">{{ task.folderName }}</span>
-              <span class="history-item-count">{{ task.imageCount }} 张</span>
+              <span class="history-item-folder">{{ recordFolderLabel(task) }}</span>
+              <span class="history-item-count">{{ task.imageCount }} 张</span><FolderMetadataLink :task-id="task.taskId" />
               <el-tag :type="taskStore.taskTagType(task)" class="history-item-tag">
                 {{ taskStore.taskTagText(task) }}
               </el-tag>
@@ -325,6 +330,8 @@
 </template>
 
 <script setup>
+import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
+import { imageFolderLabel, recordFolderLabel } from '@/utils/imageFolderLabel'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -485,12 +492,16 @@ const handleFolderSelect = (event) => {
   uploadAttempted.value = false
   selectionNotice.value = `本次选入 ${imageFiles.length} 张图片${files.length > imageFiles.length ? `，另有 ${files.length - imageFiles.length} 个文件未列入本次上传` : ''}`
 
-  const firstPath = imageFiles[0].webkitRelativePath || imageFiles[0].name
-  const firstSegments = firstPath.split('/').filter(Boolean)
-  const dirSegments = firstSegments.length > 1 ? firstSegments.slice(0, -1) : firstSegments
-
+  // Only the shared directory describes the selection when several subfolders are chosen.
+  const dirSegments = (imageFiles[0].webkitRelativePath || '').split('/').slice(0, -1)
+  for (const entry of imageFiles) {
+    const parts = (entry.webkitRelativePath || '').split('/').slice(0, -1)
+    let shared = 0
+    while (shared < dirSegments.length && dirSegments[shared] === parts[shared]) shared++
+    dirSegments.length = shared
+  }
   const autoParse = dirSegments.length >= 5
-  folderInfo.name = dirSegments.slice(0, Math.min(dirSegments.length, 5)).join(' / ')
+  folderInfo.name = dirSegments.join('/')
   folderInfo.imageCount = imageFiles.length
   folderInfo.captureDate = autoParse ? (dirSegments[0] || '') : ''
   folderCityHint = autoParse ? dirSegments[1] : ''

@@ -166,9 +166,18 @@ public class FolderTaskBoard {
             +permitted+"t.review_status END AS reviewStatus, "
             +permitted+"t.processed_images END AS processedImages, "+permitted+"t.failed_images END AS failedImages";
         var result=readPage(columns," FROM detection_task t",where,args,page,size);
+        populateUploaderLabels(result.items());
+        for (var row : result.items()) {
+            if (!permittedRow(row)) row.put("folder", shortName((String) row.get("folder")));
+        }
+        if (!actor.supervisor() && !result.items().isEmpty()) addMyDetectionTasks(result.items(), actor.userId());
+        return result;
+    }
+
+    private void populateUploaderLabels(List<Map<String,Object>> rows) {
         var ids=new HashSet<Long>();
         var names=new HashSet<String>();
-        for (var row:result.items()) {
+        for (var row:rows) {
             if (row.get("recordedId") instanceof Number id) ids.add(id.longValue());
             else if (row.get("recordedName") instanceof String name) names.add(name);
         }
@@ -180,15 +189,62 @@ public class FolderTaskBoard {
         }
         names.removeAll(byName.keySet());
         for (var employee:personnel.findByNumbers(names)) byName.put(employee.employeeNumber(),employee);
-        for (var row:result.items()) {
+        for (var row:rows) {
             var id=row.remove("recordedId");
             var name=row.remove("recordedName");
             var uploaderLabel=id instanceof Number n ? byId.get(n.longValue()) : byName.get(name);
             row.put("creator",uploaderLabel == null ? null : uploaderLabel.employeeNumber());
             row.put("creatorName",uploaderLabel == null ? null : uploaderLabel.name());
         }
-        if (!actor.supervisor() && !result.items().isEmpty()) addMyDetectionTasks(result.items(), actor.userId());
-        return result;
+    }
+
+    private static boolean permittedRow(Map<String,Object> row) {
+        Object value = row.get("canReadTask");
+        return Boolean.TRUE.equals(value) || value instanceof Number n && n.intValue() != 0;
+    }
+
+    private static String shortName(String name) {
+        if (name == null) return null;
+        String[] parts = name.replace((char) 92, '/').split("/");
+        int i = parts.length - 1;
+        if (i > 0 && parts[i].matches("(?i)originals?")) i--;
+        return i < 0 ? null : parts[i].strip();
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String,Object> folderMetadata(String taskId) {
+        var actor = users.authenticated();
+        var scope = access.currentSqlScope("t.");
+        var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId()).addValue("id",taskId);
+        String readable = "(" + scope.predicate() + " OR w.assignee_user_id=CAST(:actor AS CHAR))";
+        // Keep shared upload registration public within the board. Only task readers get capture and storage details.
+        // A dispatched folder can inherit its upload registration only when the exact OSS prefix identifies one upload.
+        String sql = """
+                SELECT t.task_id AS taskId, t.image_folder_name AS folder, t.total_images AS totalImages,
+                       CASE WHEN t.task_type='OSS_FOLDER' THEN u.created_user_id ELSE t.created_user_id END AS recordedId,
+                       CASE WHEN t.task_type='OSS_FOLDER' THEN u.created_by ELSE t.created_by END AS recordedName,
+                       DATE_FORMAT(COALESCE(u.created_at,t.created_at),'%%Y-%%m-%%d %%H:%%i:%%s') AS registeredAt,
+                       CASE WHEN %1$s THEN 1 ELSE 0 END AS canReadTask,
+                       CASE WHEN %1$s THEN t.source_oss_prefix END AS prefix,
+                       CASE WHEN %1$s THEN t.task_type END AS taskType,
+                       CASE WHEN %1$s THEN COALESCE(NULLIF(u.capture_date,''),t.capture_date) END AS captureDate,
+                       CASE WHEN %1$s THEN COALESCE(NULLIF(u.region,''),t.region) END AS city,
+                       CASE WHEN %1$s THEN COALESCE(NULLIF(u.collector,''),t.collector) END AS collector,
+                       CASE WHEN %1$s THEN COALESCE(NULLIF(u.device_name,''),t.device_name) END AS device,
+                       CASE WHEN %1$s THEN u.image_folder_name END AS uploadFolder
+                %2$s
+                LEFT JOIN detection_task u ON t.task_type='OSS_FOLDER' AND t.source_oss_prefix<>'' AND u.id=(
+                    SELECT CASE WHEN COUNT(*)=1 THEN MIN(s.id) END FROM detection_task s
+                    WHERE s.task_type IN ('BATCH','SINGLE','BATCH_DIRECT') AND BINARY s.source_oss_prefix=BINARY t.source_oss_prefix)
+                WHERE t.task_id=:id AND (%3$s OR %1$s)
+                """.formatted(readable,SOURCE,UPLOAD_TYPES);
+        var rows = db.queryForList(sql,args);
+        if (rows.isEmpty()) throw new BusinessException(404,"文件夹登记不存在或无权查看");
+        populateUploaderLabels(rows);
+        var row = rows.get(0);
+        row.put("folder",shortName((String) row.get("folder")));
+        row.put("uploadFolder",shortName((String) row.get("uploadFolder")));
+        return row;
     }
 
     private void addMyDetectionTasks(List<Map<String,Object>> uploads, long userId) {
