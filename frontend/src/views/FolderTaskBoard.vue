@@ -1,22 +1,14 @@
 <template>
   <main class="task-board">
-    <header class="board-heading"><div><h1>{{ uploadsOnly || taskList ? route.meta.title : boardTitle }}</h1></div>
+    <header class="board-heading"><div><h1>{{ uploadsOnly || taskList ? route.meta.title : inboxTitle || boardTitle }}</h1></div>
       <nav class="board-links" aria-label="相关操作">
-        <router-link v-if="uploadsOnly" to="/upload"><AppIcon name="Upload" :size="16"/>上传图片</router-link>
-        <router-link v-if="uploadsOnly" to="/inspection/tasks"><AppIcon name="Tickets" :size="16"/>{{ boardTitle }}</router-link>
-        <router-link v-else-if="supervisor" to="/inspection/uploads/all"><AppIcon name="FolderOpened" :size="16"/>全部上传记录</router-link>
-        <router-link v-else to="/inspection/uploads/mine"><AppIcon name="FolderOpened" :size="16"/>我的上传记录</router-link>
+        <router-link v-if="supervisor && (uploadsOnly || taskList)" to="/inspection/tasks"><AppIcon name="Tickets" :size="16"/>任务总表</router-link>
+        <router-link v-if="!supervisor && uploadsOnly" :to="employeeScopeLink(true)"><AppIcon name="Tickets" :size="16"/>我的待办</router-link>
         <el-button v-if="supervisor && !uploadsOnly && !verificationList" type="primary" @click="openNew()"><AppIcon name="Plus"/>新建文件夹任务</el-button>
       </nav>
     </header>
-    <section class="board-panel" aria-label="任务列表">
-      <div v-if="supervisor && !uploadsOnly" class="upload-navigation">
-        <nav class="upload-scopes" aria-label="主管任务列表">
-          <router-link to="/inspection/tasks/detection">检测任务列表</router-link>
-          <router-link to="/inspection/tasks/verification">校验任务列表</router-link>
-          <router-link to="/inspection/tasks">任务总表</router-link>
-        </nav>
-      </div>
+    <InspectionFlowNav />
+    <section class="board-panel" :aria-label="uploadsOnly ? '上传记录' : '任务列表'">
       <div v-if="uploadsOnly" class="upload-navigation">
         <nav class="upload-scopes" aria-label="上传记录范围">
           <router-link to="/inspection/uploads/mine">我的上传</router-link>
@@ -31,11 +23,11 @@
       <div v-if="!supervisor && !uploadsOnly" class="upload-navigation">
         <nav class="upload-scopes" aria-label="我的任务范围">
           <router-link v-for="scope in employeeScopes" :key="scope.value" :to="employeeScopeLink(scope.value)" custom v-slot="{ href, navigate }">
-            <a :href="href" :aria-current="inbox === scope.value ? 'page' : 'false'" @click="navigate">{{ scope.label }}</a>
+            <a :href="href" :aria-current="!inboxKind && inbox === scope.value ? 'page' : 'false'" @click="navigate">{{ scope.label }}</a>
           </router-link>
         </nav>
       </div>
-      <div class="board-toolbar"><div v-if="!uploadsOnly || supervisor || uploadScope==='mine'" class="phases" aria-label="按任务阶段筛选">
+      <div class="board-toolbar"><div v-if="(!uploadsOnly || supervisor || uploadScope==='mine') && inboxKind!=='verification'" class="phases" aria-label="按任务阶段筛选">
         <button v-for="(label,key) in listPhases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
       </div><form @submit.prevent="search">
         <el-input v-if="uploadsOnly && uploadScope==='team'" v-model="uploaderInput" maxlength="50" placeholder="上传人工号" aria-label="上传人工号" clearable @clear="search"/>
@@ -44,7 +36,7 @@
       </form></div>
       <el-alert v-if="error" :title="error" type="error" :closable="false"/>
       <el-table :data="rows" v-loading="loading" row-key="taskId" empty-text="当前筛选下没有任务">
-        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="inbox && !keyword && !phase">当前没有待你处理的任务。<router-link :to="employeeScopeLink(false)">查看全部任务</router-link></template><template v-else-if="taskList==='detection' && keyword">当前没有符合条件的检测任务。<router-link :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
+        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="inbox && !keyword && !phase">{{ inboxKind==='detection' ? '当前没有待你启动或重试的检测。' : inboxKind==='verification' ? '当前没有分派给你的待校验结果。' : '当前没有待你处理的任务。' }}<router-link :to="employeeScopeLink(false)">查看全部任务</router-link></template><template v-else-if="taskList==='detection' && keyword">当前没有符合条件的检测任务。<router-link :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
         <el-table-column label="图片文件夹" min-width="195"><template #default="{row}">
           <strong class="folder-name" :title="recordFolderLabel(row)">{{ recordFolderLabel(row) }}</strong>
           <div class="folder-metadata">
@@ -91,9 +83,11 @@
                 <small v-if="dispatchUnavailable(row)" class="dispatch-reason">{{ dispatchUnavailable(row) }}</small>
               </template>
               <template v-else>
-                <el-button size="small" type="primary" :disabled="Boolean(detectionUnavailable(row))"
-                  @click="router.push({ path:'/inspection/tasks', query:{ assignedTaskId:row.myDetectionTaskId } })">去完成检测任务</el-button>
-                <small v-if="detectionUnavailable(row)" class="dispatch-reason">{{ detectionUnavailable(row) }}</small>
+                <router-link v-if="row.myDetectionTaskId && ['READY','FAILED'].includes(row.myDetectionStatus)" class="next-action"
+                  :to="{path:'/inspection/tasks',query:{assignedTaskId:row.myDetectionTaskId}}">去完成检测任务</router-link>
+                <router-link v-else-if="row.myDetectionTaskId && row.myDetectionStatus!=='CANCELLED'"
+                  :to="assignedTrace(row.myDetectionTaskId)">{{ ['COMPLETED','PARTIAL_FAILED'].includes(row.myDetectionStatus) ? '查看检测结果' : '查看检测进度' }}</router-link>
+                <small v-else class="dispatch-reason">{{ row.myDetectionTaskId ? '检测任务已取消' : '未分派给我' }}</small>
               </template>
             </template>
             <template v-else>
@@ -104,9 +98,9 @@
               <router-link v-if="supervisor || row.qualityAssignee===user.username" :class="{ 'next-action': !!row.qualityAssignee }" :to="actionLink(row.taskId,'review')">核对模型结果</router-link>
               <router-link v-if="supervisor && row.qualityAssignee" :to="actionLink(row.taskId,'assign')">改派校验</router-link>
             </template>
-            <router-link :to="actionLink(row.taskId,'trace')">任务详情</router-link>
             <button v-if="taskList==='detection' && row.taskType!=='OSS_FOLDER' && row.modelStatus!=='UPLOADING' && isOssFolder(row)" @click="openNew({ upload:row })">派发检测任务</button>
             <button v-else-if="supervisor && !taskList && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
+            <router-link :to="actionLink(row.taskId,'trace')">任务详情</router-link>
             </template>
           </div>
         </template></el-table-column>
@@ -149,10 +143,11 @@ import {useRoute,useRouter} from 'vue-router'
 import {ElMessage} from 'element-plus'
 import {captureAccountRequest} from '@/api/request'
 import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
+import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
 import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import {humanStep,modelStep,canReview} from '@/utils/taskBoardStages'
-import {boardDialog,employeeInbox,listLocation} from '@/utils/taskBoardNavigation'
+import {boardDialog,employeeInbox,listLocation,assignedTrace} from '@/utils/taskBoardNavigation'
 import {useUserStore} from '@/stores/user'
 const TaskDialogs=defineAsyncComponent(()=>import('./ImageDetection.vue'))
 const employeeScopes=[{value:true,label:'待我处理'},{value:false,label:'全部任务'}]
@@ -164,12 +159,15 @@ const boardTitle=computed(()=>supervisor.value ? '任务总表' : '我的任务'
 const taskList=computed(()=>route.meta.taskList)
 const verificationList=computed(()=>taskList.value==='verification')
 const inbox=computed(()=>!uploadsOnly.value && !supervisor.value && employeeInbox(route.query))
+const inboxKind=computed(()=>inbox.value && ['detection','verification'].includes(route.query.kind) ? route.query.kind : undefined)
+const inboxTitle=computed(()=>({detection:'待我检测',verification:'待我校验'})[inboxKind.value])
 const directory=computed(()=>typeof route.query.directory==='string' ? route.query.directory : '')
 const phases={'':'全部',READY:'未开始',DETECTING:'检测中',VERIFYING:'校验环节',DONE:'校验完成',FAILED:'异常',MODEL_DONE:'仅有检测结果'}
 const detectionPhases={'':'全部',UPLOADING:'待上传确认',READY:'待检测',DETECTING:'检测中',FAILED:'检测失败',CANCELLED:'已取消',MODEL_DONE:'已检测'}
 const inboxPhases={'':'全部待办',READY:'待启动检测',FAILED:'待重试检测',VERIFYING:'待核对结果'}
 const verificationPhases={'':'全部',WAITING_CHECK:'待校验',VERIFYING:'校验中',CHECKED:'已校验',FOLLOW_UP:'待跟进'}
-const listPhases=computed(()=>verificationList.value ? verificationPhases : taskList.value==='detection' ? detectionPhases : inbox.value ? inboxPhases : phases)
+const pendingDetectionPhases={'':'全部待检测',READY:'待启动',FAILED:'待重试'}
+const listPhases=computed(()=>inboxKind.value==='verification' ? {} : inboxKind.value==='detection' ? pendingDetectionPhases : verificationList.value ? verificationPhases : taskList.value==='detection' ? detectionPhases : inbox.value ? inboxPhases : phases)
 const phase=computed(()=>Object.hasOwn(listPhases.value,route.query.phase) ? route.query.phase : '')
 const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.keyword : '')
 const assignedTaskId=computed(()=>!uploadsOnly.value && typeof route.query.assignedTaskId==='string' ? route.query.assignedTaskId : '')
@@ -209,6 +207,7 @@ async function load(quiet=false){
       if(uploadScope.value==='team' && typeof route.query.uploader==='string')params.uploader=route.query.uploader
     } else {
       params.inbox=inbox.value
+      params.inboxKind=inboxKind.value
       params.directory=directory.value || undefined
       params.assignedTaskId=assignedTaskId.value || undefined
       params.taskList=taskList.value
@@ -243,12 +242,6 @@ function search(){changeFilters({keyword:query.value.trim() || undefined,assigne
 function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undefined : String(value)})}
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
 function previewTaskId(row){return Number(row.canReadTask) ? row.taskId : row.myDetectionTaskId}
-function detectionUnavailable(row){
-  if(!row.myDetectionTaskId)return '未分派给我'
-  if(row.myDetectionStatus==='CANCELLED')return '检测任务已取消'
-  if(['COMPLETED','PARTIAL_FAILED'].includes(row.myDetectionStatus))return '本次模型检测已结束'
-  return ''
-}
 function dispatchUnavailable(row){
   if(Number(row.uploadPending))return '等待上传确认'
   if(!isOssFolder(row))return '未关联可派发的原图目录'
@@ -305,7 +298,14 @@ async function save(){
 async function start(row){
   if(busy.value)return
   busy.value=true
-  try{data(await api.post(url+'/'+row.taskId+'/start',null,{params:{version:row.assignmentVersion}}));ElMessage.success('模型检测已提交');await load()}
+  const origin=route.fullPath
+  try {
+    data(await api.post(url+'/'+row.taskId+'/start',null,{params:{version:row.assignmentVersion}}))
+    if(route.fullPath!==origin)return
+    ElMessage.success('模型检测已提交')
+    if(inbox.value)await router.push({path:'/inspection/tasks',query:{inbox:'0',assignedTaskId:row.taskId}})
+    else await load()
+  }
   catch(e){ElMessage.error(message(e));await load()}finally{busy.value=false}
 }
 watch(listPath,()=>{

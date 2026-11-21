@@ -17,3 +17,7 @@ export function employeeInbox(query) {
   // Existing links to a task, search or filtered archive still open the full accessible list.
   return !['assignedTaskId', 'keyword', 'directory', 'phase', 'page'].some(key => query[key])
 }
+
+export function assignedTrace(taskId) {
+  return { path:'/inspection/tasks', query:{ inbox:'0', keyword:taskId, taskId, boardAction:'trace' } }
+}

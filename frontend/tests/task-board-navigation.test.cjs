@@ -32,3 +32,11 @@ test('only suitable dialogs open from upload lists and employee lists', async ()
   }
   for(const taskId of ['', ['x','y'], 'evil/path', null, 'a'.repeat(129)]) assert.equal(boardDialog({boardAction:'trace',taskId},true,false),null)
 })
+
+test('上传记录的进度入口直接打开同一批次并保留可返回的列表',async()=>{
+  const {assignedTrace,boardDialog,listLocation,employeeInbox}=await navigation
+  const route=assignedTrace('sample_batch')
+  assert.deepEqual(boardDialog(route.query,false,false),{action:'trace',taskId:'sample_batch'})
+  assert.equal(employeeInbox(route.query),false)
+  assert.deepEqual(listLocation(route).query,{keyword:'sample_batch',inbox:'0'})
+})

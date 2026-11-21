@@ -3,7 +3,7 @@
 </template>
 <script setup>
 import {
-  Files, HomeFilled, DataAnalysis, Picture, Monitor, User, Tickets, Document,
+  Files, FolderOpened, HomeFilled, DataAnalysis, Picture, Monitor, User, Tickets, Document,
   DocumentCopy, DocumentChecked, Upload, Search, Connection, Key, CircleCheck,
   ChatDotRound, Collection, Operation, Plus, Refresh, ArrowLeft, ArrowRight,
   ArrowUp, ArrowDown, Close, Menu, Fold, Expand, Download, Delete, Edit, Filter, Lock, Warning, Clock,
@@ -11,7 +11,7 @@ import {
 } from '@element-plus/icons-vue'
 defineProps({ name: { type: String, default: 'Files' }, size: { type: [Number, String], default: 18 } })
 const icons = {
-  Files, HomeFilled, DataAnalysis, Picture, Monitor, User, Tickets, Document,
+  Files, FolderOpened, HomeFilled, DataAnalysis, Picture, Monitor, User, Tickets, Document,
   DocumentCopy, DocumentChecked, Upload, Search, Connection, Key, CircleCheck,
   ChatDotRound, Collection, Operation, Plus, Refresh, ArrowLeft, ArrowRight,
   ArrowUp, ArrowDown, Close, Menu, Fold, Expand, Download, Delete, Edit, Filter, Lock, Warning, Clock,

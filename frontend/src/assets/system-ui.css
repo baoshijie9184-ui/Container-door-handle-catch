@@ -71,15 +71,6 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .table-panel > .el-alert { margin: 14px; width: calc(100% - 28px); }
 .statistics-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 15px; background: var(--app-warning-soft); border: 1px solid #f3e1b9; border-radius: 9px; font-size: 12px; line-height: 1.8; color: var(--app-warning); }
 .statistics-notice > span { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
-.upload-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0; margin: 0; list-style: none; border: 1px solid var(--app-border); border-radius: 12px; background: white; overflow: hidden; }
-.upload-flow > li { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px; min-width: 0; }
-.upload-flow > li[aria-current=step] { background:var(--app-primary-light); box-shadow:inset 0 3px var(--app-primary); }
-.upload-flow > li[aria-current=step] .upload-flow-icon { color:white; background:var(--app-primary); }
-.upload-flow > li + li { border-left: 1px solid var(--app-border); }
-.upload-flow-icon { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border-radius: 10px; color: var(--app-primary); background: var(--app-primary-soft); }
-.upload-flow strong { font-size: 13px; font-weight: 650; color: var(--app-text); }
-.upload-flow p { margin: 5px 0 0; font-size: 12px; color: var(--app-text-secondary); line-height: 1.7; overflow-wrap: anywhere; }
-.upload-flow a { color: var(--app-primary); text-decoration: underline; text-underline-offset: 3px; }
 .upload-format-note { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary); margin: 0 0 14px; }
 .upload-readiness { display: flex; align-items: flex-start; gap: 6px; padding: 10px 12px; border-radius: 8px; color: var(--app-warning); background: var(--app-warning-soft); font-size: 12px; line-height: 1.8; }
 .upload-readiness .el-icon { flex-shrink: 0; margin-top: 3px; }
@@ -306,9 +297,6 @@ button:not(:disabled):active { transform: scale(.985); }
 @media(max-width: 640px) {
   .device-form-grid { grid-template-columns: minmax(0, 1fr); }
   .trace-responsibility { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .upload-flow { grid-template-columns: minmax(0, 1fr); }
-  .upload-flow > li { padding: 13px 15px; }
-  .upload-flow > li + li { border-left: 0; border-top: 1px solid var(--app-border); }
   .collection-heading { padding: 15px; }
   .quality-overview { padding: 16px; }
   #app .layout-content .stats-bar-item > div:last-child { min-width: 0; }

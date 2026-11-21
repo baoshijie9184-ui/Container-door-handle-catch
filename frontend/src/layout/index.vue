@@ -183,14 +183,14 @@ const navGroups = [
     label: '检测业务',
     icon: Picture,
     items: [
-      { path: '/inspection/tasks', label: '任务列表', desc: '本人及受派任务', inspectorOnly: true },
-      { path: '/inspection/tasks/detection', label: '检测任务列表', desc: '检测派单与模型进度', supervisorOnly: true },
-      { path: '/inspection/tasks/verification', label: '校验任务列表', desc: '分派校验与核对检测结果', supervisorOnly: true },
-      { path: '/upload', label: '图像采集上传', desc: '原图入库与任务创建' },
+      { path: '/upload', label: '上传图片', desc: '批量上传原图' },
       { path: '/inspection/uploads/mine', label: '我的上传记录', desc: '查看本人上传的图片批次' },
       { path: '/inspection/uploads/all', label: '全部上传记录', desc: '按员工工号查找上传记录' },
-      { path: '/inspection/workbench', label: '检测工作台', desc: '模型推理与任务执行' },
-      { path: '/inspection/history', label: '检测记录', desc: '历史结果与报告' }
+      { path: '/inspection/tasks', label: '我的任务', desc: '受派检测和人工校验', inspectorOnly: true },
+      { path: '/inspection/tasks/detection', label: '检测任务列表', desc: '检测派单与模型进度', supervisorOnly: true },
+      { path: '/inspection/tasks/verification', label: '校验任务列表', desc: '分派校验与核对检测结果', supervisorOnly: true },
+      { path: '/inspection/history', label: '检测记录', desc: '历史结果与报告' },
+      { path: '/inspection/workbench', label: '单图测试与对比', desc: '单张图片与双模型对比' }
     ]
   },
   {

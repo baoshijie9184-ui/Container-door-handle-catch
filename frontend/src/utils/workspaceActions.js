@@ -29,6 +29,18 @@ const actions = {
   budgets: { label:'分配员工额度', keywords:'分配额度 员工限额 设置预算 分配限额', icon:'DataAnalysis', path:'/agent/model-quotas' },
   approve: { label:'审批质检报告', keywords:'审批报告 审核报告 待审批', icon:'DocumentChecked', path:'/quality/reports', query:{status:'SUBMITTED'} }
 }
+export function inspectionActions(supervisor) {
+  const upload = { key:'upload', label:'上传图片', icon:'Upload', path:'/upload' }
+  const records = { key:'records', label:supervisor ? '派发检测' : '上传记录', icon:'FolderOpened',
+    path:supervisor ? '/inspection/uploads/all' : '/inspection/uploads/mine' }
+  const detection = { key:'detection', label:supervisor ? '跟进检测' : '待我检测', icon:'Tickets',
+    path:supervisor ? '/inspection/tasks/detection' : '/inspection/tasks',
+    query:supervisor ? undefined : {inbox:'1',kind:'detection'} }
+  const verification = { key:'verification', label:supervisor ? '分派校验' : '待我校验', icon:'CircleCheck',
+    path:supervisor ? '/inspection/tasks/verification' : '/inspection/tasks',
+    query:supervisor ? undefined : {inbox:'1',kind:'verification'} }
+  return supervisor ? [upload,records,detection,verification] : [detection,verification,upload,records]
+}
 export function homeActions(supervisor) {
   return (supervisor ? ['assign','approve','budgets','browse'] : ['upload','browse','quality','reports']).map(key => actions[key])
 }
@@ -41,7 +53,7 @@ export function findWorkspaceActions(groups, role, search) {
     ...item, group:group.label, symbol:group.icon, keywords:keywords[item.path] || ''
   })))
   const visible = new Map(pages.map(page => [page.path,page]))
-  const extra = [...homeActions(role==='SUPERVISOR'),actions.detect,actions.quotas]
+  const extra = [...inspectionActions(role==='SUPERVISOR'),...homeActions(role==='SUPERVISOR'),actions.detect,actions.quotas]
   if (role==='SUPERVISOR') {
     extra.push({label:'新增人员',icon:'User',path:'/employees/add',parent:'/employees',keywords:'登记员工 添加人员'},
                {label:'新增设备',icon:'Monitor',path:'/devices/add',parent:'/devices',keywords:'登记设备 添加设备'})

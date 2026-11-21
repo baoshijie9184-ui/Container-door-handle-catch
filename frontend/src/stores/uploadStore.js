@@ -12,7 +12,7 @@ export const useUploadStore = defineStore('upload', () => {
 
   // ==================== OSS 上传（可跨页面继续执行） ====================
 
-  const uploadBatchToOss = async (filesData, captureInfo) => {
+  const uploadBatchToOss = async (filesData, captureInfo, onRegistered) => {
     const account=accountSession.stamp(),current=()=>accountSession.current(account)
     accountSession.assert(account)
     // 立即提取所有数据（函数入口处），避免后续引用外部 reactive 对象
@@ -62,6 +62,7 @@ export const useUploadStore = defineStore('upload', () => {
       task.flowStatus = taskData.flowStatus || 'UPLOADING'
       taskStore.taskList.unshift(task)
       taskStore.selectedTaskId = taskData.taskId
+      onRegistered?.(taskData.taskId)
       taskStore.saveTaskList(account)
       taskStore.pushTaskLog(taskData.taskId, `开始上传 ${captureInfo.imageCount} 张原图到 OSS。`)
 

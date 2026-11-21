@@ -10,7 +10,7 @@
     </PageHero>
 
     <el-tabs v-model="activeTab" class="workspace-tabs" @tab-change="handleTabChange">
-      <el-tab-pane name="workspace" label="检测工作台">
+      <el-tab-pane name="workspace" label="单图测试与对比">
         <div class="workspace-grid">
           <el-card class="detection-card detection-input-card" shadow="never">
             <template #header>

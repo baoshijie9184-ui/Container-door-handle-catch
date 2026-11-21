@@ -67,7 +67,7 @@ const routes = [
         path: 'inspection/workbench',
         name: 'inspectionWorkbench',
         component: () => import('../views/ImageDetection.vue'),
-        meta: { title: '检测工作台', requiresAuth: true, detectionTab: 'workspace' }
+        meta: { title: '单图测试与对比', requiresAuth: true, detectionTab: 'workspace' }
       },
       {
         path: 'inspection/history',
@@ -234,7 +234,7 @@ const router = createRouter({
 })
 
 const detectionTabTitles = {
-  workspace: '检测工作台',
+  workspace: '单图测试与对比',
   history: '检测记录',
   quality: '质检队列',
   'work-order-trace': '工单追溯',

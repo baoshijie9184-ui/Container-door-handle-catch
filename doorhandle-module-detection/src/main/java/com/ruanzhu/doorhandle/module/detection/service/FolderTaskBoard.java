@@ -75,7 +75,7 @@ public class FolderTaskBoard {
         DATE_FORMAT(t.created_at,'%Y-%m-%d %H:%i:%s') AS registeredAt
         """;
 
-    public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, String assignedTaskId, String taskList, int page, int size) {
+    public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, String assignedTaskId, String taskList, String inboxKind, int page, int size) {
         var actor = users.authenticated();
         var scope = access.currentSqlScope("t.");
         var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId());
@@ -101,13 +101,17 @@ public class FolderTaskBoard {
             where += " AND BINARY t.source_oss_prefix=BINARY :directory";
             args.addValue("directory",directory);
         }
-        if(inbox) {
-            where += """
-              AND ((w.assignee_user_id=CAST(:actor AS CHAR) AND t.status IN ('READY','FAILED'))
-                OR (t.assignee=:username AND (t.assignee_user_id IS NULL OR t.assignee_user_id=:actor)
-                AND t.status IN ('COMPLETED','PARTIAL_FAILED')
-                AND t.flow_status IN ('PENDING_REVIEW','REVIEWING') AND t.review_status='PENDING'))
-              """;
+        if (inboxKind != null && (!inbox || !Set.of("detection","verification").contains(inboxKind)))
+            throw bad("未知待办类型");
+        if (inbox) {
+            String detect = "(w.assignee_user_id=CAST(:actor AS CHAR) AND t.status IN ('READY','FAILED'))";
+            String verify = """
+                (t.assignee=:username AND (t.assignee_user_id IS NULL OR t.assignee_user_id=:actor)
+                 AND t.status IN ('COMPLETED','PARTIAL_FAILED')
+                 AND t.flow_status IN ('PENDING_REVIEW','REVIEWING') AND t.review_status='PENDING')
+                """;
+            String pending = inboxKind == null ? detect+" OR "+verify : "detection".equals(inboxKind) ? detect : verify;
+            where += " AND ("+pending+")";
             args.addValue("username",actor.username());
         }
         if (phase != null && !phase.isBlank()) {

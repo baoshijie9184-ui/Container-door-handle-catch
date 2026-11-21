@@ -1,14 +1,7 @@
 <template>
   <div class="page-shell upload-container">
-    <PageHero title="图片上传">
-      <template #actions><router-link to="/inspection/uploads/mine" class="upload-next-link"><AppIcon name="FolderOpened" :size="17" />我的上传记录</router-link></template>
-    </PageHero>
-
-    <ol class="upload-flow" aria-label="图片上传与检测步骤">
-      <li :aria-current="uploadStep === 1 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Picture" :size="20" /></span><div><strong>1 选择图片</strong></div></li>
-      <li :aria-current="uploadStep === 2 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Upload" :size="20" /></span><div><strong>2 上传原图</strong></div></li>
-      <li :aria-current="uploadStep === 3 ? 'step' : undefined"><span class="upload-flow-icon"><AppIcon name="Search" :size="20" /></span><strong><router-link to="/inspection/workbench">3 查看检测进度</router-link></strong></li>
-    </ol>
+    <PageHero title="图片上传" />
+    <InspectionFlowNav />
 
     <!-- 断点续传提示卡片 -->
     <el-alert
@@ -170,7 +163,7 @@
             <el-icon><UploadFilled /></el-icon>
             {{ uploadingToOss ? '正在上传原图…' : uploadAttempted ? '本次上传已发起' : '上传原图并提交检测' }}
           </el-button>
-          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><router-link to="/inspection/uploads/mine">查看我的上传记录</router-link><p>已保留本次选择。新建任务请重新选择文件夹。</p><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
+          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><router-link :to="{path:'/inspection/uploads/mine',query:registeredTaskId ? {keyword:registeredTaskId} : {}}">{{ registeredTaskId ? '查看本次上传记录' : '查看我的上传记录' }}</router-link><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
 
           <Transition name="upload-feedback"><div v-if="uploadingTask" class="upload-progress-card">
             <div class="upload-progress-header">
@@ -313,10 +306,10 @@
             <div class="history-item-actions">
               <router-link
                 v-if="task.stage === 'uploaded' || task.stage === 'queued' || task.stage === 'detecting' || task.stage === 'completed'"
-                :to="`/inspection/workbench?taskId=${task.taskId}`"
+                :to="assignedTrace(task.taskId)"
                 class="upload-next-link"
               >
-                <el-icon aria-hidden="true"><Right /></el-icon>前往检测
+                <el-icon aria-hidden="true"><Right /></el-icon>{{ task.stage === 'completed' ? '查看检测结果' : '查看检测进度' }}
               </router-link>
               <el-button link size="small" :loading="removeCacheBusy===task.taskId" :disabled="uploadingToOss || !!removeCacheBusy" @click="removeCachedUploadTask(task)">
                 <el-icon><Delete /></el-icon>清除本机缓存
@@ -330,6 +323,8 @@
 </template>
 
 <script setup>
+import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
+import { assignedTrace } from '@/utils/taskBoardNavigation'
 import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
 import { imageFolderLabel, recordFolderLabel } from '@/utils/imageFolderLabel'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, toRaw } from 'vue'
@@ -361,6 +356,7 @@ const deviceList = ref([])
 const loadingEmployees = ref(false)
 const loadingDevices = ref(false)
 const employeeError = ref(''), deviceError = ref(''), selectionNotice = ref(''), uploadAttempted = ref(false)
+const registeredTaskId = ref('')
 const employeeLoaded = ref(false), deviceLoaded = ref(false)
 let pageActive = true, employeeRequest = 0, deviceRequest = 0
 const removeCacheBusy=ref('')
@@ -490,6 +486,7 @@ const handleFolderSelect = (event) => {
     return
   }
   uploadAttempted.value = false
+  registeredTaskId.value = ''
   selectionNotice.value = `本次选入 ${imageFiles.length} 张图片${files.length > imageFiles.length ? `，另有 ${files.length - imageFiles.length} 个文件未列入本次上传` : ''}`
 
   // Only the shared directory describes the selection when several subfolders are chosen.
@@ -524,12 +521,6 @@ const handleFolderSelect = (event) => {
   }))
 }
 
-const uploadStep = computed(() => {
-  if (uploadingToOss.value) return 2
-  if (uploadAttempted.value) return 3
-  return folderInfo.imageCount && !missingCaptureFields.value.length ? 2 : 1
-})
-
 const handleUploadBatch = () => {
   if (uploadingToOss.value || uploadAttempted.value) return
   if (!folderInfo.files.length) {
@@ -560,12 +551,16 @@ const handleUploadBatch = () => {
   }
 
   uploadAttempted.value = true
-  uploadStore.uploadBatchToOss(filesData, captureInfo)
+  const scope = accountScope()
+  uploadStore.uploadBatchToOss(filesData, captureInfo, taskId => {
+    if (pageActive && scope === accountScope()) registeredTaskId.value = taskId
+  })
 }
 
 const resetBatchState = () => {
   if (uploadingToOss.value) return
   uploadAttempted.value = false
+  registeredTaskId.value = ''
   selectionNotice.value = ''
   if (folderInput.value) folderInput.value.value = ''
   folderInfo.name = ''
@@ -1014,8 +1009,8 @@ onMounted(async () => {
 .capture-read-error button, .upload-attempt-note button { display:inline-flex; align-items:center; border:0; border-radius:4px; padding:3px 0; margin-left:8px; color:var(--app-primary); background:transparent; font:inherit; cursor:pointer; }
 .upload-attempt-note { display:flex; align-items:flex-start; gap:9px; margin-top:14px; padding:13px; border-radius:9px; color:var(--app-text-secondary); background:var(--app-primary-light); font-size:12px; line-height:1.85; }
 .upload-attempt-note > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
-.upload-attempt-note > div { min-width:0; }.upload-attempt-note strong { font-size:12px; color:var(--app-text); font-weight:550; }
-.upload-attempt-note p { margin:5px 0 0; overflow-wrap:anywhere; }.upload-attempt-note button { margin:5px 0 0; }
+.upload-attempt-note > div { min-width:0; display:flex; align-items:center; flex-wrap:wrap; gap:5px 14px; }
+.upload-attempt-note button { margin:0; }
 .capture-read-error button:disabled, .upload-attempt-note button:disabled { color:var(--app-text-muted); opacity:.6; cursor:default; }
 .capture-read-error button:focus-visible, .upload-attempt-note button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 </style>
