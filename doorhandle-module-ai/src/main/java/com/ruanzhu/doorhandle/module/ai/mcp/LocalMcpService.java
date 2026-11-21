@@ -260,7 +260,14 @@ public class LocalMcpService {
     private Map<String,Object> installed(AgentActor actor,boolean enabled){var rows=jdbc.queryForList("SELECT id AS id,owner_user_id AS owner_user_id,server_key AS server_key,package_version AS package_version,status AS status,enabled AS enabled,revision AS revision,operation_id AS operation_id,request_id AS request_id,lease_expires_at AS lease_expires_at,manifest_json AS manifest_json,manifest_sha256 AS manifest_sha256,error_code AS error_code,created_at AS created_at,updated_at AS updated_at,legacy_clock_json FROM agent_connector WHERE owner_user_id=? AND server_key='fetch' AND status='INSTALLED'"+(enabled?" AND enabled=TRUE":""),actor.userId());if(rows.isEmpty())throw fail(403,"本人尚未安装或启用此 MCP");LegacyMcpClocks.requireResolved(LegacyMcpClocks.connector(rows.get(0)));return rows.get(0);}
     private Map<String,Object> checked(Map<String,Object> row){if(lifecycle!=null)lifecycle.requireUsable(((Number)row.get("owner_user_id")).longValue(),(String)row.get("operation_id"));var manifest=read(row.get("manifest_json"));if(!sha(manifest).equals(row.get("manifest_sha256")))throw fail(409,"MCP 配置完整性校验失败");try{runtime.validate(directory(((Number)row.get("owner_user_id")).longValue(),(String)row.get("operation_id")),manifest);}catch(Exception e){throw fail(409,"MCP 文件完整性校验失败");}return manifest;}
     public Path directory(long owner,String operation){if(owner<1||operation==null||!operation.matches("[a-f0-9-]{36}"))throw fail(400,"MCP 安装路径不合法");return root.resolve("users").resolve(Long.toString(owner)).resolve("mcp/fetch/installs").resolve(operation).normalize();}
-    private void live(AgentActor actor,String runId,String callId){if(runId==null||callId==null||!callId.matches("[A-Za-z0-9_:.-]{1,160}"))throw fail(403,"缺少实际 Agent 调用上下文");var rows=jdbc.queryForList("SELECT user_id,main_agent,status FROM agent_run WHERE run_id=? AND lease_expires_at>CURRENT_TIMESTAMP",runId);if(rows.isEmpty()||((Number)rows.get(0).get("user_id")).longValue()!=actor.userId()||!RoleAgentCatalog.mainId(actor).equals(rows.get(0).get("main_agent"))||!"RUNNING".equals(rows.get(0).get("status")))throw fail(403,"当前 Agent 运行不能使用 MCP");}
+    private void live(AgentActor actor,String runId,String callId){
+        if(runId==null||callId==null||!callId.matches("[A-Za-z0-9_:.-]{1,160}"))throw fail(403,"缺少实际 Agent 调用上下文");
+        var rows=jdbc.queryForList("SELECT user_id,main_agent,status FROM agent_run WHERE run_id=? AND lease_expires_at>UTC_TIMESTAMP(6)",runId);
+        if(rows.isEmpty()||((Number)rows.get(0).get("user_id")).longValue()!=actor.userId()
+                ||!RoleAgentCatalog.mainId(actor).equals(rows.get(0).get("main_agent"))||!"RUNNING".equals(rows.get(0).get("status"))){
+            throw fail(403,"当前 Agent 运行不能使用 MCP");
+        }
+    }
     private void audit(AgentActor actor,String action,String outcome,int revision,String operation,String runId,String callId,Map<String,Object> detail){
         // detailJson is deliberately a JSON string containing the original JSON;
         // both databases validate the same envelope through the target column.

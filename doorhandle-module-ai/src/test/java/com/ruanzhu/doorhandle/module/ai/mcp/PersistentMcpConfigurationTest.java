@@ -3,6 +3,8 @@ package com.ruanzhu.doorhandle.module.ai.mcp;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
+import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
+import com.ruanzhu.doorhandle.module.ai.testsupport.CompactAgentJournalFixture;
 import com.ruanzhu.doorhandle.module.ai.testsupport.CompactMcpFixture;
 import com.ruanzhu.doorhandle.module.ai.testsupport.CompactWorkflowFixture;
 import org.junit.jupiter.api.Test;
@@ -51,6 +53,33 @@ class PersistentMcpConfigurationTest {
         assertThatThrownBy(()->jdbc.update("INSERT INTO agent_connector(owner_user_id,server_key,package_version,created_at,updated_at) VALUES(1,'fetch','fixture',NULL,NULL)"))
             .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThatThrownBy(()->CompactMcpFixture.installConnector(jdbc)).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
+    }
+    @Test void mcpRunLeaseUsesUtcWithNonUtcDatabaseSession()throws Exception{
+        var source=new DriverManagerDataSource(
+            "jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;INIT=SET TIME ZONE '+08:00'","sa","");
+        var jdbc=new JdbcTemplate(source);
+        CompactAgentJournalFixture.install(jdbc);
+        CompactMcpFixture.installConnector(jdbc);
+        jdbc.update("""
+            INSERT INTO agent_run(run_id,user_id,session_id,main_agent,entry_point,request_key,status,
+                default_model,policy_version,instance_id,started_at,heartbeat_at,lease_expires_at)
+            VALUES('own-run',1,'mcp-fixture','employee-main','CHAT','own-run','RUNNING',
+                'fixture','fixture','fixture',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),DATEADD('MINUTE',2,UTC_TIMESTAMP(6)))
+            """);
+        var users=mock(BusinessUserDirectory.class);
+        when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));
+        when(users.current(2,"bob")).thenReturn(new BusinessUserDirectory.Identity(2,"bob",false));
+        var runtime=mock(FetchMcpRuntime.class);
+        when(runtime.writesAllowed()).thenReturn(true);
+        var service=new LocalMcpService(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),users,new AgentScopeProperties(),runtime);
+        var alice=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
+        var bob=new AgentActor(2,"bob",AgentActor.Role.INSPECTOR);
+        try{
+            assertThatThrownBy(()->service.propose(bob,"own-run","call")).hasMessageContaining("403");
+            assertThat(service.propose(alice,"own-run","call")).containsEntry("status","PENDING_CONFIRM");
+            jdbc.update("UPDATE agent_run SET lease_expires_at=DATEADD('SECOND',-1,UTC_TIMESTAMP(6)) WHERE run_id='own-run'");
+            assertThatThrownBy(()->service.propose(alice,"own-run","call")).hasMessageContaining("403");
+        }finally{service.close();}
     }
     private String seedInstalledRegistration(JdbcTemplate jdbc,ObjectMapper mapper,long owner)throws Exception{
         String operation=UUID.randomUUID().toString();
