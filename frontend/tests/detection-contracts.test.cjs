@@ -48,7 +48,6 @@ test('tests\\single-image-preview-contract.test.cjs', () => {
     ['src', 'views', 'ImageDetection.vue'],
     ['src', 'views', 'inspection', 'InspectionWorkbench.vue'],
     ['src', 'views', 'inspection', 'InspectionHistory.vue'],
-    ['src', 'views', 'quality', 'QualityQueue.vue'],
     ['src', 'views', 'quality', 'WorkOrderTrace.vue'],
     ['src', 'views', 'quality', 'BatchTrace.vue']
   ]

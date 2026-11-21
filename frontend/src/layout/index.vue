@@ -32,7 +32,7 @@
       <button type="button" class="sidebar-finder" aria-label="查找功能" title="查找功能" @click="finder.open()">
         <AppIcon name="Search" :size="17" /><span v-if="!collapsed">查找功能</span><kbd v-if="!collapsed">{{ finderShortcut }}</kbd>
       </button>
-      <WorkspaceNavigation :groups="visibleNavGroups" :home-group="userStore.role === 'SUPERVISOR' ? 'quality' : 'inspection'" :active="activeMenu" :collapsed="collapsed" />
+      <WorkspaceNavigation :groups="visibleNavGroups" home-group="inspection" :active="activeMenu" :collapsed="collapsed" />
 
       <ChatAssistantLauncher v-if="!isMobile" :compact="collapsed" @open="handleOpenAssistant" />
     </aside>
@@ -40,7 +40,7 @@
     <el-drawer v-model="mobileNavVisible" title="工作空间导航" direction="ltr" size="min(310px, 88vw)" class="mobile-system-navigation">
       <div class="mobile-nav-scope"><AppIcon name="User" />{{ accountPresentation.role }} · {{ accountPresentation.scope }}</div>
       <button type="button" class="sidebar-finder drawer-assistant" @click="mobileNavVisible=false;handleOpenAssistant()"><AppIcon name="ChatDotRound" />打开侧边助手</button>
-      <WorkspaceNavigation id="mobile-system-menu" :groups="visibleNavGroups" :home-group="userStore.role === 'SUPERVISOR' ? 'quality' : 'inspection'" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
+      <WorkspaceNavigation id="mobile-system-menu" :groups="visibleNavGroups" home-group="inspection" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
     </el-drawer>
 
     <div class="layout-main">
@@ -199,9 +199,7 @@ const navGroups = [
     label: '质检追溯',
     icon: Search,
     items: [
-      { path: '/quality/queue', label: '质检队列', desc: '待复核与处置闭环' },
       { path: '/quality/reports', label: '报告与审批', desc: '个人草稿与主管审批' },
-      { path: '/quality/knowledge', label: '质检知识库', desc: '规范、版本与引用定位' },
       { path: '/quality/digests', label: '质检日报', desc: '定时统计与报告交付', supervisorOnly:true },
       { path: '/quality/work-order-trace', label: '工单追溯', desc: '按工单回溯检测链路' },
       { path: '/quality/batch-trace', label: '批次追溯', desc: '按批次追溯质量结果' }
@@ -266,7 +264,6 @@ const activeMenu = computed(() => {
     const legacyMap = {
       workspace: '/inspection/workbench',
       history: '/inspection/history',
-      quality: '/quality/queue',
       'work-order-trace': '/quality/work-order-trace',
       'batch-trace': '/quality/batch-trace'
     }

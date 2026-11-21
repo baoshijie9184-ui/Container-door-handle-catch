@@ -36,12 +36,11 @@ class RagKnowledgeServiceTest {
         RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
         service.loadKnowledgeBase();
 
-        String context = service.retrieveContext("质检队列有哪些状态，应该怎么处理返工复检");
+        String context = service.retrieveContext("怎么在校验任务列表分派校验，员工在哪里校验");
 
         assertThat(service.chunkCount()).isGreaterThan(0);
         assertThat(context).contains("系统知识库检索结果");
-        assertThat(context).contains("质检队列");
-        assertThat(context).contains("返工");
+        assertThat(context).contains("校验任务列表", "待我校验").doesNotContain("质检队列");
     }
 
     @Test
@@ -153,11 +152,11 @@ class RagKnowledgeServiceTest {
         RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
         service.loadKnowledgeBase();
 
-        String first = service.retrieveContext("质检队列返工怎么处理");
-        String second = service.retrieveContext("质检队列返工怎么处理");
+        String first = service.retrieveContext("如何分派校验任务");
+        String second = service.retrieveContext("如何分派校验任务");
 
         assertThat(second).isEqualTo(first);
-        verify(ragModelService, times(1)).rewriteRagQuery("质检队列返工怎么处理");
+        verify(ragModelService, times(1)).rewriteRagQuery("如何分派校验任务");
         verify(ragModelService, times(1)).rerankRagCandidates(any(), any(), anyInt());
     }
 }

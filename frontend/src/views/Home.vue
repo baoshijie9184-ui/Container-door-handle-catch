@@ -38,53 +38,35 @@
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`未更新：${failedSections.join('、')}。显示上次数据或“—”。`" />
     </div>
-    <div class="dashboard-overview" :class="{ 'with-history': historicalSummary }">
-      <section ref="taskPanel" class="quality-overview" tabindex="-1" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
+    <div class="dashboard-overview" :class="{ 'with-history': historicalSummary && isSupervisor, 'single-panel': !historicalSummary && !isSupervisor }">
+      <section v-if="isSupervisor" ref="taskPanel" class="quality-overview" tabindex="-1" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
         <header>
           <div class="quality-heading">
             <span class="quality-heading-icon"><AppIcon name="DocumentChecked" :size="21" /></span>
-            <div><h2 id="quality-overview-title">我的任务待办</h2></div>
+            <div><h2 id="quality-overview-title">领任务申请</h2></div>
           </div>
-          <el-button v-if="isSupervisor" text type="primary" :loading="applicationsLoading" @click="loadApplications">刷新申请</el-button>
-          <router-link v-else to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />查看队列</router-link>
+          <el-button text type="primary" :loading="applicationsLoading" @click="loadApplications">刷新申请</el-button>
         </header>
-        <template v-if="isSupervisor">
-          <el-alert v-if="applicationsError" :title="applicationsError" type="warning" :closable="false"/>
-          <p v-else-if="!pendingApplications" role="status">正在读取领任务申请…</p>
-          <div v-else-if="!pendingApplications.length" class="queue-empty">
-            <AppIcon name="CircleCheck" :size="22" /><strong>当前没有待处理的领任务申请</strong>
-          </div>
-          <ul v-else class="application-list" aria-label="待处理的领任务申请">
-            <li v-for="row in pendingApplications" :key="row.workUnitId">
-              <div><strong>工号：{{ row.applicantUserId }}</strong><small>{{ row.imageCount }} 张图片 · {{ row.workUnitId }}</small><small v-if="row.remark">{{ row.remark }}</small></div>
-              <router-link :to="{path:'/inspection/uploads/dispatch',query:{application:row.workUnitId}}">
-                {{ row.status==='WAITING' ? '选择批次并审批' : '补选原图批次' }}
-              </router-link>
-            </li>
-          </ul>
-        </template>
-        <component :is="isSupervisor ? 'details' : 'div'" :class="{'team-quality':isSupervisor}">
-          <summary v-if="isSupervisor">企业质检队列</summary>
-          <div v-if="qualityQueueEmpty" class="queue-empty">
-            <AppIcon name="CircleCheck" :size="25" /><div><strong>当前没有待处理的质检任务</strong></div>
-          </div>
-          <div v-else class="quality-overview-grid">
-            <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="qualityWorkload?.[metric.key] > 0 ? metric.tone : 'neutral'">
-              <span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="17" /></span>
-              <span class="queue-metric"><small>{{ metric.label }}</small><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong></span>
-              <AppIcon class="queue-chevron" name="ArrowRight" :size="13" />
+        <el-alert v-if="applicationsError" :title="applicationsError" type="warning" :closable="false"/>
+        <p v-else-if="!pendingApplications" role="status">正在读取领任务申请…</p>
+        <div v-else-if="!pendingApplications.length" class="queue-empty">
+          <AppIcon name="CircleCheck" :size="22" /><strong>当前没有待处理的领任务申请</strong>
+        </div>
+        <ul v-else class="application-list" aria-label="待处理的领任务申请">
+          <li v-for="row in pendingApplications" :key="row.workUnitId">
+            <div><strong>工号：{{ row.applicantUserId }}</strong><small>{{ row.imageCount }} 张图片 · {{ row.workUnitId }}</small><small v-if="row.remark">{{ row.remark }}</small></div>
+            <router-link :to="{path:'/inspection/uploads/dispatch',query:{application:row.workUnitId}}">
+              {{ row.status==='WAITING' ? '选择批次并审批' : '补选原图批次' }}
             </router-link>
-          </div>
-          <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新。' : '正在读取质量待办…' }}</p>
-          <p v-else-if="failedSections.includes('质量待办')" class="quality-overview-note" role="status">刷新失败，显示上次数据。</p>
-        </component>
+          </li>
+        </ul>
       </section>
       <HistoricalDetectionOverview v-if="historicalSummary" :summary="historicalSummary" />
       <CollaborationTodos />
     </div>
     <details class="dashboard-data-note count-scope">
       <summary>统计口径</summary>
-      <p>检测趋势、目标分类、城市和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。“—”表示数据缺失或无法计算。同一任务可计入多个质检状态。</p>
+      <p>检测趋势、目标分类、城市和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。“—”表示数据缺失或无法计算。</p>
     </details>
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
@@ -480,32 +462,6 @@ const userStore = useUserStore()
 const pageLoading = ref(true)
 const workUnitSummary = ref(null)
 const duplicateSummary = ref(null)
-const qualityWorkload = ref(null)
-const qualityMetrics = [
-  { key:'pendingReviewCount',label:'待复核',queue:'PENDING_REVIEW',icon:'Search',tone:'primary' },
-  { key:'pendingDispositionCount',label:'待处置',queue:'PENDING_DISPOSITION',icon:'CircleCheck',tone:'warning' },
-  { key:'reworkRequiredCount',label:'待返工',queue:'REWORK_REQUIRED',icon:'Edit',tone:'warning' },
-  { key:'recheckRequiredCount',label:'需复检',queue:'RECHECK_REQUIRED',icon:'Refresh',tone:'warning' },
-  { key:'holdCount',label:'暂挂',queue:'HOLD',icon:'Clock',tone:'warning' },
-  { key:'failedCount',label:'检测异常',queue:'FAILED',icon:'Warning',tone:'danger' }
-]
-
-
-const qualityQueueEmpty = computed(() =>
-  qualityWorkload.value && qualityMetrics.every(metric => qualityWorkload.value[metric.key] === 0)
-)
-
-async function fetchQualityWorkload() {
-  try {
-    const response = await dashboardRequest('质量待办', '/api/dashboard/quality-workload')
-    const counts = response.data?.data
-    if (!counts || qualityMetrics.some(metric => !Number.isSafeInteger(counts[metric.key]) || counts[metric.key] < 0)) throw new Error('质量待办统计不完整')
-    if (!disposed) qualityWorkload.value = Object.fromEntries(qualityMetrics.map(metric => [metric.key, counts[metric.key]]))
-  } catch {
-    if (!disposed && !failedSections.value.includes('质量待办')) failedSections.value.push('质量待办')
-  }
-}
-
 async function fetchDuplicateSummary() {
   try {
     const response = await getDuplicateSummary()
@@ -733,7 +689,7 @@ async function refreshAll() {
   if (refreshing.value || disposed) return
   refreshing.value = true
   try {
-    await Promise.all([loadApplications(),readFolderInbox(),fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary(), fetchQualityWorkload()])
+    await Promise.all([loadApplications(),readFolderInbox(),fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary()])
     if (!disposed) await updateChartData()
     if (!failedSections.value.length && !trendLoading.value && charts.region) lastUpdated.value = beijingDateTime()
   } finally {
@@ -1123,7 +1079,6 @@ button.focus-action { border:0;cursor:pointer;text-align:left;font:inherit }
 .application-list li { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--app-border) }
 .application-list li>div { min-width:0;overflow-wrap:anywhere }.application-list small { display:block;margin-top:4px;color:var(--app-text-secondary) }
 .application-list li a { display:inline-flex;align-items:center;min-height:44px;color:var(--app-primary);font-weight:600;flex-shrink:0 }
-.team-quality { margin-top:16px }.team-quality summary { color:var(--app-text-secondary);cursor:pointer;font-size:13px }.team-quality[open] summary { margin-bottom:8px }
 .work-entry { min-width:0;display:grid;align-content:center;background:var(--app-surface,#fff);border:1px solid var(--app-border);border-radius:var(--app-radius-lg) }
 .work-entry :deep(.inspection-flow) { border:0;padding:12px 16px 6px }.work-entry :deep(.flow-steps a){padding:5px 4px;gap:6px}
 .work-tools { display:flex;flex-wrap:wrap;gap:6px 20px;margin:5px 16px 0;padding:9px 3px;border-top:1px solid var(--app-border) }
@@ -1137,6 +1092,7 @@ button.focus-action { border:0;cursor:pointer;text-align:left;font:inherit }
 .focus-action:hover .focus-cta { background:var(--app-primary-soft); }
 .dashboard-loading-strip {min-height:100px}
 .dashboard-overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:16px; }
+.dashboard-overview.single-panel { grid-template-columns:minmax(0,1fr); }
 .dashboard-overview > * { min-width:0; }
 .dashboard-overview > .collaboration-todos { margin:0; }
 .dashboard-overview.with-history > .collaboration-todos { grid-column:1/-1; }

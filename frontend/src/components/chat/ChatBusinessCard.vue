@@ -196,7 +196,7 @@ const traceRouteText = computed(() => {
   if (isAgentHealth.value) return '查看健康详情'
   if (isBatchTrace.value) return '进入批次追溯'
   if (isWorkOrderTrace.value) return '查看工单任务'
-  return '进入质检队列'
+  return '查看校验任务'
 })
 const tracePrimaryLabel = computed(() => isWorkOrderTrace.value ? '工单' : '批次')
 const tracePrimaryValue = computed(() => isWorkOrderTrace.value

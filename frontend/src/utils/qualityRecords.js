@@ -8,20 +8,6 @@ export function qualityReviewCountText(status,value) {
   return '复核状态待核对'
 }
 
-export const normalizeQualityQueueRecord = (record = {}) => ({
-  ...record,
-  stage: record.stage ? record.stage.toLowerCase() : (record.status === 'FAILED' ? 'failed' : 'completed'),
-  imageCount: record.totalImages || record.imageCount || 0,
-  result: record.result || null,
-  captureInfo: {
-    captureDate: record.captureDate || '',
-    region: record.region || '',
-    collector: record.collector || '',
-    deviceName: record.deviceName || '',
-    imageFolderName: record.imageFolderName || ''
-  }
-})
-
 export const buildTraceEvidenceRows = (detail) => {
   if (!detail) return []
   const originals = (detail.originalImages || []).map(item => ({ ...item, type: '原图' }))

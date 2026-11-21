@@ -161,120 +161,6 @@
           <div v-if="historyTotal!==null" class="history-pagination"><el-pagination :current-page="historyPage" :page-size="historyPageSize" :total="historyTotal" :page-sizes="[10,20,50]" :disabled="historyLoading || !!historyError" layout="total, sizes, prev, pager, next, jumper" @current-change="onHistoryPageChange" @size-change="onHistorySizeChange" /></div>
         </el-card>
       </el-tab-pane>
-      <el-tab-pane lazy name="quality" label="质检队列">
-        <el-card class="detection-card quality-queue-card" shadow="never">
-          <template #header>
-            <div class="card-title-row">
-              <span>质检队列</span>
-              <el-tag type="info" effect="plain">{{ qualityQueueTotal === null ? '总数尚未核对' : `${qualityQueueTotal} 条待处理` }}</el-tag>
-              <el-button size="small" :loading="qualityQueueLoading" @click="loadQualityQueue()">
-                <el-icon><Refresh /></el-icon>
-                刷新
-              </el-button>
-            </div>
-          </template>
-
-          <p class="quality-queue-scope"><AppIcon name="User" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }}</p>
-          <div class="quality-queue-tabs" role="group" aria-label="按质检处理阶段筛选">
-            <button
-              v-for="queue in qualityQueues"
-              :key="queue.value"
-              type="button"
-              class="quality-queue-chip"
-              :class="{ active: activeQualityQueue === queue.value }"
-              :aria-pressed="activeQualityQueue === queue.value" :title="queue.hint"
-              @click="switchQualityQueue(queue.value)"
-            >
-              <span>{{ queue.label }}</span>
-            </button>
-          </div>
-          <el-alert v-if="qualityQueueError && qualityQueueRecords.length" :title="qualityQueueError" type="warning" show-icon :closable="false" class="quality-queue-read-error" />
-
-          <TableReadHint v-if="qualityQueueRecords.length" />
-          <el-table :scrollbar-tabindex="0" role="region" aria-label="当前质检队列"
-            v-loading="qualityQueueLoading"
-            :data="qualityQueueRecords"
-            size="small"
-            row-key="taskId"
-            class="quality-queue-table"
-          >
-            <template #empty>
-              <CollectionEmptyState :loading="qualityQueueLoading || (!qualityQueueLoaded && !qualityQueueError)" :error="qualityQueueError" :filtered="activeQualityQueue !== 'ALL_ACTIONABLE'" empty-title="当前队列暂无待处理任务" empty-description="检测完成后可在待复核阶段查看；放行与报告审批分别处理。" @retry="loadQualityQueue()" @reset="switchQualityQueue('ALL_ACTIONABLE')" />
-            </template>
-            <el-table-column label="任务与来源" min-width="215"><template #default="{ row }"><div class="quality-queue-task"><button type="button" @click="openTraceDialog(row.taskId)">{{ row.taskId }}</button><span>工单 {{ row.workOrderNo || '未记录' }}</span><span>批次 {{ row.batchNo || '未记录' }}</span><small>设备 {{ row.deviceName || '未记录' }}</small></div></template></el-table-column>
-            <el-table-column label="处理任务" min-width="205">
-              <template #default="{ row }">
-                <div class="queue-primary-actions">
-                  <el-button v-if="canAssignQualityTask(row)" size="small" type="primary" @click="openAssignmentDialog(row)">分派</el-button>
-                <el-button
-                  v-if="canReviewTask(row)"
-                  plain
-                  size="small"
-                  type="primary"
-                  @click="openReviewDialog(row)"
-                >
-                  复核
-                </el-button>
-                <el-button
-                  v-if="canDisposeTask(row)"
-                  link
-                  size="small"
-                  type="warning"
-                  @click="openDispositionDialog(row)"
-                >
-                  处置
-                </el-button>
-                <el-button
-                  v-if="canSubmitReworkResult(row)"
-                  link
-                  size="small"
-                  type="primary"
-                  @click="openReworkDialog(row)"
-                >
-                  返工
-                </el-button>
-                <TaskClaimButton :task="row" @claimed="loadQualityQueue(qualityQueuePage)" />
-                <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
-                </div>
-                <details class="queue-more-actions">
-                  <summary>更多</summary>
-                  <div>
-                    <QualityStageGuidance :task="row" />
-                    <ResourceMutationSummary v-if="userStore.capabilities?.changeHistory" :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" />
-                    <span v-if="userStore.role==='SUPERVISOR' && !canAssignQualityTask(row)" class="queue-assignment-note">{{ qualityActionReason(row,'ASSIGN') }}</span>
-                    <TaskClaimCandidatesButton :task="row" @authorized="loadQualityQueue(qualityQueuePage)" />
-                    <el-button link size="small" type="info" :disabled="reportDownloading" @click="downloadTaskQualityReport(row.taskId)">任务摘要</el-button>
-                  </div>
-                </details>
-              </template>
-            </el-table-column>
-            <el-table-column label="质检状态" min-width="128"><template #default="{ row }"><div class="queue-facts">
-              <StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /><span v-if="reviewStatusText(row.reviewStatus)!==flowStatusText(row.flowStatus)">复核 · {{ reviewStatusText(row.reviewStatus) }}</span>
-            </div></template></el-table-column>
-            <el-table-column label="缺陷" min-width="100"><template #default="{ row }"><div class="queue-facts">
-              <strong>{{ traceCount(row.defectCount) }}</strong><span>{{ severityText(row.severityLevel || row.maxDefectSeverity) }}</span>
-            </div></template></el-table-column>
-            <el-table-column label="责任与截止" min-width="180">
-              <template #default="{ row }"><div class="quality-queue-responsibility"><strong>{{ row.assignee || '未分派' }}</strong><span>{{ row.dueAt ? formatBusinessTime(row.dueAt) || '时间格式未知' : '未设置截止时间' }}</span></div></template>
-            </el-table-column>
-
-          </el-table>
-
-          <router-link class="quality-queue-scope" to="/quality/reports">查看质检报告<AppIcon name="ArrowRight" :size="14" /></router-link>
-          <div v-if="qualityQueueTotal !== null" class="quality-pagination">
-            <el-pagination
-              v-model:current-page="qualityQueuePage"
-              v-model:page-size="qualityQueuePageSize"
-              :total="qualityQueueTotal"
-              :page-sizes="[10, 20, 50]"
-              layout="total, sizes, prev, pager, next"
-              @current-change="loadQualityQueue"
-              @size-change="onQualityQueueSizeChange"
-            />
-          </div>
-        </el-card>
-      </el-tab-pane>
-
       <el-tab-pane lazy name="work-order-trace" label="工单追溯">
         <el-card class="detection-card batch-trace-card" shadow="never">
           <template #header>
@@ -517,23 +403,18 @@
 <script setup>
 import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import CollaborationRefreshNotice from '../components/CollaborationRefreshNotice.vue'
-import TaskClaimButton from '../components/TaskClaimButton.vue'
-import TaskClaimCandidatesButton from '../components/TaskClaimCandidatesButton.vue'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import { useLatestChanges } from '../composables/useLatestChanges'
-import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
 import { resourceHistoryLink } from '../utils/changeHistory'
 import {captureAccountRequest} from '@/api/request'
 import { accountSession } from '../utils/accountContext'
 import ModelMaintenanceSummary from '@/components/ModelMaintenanceSummary.vue'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
-import QualityStageGuidance from '@/components/QualityStageGuidance.vue'
 import QualityTaskContext from '@/components/QualityTaskContext.vue'
 import EvidenceComparison from '@/components/EvidenceComparison.vue'
 import TraceReportOverview from '@/components/TraceReportOverview.vue'
 import BusinessTraceQuery from '@/components/BusinessTraceQuery.vue'
 import DetectionHistoryCard from '@/components/DetectionHistoryCard.vue'
-import { knownCount } from '@/utils/countPresentation'
 import { useUserStore } from '../stores/user'
 import { beijingDateTime as formatBusinessTime } from '../utils/beijingTime'
 import { detectionPresentation } from '../utils/pagePresentation'
@@ -557,16 +438,10 @@ import {
   qualityActionReason,
   dispositionActionText,
   dispositionStatusText,
-  flowStatusText,
-  reviewConclusionText,
-  reviewStatusTagType,
-  reviewStatusText,
-  severityTagType,
-  severityText
+  reviewConclusionText
 } from '../utils/qualityWorkflow'
 import { formatEvidenceConfidence } from '../utils/qualityRecords'
 import { useQualityTaskActions } from '../composables/useQualityTaskActions'
-import { useQualityQueue } from '../composables/useQualityQueue'
 import { useTraceReports } from '../composables/useTraceReports'
 import { useDetectionHistory } from '../composables/useDetectionHistory'
 import { useQualityReportDownloads } from '../composables/useQualityReportDownloads'
@@ -590,21 +465,6 @@ const {
   removeTask, saveTaskList
 } = taskStore
 const { restoreFromSession, fetchTaskResults } = pollingStore
-const {
-  activeQualityQueue,
-  qualityQueueLoading,
-  qualityQueueRecords,
-  qualityQueueTotal,
-  qualityQueueError,
-  qualityQueueLoaded,
-  qualityQueuePage,
-  qualityQueuePageSize,
-  qualityQueues,
-  loadQualityQueue,
-  switchQualityQueue,
-  onQualityQueueSizeChange,
-  forgetTasks:forgetQualityTasks
-} = useQualityQueue()
 const {
   workOrderTraceNo,
   workOrderTraceLoading,
@@ -712,11 +572,10 @@ watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || 
 const router = useRouter()
 const activeTab = ref(route.query.keyword ? 'history' : route.meta.detectionTab || 'workspace')
 const workspacePresentation = computed(() => detectionPresentation[activeTab.value] || detectionPresentation.workspace)
-const validTabs = ['workspace', 'history', 'quality', 'work-order-trace', 'batch-trace']
+const validTabs = ['workspace', 'history', 'work-order-trace', 'batch-trace']
 const tabRouteMap = {
   workspace: '/inspection/workbench',
   history: '/inspection/history',
-  quality: '/quality/queue',
   'work-order-trace': '/quality/work-order-trace',
   'batch-trace': '/quality/batch-trace'
 }
@@ -727,21 +586,10 @@ const form = reactive({
 })
 const selectedDetectionModel = computed(()=>modelList.value.find(model=>model.modelId===form.modelId))
 
-const traceCount = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'
-
-const refreshQualityQueueIfVisible = async () => {
-  if (activeTab.value === 'quality') {
-    await loadQualityQueue(qualityQueuePage.value)
-  }
-}
-
 const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
   const startingRoute = route.fullPath
   if (tabName === 'workspace' && !modelsLoaded.value && !modelsLoading.value) fetchModels()
   if (tabName === 'history' && !historyLoaded.value && !historyLoading.value) fetchHistoryWithFilters(1)
-  if (tabName === 'quality' && !qualityQueueRecords.value.length) {
-    await loadQualityQueue(1)
-  }
   if (tabName === 'work-order-trace' && !workOrderTraceReport.value && !workOrderTraceLoading.value) {
     if (await ensureDefaultWorkOrderNo()) await loadWorkOrderTraceReport()
   }
@@ -789,15 +637,8 @@ const syncTabFromRoute = async () => {
 }
 
 watch(
-  () => [route.path, route.query.tab, route.query.queue, route.query.workOrderNo, route.query.batchNo, route.query.keyword],
-  () => {
-    const requestedQueue = String(route.query.queue || '')
-    if (qualityQueues.some(queue => queue.value === requestedQueue) && activeQualityQueue.value !== requestedQueue) {
-      activeQualityQueue.value = requestedQueue
-      if (activeTab.value === 'quality') loadQualityQueue(1)
-    }
-    syncTabFromRoute()
-  }
+  () => [route.path, route.query.tab, route.query.workOrderNo, route.query.batchNo, route.query.keyword],
+  syncTabFromRoute
 )
 
 const getStatType = (key) => {
@@ -950,7 +791,6 @@ const {
 } = useQualityTaskActions({
   taskStore,
   fetchTaskResults,
-  refreshQualityQueue: refreshQualityQueueIfVisible,
 })
 
 function traceData(response,taskId) {
@@ -1064,10 +904,6 @@ onMounted(async () => {
   if (validTabs.includes(routeTab)) {
     activeTab.value = routeTab
   }
-  const queryQueue = String(route.query.queue || '')
-  if (qualityQueues.some(queue => queue.value === queryQueue)) {
-    activeQualityQueue.value = queryQueue
-  }
   const queryWorkOrderNo = typeof route.query.workOrderNo === 'string' ? route.query.workOrderNo.trim() : ''
   const queryBatchNo = typeof route.query.batchNo === 'string' ? route.query.batchNo.trim() : ''
   if (queryWorkOrderNo && activeTab.value === 'work-order-trace') workOrderTraceNo.value = queryWorkOrderNo
@@ -1084,9 +920,6 @@ onMounted(async () => {
   }
   await restoreFromSession()
   if (activeTab.value === 'history') fetchHistoryWithFilters()
-  if (activeTab.value === 'quality') {
-    loadQualityQueue()
-  }
 
   // 从上传页跳转过来时自动选中对应任务
   const queryTaskId = route.query.taskId
@@ -1135,7 +968,6 @@ async function refreshCollaborationView(){
   if(props.boardRequest)return true
   let updated=true
   if(activeTab.value==='history'){await refreshHistory();updated=!historyError.value}
-  else if(activeTab.value==='quality'){await loadQualityQueue(qualityQueuePage.value);updated=!qualityQueueError.value}
   else if(activeTab.value==='work-order-trace'&&workOrderTraceReport.value)await refreshWorkOrderTraceReport()
   else if(activeTab.value==='batch-trace'&&batchTraceReport.value)await refreshBatchTraceReport()
   collaborationChanged.value=updated===false
@@ -1147,7 +979,7 @@ function discardInaccessibleTasks({requestedIds,missingIds,isCurrent}) {
   const ids=[...new Set(missingIds.filter(id=>requested.has(id)))].slice(0,100)
   if(!ids.length||!accountSession.current(account)||!isCurrent())return
   pollingStore.invalidateTaskReads()
-  for(const forget of [forgetHistoryTasks,forgetQualityTasks,forgetTraceTasks]){
+  for(const forget of [forgetHistoryTasks,forgetTraceTasks]){
     if(!isCurrent()||!accountSession.current(account))return
     forget(ids)
   }
@@ -1155,7 +987,7 @@ function discardInaccessibleTasks({requestedIds,missingIds,isCurrent}) {
 }
 const { latest:taskChanges } = useLatestChanges(computed(() => {
   if(props.boardRequest)return []
-  const rows=activeTab.value==='history'?historyRecords.value:activeTab.value==='quality'?qualityQueueRecords.value
+  const rows=activeTab.value==='history'?historyRecords.value
     :activeTab.value==='work-order-trace'?(workOrderTraceReport.value?.records||[])
       :activeTab.value==='batch-trace'?(batchTraceReport.value?.records||[]):[]
   return rows.map(task=>({taskId:task.taskId,version:task.version}))
@@ -1236,8 +1068,6 @@ async function validateCollaborationAccess(){
 .single-file-target {display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--app-primary);font-size:15px}
 .single-file-target small {font-size:12px;color:var(--app-text-secondary)}
 .single-image-uploader :deep(.el-upload-dragger) {width:100%;padding:18px 12px;border-color:var(--app-border-focus);background:var(--app-primary-light)}
-.queue-facts {display:grid;justify-items:start;gap:5px}
-.queue-facts > span:last-child,.queue-assignment-note {color:var(--app-text-secondary);font-size:12px}
 .detection-settings > div { min-width:0; }
 .detection-settings :deep(.el-form-item) { margin-bottom:8px; }
 .detection-settings .detection-input-note { margin-bottom:0; }
@@ -1436,30 +1266,6 @@ async function validateCollaborationAccess(){
   gap: 10px;
 }
 
-.quality-queue-card {
-  overflow: hidden;
-}
-
-.quality-queue-tabs {display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:8px 0 14px}
-.quality-queue-chip {border:1px solid transparent;border-radius:6px;background:var(--app-surface-muted);color:var(--app-text-secondary);font:inherit;font-size:13px;line-height:1.6;padding:6px 12px;cursor:pointer}
-.quality-queue-chip:hover,.quality-queue-chip.active {color:var(--app-primary);background:var(--app-primary-soft)}
-.quality-queue-chip.active {border-color:var(--app-border-focus);font-weight:600}
-@media(prefers-reduced-motion:reduce) { .quality-queue-chip { transition:none; transform:none; } }
-
-.queue-primary-actions,.queue-more-actions > div { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; }
-.queue-primary-actions :deep(.el-button),.queue-more-actions :deep(.el-button) { margin:0; }
-.queue-more-actions summary { width:fit-content; min-height:25px; cursor:pointer; color:var(--app-text-secondary); }
-.queue-more-actions[open] > div { padding:5px 0; }
-.quality-queue-table {
-  margin-top: 8px;
-}
-
-.quality-pagination {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 14px;
-}
-
 .single-result-image img {
   width: 100%;
   border-radius: 14px;
@@ -1560,16 +1366,6 @@ async function validateCollaborationAccess(){
   }
 }
 
-.quality-queue-scope { display:flex; align-items:flex-start; gap:7px; margin:8px 0 14px; color:var(--app-text-muted); font-size:12px; line-height:1.8; }
-.quality-queue-scope > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
-.quality-queue-read-error { margin-bottom:14px; }
-.quality-queue-task, .quality-queue-responsibility { display:grid; gap:4px; min-width:0; }
-.quality-queue-task button { width:fit-content; max-width:100%; padding:0; border:0; border-radius:3px; background:transparent; color:var(--app-primary); font-size:12px; font-weight:550; line-height:1.8; text-align:left; overflow-wrap:anywhere; cursor:pointer; }
-.quality-queue-task button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
-.quality-queue-task span, .quality-queue-responsibility span { color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
-.quality-queue-task small, .quality-queue-responsibility small { color:var(--app-text-muted); font-size:11px; line-height:1.7; overflow-wrap:anywhere; }
-.quality-queue-responsibility strong { color:var(--app-text); font-size:13px; font-weight:550; overflow-wrap:anywhere; }
-.quality-queue-chip:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .detection-input-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .detection-input-note.is-warning { padding:9px 11px; border-radius:8px; color:var(--app-warning); background:var(--app-warning-soft); }
 .detection-input-note button { margin:4px 0 0; padding:2px 0; border:0; border-radius:4px; color:var(--app-primary); background:transparent; cursor:pointer; font:inherit; }
@@ -1586,5 +1382,4 @@ async function validateCollaborationAccess(){
 .single-submission-summary dd { margin:4px 0 0; color:var(--app-text); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .detection-input-note button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 @media(max-width:480px) { .single-submission-summary { grid-template-columns:minmax(0,1fr); } }
-@media(max-width:580px) { .quality-queue-scope { font-size:11px; }.quality-pagination { justify-content:flex-start; overflow-x:auto; padding-bottom:5px; } }
 </style>

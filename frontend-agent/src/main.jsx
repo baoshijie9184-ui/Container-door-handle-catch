@@ -314,7 +314,6 @@ function App() {
     {title:'资源市场',note:'查看外部资源目录与接入条件',path:'/agent/markets',icon:Compass},
     {title:'个人记忆',note:'查看和管理本人记忆',path:'/agent/memory',icon:BrainCircuit},
     {title:'LLM模型管理',note:'查看个人额度、提交申请与跟进审批',path:'/agent/model-quotas',icon:Cpu},
-    {title:'质检知识库',note:'查看规范、版本与文字引用',path:'/quality/knowledge',icon:ClipboardCheck},
     {title:'执行与调研',note:'工具轨迹、模型路由与来源',path:'/agent/trace'+(threadId?'?sessionId='+encodeURIComponent(threadId):''),icon:ChartNoAxesCombined},
   ];
   const infoTabKey=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=event.key==='Home'?0:event.key==='End'?1:infoTab==='workspace'?1:0;setInfoTab(index?'models':'workspace');event.currentTarget.querySelectorAll('[role="tab"]')[index]?.focus();};

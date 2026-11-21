@@ -8,7 +8,6 @@ const keywords = {
   '/upload': '批量上传 上传图片 上传文件夹 图像采集 创建任务',
   '/inspection/workbench': '单图检测 开始检测 检测图片 阈值',
   '/inspection/history': '看图 浏览图片 历史任务 检测结果 原图 标注',
-  '/quality/queue': '领任务 领取 复核图片 处理待办 质检队列',
   '/quality/reports': '编写报告 质检报告 查看报告',
   '/employees': '查人 查员工 员工名册 查工号 人员目录',
   '/devices': '找设备 设备台账 设备目录 查设备',
@@ -22,10 +21,8 @@ const actions = {
   browse: { label:'浏览检测图片', icon:'Picture', path:'/inspection/history' },
   upload: { label:'批量上传图片', icon:'Upload', path:'/upload' },
   detect: { label:'单图检测', icon:'Search', path:'/inspection/workbench' },
-  quality: { label:'处理质检待办', icon:'CircleCheck', path:'/quality/queue' },
   reports: { label:'查看质检报告', icon:'DocumentChecked', path:'/quality/reports' },
   quotas: { label:'查看我的额度', icon:'DataAnalysis', path:'/agent/model-quotas' },
-  assign: { label:'分派质检任务', keywords:'分派任务 分配任务 分派人员 指派质检', icon:'User', path:'/quality/queue' },
   budgets: { label:'分配员工额度', keywords:'分配额度 员工限额 设置预算 分配限额', icon:'DataAnalysis', path:'/agent/model-quotas' },
   approve: { label:'审批质检报告', keywords:'审批报告 审核报告 待审批', icon:'DocumentChecked', path:'/quality/reports', query:{status:'SUBMITTED'} }
 }
@@ -42,7 +39,7 @@ export function inspectionActions(supervisor) {
   return supervisor ? [upload,records,detection,verification] : [detection,verification,upload,records]
 }
 export function homeActions(supervisor) {
-  return (supervisor ? ['assign','approve','budgets','browse'] : ['upload','browse','quality','reports']).map(key => actions[key])
+  return (supervisor ? ['approve','budgets','browse'] : ['upload','browse','reports']).map(key => actions[key])
 }
 export function actionLocation(item) {
   return { path:item.path, query:item.query }

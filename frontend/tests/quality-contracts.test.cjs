@@ -18,22 +18,19 @@ test('tests\\quality-records-contract.test.cjs', () => {
   const resultSource = readFrontendFile('src', 'components', 'TaskResultSnapshot.vue')
 
   for (const exportName of [
-    'normalizeQualityQueueRecord',
     'buildTraceEvidenceRows',
     'formatEvidenceConfidence',
     'formatPercentValue'
   ]) {
     assert.match(recordsSource, new RegExp(`export const ${exportName}`))
     if (exportName !== 'formatPercentValue') {
-      assert.match(imageDetectionSource + evidenceSource + resultSource + readFrontendFile('src', 'composables', 'useQualityQueue.js'), new RegExp(exportName))
+      assert.match(imageDetectionSource + evidenceSource + resultSource, new RegExp(exportName))
     }
   }
 
-  assert.match(recordsSource, /captureInfo/)
   assert.match(recordsSource, /原图/)
   assert.match(recordsSource, /标注图/)
 
-  assert.doesNotMatch(imageDetectionSource, /const normalizeQualityQueueRecord =/)
   assert.doesNotMatch(imageDetectionSource, /const formatEvidenceConfidence =/)
   assert.doesNotMatch(imageDetectionSource, /const formatPercentValue =/)
 
@@ -83,39 +80,13 @@ test('tests\\quality-workflow-contract.test.cjs', () => {
   console.log('quality workflow contract assertions passed')
 })
 
-test('tests\\use-quality-queue-contract.test.cjs', () => {
-  const composableSource = readFrontendFile('src', 'composables', 'useQualityQueue.js')
+test('verification uses the task board and old queue addresses lead back to verification', () => {
   const imageDetectionSource = readFrontendFile('src', 'views', 'ImageDetection.vue')
-
-  for (const name of [
-    'activeQualityQueue',
-    'qualityQueueLoading',
-    'qualityQueueRecords',
-    'qualityQueueTotal',
-    'qualityQueuePage',
-    'qualityQueuePageSize',
-    'qualityQueues',
-    'loadQualityQueue',
-    'switchQualityQueue',
-    'onQualityQueueSizeChange'
-  ]) {
-    assert.match(composableSource, new RegExp(name))
-    assert.match(imageDetectionSource, new RegExp(name))
-  }
-
-  assert.match(composableSource, /fetchQualityQueue/)
-  assert.match(composableSource, /normalizeQualityQueueRecord/)
-  assert.match(composableSource, /PENDING_REVIEW/)
-  assert.match(composableSource, /REWORK_REQUIRED/)
-  assert.match(composableSource, /RECHECK_REQUIRED/)
-  assert.match(imageDetectionSource, /useQualityQueue\(\)/)
-
-  assert.doesNotMatch(imageDetectionSource, /fetchQualityQueue/)
-  assert.doesNotMatch(imageDetectionSource, /const loadQualityQueue = async/)
-  assert.doesNotMatch(imageDetectionSource, /const activeQualityQueue = ref/)
-  assert.doesNotMatch(imageDetectionSource, /const qualityQueues = \[/)
-
-  console.log('use quality queue contract assertions passed')
+  const router = readFrontendFile('src', 'router', 'index.js')
+  assert.doesNotMatch(imageDetectionSource, /name="quality"|useQualityQueue|fetchQualityQueue/)
+  assert.match(router, /name:\s*'supervisorVerificationTasks'/)
+  assert.match(router, /to.name === 'legacyQualityQueue'/)
+  assert.match(router, /kind:\s*'verification'/)
 })
 
 test('tests\\use-quality-report-downloads-contract.test.cjs', () => {
@@ -163,7 +134,6 @@ test('tests\\use-quality-report-downloads-contract.test.cjs', () => {
 test('tests\\use-quality-task-actions-contract.test.cjs', () => {
   const composableSource = readFrontendFile('src', 'composables', 'useQualityTaskActions.js')
   const qualityPages = [
-    'QualityQueue.vue',
     'WorkOrderTrace.vue',
     'BatchTrace.vue'
   ]

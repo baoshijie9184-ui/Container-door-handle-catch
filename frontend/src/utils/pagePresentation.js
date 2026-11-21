@@ -4,7 +4,6 @@ const sections = [
   ['/inspection/uploads', '图片上传记录', 'FolderOpened', '检测业务'],
   ['/inspection/history', '检测记录', 'DocumentCopy', '检测业务'],
   ['/inspection', '检测工作台', 'Picture', '检测业务'],
-  ['/quality/queue', '质检队列', 'CircleCheck', '质量管理'],
   ['/quality/reports', '报告与审批', 'Document', '质量管理'],
   ['/quality/work-order-trace', '工单追溯', 'Connection', '质量管理'],
   ['/quality/batch-trace', '批次追溯', 'Connection', '质量管理'],
@@ -33,7 +32,6 @@ const sections = [
 export const detectionPresentation = {
   workspace: { title: '单图检测与对比', icon: 'Picture', description: '上传一张图片，查看模型标注或对比两个模型的检测结果。' },
   history: { title: '检测记录', icon: 'DocumentCopy', description: '按时间、采集信息和任务状态查找结果，查看原图、标注与历史结论。' },
-  quality: { title: '质检队列', icon: 'CircleCheck', description: '集中处理分派、复核和处置，核对责任人、截止时间及后续复检要求。' },
   'work-order-trace': { title: '工单追溯', icon: 'Connection', description: '按工单串联检测结果、复核结论和处置记录。' },
   'batch-trace': { title: '批次追溯', icon: 'Connection', description: '按采集批次查看质量分布、检测记录和处理进度。' }
 }

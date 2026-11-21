@@ -82,9 +82,8 @@ const routes = [
       },
       {
         path: 'quality/queue',
-        name: 'qualityQueue',
-        component: () => import('../views/ImageDetection.vue'),
-        meta: { title: '质检队列', requiresAuth: true, detectionTab: 'quality' }
+        name: 'legacyQualityQueue',
+        meta: { requiresAuth: true, hidden: true }
       },
       {
         path: 'quality/reports',
@@ -202,7 +201,6 @@ const routes = [
         path: 'agent/markets', name: 'agentMarkets', component: () => import('../views/AgentMarkets.vue'),
         meta: { title: '资源市场', requiresAuth: true, icon: 'Operation' }
       },
-      {path:'quality/knowledge',name:'qualityKnowledge',component:()=>import('../views/QualityKnowledge.vue'),meta:{title:'质检知识库',requiresAuth:true}},
       {path:'quality/digests',name:'qualityDigests',component:()=>import('../views/QualityDigests.vue'),meta:{title:'质检日报',requiresAuth:true,supervisorOnly:true}},
       {path:'agent/model-quotas',name:'agentLlmManagement',component:()=>import('../views/AgentLlmManagement.vue'),meta:{title:'LLM模型管理',requiresAuth:true}},
       {path:'agent/model-budgets',name:'agentModelBudgets',component:()=>import('../views/AgentModelBudgets.vue'),meta:{title:'企业模型额度',requiresAuth:true,supervisorOnly:true}},
@@ -241,7 +239,6 @@ const router = createRouter({
 const detectionTabTitles = {
   workspace: '单图检测与对比',
   history: '检测记录',
-  quality: '质检队列',
   'work-order-trace': '工单追溯',
   'batch-trace': '批次追溯'
 }
@@ -291,6 +288,13 @@ router.beforeEach(async (to, from, next) => {
   }
 
   const tab = to.query.tab || to.meta.detectionTab
+  if (to.name === 'legacyQualityQueue' || (to.path === '/detection' && tab === 'quality')) {
+    const supervisor = ['SUPERVISOR', 'ADMIN'].includes(userStore.role)
+    const query = supervisor ? {} : { inbox: '1', kind: 'verification' }
+    if (typeof to.query.keyword === 'string') query.keyword = to.query.keyword
+    next({ name: supervisor ? 'supervisorVerificationTasks' : 'folderTaskBoard', query, replace: true })
+    return
+  }
   const taskId = to.query.taskId
   if (to.meta.detectionTab && tab === 'workspace' && typeof taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(taskId)) {
     const action = ['images', 'review', 'assign'].includes(to.query.boardAction) ? to.query.boardAction : 'trace'
