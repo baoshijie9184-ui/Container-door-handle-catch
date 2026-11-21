@@ -225,8 +225,12 @@ public class FolderTaskBoard {
         }
         var labels = resolveLabels(ids, accounts);
         for (var row : rows) {
-            row.put("detectorName", name(labels.find(row.remove("detectorNameId"), row.get("detector"))));
-            row.put("verifierName", name(labels.find(row.remove("verifierNameId"), verifierAccount(row))));
+            var detector = labels.find(row.remove("detectorNameId"), row.get("detector"));
+            var verifier = labels.find(row.remove("verifierNameId"), verifierAccount(row));
+            row.put("detectorName", name(detector));
+            row.put("detectorEmployeeNumber", detector == null ? null : detector.employeeNumber());
+            row.put("verifierName", name(verifier));
+            row.put("verifierEmployeeNumber", verifier == null ? null : verifier.employeeNumber());
         }
     }
 

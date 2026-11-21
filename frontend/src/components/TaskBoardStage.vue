@@ -25,8 +25,10 @@ const modelCode = computed(() => Number(props.row.totalImages) > 0 &&
   Number(props.row.failedImages) === Number(props.row.totalImages) ? 'FAILED' : props.row.modelStatus)
 const stageLabel = computed(() => {
   const label = props.verification ? humanStep(props.row) : modelStep(props.row)
-  const employee = props.verification ? props.row.verifierName : props.row.detectorName
-  return employee?.trim() ? `${label}（${employee.trim()}）` : label
+  const name = props.verification ? props.row.verifierName : props.row.detectorName
+  const number = props.verification ? props.row.verifierEmployeeNumber : props.row.detectorEmployeeNumber
+  const employee = [name?.trim(), number?.trim()].filter(Boolean).join(' · ')
+  return employee ? `${label}（${employee}）` : label
 })
 </script>
 
