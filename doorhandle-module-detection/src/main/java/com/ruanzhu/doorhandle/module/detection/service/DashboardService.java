@@ -32,9 +32,7 @@ public interface DashboardService {
      * 获取各地区图片采集量统计
      * @return 各地区的采集图片数量
      */
-    default List<Map<String, Object>> getRegionStats() { return getRegionStats(DashboardScope.ACCOUNT); }
-
-    List<Map<String, Object>> getRegionStats(DashboardScope scope);
+    RegionCollectionSummary getRegionSummary(DashboardScope scope);
 
     /**
      * 获取模型使用统计

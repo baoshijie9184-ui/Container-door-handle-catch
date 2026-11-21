@@ -17,7 +17,6 @@ const requireSuccess = (response, fallbackMessage) => {
 
 const buildCaptureInfo = (file) => ({
   captureDate: beijingDateTime(new Date()).slice(0, 10),
-  region: '单图检测',
   collector: readAccountPreference('username').value || 'web-user',
   deviceName: 'WEB-SINGLE-UPLOAD',
   imageFolderName: `single-${file.name}`

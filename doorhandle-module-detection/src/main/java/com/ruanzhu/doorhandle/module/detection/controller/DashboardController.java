@@ -84,8 +84,10 @@ public class DashboardController {
      * @return 各地区的采集图片数量和任务数
      */
     @GetMapping("/region-stats")
-    public Result getRegionStats(@RequestParam(defaultValue = "ACCOUNT") DashboardScope scope) {
-        return Result.success(dashboardService.getRegionStats(scope));
+    public Result getRegionStats(@RequestParam(defaultValue = "ACCOUNT") DashboardScope scope,
+                                 @RequestParam(defaultValue = "false") boolean includeUnassigned) {
+        var summary = dashboardService.getRegionSummary(scope);
+        return Result.success(includeUnassigned ? summary : summary.regions());
     }
 
     /**

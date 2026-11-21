@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
+import com.ruanzhu.doorhandle.module.detection.service.RegionCollectionSummary;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
 import com.ruanzhu.doorhandle.module.detection.service.HistoricalDetectionSummaryService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -310,32 +311,15 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    public List<Map<String, Object>> getRegionStats(DashboardScope audience) {
+    public RegionCollectionSummary getRegionSummary(DashboardScope audience) {
         var scope = audience.forAggregate(accessPolicy, "");
-        String sql = "SELECT " +
-                "CASE " +
-                "  WHEN region LIKE '%区' THEN '北京' " +
-                "  ELSE COALESCE(region, '未知地区') " +
-                "END AS city, " +
-                "SUM(total_images) AS imageCount, " +
-                "COUNT(*) AS taskCount " +
-                "FROM detection_task " +
-                "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate() + " " +
-                "GROUP BY city " +
-                "ORDER BY imageCount DESC";
-
-        List<Map<String, Object>> queryResult = scopedJdbc.queryForList(sql, scope.parameters());
-        List<Map<String, Object>> result = new ArrayList<>();
-
-        for (Map<String, Object> row : queryResult) {
-            Map<String, Object> item = new HashMap<>();
-            item.put("region", row.get("city"));
-            item.put("imageCount", row.get("imageCount") != null ? ((Number) row.get("imageCount")).longValue() : 0L);
-            item.put("taskCount", row.get("taskCount") != null ? ((Number) row.get("taskCount")).longValue() : 0L);
-            result.add(item);
-        }
-
-        return result;
+        String sql = """
+                SELECT MIN(region) AS region, COALESCE(SUM(total_images), 0) AS imageCount, COUNT(*) AS taskCount
+                FROM detection_task
+                WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND (%s)
+                GROUP BY BINARY region
+                """.formatted(scope.predicate());
+        return RegionCollectionSummary.from(scopedJdbc.queryForList(sql, scope.parameters()));
     }
 
     // Task totals and threshold groups come from the same permission-filtered snapshot.

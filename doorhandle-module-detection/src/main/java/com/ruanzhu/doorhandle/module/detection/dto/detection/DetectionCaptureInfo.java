@@ -8,7 +8,6 @@ public class DetectionCaptureInfo {
     @NotBlank(message = "采集日期不能为空")
     private String captureDate;
 
-    @NotBlank(message = "地区不能为空")
     private String region;
 
     @NotBlank(message = "采集员不能为空")

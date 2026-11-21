@@ -87,7 +87,7 @@ for n,(title,status,flow,review,conclusion,success,failed,empty) in enumerate(SC
               falsePositiveCount=0 if review=='REVIEWED' else None,
               severityLevel='MAJOR' if defect else 'MINOR',dueAt=at(420),
               disposition='RELEASE' if flow in ('RELEASED','ARCHIVED') else 'REWORK' if 'REWORK' in flow else 'HOLD',
-              captureDate='2026-10-25',region=['东区','西区','返工区'][(n-1)%3],
+              captureDate='2026-10-25',region=['上海市','南京市','未提供'][(n-1)%3],
               collector=EMPLOYEES[(n-1)%3]['name'],deviceName=DEVICES[(n-1)%2]['modelName'],
               errorMessage='【演示】图片读取失败，未重新执行' if failed else None,
               originalImages=[],previewImages=[],defectEvidence=[],timeline=[],
@@ -252,7 +252,14 @@ def response(path, method='GET', role='SUPERVISOR', url='', body=None):
         flows=Counter(t['flowStatus'] for t in TASKS)
         return wrapped({key:flows[flow] for key,flow in [('pendingReviewCount','PENDING_REVIEW'),('pendingDispositionCount','CONFIRMED'),('reworkRequiredCount','REWORK_REQUIRED'),('recheckRequiredCount','RECHECK_REQUIRED'),('holdCount','HOLD'),('failedCount','FAILED')]})
     if path=='/api/dashboard/region-stats':
-        return wrapped([{'region':region,'imageCount':sum(t['totalImages'] for t in TASKS if t['region']==region),'taskCount':sum(t['region']==region for t in TASKS)} for region in ('东区','西区','返工区')])
+        finished = [t for t in TASKS if t['status'] in ('COMPLETED','PARTIAL_FAILED')]
+        regions = [dict(region=name,imageCount=sum(t['totalImages'] for t in finished if t['region']==name),
+                        taskCount=sum(t['region']==name for t in finished)) for name in ('上海市','南京市') if any(t['region']==name for t in finished)]
+        regions.sort(key=lambda r: (-r['imageCount'], r['region']))
+        if query.get('includeUnassigned') == ['true']:
+            missing = [t for t in finished if t['region']=='未提供']
+            return wrapped(dict(regions=regions,unassignedImages=sum(t['totalImages'] for t in missing),unassignedTasks=len(missing)))
+        return wrapped(regions)
     if path in ('/api/dashboard/work-unit-summary','/api/dashboard/duplicate-summary'): return wrapped({'counts':{}})
     if path=='/api/statistics/detection-distribution': return wrapped([{'result':key,'count':sum(t['statistics'].get('classCounts',{}).get(key,0) for t in TASKS)} for key in ('Normal','Bent','Deformed','Rusty','Missing','Compromised')])
     if path=='/api/statistics/detection-trend':

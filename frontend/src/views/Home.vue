@@ -282,7 +282,7 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">地区图片采集量</h3>
-              <p class="app-panel-subtitle">企业汇总 · 按登记地区</p>
+              <p class="app-panel-subtitle">企业汇总 · 按登记地区<span v-if="chartReadouts.region.unassignedTasks"> · 地区待确认 {{ chartReadouts.region.unassignedImages.toLocaleString('zh-CN') }} 张（{{ chartReadouts.region.unassignedTasks }} 个任务）</span></p>
             </div>
           </div>
         </template>
@@ -960,18 +960,20 @@ function updateEmployeeStatusChart() {
 async function updateRegionChart() {
   if (!charts.region) return
   try {
-    const res = await dashboardRequest('地区采集', '/api/dashboard/region-stats', { params: companyScope })
+    const res = await dashboardRequest('地区采集', '/api/dashboard/region-stats', { params: { ...companyScope, includeUnassigned: true } })
     if (disposed) return
     charts.region.clear()
-    const data = res.data?.data
-    if (!Array.isArray(data)) throw new Error('地区统计格式异常')
-    if (!data.length) { chartReadouts.region={rows:[],loaded:true};charts.region.setOption(buildEmptyOption('暂无地区数据')); return }
-
+    const summary = res.data?.data
+    const data = summary?.regions
+    const unassignedImages = knownCount(summary?.unassignedImages)
+    const unassignedTasks = knownCount(summary?.unassignedTasks)
+    if (!Array.isArray(data) || unassignedImages === null || unassignedTasks === null) throw new Error('地区统计格式异常')
     const regions = data.map(i => i.region)
     const imageCounts = data.map(i => knownCount(i.imageCount))
     const taskCounts = data.map(i => knownCount(i.taskCount))
     if ([...imageCounts, ...taskCounts].some(value => value === null)) throw new Error('地区统计字段不完整')
-    chartReadouts.region={rows:data.map((item,index)=>({label:item.region,images:imageCounts[index],tasks:taskCounts[index]})),loaded:true}
+    chartReadouts.region={rows:data.map((item,index)=>({label:item.region,images:imageCounts[index],tasks:taskCounts[index]})),loaded:true,unassignedImages,unassignedTasks}
+    if (!data.length) { charts.region.setOption(buildEmptyOption(unassignedTasks ? '暂无可确认地区的采集记录' : '暂无地区数据')); return }
 
     charts.region.setOption({
       ...chartMotionOptions(),
@@ -1020,7 +1022,7 @@ async function updateRegionChart() {
         }
       ]
     })
-  } catch { if (!disposed) { markSectionFailed('地区采集'); charts.region.setOption(buildEmptyOption('地区数据加载失败，请刷新重试'), true) } }
+  } catch { if (!disposed) { markSectionFailed('地区采集'); chartReadouts.region={rows:[],loaded:false}; charts.region.setOption(buildEmptyOption('地区数据加载失败，请刷新重试'), true) } }
 }
 
 function buildEmptyOption(text) {

@@ -205,7 +205,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         ModelInfo modelInfo = resolveModelInfo(request.getModelId());
         String taskId = buildTaskId();
         LocalDateTime now = LocalDateTime.now();
-        DetectionCaptureInfo captureInfo = normalizeCaptureInfo(request.getCaptureInfo());
+        DetectionCaptureInfo captureInfo = normalizeCaptureInfo(request.getCaptureInfo(), "SINGLE".equalsIgnoreCase(request.getTaskType()));
         var uploader = assignmentActors.authenticated();
         String uploadPrefix = UploadFolders.batch(ossStorageService.normalizeBasePrefix(), uploader.supervisor(),
                 assignmentActors.employeeNumber(uploader.userId()), captureInfo.getImageFolderName(), taskId);
@@ -1534,16 +1534,21 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     private String buildBatchNo(DetectionCaptureInfo captureInfo) {
         return String.join("_",
                 captureInfo.getCaptureDate(),
-                captureInfo.getRegion(),
+                captureInfo.getRegion() == null ? "unknown-region" : captureInfo.getRegion(),
                 captureInfo.getDeviceName(),
                 captureInfo.getImageFolderName()
         );
     }
 
-    private DetectionCaptureInfo normalizeCaptureInfo(DetectionCaptureInfo source) {
+    private DetectionCaptureInfo normalizeCaptureInfo(DetectionCaptureInfo source, boolean single) {
         DetectionCaptureInfo target = new DetectionCaptureInfo();
         target.setCaptureDate(normalizePathSegment(source == null ? null : source.getCaptureDate(), "unknown-date"));
-        target.setRegion(normalizePathSegment(source == null ? null : source.getRegion(), "unknown-region"));
+        String region = source == null ? null : source.getRegion();
+        if (!single && !StringUtils.hasText(region)) throw new BusinessException(400, "地区不能为空");
+        // Older single-image clients sent the operation name in place of a collection location.
+        if (StringUtils.hasText(region) && !(single && "单图检测".equals(region.strip()))) {
+            target.setRegion(normalizePathSegment(region, "unknown-region"));
+        }
         target.setCollector(normalizePathSegment(source == null ? null : source.getCollector(), "unknown-collector"));
         target.setDeviceName(normalizePathSegment(source == null ? null : source.getDeviceName(), "unknown-device"));
         target.setImageFolderName(normalizePathSegment(source == null ? null : source.getImageFolderName(), "unknown-folder"));
@@ -2041,7 +2046,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     private DetectionTaskEventCaptureInfo toEventCaptureInfo(DetectionTask task) {
         return DetectionTaskEventCaptureInfo.builder()
                 .captureDate(task.getCaptureDate())
-                .region(task.getRegion())
+                .region(task.getRegion() == null ? "" : task.getRegion())
                 .collector(task.getCollector())
                 .deviceName(task.getDeviceName())
                 .imageFolderName(task.getImageFolderName())

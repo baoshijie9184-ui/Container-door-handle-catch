@@ -64,6 +64,34 @@ class DetectionTaskUploadTest {
                 () -> fixture.service.getTaskProgress("det_private"));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"单图检测", "上海"})
+    void singleUploadsPreserveOnlyTheSuppliedLocation(String region) throws Exception {
+        var info = new DetectionCaptureInfo();
+        info.setRegion(region);
+        info.setImageFolderName("单图采集");
+        var file = new DetectionUploadFileRequest();
+        file.setFileName("frame.jpg");
+        file.setContentType("image/jpeg");
+        var request = new CreateDetectionTaskRequest();
+        request.setCaptureInfo(info);
+        request.setFiles(List.of(file));
+        when(fixture.ossStorageService.isConfigured()).thenReturn(true);
+        when(fixture.ossStorageService.normalizeBasePrefix()).thenReturn("detection");
+        when(fixture.ossStorageService.generatePutUrl(any(), any(), any())).thenReturn(new URL("http://example.com/upload"));
+        if (region == null || region.isBlank()) {
+            assertThrows(BusinessException.class, () -> fixture.service.createTask(request));
+        }
+        request.setTaskType("SINGLE");
+        var response = fixture.service.createTask(request);
+        var saved = ArgumentCaptor.forClass(DetectionTask.class);
+        verify(fixture.detectionTaskMapper).insert(saved.capture());
+        String expected = "上海".equals(region) ? region : null;
+        assertEquals(expected, response.getCaptureInfo().getRegion());
+        assertEquals(expected, saved.getValue().getRegion());
+    }
+
     @Test
     void createTaskBuildsTraceableOssKeyFromCaptureInfoAndRelativePath() throws Exception {
         DetectionCaptureInfo captureInfo = new DetectionCaptureInfo();
