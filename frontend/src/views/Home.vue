@@ -74,7 +74,7 @@
     </div>
     <details class="dashboard-data-note count-scope">
       <summary>统计口径</summary>
-      <p>检测趋势、目标分类、地区和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。“—”表示数据缺失或无法计算。同一任务可计入多个质检状态。</p>
+      <p>检测趋势、目标分类、城市和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。“—”表示数据缺失或无法计算。同一任务可计入多个质检状态。</p>
     </details>
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
@@ -276,18 +276,18 @@
         </div>
       </el-card>
 
-      <!-- 地区采集量 (左半) -->
+      <!-- 城市采集量 (左半) -->
       <el-card class="chart-card-half">
         <template #header>
           <div class="panel-header">
             <div>
-              <h3 class="app-panel-title">地区图片采集量</h3>
-              <p class="app-panel-subtitle">批量采集 · 按登记地区<span v-if="chartReadouts.region.unassignedTasks"> · 地区待确认 {{ chartReadouts.region.unassignedImages.toLocaleString('zh-CN') }} 张（{{ chartReadouts.region.unassignedTasks }} 个任务）</span></p>
+              <h3 class="app-panel-title">城市图片采集量</h3>
+              <p class="app-panel-subtitle">批量采集 · 按登记城市<span v-if="chartReadouts.region.unassignedTasks"> · 城市待确认 {{ chartReadouts.region.unassignedImages.toLocaleString('zh-CN') }} 张（{{ chartReadouts.region.unassignedTasks }} 个任务）</span></p>
             </div>
           </div>
         </template>
-        <div ref="regionChartRef" class="chart" role="img" aria-label="登记地区的累计任务图片数与任务数"></div>
-        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="批量采集任务（含单张图片批次）· 按登记地区" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
+        <div ref="regionChartRef" class="chart" role="img" aria-label="登记城市的累计任务图片数与任务数"></div>
+        <ChartDataDetails title="查看城市数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="批量采集任务（含单张图片批次）· 按登记城市" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('城市采集')?'城市统计暂不可读取。':''" />
       </el-card>
 
       <!-- 检测结果分布 (右半) -->
@@ -564,7 +564,7 @@ const deviceStatus = reactive({
 // Reading alternatives use the same validated values as the charts, without another request.
 const chartReadouts=reactive({trend:{rows:[],loaded:false,scope:''},region:{rows:[],loaded:false},distribution:{rows:[],loaded:false}})
 const trendColumns=[{key:'period',label:'统计分组'},...Object.entries({total:'图片数（张）',normal:'正常目标（个）',bent:'弯曲目标（个）',deformed:'形变目标（个）',rusty:'锈蚀目标（个）',missing:'缺失目标（个）',compromised:'结构损伤目标（个）'}).map(([key,label])=>({key,label,numeric:true}))]
-const regionColumns=[{key:'label',label:'登记地区'},{key:'images',label:'图片数（张）',numeric:true},{key:'tasks',label:'任务数（个）',numeric:true}]
+const regionColumns=[{key:'label',label:'登记城市'},{key:'images',label:'图片数（张）',numeric:true},{key:'tasks',label:'任务数（个）',numeric:true}]
 const targetColumns=[{key:'label',label:'检测类别'},{key:'count',label:'目标数（个）',numeric:true}]
 const deviceColumns=[{key:'label',label:'设备业务状态'},{key:'count',label:'设备数（台）',numeric:true}]
 const employeeColumns=[{key:'label',label:'人员状态'},{key:'count',label:'人数（人）',numeric:true}]
@@ -960,20 +960,20 @@ function updateEmployeeStatusChart() {
 async function updateRegionChart() {
   if (!charts.region) return
   try {
-    const res = await dashboardRequest('地区采集', '/api/dashboard/region-stats', { params: { ...companyScope, includeUnassigned: true } })
+    const res = await dashboardRequest('城市采集', '/api/dashboard/region-stats', { params: { ...companyScope, includeUnassigned: true } })
     if (disposed) return
     charts.region.clear()
     const summary = res.data?.data
     const data = summary?.regions
     const unassignedImages = knownCount(summary?.unassignedImages)
     const unassignedTasks = knownCount(summary?.unassignedTasks)
-    if (!Array.isArray(data) || unassignedImages === null || unassignedTasks === null) throw new Error('地区统计格式异常')
+    if (!Array.isArray(data) || unassignedImages === null || unassignedTasks === null) throw new Error('城市统计格式异常')
     const regions = data.map(i => i.region)
     const imageCounts = data.map(i => knownCount(i.imageCount))
     const taskCounts = data.map(i => knownCount(i.taskCount))
-    if ([...imageCounts, ...taskCounts].some(value => value === null)) throw new Error('地区统计字段不完整')
+    if ([...imageCounts, ...taskCounts].some(value => value === null)) throw new Error('城市统计字段不完整')
     chartReadouts.region={rows:data.map((item,index)=>({label:item.region,images:imageCounts[index],tasks:taskCounts[index]})),loaded:true,unassignedImages,unassignedTasks}
-    if (!data.length) { charts.region.setOption(buildEmptyOption(unassignedTasks ? '暂无可确认地区的采集记录' : '暂无地区数据')); return }
+    if (!data.length) { charts.region.setOption(buildEmptyOption(unassignedTasks ? '暂无可确认城市的采集记录' : '暂无城市数据')); return }
 
     charts.region.setOption({
       ...chartMotionOptions(),
@@ -1022,7 +1022,7 @@ async function updateRegionChart() {
         }
       ]
     })
-  } catch { if (!disposed) { markSectionFailed('地区采集'); chartReadouts.region={rows:[],loaded:false}; charts.region.setOption(buildEmptyOption('地区数据加载失败，请刷新重试'), true) } }
+  } catch { if (!disposed) { markSectionFailed('城市采集'); chartReadouts.region={rows:[],loaded:false}; charts.region.setOption(buildEmptyOption('城市数据加载失败，请刷新重试'), true) } }
 }
 
 function buildEmptyOption(text) {

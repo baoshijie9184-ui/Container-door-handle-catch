@@ -96,8 +96,12 @@
                 style="width: 100%"
               />
             </el-form-item>
-            <el-form-item label="地区" required>
-              <el-input v-model="folderInfo.region" :disabled="uploadingToOss || uploadAttempted" aria-label="采集地区" placeholder="例如 上海" />
+            <el-form-item label="城市" required>
+              <el-select v-model="folderInfo.region" filterable aria-label="采集城市" placeholder="选择采集城市"
+                :loading="loadingCities" :disabled="uploadingToOss || uploadAttempted || !collectionCities.length">
+                <el-option v-for="city in collectionCities" :key="city" :label="city" :value="city" />
+              </el-select>
+              <p v-if="cityError" class="capture-read-error" role="alert">采集城市读取失败<button type="button" @click="loadCities">重新读取</button></p>
             </el-form-item>
             <el-form-item label="采集员" required>
               <el-select
@@ -325,7 +329,7 @@ import { computed, onMounted, onBeforeUnmount, reactive, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Calendar, CircleCheck, Clock, Delete, FolderOpened, Refresh, Right, Search, UploadFilled, Warning } from '@element-plus/icons-vue'
-import { fetchDevicesForSelect, fetchEmployeesForSelect } from '../api/resourceOptions'
+import { fetchCollectionCities, fetchDevicesForSelect, fetchEmployeesForSelect } from '../api/resourceOptions'
 import { useTaskStore, useUploadStore, usePollingStore } from '../stores/detectionTask'
 import { beijingDateTime } from '../utils/beijingTime'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
@@ -341,6 +345,10 @@ const { taskList } = storeToRefs(taskStore)
 
 const folderInput = ref(null)
 const resumeFolderInput = ref(null)
+const collectionCities = ref([])
+const loadingCities = ref(false)
+const cityError = ref(false)
+let folderCityHint = ''
 const employeeList = ref([])
 const deviceList = ref([])
 const loadingEmployees = ref(false)
@@ -390,7 +398,7 @@ const folderInfo = reactive({
 })
 
 const missingCaptureFields = computed(() => [
-  ['captureDate', '采集日期'], ['region', '地区'], ['collector', '采集员'],
+  ['captureDate', '采集日期'], ['region', '城市'], ['collector', '采集员'],
   ['deviceName', '采集设备'], ['imageFolderName', '图片文件夹名称']
 ].filter(([key]) => !String(folderInfo[key] || '').trim()).map(([, label]) => label))
 
@@ -440,6 +448,27 @@ const uploadHistory = computed(() => {
   return list
 })
 
+function cityFromFolder(value) {
+  return collectionCities.value.find(city => city === value || city.slice(0, -1) === value) || ''
+}
+
+async function loadCities() {
+  if (loadingCities.value) return
+  loadingCities.value = true
+  cityError.value = false
+  try {
+    const { data } = await fetchCollectionCities()
+    if (data?.code !== 200 || !Array.isArray(data.data) || !data.data.length) throw new Error()
+    if (!pageActive) return
+    collectionCities.value = data.data
+    if (!folderInfo.region) folderInfo.region = cityFromFolder(folderCityHint)
+  } catch {
+    if (pageActive) cityError.value = true
+  } finally {
+    loadingCities.value = false
+  }
+}
+
 const triggerFolderSelect = () => {
   if (uploadingToOss.value) return
   folderInput.value?.click()
@@ -464,7 +493,8 @@ const handleFolderSelect = (event) => {
   folderInfo.name = dirSegments.slice(0, Math.min(dirSegments.length, 5)).join(' / ')
   folderInfo.imageCount = imageFiles.length
   folderInfo.captureDate = autoParse ? (dirSegments[0] || '') : ''
-  folderInfo.region = autoParse ? (dirSegments[1] || '') : ''
+  folderCityHint = autoParse ? dirSegments[1] : ''
+  folderInfo.region = cityFromFolder(folderCityHint)
   const collectorField = autoParse ? dirSegments[2] : ''
   const candidates = employeeList.value.filter(person => person.employeeNumber===collectorField || person.name===collectorField)
   folderInfo.collector = candidates.length===1 ? candidates[0].employeeNumber : ''
@@ -496,7 +526,7 @@ const handleUploadBatch = () => {
     return
   }
   if (missingCaptureFields.value.length) {
-    ElMessage.error('请先确认采集日期、地区、采集员、采集设备和图片文件夹名称')
+    ElMessage.error('请先确认采集日期、城市、采集员、采集设备和图片文件夹名称')
     return
   }
 
@@ -530,6 +560,7 @@ const resetBatchState = () => {
   folderInfo.name = ''
   folderInfo.imageCount = 0
   folderInfo.captureDate = ''
+  folderCityHint = ''
   folderInfo.region = ''
   folderInfo.collector = ''
   folderInfo.deviceName = ''
@@ -687,7 +718,8 @@ onMounted(async () => {
     pollingStore.restoreFromSession(),
     loadUploadHistory(),
     fetchEmployees(),
-    fetchDevices()
+    fetchDevices(),
+    loadCities()
   ])
   if (!pageActive) return
   // 检查是否有未完成的上传任务

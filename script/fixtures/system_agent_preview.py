@@ -253,6 +253,8 @@ def response(path, method='GET', role='SUPERVISOR', url='', body=None):
     if path=='/api/dashboard/quality-workload':
         flows=Counter(t['flowStatus'] for t in formal)
         return wrapped({key:flows[flow] for key,flow in [('pendingReviewCount','PENDING_REVIEW'),('pendingDispositionCount','CONFIRMED'),('reworkRequiredCount','REWORK_REQUIRED'),('recheckRequiredCount','RECHECK_REQUIRED'),('holdCount','HOLD'),('failedCount','FAILED')]})
+    if path=='/api/dashboard/collection-cities':
+        return wrapped(['大连市','天津市','青岛市','重庆市','武汉市','南京市','上海市','宁波市','广州市','钦州市'])
     if path=='/api/dashboard/region-stats':
         regions = [dict(region=name,imageCount=sum(t['totalImages'] for t in finished if t['region']==name),
                         taskCount=sum(t['region']==name for t in finished)) for name in ('上海市','南京市') if any(t['region']==name for t in finished)]

@@ -6,15 +6,17 @@ import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Exact place names from the county-and-above register; no substring or suffix guessing. */
-final class RegisteredRegionNames {
+/** Resolves unambiguous administrative place names to the configured collection cities. */
+public final class RegisteredRegionNames {
+    public static final List<String> COLLECTION_CITIES = List.of(
+            "大连市", "天津市", "青岛市", "重庆市", "武汉市", "南京市", "上海市", "宁波市", "广州市", "钦州市");
+
+    private RegisteredRegionNames() {}
     // National Place Names Database, 2025 year end. CC0 transcription, unmodified:
     // https://github.com/yescallop/areacodes/blob/2da87e7648f0da7e10dea39e8a613107ed3fe273/data/2025.txt
     private static final String RESOURCE = "/geography/cn-divisions-2025.txt";
@@ -33,14 +35,12 @@ final class RegisteredRegionNames {
 
     private static Map<String,String> load() {
         Map<String,String> names = new HashMap<>();
-        Set<String> seen = new HashSet<>(), repeated = new HashSet<>();
         try (var reader = new BufferedReader(new InputStreamReader(
                 Objects.requireNonNull(RegisteredRegionNames.class.getResourceAsStream(RESOURCE)), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 String name = line.substring(7);
                 names.put(line.substring(0,6), name);
-                if (!seen.add(name)) repeated.add(name);
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -53,26 +53,24 @@ final class RegisteredRegionNames {
             boolean topLevel = code.endsWith("0000");
             boolean county = !code.endsWith("00");
             List<String> local = county ? List.of(name) : aliases(name);
-            for (String alias : local) add(labels, alias, name);
+            String collectionCity = COLLECTION_CITIES.contains(province) ? province
+                    : city != null && COLLECTION_CITIES.contains(city) ? city : "";
+            for (String alias : local) add(labels, alias, collectionCity);
             if (topLevel) return;
 
-            String parent = county && city != null ? city : province;
-            String qualifiedLabel = repeated.contains(name) ? parent + name : name;
             for (String p : aliases(province)) {
-                addQualified(labels, p, local, qualifiedLabel);
+                addQualified(labels, p, local, collectionCity);
             }
             if (county && city != null) {
                 for (String c : aliases(city)) {
-                    addQualified(labels, c, local, qualifiedLabel);
+                    addQualified(labels, c, local, collectionCity);
                     for (String p : aliases(province)) {
-                        addQualified(labels, p + c, local, qualifiedLabel);
-                        addQualified(labels, p + " " + c, local, qualifiedLabel);
+                        addQualified(labels, p + c, local, collectionCity);
+                        addQualified(labels, p + " " + c, local, collectionCity);
                     }
                 }
             }
         });
-        // Bare official names keep their registered granularity, including shared district names.
-        seen.forEach(name -> labels.put(name, name));
         return Map.copyOf(labels);
     }
 

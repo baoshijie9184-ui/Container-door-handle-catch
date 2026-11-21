@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.detection.controller;
 import com.ruanzhu.doorhandle.common.Result;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
+import com.ruanzhu.doorhandle.module.detection.service.RegisteredRegionNames;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -79,9 +80,14 @@ public class DashboardController {
         return Result.success(distributionData);
     }
 
+    @GetMapping("/collection-cities")
+    public Result<List<String>> getCollectionCities() {
+        return Result.success(RegisteredRegionNames.COLLECTION_CITIES);
+    }
+
     /**
-     * 获取各地区图片采集量统计
-     * @return 各地区的采集图片数量和任务数
+     * 获取各城市图片采集量统计
+     * @return 各城市的采集图片数量和任务数
      */
     @GetMapping("/region-stats")
     public Result getRegionStats(@RequestParam(defaultValue = "ACCOUNT") DashboardScope scope,

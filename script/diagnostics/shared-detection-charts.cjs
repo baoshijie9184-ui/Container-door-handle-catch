@@ -55,7 +55,7 @@ async function inspect(browser, role) {
     const regions = await api('/api/dashboard/region-stats?scope=COMPANY')
     const distribution = await api('/api/statistics/detection-distribution?scope=COMPANY')
     const models = await api('/api/dashboard/model-stats?scope=COMPANY')
-    shared.regions = await table(page, '查看地区数据')
+    shared.regions = await table(page, '查看城市数据')
     shared.distribution = await table(page, '查看分类目标数')
     assert.deepEqual(shared.regions.map(r => [r[0], ...counts(r.slice(1))]), regions.map(r => [r.region, r.imageCount, r.taskCount]))
     assert.deepEqual(Object.fromEntries(shared.distribution.map(([k,v]) => [k,counts([v])[0]])), Object.fromEntries(distribution.map(r => [r.result,r.count])))
