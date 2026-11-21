@@ -32,6 +32,8 @@ export const CATEGORY_ALIASES = {
   结构损伤: 'Compromised'
 }
 
+export const isBatchUploadTask = task => task.taskType === 'BATCH' || task.taskType === 'BATCH_DIRECT'
+
 export const useTaskStore = defineStore('task', () => {
   const taskList = ref([])
   const selectedTaskId = ref(null)
@@ -76,6 +78,7 @@ export const useTaskStore = defineStore('task', () => {
     try {
       const savable = taskList.value.map(t => ({
         taskId: t.taskId,
+        taskType: t.taskType,
         version: t.version,
         batchNo: t.batchNo,
         workOrderNo: t.workOrderNo,
@@ -115,24 +118,24 @@ export const useTaskStore = defineStore('task', () => {
 
   // 获取所有需要恢复的任务信息
   const getResumeTaskList = () => {
-    const tasks = loadTaskList()
-    return tasks
+    return taskList.value
       .filter(t => t.stage === 'uploading' && !t.uploadConfirmation)
-      .map(t => {
+      .flatMap(t => {
         const fileState = loadFileState(t.taskId)
+        if (!fileState || (t.taskType && !isBatchUploadTask(t))) return []
         const ci = t.captureInfo
         // 构建完整路径：采集时间 / 地区 / 采集员 / 采集设备 / 图片文件夹名称
         const fullPath = ci
           ? [ci.captureDate, ci.region, ci.collector, ci.deviceName, ci.imageFolderName].filter(Boolean).join(' / ')
           : t.folderName
-        return {
+        return [{
           taskId: t.taskId,
           folderName: fullPath || t.folderName,
           imageCount: t.imageCount,
-          uploadedCount: fileState ? fileState.completed.length : 0,
-          failedCount: fileState ? fileState.failed.length : 0,
-          totalCount: fileState ? fileState.total : t.imageCount
-        }
+          uploadedCount: fileState.completed.length,
+          failedCount: fileState.failed.length,
+          totalCount: fileState.total
+        }]
       })
   }
 
@@ -140,6 +143,7 @@ export const useTaskStore = defineStore('task', () => {
 
   const createTaskEntry = (taskId, folderName, imageCount, captureInfo) => ({
     taskId,
+    taskType: 'BATCH',
     batchNo: '',
     workOrderNo: '',
     flowStatus: 'UPLOADING',

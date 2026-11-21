@@ -1388,6 +1388,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         var identity=identities==null?null:identities.assignmentIdentity(task.getTaskId());
         return DetectionTaskProgressResponse.builder()
                 .taskId(task.getTaskId())
+                .taskType(task.getTaskType())
                 .version(task.getVersion() == null ? null : task.getVersion().toString())
                 .workflowUuid(task.getWorkflowUuid())
                 .status(task.getStatus())

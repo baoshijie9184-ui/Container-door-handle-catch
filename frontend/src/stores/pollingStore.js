@@ -87,6 +87,7 @@ export const usePollingStore = defineStore('polling', () => {
 
     taskStore.updateTask(taskId, {
       stage: normalizedStage,
+      ...(progress.taskType ? { taskType: progress.taskType } : {}),
       progressPercent: percentMap[normalizedStage] || progress.progressPercent || 0,
       message: progress.message || (normalizedStage === 'queued' ? '已交给模型处理，等待检测服务调度。' : (normalizedStage === 'detecting' ? '模型正在检测。' : '')),
       error: progressStatus === 'FAILED' ? (progress.message || '检测失败') : '',
@@ -253,6 +254,7 @@ export const usePollingStore = defineStore('polling', () => {
           // 后端有但本地没有 → 新增
           taskStore.taskList.push({
             taskId: bt.taskId,
+            taskType: bt.taskType,
             batchNo: bt.batchNo || '',
             workOrderNo: bt.workOrderNo || '',
             flowStatus: bt.flowStatus || '',
@@ -318,6 +320,7 @@ export const usePollingStore = defineStore('polling', () => {
             : (bt.progressPercent != null ? bt.progressPercent : existing.progressPercent)
           taskStore.updateTask(bt.taskId, {
             stage,
+            taskType: bt.taskType || existing.taskType,
             progressPercent,
             updatedAt: bt.updatedAt,
             createdAt: bt.createdAt || existing.createdAt,

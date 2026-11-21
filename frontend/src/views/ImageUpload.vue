@@ -5,12 +5,11 @@
 
     <!-- 断点续传提示卡片 -->
     <el-alert
-      v-if="resumeTaskInfo"
+      v-if="resumeTaskInfo && !uploadingToOss"
       class="resume-alert"
       type="warning"
       show-icon
-      :closable="!uploadingToOss"
-      @close="dismissResume"
+      :closable="false"
     >
       <template #default>
         <div class="resume-content">
@@ -203,7 +202,7 @@
       <el-card class="upload-card history-card" shadow="never">
         <template #header>
           <div class="card-title-row">
-            <h2 class="upload-card-title">最近任务</h2>
+            <h2 class="upload-card-title">最近上传</h2>
             <el-button class="refresh-history" size="small" :loading="refreshing || historyLoading" @click="refreshHistory" title="刷新上传历史" aria-label="刷新上传历史">
               <template #icon><el-icon><Refresh /></el-icon></template>
             </el-button>
@@ -241,7 +240,7 @@
           </label>
         </div>
         <div class="upload-history-scope">
-          <span role="status">{{ historyLoading ? '正在读取…' : hasHistoryFilters ? `匹配 ${uploadHistory.length} 条已加载记录` : `已加载 ${taskList.length} 条` }}</span>
+          <span role="status">{{ historyLoading ? '正在读取…' : hasHistoryFilters ? `匹配 ${uploadHistory.length} 条已加载记录` : `已加载 ${uploadTasks.length} 条` }}</span>
           <el-button v-if="hasHistoryFilters && uploadHistory.length" link size="small" @click="resetHistoryFilters">清空筛选</el-button>
         </div>
         <el-alert v-if="historyError && uploadHistory.length" :title="historyError + '；以下为先前已加载的记录，请刷新核对。'" type="error" show-icon :closable="false" />
@@ -335,7 +334,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheck, Clock, Delete, FolderOpened, Refresh, Right, Search, UploadFilled, Warning } from '@element-plus/icons-vue'
 import { fetchCollectionCities, fetchDevicesForSelect, fetchEmployeesForSelect } from '../api/resourceOptions'
 import { useTaskStore, useUploadStore, usePollingStore } from '../stores/detectionTask'
-import { beijingDateTime } from '../utils/beijingTime'
+import { isBatchUploadTask } from '../stores/taskStore'
+import { beijingDateTime, businessTimestamp } from '../utils/beijingTime'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import SelectedImageFiles from '../components/SelectedImageFiles.vue'
 import { useUserStore } from '../stores/user'
@@ -433,9 +433,11 @@ const uploadingTask = computed(() => {
     : null
 })
 
+const uploadTasks = computed(() => taskList.value.filter(task => isBatchUploadTask(task) || (!task.taskType && task.uploadConfirmation)))
+
 // 上传历史：根据搜索条件过滤
 const uploadHistory = computed(() => {
-  let list = [...taskList.value]
+  let list = [...uploadTasks.value]
 
   // 关键字过滤
   const kw = searchKeyword.value.trim().toLowerCase()
@@ -468,8 +470,7 @@ const uploadHistory = computed(() => {
     list = list.filter(t => t.stage === targetStage)
   }
 
-  // 按 taskId 倒序（taskId 含时间戳，稳定不跳）
-  list.sort((a, b) => (b.taskId || '').localeCompare(a.taskId || ''))
+  list.sort((a, b) => businessTimestamp(b.createdAt) - businessTimestamp(a.createdAt) || b.taskId.localeCompare(a.taskId))
 
   return list
 })

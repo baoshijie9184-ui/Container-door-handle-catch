@@ -8,6 +8,7 @@ import lombok.Data;
 @lombok.extern.jackson.Jacksonized
 public class DetectionTaskProgressResponse {
     private String taskId;
+    private String taskType;
     private String version;
     private String workflowUuid;
     private String status;
