@@ -11,9 +11,13 @@
       </nav>
     </header>
     <section class="action-deck" aria-label="工作台快捷入口">
-      <router-link class="focus-action" :to="isSupervisor ? { path:'/quality/queue', query:{queue:'PENDING_REVIEW'} } : {path:'/inspection/tasks',query:{inbox:'1',kind:nextInboxKind}}">
-        <span class="focus-stat">{{ isSupervisor ? '待人工复核' : '我的待办' }}<span><strong>{{ formatNumber(isSupervisor ? qualityWorkload?.pendingReviewCount : folderInbox) }}</strong>项</span></span>
-        <span class="focus-cta">{{ isSupervisor ? '进入复核队列' : (nextInboxKind==='detection' ? '去处理检测' : nextInboxKind==='verification' ? '去校验结果' : '查看我的待办') }}<AppIcon name="ArrowRight" :size="16" /></span>
+      <button v-if="isSupervisor" type="button" class="focus-action" :disabled="pageLoading" @click="focusApplications">
+        <span class="focus-stat">申请待办数<span><strong>{{ formatNumber(pendingApplications?.length) }}</strong>项</span></span>
+        <span class="focus-cta">查看领任务申请<AppIcon name="ArrowRight" :size="16" /></span>
+      </button>
+      <router-link v-else class="focus-action" :to="{path:'/inspection/tasks',query:{inbox:'1',kind:nextInboxKind}}">
+        <span class="focus-stat">我的任务待办<span><strong>{{ formatNumber(folderInbox) }}</strong>项</span></span>
+        <span class="focus-cta">{{ nextInboxKind==='detection' ? '去处理检测' : nextInboxKind==='verification' ? '去校验结果' : '查看我的任务' }}<AppIcon name="ArrowRight" :size="16" /></span>
       </router-link>
       <div class="work-entry">
         <InspectionFlowNav overview :counts="inboxCounts" />
@@ -35,26 +39,43 @@
         :title="`未更新：${failedSections.join('、')}。显示上次数据或“—”。`" />
     </div>
     <div class="dashboard-overview" :class="{ 'with-history': historicalSummary }">
-      <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
+      <section ref="taskPanel" class="quality-overview" tabindex="-1" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
         <header>
           <div class="quality-heading">
             <span class="quality-heading-icon"><AppIcon name="DocumentChecked" :size="21" /></span>
-            <div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2></div>
+            <div><h2 id="quality-overview-title">我的任务待办</h2></div>
           </div>
-          <router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />查看队列</router-link>
+          <el-button v-if="isSupervisor" text type="primary" :loading="applicationsLoading" @click="loadApplications">刷新申请</el-button>
+          <router-link v-else to="/quality/queue"><AppIcon name="ArrowRight" :size="14" />查看队列</router-link>
         </header>
-        <div v-if="qualityQueueEmpty" class="queue-empty">
-          <AppIcon name="CircleCheck" :size="25" /><div><strong>当前没有待处理的质检任务</strong></div>
-        </div>
-        <div v-else class="quality-overview-grid">
-          <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="qualityWorkload?.[metric.key] > 0 ? metric.tone : 'neutral'">
-            <span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="17" /></span>
-            <span class="queue-metric"><small>{{ metric.label }}</small><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong></span>
-            <AppIcon class="queue-chevron" name="ArrowRight" :size="13" />
-          </router-link>
-        </div>
-        <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新。' : '正在读取质量待办…' }}</p>
-        <p v-else-if="failedSections.includes('质量待办')" class="quality-overview-note" role="status">刷新失败，显示上次数据。</p>
+        <template v-if="isSupervisor">
+          <el-alert v-if="applicationsError" :title="applicationsError" type="warning" :closable="false"/>
+          <p v-else-if="!pendingApplications" role="status">正在读取领任务申请…</p>
+          <div v-else-if="!pendingApplications.length" class="queue-empty">
+            <AppIcon name="CircleCheck" :size="22" /><strong>当前没有待审批的领任务申请</strong>
+          </div>
+          <ul v-else class="application-list" aria-label="待审批的领任务申请">
+            <li v-for="row in pendingApplications" :key="row.workUnitId">
+              <div><strong>工号：{{ row.applicantUserId }}</strong><small>{{ row.imageCount }} 张图片 · {{ row.workUnitId }}</small><small v-if="row.remark">{{ row.remark }}</small></div>
+              <el-button size="small" type="primary" :loading="approving===row.workUnitId" :disabled="!!approving" @click="approveApplication(row)">同意</el-button>
+            </li>
+          </ul>
+        </template>
+        <component :is="isSupervisor ? 'details' : 'div'" :class="{'team-quality':isSupervisor}">
+          <summary v-if="isSupervisor">企业质检队列</summary>
+          <div v-if="qualityQueueEmpty" class="queue-empty">
+            <AppIcon name="CircleCheck" :size="25" /><div><strong>当前没有待处理的质检任务</strong></div>
+          </div>
+          <div v-else class="quality-overview-grid">
+            <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="qualityWorkload?.[metric.key] > 0 ? metric.tone : 'neutral'">
+              <span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="17" /></span>
+              <span class="queue-metric"><small>{{ metric.label }}</small><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong></span>
+              <AppIcon class="queue-chevron" name="ArrowRight" :size="13" />
+            </router-link>
+          </div>
+          <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新。' : '正在读取质量待办…' }}</p>
+          <p v-else-if="failedSections.includes('质量待办')" class="quality-overview-note" role="status">刷新失败，显示上次数据。</p>
+        </component>
       </section>
       <HistoricalDetectionOverview v-if="historicalSummary" :summary="historicalSummary" />
       <CollaborationTodos />
@@ -430,6 +451,7 @@
 </template>
 
 <script setup>
+import { ElMessage } from 'element-plus'
 import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
 import CollaborationTodos from '../components/CollaborationTodos.vue'
 import { useResourceChanges } from '../composables/useResourceChanges'
@@ -654,6 +676,49 @@ onBeforeUnmount(() => {
 
 // ── 数据获取 ──
 
+const taskPanel=ref(null)
+const pendingApplications=ref(null), applicationsLoading=ref(false), applicationsError=ref(''), approving=ref('')
+let applicationRead=0
+function focusApplications() {
+  taskPanel.value?.focus({preventScroll:true})
+  taskPanel.value?.scrollIntoView({block:'start'})
+}
+async function loadApplications() {
+  if(!isSupervisor.value)return
+  const read=++applicationRead
+  applicationsLoading.value=true
+  try {
+    const response=await request.get('/api/detection/supervisor/work-units/pending')
+    const rows=response.data?.data
+    if(response.data?.code!==200 || !Array.isArray(rows))throw Error()
+    if(disposed || read!==applicationRead)return
+    pendingApplications.value=rows.filter(row=>row.status==='WAITING' && row.strategy!=='OSS_FOLDER' && row.applicantUserId?.trim() && !row.assigneeUserId)
+    applicationsError.value=''
+  } catch {
+    if(!disposed && read===applicationRead){
+      pendingApplications.value=null
+      applicationsError.value='领任务申请暂不可读取，请刷新申请。'
+    }
+  } finally {
+    if(!disposed && read===applicationRead)applicationsLoading.value=false
+  }
+}
+async function approveApplication(row) {
+  if(approving.value || !isSupervisor.value)return
+  approving.value=row.workUnitId
+  try {
+    const response=await request.post('/api/detection/supervisor/work-units/'+encodeURIComponent(row.workUnitId)+'/dispatch',{
+      expectedVersion:row.version,assigneeUserId:row.applicantUserId,remark:row.remark
+    })
+    if(response.data?.code!==200)throw Error(response.data?.message || '同意申请失败')
+    if(!disposed)ElMessage.success('已同意，任务已分配给 '+row.applicantUserId)
+  } catch(error) {
+    if(!disposed)ElMessage.warning(error.response?.data?.message || error.message || '请核对申请状态')
+  } finally {
+    if(!disposed){await loadApplications();approving.value=''}
+  }
+}
+
 const inboxCounts=ref({})
 const folderInbox=computed(()=>{
   const {detection,verification}=inboxCounts.value
@@ -679,7 +744,7 @@ async function refreshAll() {
   if (refreshing.value || disposed) return
   refreshing.value = true
   try {
-    await Promise.all([readFolderInbox(),fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary(), fetchQualityWorkload()])
+    await Promise.all([loadApplications(),readFolderInbox(),fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary(), fetchQualityWorkload()])
     if (!disposed) await updateChartData()
     if (!failedSections.value.length && !trendLoading.value && charts.region) lastUpdated.value = beijingDateTime()
   } finally {
@@ -1063,7 +1128,12 @@ useResourceChanges({refresh:()=>refreshAll()})
 .shared-directories a { display:inline-flex; align-items:center; gap:6px; padding:8px 11px; border:1px solid var(--app-border-strong); border-radius:8px; background:white; color:var(--app-text-secondary); font-size:13px; }
 .shared-directories a:hover, .shared-directories a:focus-visible { color:var(--app-primary); border-color:var(--app-border-focus); }
 .action-deck { display:grid; grid-template-columns:minmax(210px,.64fr) minmax(0,1.65fr); gap:14px; }
-.action-deck > a { display:flex; flex-direction:column; min-width:0; min-height:143px; padding:18px 22px; border-radius:var(--app-radius-lg); text-decoration:none; }
+.action-deck > .focus-action { display:flex; flex-direction:column; min-width:0; min-height:143px; padding:18px 22px; border-radius:var(--app-radius-lg); text-decoration:none; }
+button.focus-action { border:0;cursor:pointer;text-align:left;font:inherit }
+.application-list { list-style:none;padding:0;margin:0;max-height:340px;overflow:auto }
+.application-list li { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--app-border) }
+.application-list li>div { min-width:0;overflow-wrap:anywhere }.application-list small { display:block;margin-top:4px;color:var(--app-text-secondary) }
+.team-quality { margin-top:16px }.team-quality summary { color:var(--app-text-secondary);cursor:pointer;font-size:13px }.team-quality[open] summary { margin-bottom:8px }
 .work-entry { min-width:0;display:grid;align-content:center;background:var(--app-surface,#fff);border:1px solid var(--app-border);border-radius:var(--app-radius-lg) }
 .work-entry :deep(.inspection-flow) { border:0;padding:12px 16px 6px }.work-entry :deep(.flow-steps a){padding:5px 4px;gap:6px}
 .work-tools { display:flex;flex-wrap:wrap;gap:6px 20px;margin:5px 16px 0;padding:9px 3px;border-top:1px solid var(--app-border) }
@@ -1086,7 +1156,7 @@ useResourceChanges({refresh:()=>refreshAll()})
   .dashboard-hero { align-items:flex-start; flex-wrap:wrap; gap:8px; }
   .shared-directories a { min-height:32px; }
   .action-deck { grid-template-columns:minmax(0,1fr); gap:9px; }
-  .action-deck > a { min-height:112px; padding:14px; }
+  .action-deck > .focus-action { min-height:112px; padding:14px; }
   .action-deck .focus-action { grid-column:1/-1; flex-direction:row; align-items:center; min-height:90px; }
 
 }
