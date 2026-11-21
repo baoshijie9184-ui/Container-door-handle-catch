@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
+import com.ruanzhu.doorhandle.module.detection.service.BusinessDetectionTasks;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
 import com.ruanzhu.doorhandle.module.detection.service.RegionCollectionSummary;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
@@ -47,12 +48,13 @@ public class DashboardServiceImpl implements DashboardService {
         // 从 detection_task 表统计 COMPLETED / PARTIAL_FAILED 的任务数
         var detectionCounts = scopedJdbc.queryForMap(
                 "SELECT COUNT(*) AS companyCount, COUNT(CASE WHEN " + scope.predicate() + " THEN 1 END) AS visibleCount " +
-                "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED')", scope.parameters());
+                "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + BusinessDetectionTasks.FILTER, scope.parameters());
 
         // 从 statistics_json 提取平均漏检率
         List<Double> missRates = scopedJdbc.queryForList(
             "SELECT AVG(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.missDetectionRate')) AS DECIMAL(10,4))) " +
-            "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND statistics_json IS NOT NULL AND " + scope.predicate(), scope.parameters(), Double.class);
+            "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND statistics_json IS NOT NULL AND " +
+            BusinessDetectionTasks.FILTER + " AND (" + scope.predicate() + ")", scope.parameters(), Double.class);
         Double avgMissRate = missRates.isEmpty() ? null : missRates.get(0);
 
         List<Integer> employeeCounts = jdbcTemplate.queryForList(
@@ -75,7 +77,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getDetectionTrend(String timeRange) {
-        var scope = accessPolicy.currentSqlScope("");
+        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
         Map<String, Object> result = new HashMap<>();
         
         // 设置查询参数
@@ -257,7 +259,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getDetectionDistribution() {
-        var scope = accessPolicy.currentSqlScope("");
+        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
         Map<String, Object> result = new HashMap<>();
         List<Map<String, Object>> seriesList = new ArrayList<>();
         
@@ -316,8 +318,7 @@ public class DashboardServiceImpl implements DashboardService {
         String sql = """
                 SELECT MIN(region) AS region, COALESCE(SUM(total_images), 0) AS imageCount, COUNT(*) AS taskCount
                 FROM detection_task
-                WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND (task_type IS NULL OR task_type <> 'SINGLE')
-                  AND (%s)
+                WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND (%s)
                 GROUP BY BINARY region
                 """.formatted(scope.predicate());
         return RegionCollectionSummary.from(scopedJdbc.queryForList(sql, scope.parameters()));
@@ -412,7 +413,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getQualityDispositionStats() {
-        var scope = accessPolicy.currentSqlScope("");
+        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
         String summarySql = "SELECT 'summary' AS summary, " +
                 "COUNT(*) AS reviewedCount, " +
                 "SUM(CASE WHEN review_status = 'REVIEWED' AND (disposition_status IS NULL OR disposition_status = 'PENDING') THEN 1 ELSE 0 END) AS pendingDispositionCount, " +
@@ -447,7 +448,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getQualityWorkload() {
-        var scope = accessPolicy.currentSqlScope("");
+        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
         String sql = "SELECT 'quality_workload' AS workload, " +
                 "SUM(CASE WHEN status IN ('COMPLETED', 'PARTIAL_FAILED') AND review_status = 'PENDING' THEN 1 ELSE 0 END) AS pendingReviewCount, " +
                 "SUM(CASE WHEN review_status = 'REVIEWED' AND (disposition_status IS NULL OR disposition_status = 'PENDING') THEN 1 ELSE 0 END) AS pendingDispositionCount, " +

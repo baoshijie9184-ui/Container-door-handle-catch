@@ -11,8 +11,12 @@ public enum DashboardScope {
     ACCOUNT, COMPANY;
 
     public SqlScope forAggregate(DetectionTaskAccessPolicy access, String alias) {
-        if (this == ACCOUNT) return access.currentSqlScope(alias);
+        String formal = BusinessDetectionTasks.filter(alias);
+        if (this == ACCOUNT) {
+            var account = access.currentSqlScope(alias);
+            return new SqlScope(formal + " AND (" + account.predicate() + ")", account.parameters());
+        }
         access.assertAuthenticated(SecurityContextHolder.getContext().getAuthentication());
-        return new SqlScope("1 = 1", Map.of());
+        return new SqlScope(formal, Map.of());
     }
 }

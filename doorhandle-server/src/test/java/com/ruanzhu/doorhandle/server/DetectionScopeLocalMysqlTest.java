@@ -58,8 +58,9 @@ class DetectionScopeLocalMysqlTest {
             for (var row:(List<Map<String,Object>>) legacy.get("records")) {
                 assertThat(supervisor || pair.getKey().equals(row.get("created_by")) || pair.getKey().equals(row.get("assignee"))).isTrue();
             }
-            long completed=supervisor ? jdbc.queryForObject("SELECT COUNT(*) FROM detection_task WHERE status IN ('COMPLETED','PARTIAL_FAILED')",Long.class)
-                    : jdbc.queryForObject("SELECT COUNT(*) FROM detection_task WHERE status IN ('COMPLETED','PARTIAL_FAILED') AND (created_by=? OR assignee=?)",Long.class,pair.getKey(),pair.getKey());
+            String formalCompleted = "SELECT COUNT(*) FROM detection_task WHERE status IN ('COMPLETED','PARTIAL_FAILED') AND (task_type IS NULL OR task_type <> 'SINGLE')";
+            long completed=supervisor ? jdbc.queryForObject(formalCompleted,Long.class)
+                    : jdbc.queryForObject(formalCompleted+" AND (created_by=? OR assignee=?)",Long.class,pair.getKey(),pair.getKey());
             var stats=data(client,base,"/api/dashboard/stats",pair.getValue());
             assertThat(((Number)stats.get("detectionCount")).longValue()).isEqualTo(completed);
             var checked=data(client,base,"/api/statistics/check-detection-records",pair.getValue());

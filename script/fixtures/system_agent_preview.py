@@ -229,9 +229,11 @@ def response(path, method='GET', role='SUPERVISOR', url='', body=None):
     if path.startswith('/api/devices/') or path.startswith('/api/employees/'):
         rows=DEVICES if '/devices/' in path else EMPLOYEES
         return wrapped(next((r for r in rows if str(r['id'])==path.split('/')[3]),None))
-    if path=='/api/detection/tasks': return wrapped(page(TASKS,query))
+    formal = [t for t in TASKS if t.get('taskType') != 'SINGLE']
+    finished = [t for t in formal if t['status'] in ('COMPLETED','PARTIAL_FAILED')]
+    if path=='/api/detection/tasks': return wrapped(page(formal if query.get('businessOnly') == ['true'] else TASKS,query))
     if path=='/api/detection/tasks/quality-queue':
-        rows=[t for t in TASKS if t['flowStatus'] not in ('RELEASED','ARCHIVED')]
+        rows=[t for t in formal if t['flowStatus'] not in ('RELEASED','ARCHIVED')]
         queue=query.get('queue',[''])[0]
         flows={'PENDING_REVIEW':'PENDING_REVIEW','PENDING_DISPOSITION':'CONFIRMED','REWORK_REQUIRED':'REWORK_REQUIRED','RECHECK_REQUIRED':'RECHECK_REQUIRED','HOLD':'HOLD','FAILED':'FAILED'}
         if queue in flows: rows=[t for t in rows if t['flowStatus']==flows[queue]]
@@ -245,14 +247,13 @@ def response(path, method='GET', role='SUPERVISOR', url='', body=None):
         return wrapped(next((r for r in REPORTS if r['reportId']==path.split('/')[4]),None))
     if path=='/api/device-usage-records': return wrapped({'records':[],'total':0})
     if path=='/api/dashboard/stats':
-        completed=sum(t['status'] in ('COMPLETED','PARTIAL_FAILED') for t in TASKS)
+        completed=len(finished)
         return wrapped({'detectionCount':completed,'companyDetectionCount':completed,'avgMissRate':None})
     if path=='/api/dashboard/model-stats': return wrapped([{'modelId':m['modelId'],'modelName':m['modelName'],'avgMissRate':None} for m in MODELS])
     if path=='/api/dashboard/quality-workload':
-        flows=Counter(t['flowStatus'] for t in TASKS)
+        flows=Counter(t['flowStatus'] for t in formal)
         return wrapped({key:flows[flow] for key,flow in [('pendingReviewCount','PENDING_REVIEW'),('pendingDispositionCount','CONFIRMED'),('reworkRequiredCount','REWORK_REQUIRED'),('recheckRequiredCount','RECHECK_REQUIRED'),('holdCount','HOLD'),('failedCount','FAILED')]})
     if path=='/api/dashboard/region-stats':
-        finished = [t for t in TASKS if t['status'] in ('COMPLETED','PARTIAL_FAILED') and t.get('taskType') != 'SINGLE']
         regions = [dict(region=name,imageCount=sum(t['totalImages'] for t in finished if t['region']==name),
                         taskCount=sum(t['region']==name for t in finished)) for name in ('上海市','南京市') if any(t['region']==name for t in finished)]
         regions.sort(key=lambda r: (-r['imageCount'], r['region']))
@@ -261,11 +262,11 @@ def response(path, method='GET', role='SUPERVISOR', url='', body=None):
             return wrapped(dict(regions=regions,unassignedImages=sum(t['totalImages'] for t in missing),unassignedTasks=len(missing)))
         return wrapped(regions)
     if path in ('/api/dashboard/work-unit-summary','/api/dashboard/duplicate-summary'): return wrapped({'counts':{}})
-    if path=='/api/statistics/detection-distribution': return wrapped([{'result':key,'count':sum(t['statistics'].get('classCounts',{}).get(key,0) for t in TASKS)} for key in ('Normal','Bent','Deformed','Rusty','Missing','Compromised')])
+    if path=='/api/statistics/detection-distribution': return wrapped([{'result':key,'count':sum(t['statistics'].get('classCounts',{}).get(key,0) for t in finished)} for key in ('Normal','Bent','Deformed','Rusty','Missing','Compromised')])
     if path=='/api/statistics/detection-trend':
         rows=[]
-        for n in range(3):
-            group=TASKS[n*4:n*4+4]
+        for n in range((len(finished)+3)//4):
+            group=finished[n*4:n*4+4]
             rows.append({'date':f'2026-10-25 演示组 {n+1}','total':sum(t['totalImages'] for t in group),**{k.lower():sum(t['statistics'].get('classCounts',{}).get(k,0) for t in group) for k in ('Normal','Bent','Deformed','Rusty','Missing','Compromised')}})
         return wrapped(rows)
     return None

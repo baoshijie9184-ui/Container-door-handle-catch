@@ -32,7 +32,7 @@ class DashboardServiceImplTest {
         var access = new DetectionTaskAccessPolicy();
         assertEquals(Map.of("scopeUsername", "alice"), DashboardScope.ACCOUNT.forAggregate(access, "t.").parameters());
         var company = DashboardScope.COMPANY.forAggregate(access, "t.");
-        assertEquals("1 = 1", company.predicate());
+        assertEquals("(t.task_type IS NULL OR t.task_type <> 'SINGLE')", company.predicate());
         assertTrue(company.parameters().isEmpty());
         SecurityContextHolder.clearContext();
         org.junit.jupiter.api.Assertions.assertThrows(com.ruanzhu.doorhandle.common.BusinessException.class,

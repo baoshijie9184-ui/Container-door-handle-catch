@@ -173,7 +173,7 @@ public class DetectionCreationService implements DetectionCreationApi {
             current(actor);revalidate(actor,approved);
             if(!expectedStatus.equals(row.get("status")))throw new IllegalStateException("创建命令状态已变化");
             var p=approved.capture();var task=new DetectionTask();String taskId=(String)row.get("task_id");
-            task.setTaskId(taskId);task.setWorkflowUuid(UUID.randomUUID().toString());task.setTaskType(approved.images().size()==1?"SINGLE":"BATCH");
+            task.setTaskId(taskId);task.setWorkflowUuid(UUID.randomUUID().toString());task.setTaskType("BATCH");
             task.setBatchNo(p.captureDate()+"_"+p.region()+"_"+p.deviceName()+"_"+p.imageFolderName());task.setWorkOrderNo("WO-"+row.get("command_id"));
             task.setStatus("QUEUED");task.setStage("QUEUED");task.setFlowStatus("PENDING_DETECTION");task.setReviewStatus("PENDING");task.setDispositionStatus("PENDING");
             task.setDispatchId((String)row.get("dispatch_id"));task.setModelId(approved.model().id());task.setModelVersion(approved.model().version());task.setThreshold(approved.threshold());

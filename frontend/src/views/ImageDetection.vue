@@ -13,7 +13,7 @@
       <el-tab-pane name="workspace" label="检测工作台">
         <div class="workspace-grid">
           <el-card class="detection-card detection-input-card" shadow="never">
-            <template #header><h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />单图检测</h2></template>
+            <template #header><h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />单图检测（测试）</h2></template>
             <el-form label-position="top">
               <div class="input-grid">
                 <div class="input-block">
@@ -1106,7 +1106,7 @@ const handleSingleDetection = async () => {
     annotatedImageUrl.value = result.annotatedImagePath
     singleDetectionTaskId.value = result.taskId
     singleDetectionStage.value = result.status === 'PARTIAL_FAILED' ? 'PARTIAL_FAILED' : 'COMPLETED'
-    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '检测返回部分失败，请核对任务记录' : '单图检测结果已返回，人工复核与报告审批仍需分别完成'
+    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '检测返回部分失败，请核对任务记录' : '单图测试已完成，结果可在检测记录中查看'
     if (result.status === 'PARTIAL_FAILED') ElMessage.warning('检测结果包含失败项，请核对任务')
     else ElMessage.success('单图检测结果已返回')
   } catch (error) {

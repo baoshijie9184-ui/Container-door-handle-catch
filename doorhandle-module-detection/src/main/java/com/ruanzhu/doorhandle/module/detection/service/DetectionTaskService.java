@@ -32,8 +32,13 @@ public interface DetectionTaskService {
 
     Map<String, Object> getQualityReport(String taskId);
 
+    default Map<String, Object> listTasks(int page, int size, String keyword, String status,
+                                          String collector, String deviceName, String region) {
+        return listTasks(page, size, keyword, status, collector, deviceName, region, false);
+    }
+
     Map<String, Object> listTasks(int page, int size, String keyword, String status,
-                                  String collector, String deviceName, String region);
+                                  String collector, String deviceName, String region, boolean businessOnly);
 
     Map<String, Object> listQualityQueue(String queue, int page, int size);
 

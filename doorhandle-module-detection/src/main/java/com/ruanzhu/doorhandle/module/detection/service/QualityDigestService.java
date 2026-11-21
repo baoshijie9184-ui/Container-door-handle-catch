@@ -199,7 +199,21 @@ public class QualityDigestService {
         audits.append(new AuditEvent("DIGEST",user,user,"SCHEDULE",id,null,detail.runId(),null,null,action,(long)version,detail.snapshotSha256(),now(),1,detail));
     }
 
-    private Map<String,Object> snapshot(LocalDate date){LocalDateTime from=date.atStartOfDay(DISPLAY_ZONE).withZoneSameInstant(taskZone).toLocalDateTime(),to=date.plusDays(1).atStartOfDay(DISPLAY_ZONE).withZoneSameInstant(taskZone).toLocalDateTime();var rows=rows("SELECT status,COUNT(*) AS taskCount,COALESCE(SUM(total_images),0) AS imageCount,COALESCE(SUM(successful_images),0) AS successfulImages,COALESCE(SUM(failed_images),0) AS failedImages,COALESCE(SUM(defect_count),0) AS modelDefectTargets,COALESCE(SUM(CASE WHEN review_status='PENDING' THEN 1 ELSE 0 END),0) AS pendingReviewCount,COALESCE(SUM(CASE WHEN review_status IS NULL THEN 1 ELSE 0 END),0) AS unrecordedReviewCount FROM detection_task WHERE created_at>=? AND created_at<? GROUP BY status ORDER BY status",from,to);return Map.of("reportDate",date.toString(),"timeZone",DISPLAY_ZONE.getId(),"taskStorageZone",taskZone.getId(),"basis","该日创建任务的当前状态快照；模型缺陷目标数不代表人工确认结果", "generatedAt",Instant.now().toString(),"statusGroups",rows);}
+    Map<String,Object> snapshot(LocalDate date) {
+        LocalDateTime from = date.atStartOfDay(DISPLAY_ZONE).withZoneSameInstant(taskZone).toLocalDateTime();
+        LocalDateTime to = date.plusDays(1).atStartOfDay(DISPLAY_ZONE).withZoneSameInstant(taskZone).toLocalDateTime();
+        var groups = rows("""
+                SELECT status, COUNT(*) AS taskCount, COALESCE(SUM(total_images),0) AS imageCount,
+                       COALESCE(SUM(successful_images),0) AS successfulImages, COALESCE(SUM(failed_images),0) AS failedImages,
+                       COALESCE(SUM(defect_count),0) AS modelDefectTargets,
+                       SUM(CASE WHEN review_status='PENDING' THEN 1 ELSE 0 END) AS pendingReviewCount,
+                       SUM(CASE WHEN review_status IS NULL THEN 1 ELSE 0 END) AS unrecordedReviewCount
+                FROM detection_task WHERE created_at>=? AND created_at<? AND %s GROUP BY status ORDER BY status
+                """.formatted(BusinessDetectionTasks.FILTER), from, to);
+        return Map.of("reportDate",date.toString(),"timeZone",DISPLAY_ZONE.getId(),"taskStorageZone",taskZone.getId(),
+                "basis","该日创建的正式检测任务，按生成日报时的状态汇总。缺陷目标数取自模型结果。",
+                "generatedAt",Instant.now().toString(),"statusGroups",groups);
+    }
     private String markdown(String encoded,String hash){try{var root=json.readTree(encoded);var text=new StringBuilder("# 质检统计日报\n\n日期："+root.path("reportDate").asText()+"\n时区：Asia/Shanghai\n统计口径："+root.path("basis").asText()+"\n快照 SHA-256："+hash+"\n\n");for(var row:root.path("statusGroups")){text.append("## ").append(Map.of("COMPLETED","已完成","PARTIAL_FAILED","部分失败","FAILED","执行失败","RUNNING","检测中","UPLOADING","上传中","QUEUED","等待调度","DISPATCHING","派发中","CANCELLED","已取消").getOrDefault(row.path("status").asText(),row.path("status").asText())).append("\n");for(var item:Map.of("taskCount","任务数","imageCount","图片数","successfulImages","成功图片","failedImages","失败图片","modelDefectTargets","模型缺陷目标","pendingReviewCount","登记待复核","unrecordedReviewCount","未登记复核状态").entrySet())text.append(item.getValue()).append("：").append(row.path(item.getKey()).asLong()).append("\n");}if(root.path("statusGroups").isEmpty())text.append("该日暂无创建的检测任务\n");return text.append("\n本文件为统计快照，不替代人工复核、产品放行或报告审批。\n").toString();}catch(Exception error){throw fail(409,"日报快照无法读取");}}
     private String canonical(String encoded){try{return write(json.readValue(encoded,Object.class));}catch(Exception error){throw fail(409,"日报快照无法读取");}}
     private static CronExpression cron(String value){try{String text=value.strip();if(!text.split("\\s+")[0].equals("0"))throw new IllegalArgumentException();var cron=CronExpression.parse(text);next(cron);return cron;}catch(RuntimeException error){throw fail(400,"请使用六段 Cron，秒位固定为 0；例如每天 08:00：0 0 8 * * *");}}

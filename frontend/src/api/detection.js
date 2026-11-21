@@ -5,7 +5,7 @@ export const detectSingleImage = (formData) => request.post('/api/image-detectio
 export const fetchAvailableModels = () => request.get('/api/models')
 
 export const fetchTraceReferenceTasks = (config = {}) => request.get('/api/detection/tasks', {
-  ...config, params: { page: 1, size: 50 }
+  ...config, params: { page: 1, size: 50, businessOnly: true }
 })
 
 export const advanceDetectionTaskFlow = (taskId, target) => request.post(`/api/detection/tasks/${taskId}/flow`, null, {

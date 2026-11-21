@@ -34,6 +34,7 @@ import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
+import com.ruanzhu.doorhandle.module.detection.service.BusinessDetectionTasks;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionNotificationPort;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskDispatchService;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
@@ -549,11 +550,13 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     @Override
     public java.util.Map<String, Object> listTasks(int page, int size, String keyword, String status,
-                                                    String collector, String deviceName, String region) {
+                                                    String collector, String deviceName, String region, boolean businessOnly) {
         com.baomidou.mybatisplus.core.metadata.IPage<DetectionTask> taskPage = new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
         LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<DetectionTask>()
                 .orderByDesc(DetectionTask::getCreatedAt);
         applyOwnerFilter(wrapper);
+
+        if (businessOnly) wrapper.apply(BusinessDetectionTasks.FILTER);
 
         // 关键字搜索：任务ID、文件夹名、批次号或工单号
         if (org.springframework.util.StringUtils.hasText(keyword)) {
@@ -606,6 +609,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .orderByDesc(DetectionTask::getUpdatedAt)
                 .orderByDesc(DetectionTask::getCreatedAt);
         applyOwnerFilter(wrapper);
+        wrapper.apply(BusinessDetectionTasks.FILTER);
         applyQualityQueueFilter(wrapper, normalizedQueue);
 
         detectionTaskMapper.selectPage(taskPage, wrapper);
@@ -627,6 +631,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         }
         String normalizedBatchNo = batchNo.trim();
         LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<DetectionTask>()
+                .apply(BusinessDetectionTasks.FILTER)
                 .eq(DetectionTask::getBatchNo, normalizedBatchNo)
                 .orderByAsc(DetectionTask::getCreatedAt);
         applyOwnerFilter(wrapper);
@@ -658,6 +663,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         }
         String normalizedWorkOrderNo = workOrderNo.trim();
         LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<DetectionTask>()
+                .apply(BusinessDetectionTasks.FILTER)
                 .eq(DetectionTask::getWorkOrderNo, normalizedWorkOrderNo)
                 .orderByAsc(DetectionTask::getCreatedAt);
         applyOwnerFilter(wrapper);

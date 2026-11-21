@@ -28,6 +28,15 @@ class DetectionAgentReadApiImplTest {
         assertThat(captor.getValue().getSqlSegment()).contains("created_by", "assignee", "task_id");
         assertThat(captor.getValue().getParamNameValuePairs()).containsValues("alice", "foreign-task");
     }
+    @Test void workloadIncludesOnlyFormalTasksInTheEmployeesScope() {
+        when(mapper.selectMaps(any())).thenReturn(List.of());
+        api.metrics(employee, 30);
+        var query = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(mapper).selectMaps(query.capture());
+        assertThat(query.getValue().getSqlSegment()).contains("created_by", "assignee",
+                "task_type IS NULL OR task_type <> 'SINGLE'", "created_at");
+    }
+
     @Test void taskResponseDoesNotExposeStorageKeysOrSession() {
         DetectionTask task = new DetectionTask();
         task.setTaskId("task-1"); task.setSourceOssPrefix("private/key"); task.setSessionId("private-session");

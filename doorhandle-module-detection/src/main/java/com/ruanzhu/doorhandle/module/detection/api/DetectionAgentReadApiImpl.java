@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.agent.DetectionAgentReadApi;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
+import com.ruanzhu.doorhandle.module.detection.service.BusinessDetectionTasks;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,7 +29,7 @@ public class DetectionAgentReadApiImpl implements DetectionAgentReadApi {
         checkPage(page, size);
         QueryWrapper<DetectionTask> query = scope(actor);
         // 质检查询包括待复核及已有复核状态的记录；不把此列表解释为仅待办。
-        if (qualityOnly) query.isNotNull("review_status");
+        if (qualityOnly) query.apply(BusinessDetectionTasks.FILTER).isNotNull("review_status");
         long total = mapper.selectCount(query);
         query.orderByDesc("created_at").orderByDesc("id")
                 .last("LIMIT " + size + " OFFSET " + ((page - 1) * size));
@@ -50,7 +51,7 @@ public class DetectionAgentReadApiImpl implements DetectionAgentReadApi {
         if (days < 1 || days > 366) throw new IllegalArgumentException("统计天数必须在 1 到 366 之间");
         LocalDateTime to = LocalDateTime.now();
         LocalDateTime from = to.minusDays(days);
-        QueryWrapper<DetectionTask> query = scope(actor).ge("created_at", from).lt("created_at", to);
+        QueryWrapper<DetectionTask> query = scope(actor).apply(BusinessDetectionTasks.FILTER).ge("created_at", from).lt("created_at", to);
         query.select("COUNT(*) AS taskCount", "COALESCE(SUM(total_images),0) AS imageCount",
                 "COALESCE(SUM(processed_images),0) AS processedImageCount",
                 "COALESCE(SUM(defect_count),0) AS defectCount");

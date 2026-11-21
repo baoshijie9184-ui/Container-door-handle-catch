@@ -24,7 +24,7 @@
         </template>
         <template v-else>
           <span class="inspection-action"><AppIcon name="Search" :size="21" /><strong>开始单图检测</strong><AppIcon name="ArrowRight" :size="18" /></span>
-          <span class="assigned-count">选择单张图片</span>
+          <span class="assigned-count">仅供测试</span>
         </template>
       </router-link>
       <div class="home-shortcuts">
