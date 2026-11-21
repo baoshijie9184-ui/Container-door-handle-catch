@@ -2,6 +2,7 @@ import json
 from io import BytesIO
 
 from PIL import Image
+import pytest
 
 from kafka_detection_worker import process_created_event
 from kafka_event_models import DetectionTaskCreatedEvent
@@ -99,7 +100,11 @@ def test_oss_result_uploader_preserves_relative_paths_and_writes_json():
     assert payload["results"][0]["fileName"] == "img001.jpg"
 
 
-def test_process_created_event_reads_originals_and_builds_finished_event():
+@pytest.mark.parametrize("image_directory,preview_directory,report_name", [
+    ("Original/", "Result/", "detection_results.json"),
+    ("Original/images/", "Result/images/", "metadata.json"),
+])
+def test_process_created_event_reads_originals_and_builds_finished_event(image_directory, preview_directory, report_name):
     class FakeObject:
         def __init__(self, content):
             self._content = content
@@ -117,7 +122,8 @@ def test_process_created_event_reads_originals_and_builds_finished_event():
         def put_object(self, key, body):
             self.objects[key] = body
 
-    source_key = "detection/2026-05-20/上海/张三/设备A/批次A/Original/车间A/img001.jpg"
+    batch = "detection/2026-05-20/上海/张三/设备A/批次A/"
+    source_key = batch + image_directory + "车间A/img001.jpg"
     image = Image.new("RGB", (2, 2), color="blue")
     image_buffer = BytesIO()
     image.save(image_buffer, format="JPEG")
@@ -131,7 +137,7 @@ def test_process_created_event_reads_originals_and_builds_finished_event():
             "taskId": "det_20260520_xxx",
             "dispatchId": "dispatch-process",
             "bucketName": "doorhandlecatch",
-            "sourcePrefix": "detection/2026-05-20/上海/张三/设备A/批次A/Original/",
+            "sourcePrefix": batch + image_directory,
             "originalKeys": [source_key],
             "captureInfo": {
                 "captureDate": "2026-05-20",
@@ -157,8 +163,12 @@ def test_process_created_event_reads_originals_and_builds_finished_event():
     assert finished.total_images == 1
     assert finished.successful_images == 1
     assert finished.failed_images == 0
-    assert finished.result_json_key.endswith("/Result/detection_results.json")
-    assert finished.preview_keys == ["detection/2026-05-20/上海/张三/设备A/批次A/Result/车间A/img001.jpg"]
+    assert finished.result_json_key == batch + "Result/" + report_name
+    assert finished.preview_keys == [batch + preview_directory + "车间A/img001.jpg"]
+    payload = json.loads(bucket.objects[finished.result_json_key])
+    assert payload["results"][0]["relativePath"] == "车间A/img001.jpg"
+    assert payload["results"][0]["sourceKey"] == source_key
+    assert payload["results"][0]["previewKey"] == finished.preview_keys[0]
     assert finished.statistics["classCounts"] == {
         "Normal": 1,
         "Bent": 0,

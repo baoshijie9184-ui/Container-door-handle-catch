@@ -20,6 +20,7 @@ from runtime_telemetry import RuntimeTelemetry
 
 DetectionFunction = Callable[[bytes, float], Tuple[Any, List[Dict[str, Any]]]]
 BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
+ORIGINAL_IMAGE_SUFFIX = "/Original/images/"
 
 
 def create_oss_bucket(settings: KafkaWorkerSettings) -> Any:
@@ -124,6 +125,8 @@ def default_detector(image_bytes: bytes, threshold: float) -> Tuple[Any, List[Di
 
 
 def build_result_prefix(source_prefix: str) -> str:
+    if source_prefix.endswith(ORIGINAL_IMAGE_SUFFIX):
+        return source_prefix.removesuffix(ORIGINAL_IMAGE_SUFFIX) + "/Result/"
     if "/originals/" in source_prefix:
         return source_prefix.replace("/originals/", "/Result/")
     if "/Original/" in source_prefix:
@@ -355,6 +358,7 @@ def process_created_event(
                 "statistics": statistics,
                 "errors": failures,
             },
+            split_layout=task.source_prefix.endswith(ORIGINAL_IMAGE_SUFFIX),
         )
         for index, preview_key in enumerate(preview_keys):
             if index < len(per_image_results):

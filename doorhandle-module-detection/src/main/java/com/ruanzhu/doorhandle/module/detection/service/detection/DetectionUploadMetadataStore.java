@@ -35,9 +35,25 @@ public class DetectionUploadMetadataStore {
     public record Registered(JsonNode document, boolean storedInOss) {}
     private record Snapshot(String contents, boolean storedInOss) {}
 
+    public void save(String taskId, DetectionCaptureInfo capture, List<String> imagePaths) {
+        ObjectNode result = batchDocument(capture);
+        var images = result.putArray("images");
+        imagePaths.forEach(path -> images.addObject().put("path", path));
+        saveDocument(taskId, result);
+    }
+
     public void save(String taskId, DetectionCaptureInfo capture, List<DetectionUploadFileRequest> files,
-                     DetectionUploadMetadata metadata) {
-        String contents = document(capture, files, metadata).toString();
+                     DetectionUploadMetadata metadata, List<String> imagePaths) {
+        var document = document(capture, files, metadata);
+        var images = document.path("images");
+        for (int i = 0; i < imagePaths.size(); i++) {
+            ((ObjectNode) images.get(i)).put("path", imagePaths.get(i));
+        }
+        saveDocument(taskId, document);
+    }
+
+    private void saveDocument(String taskId, ObjectNode document) {
+        String contents = document.toString();
         if (contents.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) {
             throw new BusinessException(400, "元数据内容不能超过 256 KB，请缩短备注或拆分批次");
         }
@@ -115,11 +131,16 @@ public class DetectionUploadMetadataStore {
                 addDetails(stored, image.notes(), image.attributes());
             }
         }
-        ObjectNode result = json.createObjectNode().put("schemaVersion", 1);
-        result.set("captureInfo", json.valueToTree(capture));
+        ObjectNode result = batchDocument(capture);
         addDetails(result, metadata.notes(), null);
         var manifest = result.putArray("images");
         images.values().forEach(manifest::add);
+        return result;
+    }
+
+    private ObjectNode batchDocument(DetectionCaptureInfo capture) {
+        ObjectNode result = json.createObjectNode().put("schemaVersion", 1);
+        result.set("captureInfo", json.valueToTree(capture));
         return result;
     }
 

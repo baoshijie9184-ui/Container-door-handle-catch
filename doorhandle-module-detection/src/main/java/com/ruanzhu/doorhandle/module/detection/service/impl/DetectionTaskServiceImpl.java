@@ -157,7 +157,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setFlowStatus("PENDING_DETECTION");
         task.setReviewStatus("PENDING");
         task.setWorkOrderNo(buildWorkOrderNo());
-        String[] parts = prefix.split("/");
+        String[] parts = UploadFolders.originalDirectory(prefix).split("/");
         String name = parts[parts.length-1];
         if (parts.length > 2 && (name.equalsIgnoreCase("Original") || name.equalsIgnoreCase("originals"))) name = parts[parts.length-2];
         task.setImageFolderName(name.substring(0,Math.min(name.length(),128)));
@@ -271,8 +271,13 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         detectionTaskMapper.insert(task);
-        if (request.getMetadata() != null) {
-            uploadMetadata.save(taskId, captureInfo, request.getFiles(), request.getMetadata());
+        if (uploadMetadata != null) {
+            var imagePaths = originalKeys.stream().map(key -> key.substring(uploadPrefix.length())).toList();
+            if (request.getMetadata() == null) {
+                uploadMetadata.save(taskId, captureInfo, imagePaths);
+            } else {
+                uploadMetadata.save(taskId, captureInfo, request.getFiles(), request.getMetadata(), imagePaths);
+            }
         }
         if(identities!=null)identities.recordCreation(task);
         if (modelInfo != null && modelInfo.getModelId() != null) {

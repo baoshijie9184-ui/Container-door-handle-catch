@@ -1,10 +1,11 @@
 // Only the display label drops the storage hierarchy. Navigation keeps the original key.
 export function imageFolderLabel(path) {
   const parts = String(path ?? '').split(/[\\/]+/).map(part => part.trim()).filter(Boolean)
+  if (parts.at(-2) === 'Original' && parts.at(-1) === 'images') parts.pop()
   if (parts.length > 1 && /^originals?$/i.test(parts.at(-1))) parts.pop()
   const leaf = parts.at(-1) || ''
   if (parts.at(-4) === '图片上传' && ['主管上传', '员工上传'].includes(parts.at(-3))) {
-    return leaf.replace(/_det_\d{8}_\d{6}_[a-f0-9]{8}$/i, '')
+    return leaf.replace(/_det_(?:\d{8}_\d{6}_[a-f0-9]{8}|[a-f0-9]{32})$/i, '')
   }
   return leaf
 }

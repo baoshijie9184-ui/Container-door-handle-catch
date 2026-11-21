@@ -9,9 +9,11 @@ test('isolated batch names omit the generated suffix while navigation can use th
     const path = 'detection/图片上传/' + role + '/' + batch + '/'
     assert.equal(imageFolderLabel(path), '车间 A_早班')
     assert.equal(imageFolderLabel(path + 'Original/'), '车间 A_早班')
+    assert.equal(imageFolderLabel(path + 'Original/images/'), '车间 A_早班')
     assert.equal(recordFolderLabel({ taskType:'OSS_FOLDER', folder:batch, prefix:path }), '车间 A_早班')
   }
   assert.equal(imageFolderLabel('detection/旧目录/' + batch + '/Original/'), batch)
+  assert.equal(imageFolderLabel('detection/图片上传/主管上传/SUP-0001/车间 A_det_' + '1'.repeat(32) + '/Original/images/'), '车间 A')
 })
 
 test('registered names take precedence and legacy, unnamed and shared records have compact labels', async () => {

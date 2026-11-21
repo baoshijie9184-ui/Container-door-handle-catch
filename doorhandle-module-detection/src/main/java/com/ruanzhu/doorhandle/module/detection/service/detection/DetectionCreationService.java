@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.contracts.detection.*;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionCaptureInfo;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService;
@@ -40,6 +41,7 @@ public class DetectionCreationService implements DetectionCreationApi {
     private final ObjectProvider<WorkspaceDetectionImagesApi> images;private final DetectionModelSelectionApi models;
     private final BusinessUserDirectory users;private final OperationsAuditApi audit;private final OssStorageService oss;
     private final DetectionTaskMapper tasks;private final DetectionDispatchOutbox outbox;private final ObjectProvider<DetectionIdentityService> identities;
+    private final DetectionUploadMetadataStore uploadMetadata;
     private final ExecutorService executor=Executors.newSingleThreadExecutor(r->{var t=new Thread(r,"approved-detection-creation");t.setDaemon(true);return t;});
     private final AtomicBoolean busy=new AtomicBoolean();
     private final ExecutorService reviewExecutor=Executors.newSingleThreadExecutor(r->{var t=new Thread(r,"detection-transfer-review");t.setDaemon(true);return t;});
@@ -48,8 +50,10 @@ public class DetectionCreationService implements DetectionCreationApi {
     @Value("${detection.max-image-bytes:10485760}") private long maxImageBytes=10485760;
     public DetectionCreationService(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json,ObjectProvider<WorkspaceDetectionImagesApi> images,
             DetectionModelSelectionApi models,BusinessUserDirectory users,OperationsAuditApi audit,OssStorageService oss,
-            DetectionTaskMapper tasks,DetectionDispatchOutbox outbox,ObjectProvider<DetectionIdentityService> identities){
+            DetectionTaskMapper tasks,DetectionDispatchOutbox outbox,ObjectProvider<DetectionIdentityService> identities,
+            DetectionUploadMetadataStore uploadMetadata){
         this.jdbc=jdbc;this.persistence=new DetectionCreationPersistence(jdbc,json);this.executionPersistence=new DetectionExecutionPersistence(jdbc,json);tx=new TransactionTemplate(manager);this.transactions=manager;this.json=json;this.images=images;this.models=models;this.users=users;this.audit=audit;this.oss=oss;this.tasks=tasks;this.outbox=outbox;this.identities=identities;
+        this.uploadMetadata=uploadMetadata;
     }
     @PostConstruct public void validate(){
         if(maxImages<1||maxImageBytes<1||maxImageBytes>26214400)throw new IllegalStateException("检测图片限制配置无效");
@@ -167,7 +171,7 @@ public class DetectionCreationService implements DetectionCreationApi {
             publishTask(locked,actor,approved,prefix,keys,"UPLOADING");
         });
     }
-    /** SQL-only finalization, shared by original execution and an explicit verified recovery decision. */
+    /** Shared by original execution and an explicit verified recovery decision. */
     private void publishTask(Map<String,Object> row,AgentActor actor,Preview approved,String prefix,List<String> keys,String expectedStatus){
             if(!TransactionSynchronizationManager.isActualTransactionActive())throw new IllegalStateException("检测创建必须在业务事务内完成");
             current(actor);revalidate(actor,approved);
@@ -181,6 +185,12 @@ public class DetectionCreationService implements DetectionCreationApi {
             task.setTotalImages(keys.size());task.setProcessedImages(0);task.setSuccessfulImages(0);task.setFailedImages(0);task.setSourceOssPrefix(prefix);task.setOriginalImageKeysJson(write(keys));
             task.setSessionId(approved.sessionId());task.setCreatedBy(actor.username());task.setCreatedAt(LocalDateTime.now(ZoneOffset.ofHours(8)));task.setUpdatedAt(task.getCreatedAt());
             tasks.insert(task);var identity=identities.getIfAvailable();if(identity!=null)identity.recordCreation(task,actor,(String)row.get("request_id"));models.recordUse(approved.model());
+            if (UploadFolders.isImagePrefix(prefix)) {
+                var capture = json.convertValue(p, DetectionCaptureInfo.class);
+                var paths = keys.stream().map(key -> key.substring(prefix.length())).toList();
+                uploadMetadata.save(taskId, capture, paths);
+                uploadMetadata.storeInOss(taskId, prefix);
+            }
             var event=DetectionTaskCreatedEvent.builder().eventId(UUID.randomUUID().toString()).eventType("DETECTION_TASK_CREATED").eventTime(OffsetDateTime.now(ZoneOffset.ofHours(8)).toString())
                     .taskId(taskId).dispatchId(task.getDispatchId()).bucketName(oss.getBucketName()).sourcePrefix(prefix).originalKeys(keys).modelId(approved.model().id()).threshold(approved.threshold())
                     .captureInfo(DetectionTaskEventCaptureInfo.builder().captureDate(p.captureDate()).region(p.region()).collector(p.collector()).deviceName(p.deviceName()).imageFolderName(p.imageFolderName()).build()).build();

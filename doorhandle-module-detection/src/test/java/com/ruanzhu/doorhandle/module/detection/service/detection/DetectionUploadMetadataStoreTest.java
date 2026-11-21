@@ -36,7 +36,8 @@ class DetectionUploadMetadataStoreTest {
     @Test
     void savesTheRegisteredJsonNextToImagesAndOnlyMarksAConfirmedWrite() throws Exception {
         String taskId = "det_1";
-        String prefix = "detection/图片上传/主管上传/SUP-0001/车门_det_1/Original/";
+        String directory = "detection/图片上传/主管上传/SUP-0001/车门_det_1/Original/";
+        String prefix = directory + "images/";
         String contents = "{\"schemaVersion\":1,\"notes\":\"原图资料\"}";
         long length = contents.getBytes(StandardCharsets.UTF_8).length;
         var row = mock(ResultSet.class);
@@ -53,14 +54,14 @@ class DetectionUploadMetadataStoreTest {
             InputStream input = call.getArgument(1);
             assertEquals(contents, new String(input.readAllBytes(), StandardCharsets.UTF_8));
             return null;
-        }).when(oss).putObject(eq(prefix + "metadata.json"), any(InputStream.class), eq(length), eq("application/json"));
+        }).when(oss).putObject(eq(directory + "metadata.json"), any(InputStream.class), eq(length), eq("application/json"));
 
         assertEquals(503, assertThrows(BusinessException.class, () -> store.storeInOss(taskId, prefix)).getCode());
         verify(jdbc, never()).update(contains("OSS_STORED"), eq(taskId));
         store.storeInOss(taskId, prefix);
         store.storeInOss(taskId, prefix);
         verify(jdbc, times(1)).update(contains("OSS_STORED"), eq(taskId));
-        verify(oss, times(2)).putObject(eq(prefix + "metadata.json"), any(InputStream.class), eq(length), eq("application/json"));
+        verify(oss, times(2)).putObject(eq(directory + "metadata.json"), any(InputStream.class), eq(length), eq("application/json"));
     }
 
     @Test

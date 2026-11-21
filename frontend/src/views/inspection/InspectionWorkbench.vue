@@ -337,7 +337,7 @@
                         {{ task.reworkResult || task.result.reworkResult }}
                       </el-descriptions-item>
                       <el-descriptions-item label="结果JSON">
-                        <a v-if="task.result.resultJsonUrl" :href="task.result.resultJsonUrl" target="_blank">打开 detection_results.json</a>
+                        <a v-if="task.result.resultJsonUrl" :href="task.result.resultJsonUrl" target="_blank">打开结果 JSON</a>
                         <span v-else>暂无</span>
                       </el-descriptions-item>
                     </el-descriptions>

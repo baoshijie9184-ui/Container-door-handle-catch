@@ -30,12 +30,15 @@ class OssResultUploader:
         result_prefix: str,
         per_image_results: Iterable[Tuple[str, Any, Dict[str, Any]]],
         summary: Dict[str, Any],
+        *,
+        split_layout: bool = False,
     ) -> Tuple[str, str, List[str]]:
         preview_keys: List[str] = []
         result_items: List[Dict[str, Any]] = []
 
+        image_prefix = result_prefix + ("images/" if split_layout else "")
         for relative_path, annotated_image, detection_payload in per_image_results:
-            preview_key = f"{result_prefix}{relative_path}"
+            preview_key = f"{image_prefix}{relative_path}"
             preview_keys.append(self.upload_preview_image(preview_key, annotated_image))
             result_items.append(
                 {
@@ -45,7 +48,7 @@ class OssResultUploader:
                 }
             )
 
-        result_json_key = f"{result_prefix}detection_results.json"
+        result_json_key = result_prefix + ("metadata.json" if split_layout else "detection_results.json")
         self.upload_json(
             result_json_key,
             {

@@ -206,7 +206,7 @@ const folderChoices=computed(()=>{
   const counts=new Map()
   const choices=children.value.map(path=>{
     const leaf=path.slice(folder.value.length,-1)
-    const label=/^originals?$/i.test(leaf) ? '原图' : imageFolderLabel(path)
+    const label=path.endsWith('/Original/images/') ? '图片' : (/^originals?$/i.test(leaf) ? '原图' : imageFolderLabel(path))
     counts.set(label,(counts.get(label) || 0)+1)
     return {path,label,leaf}
   })

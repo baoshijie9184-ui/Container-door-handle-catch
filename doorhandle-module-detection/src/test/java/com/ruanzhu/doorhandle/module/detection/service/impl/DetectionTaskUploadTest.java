@@ -132,7 +132,7 @@ class DetectionTaskUploadTest {
         assertEquals("张三", savedTask.getCollector());
         assertEquals("海康Cam01", savedTask.getDeviceName());
         assertEquals("批次A", savedTask.getImageFolderName());
-        assertEquals("detection/图片上传/主管上传/SUP-0001/批次A_"+savedTask.getTaskId()+"/Original/", savedTask.getSourceOssPrefix());
+        assertEquals("detection/图片上传/主管上传/SUP-0001/批次A_"+savedTask.getTaskId()+"/Original/images/", savedTask.getSourceOssPrefix());
 
         String objectKey = response.getUploadUrls().get(0).getObjectKey();
         assertTrue(objectKey.startsWith(savedTask.getSourceOssPrefix()));
