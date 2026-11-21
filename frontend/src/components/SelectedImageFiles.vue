@@ -1,38 +1,7 @@
 <template>
-  <div class="selection-tools">
-    <dl class="selected-image-total"><dt>图片总大小</dt><dd :title="totalBytes===null ? undefined : totalBytes.toLocaleString('zh-CN')+' 字节'">{{ byteLabel(totalBytes) }}</dd></dl>
-    <el-button class="browse-selection" @click="openViewer(0)">
-      <AppIcon name="Picture" :size="16" />浏览所选图片
-    </el-button>
-  </div>
-  <details ref="detailsElement" class="selected-image-review" @toggle="toggle">
-    <summary><AppIcon name="Files" :size="16" /><span>图片清单</span><AppIcon class="selected-image-chevron" name="ArrowDown" :size="14" /></summary>
-    <div v-if="opened" class="selected-image-content">
-      <p class="selected-image-note">前 {{ previews.length }} 张缩略图 · 选择任意一张开始浏览</p>
-      <div class="selected-image-previews">
-        <figure v-for="preview in previews" :key="preview.key">
-          <button type="button" class="selected-image-frame" :aria-label="'浏览图片：'+preview.name" @click="openViewer(preview.key)">
-            <img v-if="preview.url && !preview.failed" :src="preview.url" :alt="preview.name" decoding="async" @load="imageLoaded($event,preview)" @error="imageFailed($event,preview)" />
-            <span v-if="!preview.url || preview.failed" class="selected-image-fallback"><AppIcon name="Picture" :size="22" />本机缩略图不可用</span>
-            <span v-else-if="!preview.loaded" class="selected-image-loading">正在显示</span>
-          </button>
-          <figcaption :title="preview.name">{{ preview.name }}</figcaption>
-        </figure>
-      </div>
-      <label class="selected-image-search"><span><AppIcon name="Search" :size="14" />查找本次所选文件</span><el-input ref="searchElement" v-model="query" maxlength="200" clearable aria-label="按文件名或相对路径查找本次所选图片" placeholder="文件名或相对路径" @keydown.enter.prevent @keydown.esc.stop.prevent="query=''" /></label>
-      <p class="selected-image-note" role="status">{{ query.trim() ? '匹配 '+matches.length+' / 所选 '+entries.length+' 张，仅查找当前清单。' : '当前清单 '+entries.length+' 张，保持所选顺序。' }}</p>
-      <div v-if="matches.length" class="selected-image-manifest" tabindex="0" role="region" :aria-label="(query.trim() ? '本次所选图片匹配文件清单' : '本次所选图片完整文件清单')+'，可使用方向键滚动'">
-        <ol><li v-for="entry in matches" :key="entry.key">
-          <button type="button" @click="openViewer(entry.key)">
-            <span class="manifest-file"><strong>{{ entry.name }}</strong></span>
-            <small :title="entry.bytes===null ? undefined : entry.bytes+' 字节'">{{ byteLabel(entry.bytes) }}</small>
-          </button>
-        </li></ol>
-      </div>
-      <div v-else class="selected-image-empty"><AppIcon name="Search" :size="20" /><p>本次所选文件中没有匹配项</p><button type="button" @click="clearQuery">清空查找</button></div>
-      <p class="selected-image-note">按所选顺序浏览全部图片。要更改上传清单，请重新选择文件夹。</p>
-    </div>
-  </details>
+  <el-button class="browse-selection" aria-haspopup="dialog" @click="openViewer(0)">
+    <AppIcon name="Picture" :size="16" />浏览所选图片
+  </el-button>
   <el-dialog v-model="viewerOpen" title="浏览所选图片" width="min(1000px, 96vw)" top="5vh"
              append-to-body destroy-on-close class="local-image-dialog" @opened="pager?.focus()">
     <template v-if="viewerOpen && current">
@@ -41,7 +10,7 @@
                       aria-label="按文件名或路径跳转" placeholder="按文件名或路径跳转" />
         <ImageListNavigation ref="pager" :index="viewIndex" :total="entries.length" @select="viewIndex = $event" />
       </div>
-      <figure class="local-image-view">
+      <figure ref="imageView" class="local-image-view">
         <div class="local-image-stage">
           <img v-if="viewUrl && !viewFailed" :key="viewUrl" :src="viewUrl" :alt="current.name" decoding="async"
                @error="onViewError" />
@@ -51,6 +20,33 @@
           <details :key="current.key"><summary>图片元数据</summary><small>相对路径：{{ current.path || current.name }}</small></details>
         </figcaption>
       </figure>
+      <details ref="detailsElement" class="selected-image-review" @toggle="toggle">
+        <summary><AppIcon name="Files" :size="16" /><span>图片清单</span><span class="selected-image-size" :title="totalBytes===null ? undefined : totalBytes.toLocaleString('zh-CN')+' 字节'">{{ byteLabel(totalBytes) }}</span><AppIcon class="selected-image-chevron" name="ArrowDown" :size="14" /></summary>
+        <div v-if="opened" class="selected-image-content">
+          <p class="selected-image-note">前 {{ previews.length }} 张缩略图 · 选择任意一张开始浏览</p>
+          <div class="selected-image-previews">
+            <figure v-for="preview in previews" :key="preview.key">
+              <button type="button" class="selected-image-frame" :aria-label="'浏览图片：'+preview.name" @click="chooseImage(preview.key)">
+                <img v-if="preview.url && !preview.failed" :src="preview.url" :alt="preview.name" decoding="async" @load="imageLoaded($event,preview)" @error="imageFailed($event,preview)" />
+                <span v-if="!preview.url || preview.failed" class="selected-image-fallback"><AppIcon name="Picture" :size="22" />本机缩略图不可用</span>
+                <span v-else-if="!preview.loaded" class="selected-image-loading">正在显示</span>
+              </button>
+              <figcaption :title="preview.name">{{ preview.name }}</figcaption>
+            </figure>
+          </div>
+          <label class="selected-image-search"><span><AppIcon name="Search" :size="14" />查找本次所选文件</span><el-input ref="searchElement" v-model="query" maxlength="200" clearable aria-label="按文件名或相对路径查找本次所选图片" placeholder="文件名或相对路径" @keydown.enter.prevent @keydown.esc.stop.prevent="query=''" /></label>
+          <p class="selected-image-note" role="status">{{ query.trim() ? '匹配 '+matches.length+' / 所选 '+entries.length+' 张，仅查找当前清单。' : '当前清单 '+entries.length+' 张，保持所选顺序。' }}</p>
+          <div v-if="matches.length" class="selected-image-manifest" tabindex="0" role="region" :aria-label="(query.trim() ? '本次所选图片匹配文件清单' : '本次所选图片完整文件清单')+'，可使用方向键滚动'">
+            <ol><li v-for="entry in matches" :key="entry.key">
+              <button type="button" @click="chooseImage(entry.key)">
+                <span class="manifest-file"><strong>{{ entry.name }}</strong></span>
+                <small :title="entry.bytes===null ? undefined : entry.bytes+' 字节'">{{ byteLabel(entry.bytes) }}</small>
+              </button>
+            </li></ol>
+          </div>
+          <div v-else class="selected-image-empty"><AppIcon name="Search" :size="20" /><p>本次所选文件中没有匹配项</p><button type="button" @click="clearQuery">清空查找</button></div>
+        </div>
+      </details>
     </template>
   </el-dialog>
 </template>
@@ -75,6 +71,7 @@ const matches = computed(() => {
 const viewerOpen = ref(false)
 const viewIndex = ref(0)
 const pager = ref(null)
+const imageView = ref(null)
 const viewUrl = ref('')
 const viewFailed = ref(false)
 const current = computed(() => viewerOpen.value ? entries.value[viewIndex.value] : null)
@@ -87,6 +84,12 @@ const viewerOptions = computed(() => entries.value.filter(entry =>
 function openViewer(index) {
   viewIndex.value = index
   viewerOpen.value = true
+}
+function chooseImage(index) {
+  viewIndex.value = index
+  if (detailsElement.value) detailsElement.value.open = false
+  pager.value?.focus()
+  imageView.value?.scrollIntoView({ block:'nearest' })
 }
 function localImageUrl(file) {
   try {
@@ -139,17 +142,16 @@ watch(opened,open=>{
     return {key:entry.key,name:entry.name,url,loaded:false,failed:!url}
   })
 },{flush:'sync'})
-watch(()=>[props.files,props.scopeKey],()=>{
-  viewerOpen.value=false;viewIndex.value=0
-  opened.value=false;query.value='';releasePreviews()
-  if(detailsElement.value)detailsElement.value.open=false
-},{flush:'sync'})
+watch(viewerOpen, open => {
+  if (open) return
+  opened.value = false
+  query.value = ''
+  filterViewer('')
+}, { flush:'sync' })
+watch(()=>[props.files,props.scopeKey],()=>{ viewerOpen.value=false },{flush:'sync'})
 onBeforeUnmount(releasePreviews)
 </script>
 <style scoped>
-.selection-tools { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;margin-top:12px }
-.selected-image-total { display:flex;align-items:baseline;gap:7px;margin:0;color:var(--app-text-secondary);font-size:12px;font-variant-numeric:tabular-nums }
-.selected-image-total dd { margin:0;color:var(--app-text);font-weight:600 }
 .local-image-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .local-image-toolbar .el-select-v2 { flex: 1 1 260px; min-width: 0; max-width: 100%; }
 .local-image-view { margin: 16px 0 0; }
@@ -164,7 +166,8 @@ onBeforeUnmount(releasePreviews)
 .selected-image-review>summary:hover,.selected-image-review[open]>summary{color:var(--app-primary)}
 .selected-image-review>summary::-webkit-details-marker{display:none}
 .selected-image-review>summary>.el-icon{flex:0 0 auto}
-.selected-image-chevron{margin-left:auto;transition:transform 180ms ease}.selected-image-review[open]>summary .selected-image-chevron{transform:rotate(180deg)}
+.selected-image-size{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums}
+.selected-image-chevron{transition:transform 180ms ease}.selected-image-review[open]>summary .selected-image-chevron{transform:rotate(180deg)}
 .selected-image-content{padding-top:8px;min-width:0}.selected-image-note{margin:7px 0 12px;font-size:12px;line-height:1.85;color:var(--app-text-secondary);overflow-wrap:anywhere}
 .selected-image-previews{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 9px}.selected-image-previews figure{margin:0;min-width:0}
 .selected-image-frame{position:relative;width:100%;padding:0;cursor:pointer;aspect-ratio:4/3;display:grid;place-items:center;overflow:hidden;border-radius:6px;background:var(--app-surface-muted);border:1px solid var(--app-border)}

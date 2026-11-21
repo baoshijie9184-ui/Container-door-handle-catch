@@ -61,120 +61,29 @@
             <button v-if="!folderInfo.imageCount" type="button" class="folder-picker" aria-labelledby="upload-folder-label" aria-describedby="upload-image-format" :disabled="uploadingToOss" @click="triggerFolderSelect">
               <span class="folder-picker-icon"><el-icon><FolderOpened /></el-icon></span>
               <strong id="upload-folder-label">选择图片文件夹</strong>
-              <span id="upload-image-format">支持 JPG、JPEG、PNG，会自动读取文件夹内的 metadata.json</span>
+              <span id="upload-image-format">JPG / PNG · 自动读取 metadata.json</span>
             </button>
             <template v-else>
               <div class="selected-folder">
                 <span class="selected-folder-icon"><el-icon><FolderOpened /></el-icon></span>
                 <div class="selected-folder-name">
-                  <strong :title="folderInfo.name">{{ imageFolderLabel(folderInfo.name) || folderInfo.imageFolderName || '所选文件夹' }}</strong>
-                  <span>{{ folderInfo.imageCount }} 张图片</span>
+                  <strong :title="folderInfo.name">{{ folderInfo.imageFolderName || imageFolderLabel(folderInfo.name) || '所选文件夹' }}</strong>
+                  <span id="upload-selection-status" role="status">{{ folderInfo.imageCount }} 张图片 · {{ metadataStatus }}</span>
                 </div>
                 <el-button class="replace-folder" :disabled="uploadingToOss" @click="triggerFolderSelect">更换文件夹</el-button>
               </div>
               <p v-if="selectionNotice" class="upload-selection-note" role="status">{{ selectionNotice }}</p>
-              <SelectedImageFiles :key="selectionVersion" :files="folderInfo.files" :scope-key="accountScope()" />
             </template>
           </section>
 
-          <section v-if="folderInfo.imageCount" class="capture-options" aria-labelledby="upload-capture-heading">
-            <div class="capture-options-header">
-              <h3 id="upload-capture-heading" class="capture-meta-heading">采集信息</h3>
-              <el-button link type="primary" aria-controls="upload-capture-fields" :aria-expanded="captureExpanded" @click="captureExpanded=!captureExpanded">{{ captureExpanded ? '收起采集信息' : '编辑采集信息' }}</el-button>
-            </div>
-            <div class="capture-json-row">
-              <input ref="metadataInput" type="file" accept="application/json,.json" hidden @change="chooseMetadata" />
-              <div class="capture-json-state">
-                <AppIcon name="Document" :size="16" />
-                <span v-if="metadataReading" role="status">正在读取 JSON…</span>
-                <span v-else-if="metadataName" role="status">已导入 {{ metadataName }}<template v-if="batchMetadata.images.length"> · {{ batchMetadata.images.length }} 张有图片资料</template></span>
-                <span v-else>采集资料 JSON</span>
-              </div>
-              <div class="capture-json-actions">
-                <el-button link type="primary" :disabled="uploadingToOss || uploadAttempted || metadataReading" @click="metadataInput?.click()">{{ metadataName ? '更换 JSON' : '导入 JSON' }}</el-button>
-                <el-button v-if="!metadataName" link :disabled="metadataReading" @click="downloadTemplate">下载模板</el-button>
-                <el-button v-if="metadataName || metadataError" link :disabled="uploadingToOss || uploadAttempted" @click="clearMetadata">移除 JSON</el-button>
-              </div>
-            </div>
-            <p v-if="metadataError" class="capture-read-error" role="alert">{{ metadataError }}</p>
-            <dl v-if="!captureExpanded" class="capture-summary">
-              <div><dt>采集日期</dt><dd>{{ folderInfo.captureDate || '待填写' }}</dd></div>
-              <div><dt>城市</dt><dd>{{ folderInfo.region || '待填写' }}</dd></div>
-              <div><dt>采集员</dt><dd>{{ collectorLabel || '待填写' }}</dd></div>
-              <div><dt>采集设备</dt><dd>{{ folderInfo.deviceName || '待填写' }}</dd></div>
-              <div class="capture-batch-name"><dt>批次名称</dt><dd>{{ folderInfo.imageFolderName || '待填写' }}</dd></div>
-            </dl>
-            <div v-show="captureExpanded" id="upload-capture-fields" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading">
-              <el-form-item label="采集日期" required>
-                <el-date-picker
-                  v-model="folderInfo.captureDate"
-                  :disabled="uploadingToOss || uploadAttempted"
-                  value-format="YYYY-MM-DD"
-                  aria-label="采集日期" placeholder="选择采集日期"
-                  />
-              </el-form-item>
-              <el-form-item label="城市" required>
-                <el-select v-model="folderInfo.region" filterable aria-label="采集城市" placeholder="选择采集城市"
-                  :loading="loadingCities" :disabled="uploadingToOss || uploadAttempted || !collectionCities.length">
-                  <el-option v-for="city in collectionCities" :key="city" :label="city" :value="city" />
-                </el-select>
-                <p v-if="cityError" class="capture-read-error" role="alert">采集城市读取失败<button type="button" @click="loadCities">重新读取</button></p>
-              </el-form-item>
-              <el-form-item label="采集员" required>
-                <el-select
-                  v-model="folderInfo.collector"
-                  aria-label="选择采集员" placeholder="选择采集员"
-                  filterable
-                  :disabled="uploadingToOss || uploadAttempted"
-                  :no-data-text="employeeError ? '候选读取失败，请重新读取' : loadingEmployees || !employeeLoaded ? '正在核对候选' : '当前已加载范围无候选'"
-                  :loading="loadingEmployees"
-                  clearable
-                >
-                  <el-option
-                    v-for="emp in employeeList"
-                    :key="emp.id"
-                    :value="emp.employeeNumber"
-                    :label="`${emp.name} (${emp.employeeNumber || ''})`"
-                  >
-                    <span>{{ emp.name }}</span>
-                    <span class="capture-option-detail">{{ emp.employeeNumber }}</span>
-                  </el-option>
-                </el-select>
-                <p v-if="employeeError" class="capture-read-error" role="alert">{{ employeeError }}<button type="button" :disabled="loadingEmployees || uploadingToOss" @click="fetchEmployees">重新读取</button></p>
-              </el-form-item>
-              <el-form-item label="采集设备" required>
-                <el-select
-                  v-model="folderInfo.deviceName"
-                  aria-label="选择采集设备" placeholder="选择采集设备"
-                  filterable
-                  :disabled="uploadingToOss || uploadAttempted"
-                  :no-data-text="deviceError ? '候选读取失败，请重新读取' : loadingDevices || !deviceLoaded ? '正在核对候选' : '当前已加载范围无候选'"
-                  :loading="loadingDevices"
-                  clearable
-                >
-                  <el-option
-                    v-for="dev in deviceList"
-                    :key="dev.id"
-                    :value="dev.deviceCode"
-                    :label="`${dev.deviceCode} ${dev.modelName || ''}`"
-                  >
-                    <span>{{ dev.deviceCode }}</span>
-                    <span class="capture-option-detail">{{ dev.modelName }}</span>
-                  </el-option>
-                </el-select>
-                <p v-if="deviceError" class="capture-read-error" role="alert">{{ deviceError }}<button type="button" :disabled="loadingDevices || uploadingToOss" @click="fetchDevices">重新读取</button></p>
-              </el-form-item>
-              <el-form-item label="批次名称" required class="capture-batch-name">
-                <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="输入批次名称" />
-              </el-form-item>
-            </div>
-          </section>
-
           <div v-if="folderInfo.imageCount || uploadingToOss" class="upload-footer">
-            <div v-if="folderInfo.imageCount && (!uploadAttempted || uploadingToOss)" class="upload-submit-row">
-              <p v-if="missingCaptureFields.length" id="upload-readiness" class="upload-readiness" role="status"><AppIcon name="Warning" :size="16" />请补全{{ missingCaptureFields.join('、') }}</p>
-              <el-button type="primary" class="upload-action" size="large"
-                :aria-describedby="missingCaptureFields.length ? 'upload-readiness' : undefined"
+            <div v-if="folderInfo.imageCount" class="upload-submit-row">
+              <div class="selected-folder-actions">
+                <SelectedImageFiles :key="selectionVersion" :files="folderInfo.files" :scope-key="accountScope()" />
+                <el-button aria-haspopup="dialog" @click="captureDetailsOpen=true">详细数据</el-button>
+              </div>
+              <el-button v-if="!uploadAttempted || uploadingToOss" type="primary" class="upload-action" size="large"
+                aria-describedby="upload-selection-status"
                 :disabled="uploadingToOss || metadataReading || !!metadataError || !!missingCaptureFields.length || uploadAttempted"
                 :loading="uploadingToOss" @click="handleUploadBatch">
                 <el-icon v-if="!uploadingToOss"><UploadFilled /></el-icon>
@@ -319,6 +228,91 @@
         </div>
       </el-card>
     </div>
+    <el-dialog v-if="folderInfo.imageCount" v-model="captureDetailsOpen" title="详细数据"
+      class="upload-capture-dialog" width="min(640px, 94vw)" append-to-body destroy-on-close>
+      <div class="capture-json-row">
+        <input ref="metadataInput" type="file" accept="application/json,.json" hidden @change="chooseMetadata" />
+        <div class="capture-json-state">
+          <AppIcon name="Document" :size="16" />
+          <span role="status">{{ metadataReading ? '正在读取 JSON…' : metadataName || '采集资料 JSON' }}</span>
+        </div>
+        <div class="capture-json-actions">
+          <el-button link type="primary" :disabled="uploadingToOss || uploadAttempted || metadataReading" @click="metadataInput?.click()">{{ metadataName ? '更换 JSON' : '导入 JSON' }}</el-button>
+          <el-button v-if="!metadataName" link :disabled="metadataReading" @click="downloadTemplate">下载模板</el-button>
+          <el-button v-if="metadataName || metadataError" link :disabled="uploadingToOss || uploadAttempted" @click="clearMetadata">移除 JSON</el-button>
+        </div>
+      </div>
+      <p v-if="metadataError" class="capture-read-error" role="alert">{{ metadataError }}</p>
+      <el-form label-position="top" @submit.prevent>
+        <div class="capture-meta-form">
+          <el-form-item label="采集日期" required>
+            <el-date-picker
+              v-model="folderInfo.captureDate"
+              :disabled="uploadingToOss || uploadAttempted"
+              value-format="YYYY-MM-DD"
+              aria-label="采集日期" placeholder="选择采集日期"
+            />
+          </el-form-item>
+          <el-form-item label="城市" required>
+            <el-select v-model="folderInfo.region" filterable aria-label="采集城市" placeholder="选择采集城市"
+              :loading="loadingCities" :disabled="uploadingToOss || uploadAttempted || !collectionCities.length">
+              <el-option v-for="city in collectionCities" :key="city" :label="city" :value="city" />
+            </el-select>
+            <p v-if="cityError" class="capture-read-error" role="alert">采集城市读取失败<button type="button" @click="loadCities">重新读取</button></p>
+          </el-form-item>
+          <el-form-item label="采集员" required>
+            <el-select
+              v-model="folderInfo.collector"
+              aria-label="选择采集员" placeholder="选择采集员"
+              filterable
+              :disabled="uploadingToOss || uploadAttempted"
+              :no-data-text="employeeError ? '候选读取失败，请重新读取' : loadingEmployees || !employeeLoaded ? '正在核对候选' : '当前已加载范围无候选'"
+              :loading="loadingEmployees"
+              clearable
+            >
+              <el-option
+                v-for="emp in employeeList"
+                :key="emp.id"
+                :value="emp.employeeNumber"
+                :label="`${emp.name} (${emp.employeeNumber || ''})`"
+              >
+                <span>{{ emp.name }}</span>
+                <span class="capture-option-detail">{{ emp.employeeNumber }}</span>
+              </el-option>
+            </el-select>
+            <p v-if="employeeError" class="capture-read-error" role="alert">{{ employeeError }}<button type="button" :disabled="loadingEmployees || uploadingToOss" @click="fetchEmployees">重新读取</button></p>
+          </el-form-item>
+          <el-form-item label="采集设备" required>
+            <el-select
+              v-model="folderInfo.deviceName"
+              aria-label="选择采集设备" placeholder="选择采集设备"
+              filterable
+              :disabled="uploadingToOss || uploadAttempted"
+              :no-data-text="deviceError ? '候选读取失败，请重新读取' : loadingDevices || !deviceLoaded ? '正在核对候选' : '当前已加载范围无候选'"
+              :loading="loadingDevices"
+              clearable
+            >
+              <el-option
+                v-for="dev in deviceList"
+                :key="dev.id"
+                :value="dev.deviceCode"
+                :label="`${dev.deviceCode} ${dev.modelName || ''}`"
+              >
+                <span>{{ dev.deviceCode }}</span>
+                <span class="capture-option-detail">{{ dev.modelName }}</span>
+              </el-option>
+            </el-select>
+            <p v-if="deviceError" class="capture-read-error" role="alert">{{ deviceError }}<button type="button" :disabled="loadingDevices || uploadingToOss" @click="fetchDevices">重新读取</button></p>
+          </el-form-item>
+          <el-form-item label="批次名称" required class="capture-batch-name">
+            <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="输入批次名称" />
+          </el-form-item>
+        </div>
+      </el-form>
+      <p v-if="missingCaptureFields.length" class="capture-read-error" role="status">请补全{{ missingCaptureFields.join('、') }}</p>
+      <UploadMetadataContent :notes="batchMetadata.notes" :images="batchMetadata.images" />
+      <template #footer><el-button type="primary" @click="captureDetailsOpen=false">完成</el-button></template>
+    </el-dialog>
   </div>
 </template>
 
@@ -338,6 +332,7 @@ import { isBatchUploadTask } from '../stores/taskStore'
 import { beijingDateTime, businessTimestamp } from '../utils/beijingTime'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import SelectedImageFiles from '../components/SelectedImageFiles.vue'
+import UploadMetadataContent from '../components/UploadMetadataContent.vue'
 import { useUserStore } from '../stores/user'
 
 const taskStore = useTaskStore()
@@ -351,7 +346,7 @@ const folderInput = ref(null)
 const metadataInput = ref(null)
 const resumeFolderInput = ref(null)
 const batchMetadata=ref({notes:'',images:[]}), metadataName=ref(''), metadataError=ref(''), metadataReading=ref(false)
-const captureExpanded=ref(true), selectionVersion=ref(0)
+const captureDetailsOpen = ref(false), selectionVersion = ref(0)
 let metadataRead=0
 const collectionCities = ref([])
 const loadingCities = ref(false)
@@ -409,11 +404,6 @@ const folderInfo = reactive({
   files: []
 })
 
-const collectorLabel = computed(() => {
-  const employee = employeeList.value.find(item => item.employeeNumber === folderInfo.collector)
-  return employee ? `${employee.name}（${employee.employeeNumber}）` : folderInfo.collector
-})
-
 const missingCaptureFields = computed(() => [
   ['captureDate', '采集日期'], ['region', '城市'], ['collector', '采集员'],
   ['deviceName', '采集设备'], ['imageFolderName', '批次名称']
@@ -425,6 +415,13 @@ const missingCaptureFields = computed(() => [
   if (key==='deviceName') return !deviceList.value.some(item=>item.deviceCode===folderInfo.deviceName)
   return false
 }).map(([, label]) => label))
+
+const metadataStatus = computed(() => {
+  if (metadataReading.value) return '正在读取元数据'
+  if (metadataError.value) return '元数据读取失败'
+  if (missingCaptureFields.value.length) return '采集信息待补全'
+  return metadataName.value ? '元数据已导入' : '采集信息已填写'
+})
 
 // 当前正在上传的任务
 const uploadingTask = computed(() => {
@@ -507,7 +504,6 @@ function clearMetadata() {
   metadataRead++
   metadataName.value='';metadataError.value='';metadataReading.value=false
   batchMetadata.value={notes:'',images:[]}
-  captureExpanded.value=true
 }
 
 async function readMetadata(file) {
@@ -524,7 +520,6 @@ async function readMetadata(file) {
     Object.assign(folderInfo,captureInfo)
     batchMetadata.value={notes,images}
     metadataName.value=file.name
-    captureExpanded.value=missingCaptureFields.value.length>0
   } catch (error) {
     if (current()) metadataError.value=error.message || 'JSON 文件暂不可读取'
   } finally {
@@ -554,6 +549,7 @@ const handleFolderSelect = (event) => {
     return
   }
   clearMetadata()
+  captureDetailsOpen.value = false
   selectionVersion.value++
   uploadAttempted.value = false
   registeredTaskId.value = ''
@@ -632,6 +628,7 @@ const handleUploadBatch = () => {
 const resetBatchState = () => {
   if (uploadingToOss.value) return
   clearMetadata()
+  captureDetailsOpen.value = false
   uploadAttempted.value = false
   registeredTaskId.value = ''
   selectionNotice.value = ''
@@ -898,23 +895,15 @@ onMounted(async () => {
 .selected-folder-name span { font-size:12px; color:var(--app-text-secondary); }
 .upload-selection-note { margin:9px 0 0; color:var(--app-text-secondary); font-size:12px; }
 
-.capture-options {
-  margin-top:14px;
-  padding-top:14px;
-  border-top:1px solid var(--app-border);
-  container-type:inline-size;
-}
-.capture-options-header,.capture-json-row,.capture-json-state,.capture-json-actions {
+.capture-json-row,.capture-json-state,.capture-json-actions {
   display:flex;
   align-items:center;
   flex-wrap:wrap;
   gap:6px 12px;
 }
-.capture-options-header,.capture-json-row { justify-content:space-between; }
-.capture-meta-heading { margin:0; color:var(--app-text); font-size:15px; font-weight:650; }
 .capture-json-row {
-  margin-top:7px;
-  padding:4px 10px;
+  justify-content:space-between;
+  padding:5px 10px;
   border-radius:var(--app-radius-sm);
   background:var(--app-surface-muted);
 }
@@ -932,21 +921,11 @@ onMounted(async () => {
 .capture-json-state > .el-icon { flex:none; margin-top:3px; color:var(--app-primary); }
 .capture-json-actions :deep(.el-button) { margin:0; }
 .capture-option-detail { margin-left:8px; color:var(--app-text-secondary); font-size:12px; }
-.capture-summary,.capture-meta-form {
+.capture-meta-form {
   display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));
   gap:10px 16px;
-  margin:14px 0 0;
-}
-.capture-summary { grid-template-columns:repeat(4,minmax(0,1fr)); }
-.capture-summary > div { min-width:0; }
-.capture-summary dt { color:var(--app-text-secondary); font-size:12px; }
-.capture-summary dd {
-  margin:4px 0 0;
-  font-size:13px;
-  font-weight:550;
-  color:var(--app-text);
-  overflow-wrap:anywhere;
+  margin-top:14px;
 }
 .capture-batch-name { grid-column:1/-1; }
 .capture-meta-form :deep(.el-form-item) { min-width:0; margin:0; }
@@ -979,19 +958,11 @@ onMounted(async () => {
   flex-wrap:wrap;
   gap:8px 12px;
 }
-.upload-readiness {
-  display:flex;
-  align-items:flex-start;
-  flex:1 1 200px;
-  gap:6px;
-  margin:0;
-  color:var(--app-warning);
-  font-size:12px;
-  line-height:1.8;
-}
-.upload-readiness > .el-icon { flex:none; margin-top:3px; }
+.upload-submit-row { justify-content:space-between; }
+.selected-folder-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.selected-folder-actions :deep(.el-button) { margin:0; }
 .upload-action { min-width:176px; }
-.upload-attempt-note { justify-content:space-between; }
+.upload-attempt-note { justify-content:space-between; margin-top:12px; }
 .upload-attempt-note a { font-size:13px; }
 
 .upload-progress-card {
@@ -1091,9 +1062,6 @@ onMounted(async () => {
 }
 .history-footer > .el-button { margin-right:auto; }
 
-@container (max-width:480px) {
-  .capture-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
-}
 @media (max-width:1000px) {
   .upload-grid { grid-template-columns:minmax(0,1fr); }
 }
@@ -1106,10 +1074,11 @@ onMounted(async () => {
   .capture-meta-form { gap:9px; }
   .capture-json-row { padding:6px 9px; }
   .upload-submit-row { align-items:stretch; flex-direction:column; }
-  .upload-readiness { flex:auto; }
   .upload-action { width:100%; }
   .history-item-time { margin-left:0; }
 }
+:global(.upload-capture-dialog) { display:flex; flex-direction:column; max-height:88dvh; }
+:global(.upload-capture-dialog .el-dialog__body) { min-height:0; overflow:auto; overscroll-behavior:contain; }
 @media (prefers-reduced-motion:reduce) {
   .upload-feedback-enter-active,.upload-feedback-leave-active { transition:none; }
 }
