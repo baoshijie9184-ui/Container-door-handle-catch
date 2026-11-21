@@ -9,6 +9,7 @@ import { usePollingStore } from './pollingStore'
 
 export const useUploadStore = defineStore('upload', () => {
   const uploadingToOss = ref(false)
+  const activeUploadTaskId = ref(null)
 
   // ==================== OSS 上传（可跨页面继续执行） ====================
 
@@ -28,6 +29,7 @@ export const useUploadStore = defineStore('upload', () => {
     }
 
     uploadingToOss.value = true
+    activeUploadTaskId.value = null
 
     try {
       const createResponse = await request.post('/api/detection/tasks', {
@@ -54,6 +56,7 @@ export const useUploadStore = defineStore('upload', () => {
       }
 
       const taskData = createResponse.data.data
+      activeUploadTaskId.value = taskData.taskId
       const uploadVersion=responseResourceVersion(createResponse)
       const folderLabel = captureInfo.folderLabel || `${captureInfo.region || '未知'} / ${captureInfo.imageFolderName || '未命名'}`
       const task = taskStore.createTaskEntry(taskData.taskId, folderLabel, captureInfo.imageCount, captureInfo)
@@ -178,7 +181,7 @@ export const useUploadStore = defineStore('upload', () => {
       console.error('上传 OSS 失败:', error)
       ElMessage.error(error.response?.data?.message || error.message || '上传未完成')
     } finally {
-      if(current())uploadingToOss.value = false
+      if(current()) { uploadingToOss.value = false; activeUploadTaskId.value = null }
     }
   }
 
@@ -203,6 +206,7 @@ export const useUploadStore = defineStore('upload', () => {
     }
 
     uploadingToOss.value = true
+    activeUploadTaskId.value = taskId
 
     try {
       // 请求后端生成新的预签名 URL（旧的可能已过期）
@@ -331,12 +335,13 @@ export const useUploadStore = defineStore('upload', () => {
       console.error('续传失败:', error)
       ElMessage.error(`续传失败: ${error.message || '未知错误'}`)
     } finally {
-      if(current())uploadingToOss.value = false
+      if(current()) { uploadingToOss.value = false; activeUploadTaskId.value = null }
     }
   }
 
   return {
     uploadingToOss,
+    activeUploadTaskId,
     uploadBatchToOss,
     resumeUploadToOss
   }

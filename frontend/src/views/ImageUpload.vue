@@ -337,7 +337,7 @@ const taskStore = useTaskStore()
 const userStore = useUserStore()
 const uploadStore = useUploadStore()
 const pollingStore = usePollingStore()
-const { uploadingToOss } = storeToRefs(uploadStore)
+const { uploadingToOss, activeUploadTaskId } = storeToRefs(uploadStore)
 const { taskList } = storeToRefs(taskStore)
 
 const folderInput = ref(null)
@@ -413,7 +413,9 @@ const missingCaptureFields = computed(() => [
 
 // 当前正在上传的任务
 const uploadingTask = computed(() => {
-  return taskList.value.find(t => t.stage === 'uploading') || null
+  return uploadingToOss.value && activeUploadTaskId.value
+    ? taskList.value.find(task => task.taskId === activeUploadTaskId.value && task.stage === 'uploading') || null
+    : null
 })
 
 // 上传历史：根据搜索条件过滤
