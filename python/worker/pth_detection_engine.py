@@ -48,7 +48,14 @@ class PthDetectionEngine:
         if not checkpoint.is_relative_to(manifest_path.parent):
             raise ValueError('Checkpoint must be in the manifest directory')
         self.sha256=sha256(checkpoint)
-        if self.sha256!=manifest['checkpointSha256'] or self.sha256!=metadata['checkpoint_sha256']:
+        expected_digest = metadata['checkpoint_sha256']
+        profile = manifest.get('checkpointProfile')
+        if profile is not None:
+            if profile != 'wacga-v5' or encoder_name != 'HybridEncoderWACGAShrinkage':
+                raise ValueError('Unsupported checkpoint profile')
+            # Separately trained on the v5 split, using the same S3 encoder and inference config.
+            expected_digest = 'cc71a93f5229e0f40bc046328c32b4b95d3f2280f6c2c1f0d43e077aba1b3c64'
+        if self.sha256 != manifest['checkpointSha256'] or self.sha256 != expected_digest:
             raise ValueError('Checkpoint SHA-256 mismatch')
         config=source/'configs/portable'/config_name
         if sha256(config)!=manifest['configSha256']:

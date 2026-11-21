@@ -447,6 +447,16 @@ def run_worker() -> None:
         if expected_model_id <= 0:
             raise ValueError("DETECTION_MODEL_ID must identify the deployed model")
         ensure_model_loaded()
+    secondary_id = os.getenv("DETECTION_SECONDARY_MODEL_ID")
+    secondary = None
+    if secondary_id:
+        from pth_detection_engine import PthDetectionEngine
+        secondary_id = int(secondary_id)
+        if os.getenv("DETECTION_ENGINE") != "pth" or secondary_id <= 0 or secondary_id == expected_model_id:
+            raise ValueError("The secondary PTH model requires a distinct positive model ID")
+        secondary = PthDetectionEngine(os.environ["DETECTION_SECONDARY_MODEL_MANIFEST"])
+        if secondary.sha256 == ensure_model_loaded().sha256:
+            raise ValueError("The two deployed checkpoints must be distinct")
     bucket = create_oss_bucket(settings)
     consumer = Consumer(
         {
@@ -506,11 +516,14 @@ def run_worker() -> None:
         with telemetry.span("worker.consume", attributes, headers=source_headers) as consume_span:
             def operation():
                 with telemetry.span("worker.infer", attributes) as inference_span:
+                    detector, model_id = default_detector, expected_model_id
+                    if secondary is not None and task.model_id == secondary_id:
+                        detector, model_id = secondary.detect_bytes, secondary_id
                     if task.task_id.startswith("det_folder_"):
                         report_progress = (lambda n, ok, failed: receipts.folder_progress(task,n,ok,failed)) if receipts else None
-                        result = process_folder(task, bucket, default_detector, expected_model_id, heartbeat, report_progress)
+                        result = process_folder(task, bucket, detector, model_id, heartbeat, report_progress)
                     else:
-                        result = process_created_event(task, bucket, default_detector, expected_model_id, heartbeat)
+                        result = process_created_event(task, bucket, detector, model_id, heartbeat)
                     # Only counts/status leave the process; business error text,
                     # image keys, capture metadata and detections remain private.
                     if hasattr(result, "successful_images"):

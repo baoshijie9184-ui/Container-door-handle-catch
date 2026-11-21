@@ -26,6 +26,24 @@ public class ModelController {
     @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}")
     private boolean mutationProtectionEnabled;
 
+    @org.springframework.beans.factory.annotation.Value("${DETECTION_PRIMARY_MODEL_ID:0}")
+    private int primaryModelId;
+    @org.springframework.beans.factory.annotation.Value("${DETECTION_SECONDARY_MODEL_ID:}")
+    private Integer secondaryModelId;
+
+    public record TestModel(int modelId, String modelName, String version) {}
+
+    @GetMapping("/single-test-models")
+    @PreAuthorize("hasAnyRole('SUPERVISOR','INSPECTOR','ADMIN')")
+    public Result<List<TestModel>> singleTestModels() {
+        var models = modelService.getAllModels().stream()
+                .filter(m -> m.getModelId() == primaryModelId || m.getModelId().equals(secondaryModelId))
+                .sorted(java.util.Comparator.comparingInt(m -> m.getModelId() == primaryModelId ? 0 : 1))
+                .map(m -> new TestModel(m.getModelId(), m.getModelName(), m.getVersion()))
+                .toList();
+        return Result.success(models);
+    }
+
     @GetMapping("/file-operations")
     @PreAuthorize("hasRole('SUPERVISOR')")
     public org.springframework.http.ResponseEntity<Result<com.ruanzhu.doorhandle.module.model.service.ModelFileJournal.View>> fileOperations(

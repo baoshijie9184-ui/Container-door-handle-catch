@@ -31,15 +31,17 @@ const mapCompletedResult = (taskId, result, status) => {
   const summary = result.statistics?.singleImageResult
   const preview = result.previewImages?.[0]
   const confidenceMissing = summary?.confidence === null || summary?.confidence === undefined
-  if (!summary?.category || confidenceMissing || !preview?.annotatedUrl) {
+  const noTargets = result.statistics?.noDetectionImages === 1 && result.statistics?.successfulImages === 1
+  if ((!noTargets && (!summary?.category || confidenceMissing)) || !preview?.annotatedUrl) {
     throw new Error(`远程结果不完整，任务编号：${taskId}`)
   }
   return {
     taskId,
     status,
-    category: summary.category,
+    category: noTargets ? '未检出目标' : summary.category,
+    targetCount: Object.values(result.statistics?.classCounts || {}).reduce((sum, n) => sum + Number(n), 0),
     modelMaintenance: result.modelMaintenance,
-    confidence: Number(summary.confidence),
+    confidence: noTargets ? null : Number(summary.confidence),
     annotatedImagePath: preview.annotatedUrl,
     processedImagePath: preview.originalUrl || '',
     source: 'KAFKA_REMOTE'

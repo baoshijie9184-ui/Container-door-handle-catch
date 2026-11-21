@@ -13,8 +13,18 @@
       <el-tab-pane name="workspace" label="检测工作台">
         <div class="workspace-grid">
           <el-card class="detection-card detection-input-card" shadow="never">
-            <template #header><h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />单图检测（测试）</h2></template>
-            <el-form label-position="top">
+            <template #header>
+              <div class="single-mode-header">
+                <h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />单图检测（测试）</h2>
+                <el-radio-group v-model="singleMode" aria-label="单图检测模式" :disabled="comparisonBusy || loadingSingle" size="small">
+                  <el-radio-button value="compare">双模型对比</el-radio-button>
+                  <el-radio-button value="single">单模型检测</el-radio-button>
+                </el-radio-group>
+              </div>
+            </template>
+            <SingleModelComparison v-if="activeTab === 'workspace'" v-show="singleMode === 'compare'"
+              :key="comparisonScope" @busy="comparisonBusy=$event" @trace="openTraceDialog" />
+            <el-form v-show="singleMode === 'single'" label-position="top">
               <div class="input-grid">
                 <div class="input-block">
                   <div class="single-detection-workspace">
@@ -758,6 +768,7 @@ import { useDetectionHistory } from '../composables/useDetectionHistory'
 import { useQualityReportDownloads } from '../composables/useQualityReportDownloads'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import TaskTracePanel from '../components/TaskTracePanel.vue'
+import SingleModelComparison from '../components/SingleModelComparison.vue'
 import SingleDetectionEvidence from '../components/SingleDetectionEvidence.vue'
 import TaskExecutionProgress from '../components/TaskExecutionProgress.vue'
 import TaskResultSnapshot from '../components/TaskResultSnapshot.vue'
@@ -767,6 +778,10 @@ import '@/assets/task-trace-dialog.css'
 const props=defineProps({boardRequest:Object})
 const emit=defineEmits(['dismiss'])
 const userStore = useUserStore()
+const singleMode = ref('compare')
+const comparisonBusy = ref(false)
+const comparisonScope = computed(() => JSON.stringify([userStore.identity?.userId, userStore.username, userStore.role, userStore.isAuthenticated]))
+watch(comparisonScope, () => { comparisonBusy.value=false })
 const businessTraceScope = computed(() => userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权查看的业务范围')
 const taskStore = useTaskStore()
 const uploadStore = useUploadStore()
@@ -1495,6 +1510,7 @@ async function validateCollaborationAccess(){
 .detection-settings > div { min-width:0; }
 .detection-settings :deep(.el-form-item) { margin-bottom:8px; }
 .detection-settings .detection-input-note { margin-bottom:0; }
+.single-mode-header { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px }
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
