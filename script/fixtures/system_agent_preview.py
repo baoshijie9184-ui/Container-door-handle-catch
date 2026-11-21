@@ -252,7 +252,7 @@ def response(path, method='GET', role='SUPERVISOR', url='', body=None):
         flows=Counter(t['flowStatus'] for t in TASKS)
         return wrapped({key:flows[flow] for key,flow in [('pendingReviewCount','PENDING_REVIEW'),('pendingDispositionCount','CONFIRMED'),('reworkRequiredCount','REWORK_REQUIRED'),('recheckRequiredCount','RECHECK_REQUIRED'),('holdCount','HOLD'),('failedCount','FAILED')]})
     if path=='/api/dashboard/region-stats':
-        finished = [t for t in TASKS if t['status'] in ('COMPLETED','PARTIAL_FAILED')]
+        finished = [t for t in TASKS if t['status'] in ('COMPLETED','PARTIAL_FAILED') and t.get('taskType') != 'SINGLE']
         regions = [dict(region=name,imageCount=sum(t['totalImages'] for t in finished if t['region']==name),
                         taskCount=sum(t['region']==name for t in finished)) for name in ('上海市','南京市') if any(t['region']==name for t in finished)]
         regions.sort(key=lambda r: (-r['imageCount'], r['region']))

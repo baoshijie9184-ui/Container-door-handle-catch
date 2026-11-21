@@ -282,12 +282,12 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">地区图片采集量</h3>
-              <p class="app-panel-subtitle">企业汇总 · 按登记地区<span v-if="chartReadouts.region.unassignedTasks"> · 地区待确认 {{ chartReadouts.region.unassignedImages.toLocaleString('zh-CN') }} 张（{{ chartReadouts.region.unassignedTasks }} 个任务）</span></p>
+              <p class="app-panel-subtitle">批量采集 · 按登记地区<span v-if="chartReadouts.region.unassignedTasks"> · 地区待确认 {{ chartReadouts.region.unassignedImages.toLocaleString('zh-CN') }} 张（{{ chartReadouts.region.unassignedTasks }} 个任务）</span></p>
             </div>
           </div>
         </template>
         <div ref="regionChartRef" class="chart" role="img" aria-label="登记地区的累计任务图片数与任务数"></div>
-        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="企业汇总 · 按登记地区" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
+        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="批量采集任务（含单张图片批次）· 按登记地区" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
       </el-card>
 
       <!-- 检测结果分布 (右半) -->

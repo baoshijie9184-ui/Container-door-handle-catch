@@ -316,7 +316,8 @@ public class DashboardServiceImpl implements DashboardService {
         String sql = """
                 SELECT MIN(region) AS region, COALESCE(SUM(total_images), 0) AS imageCount, COUNT(*) AS taskCount
                 FROM detection_task
-                WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND (%s)
+                WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND (task_type IS NULL OR task_type <> 'SINGLE')
+                  AND (%s)
                 GROUP BY BINARY region
                 """.formatted(scope.predicate());
         return RegionCollectionSummary.from(scopedJdbc.queryForList(sql, scope.parameters()));
