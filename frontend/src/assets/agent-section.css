@@ -12,11 +12,6 @@
 #app .is-agent-section.is-agent-workspace .layout-content { padding: 0; }
 #app .is-agent-section.is-agent-workspace .chat-workspace { border: 0; border-radius: 0; box-shadow: none; }
 #app .is-agent-workspace .chat-workspace .chat-sidebar { background: #f3f6fc; border-right-color: #e4eaf5; }
-#app .is-agent-workspace .sidebar-caption { padding-top: 26px; padding-bottom: 20px; }
-#app .is-agent-workspace .sidebar-caption > strong { font-size: 17px; color: #233a5f; letter-spacing: -.03em; }
-#app .is-agent-workspace .sidebar-agent-label { display: inline-block; padding: 2px 6px; margin-left: 3px; border-radius: 6px; background: #e0eaff; color: #2d63c7; font-size: 11px; letter-spacing: 0; }
-#app .is-agent-workspace .chat-workspace .sidebar-header .new-session-btn { background: #2b65df; border-color: #2b65df; color: white; box-shadow: 0 4px 10px #2563eb1a; }
-#app .is-agent-workspace .chat-workspace .sidebar-header .new-session-btn:hover { background: #2458c6; color: white; }
 #app .is-agent-workspace .chat-workspace .chat-body:has(.msg-empty) { background: radial-gradient(ellipse at 50% 30%, #eef4ff80, transparent 65%); }
 #app .is-agent-workspace .msg-empty .empty-avatar { width: 64px; height: 64px; background: linear-gradient(135deg, #2b65df, #5e99ff); color: white; border: 0; border-radius: 20px; box-shadow: 0 10px 24px #2563eb23; font-size: 30px; }
 #app .is-agent-workspace .msg-empty .welcome-eyebrow { color: #507bbf; }

@@ -1,6 +1,6 @@
 <template>
   <button v-if="compact && !collapsed" class="session-backdrop" type="button" aria-label="关闭会话列表" @click="closeCompactSidebar"></button>
-  <aside ref="sidebarRef" class="chat-sidebar" :class="{ collapsed: collapsed, compact: compact }" @keydown.esc="handleSidebarEscape">
+  <aside ref="sidebarRef" class="chat-sidebar" aria-label="助手会话侧栏" :class="{ collapsed: collapsed, compact: compact }" @keydown.esc="handleSidebarEscape">
     <!-- 折叠按钮 -->
     <button ref="sidebarToggleRef" type="button" class="sidebar-toggle" @click="collapsed = !collapsed" :title="collapsed ? '展开会话列表' : '收起会话列表'" :aria-label="collapsed ? '展开会话列表' : '收起会话列表'" :aria-expanded="!collapsed">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -10,17 +10,20 @@
     </button>
 
     <template v-if="!collapsed">
-      <div class="sidebar-caption" :title="SYSTEM_NAME"><strong>{{ SYSTEM_SHORT_NAME }} <span class="sidebar-agent-label">Agent</span></strong><span>{{ SYSTEM_SCOPE }}</span></div>
+      <header class="sidebar-caption">
+        <span class="sidebar-assistant-icon"><AppIcon name="ChatDotRound" :size="19" /></span>
+        <h2>智能对话助手</h2>
+      </header>
       <!-- 新建按钮组 -->
       <div class="sidebar-header">
-        <button class="new-session-btn" @click="handleNewSession">
+        <button type="button" class="new-session-btn" @click="handleNewSession">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
           <span>新建对话</span>
         </button>
-        <button class="new-project-btn" @click="openCreateProjectModal">
+        <button type="button" class="new-project-btn" @click="openCreateProjectModal">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
             <line x1="12" y1="11" x2="12" y2="17" />
@@ -45,7 +48,6 @@
             type="text"
             placeholder="搜索标题或摘要"
             aria-label="搜索已加载的对话标题或摘要"
-            aria-describedby="sidebar-search-scope"
             class="search-input"
           />
           <button v-if="searchQuery" type="button" class="search-clear" aria-label="清除对话搜索" title="清除搜索" @click="clearSearch">
@@ -58,7 +60,7 @@
       </div>
 
       <div class="sidebar-history-heading"><span>{{ searchQuery.trim() ? `匹配 ${searchResults.length} 条` : '对话历史' }}</span><button type="button" aria-label="重新读取会话列表" title="重新读取会话列表" :disabled="store.sessionsLoading" @click="store.loadSessionList()"><AppIcon name="Refresh" :size="15" /></button></div>
-      <p id="sidebar-search-scope" class="sidebar-search-scope">仅搜索当前账号已加载的标题和摘要</p>
+      <p v-if="searchQuery.trim()" class="sidebar-search-scope">搜索范围：已加载的对话</p>
       <p v-if="store.sessionsError" class="sidebar-read-error" role="alert">{{ store.sessionsError }}</p>
       <p v-if="renameError" class="sidebar-read-error" role="alert">{{ renameError }}<button v-if="renameUncertain" type="button" @click="cancelEdit(); store.loadSessionList()">关闭编辑并重新读取</button></p>
       <!-- 会话列表 -->
@@ -427,7 +429,6 @@
 </template>
 
 <script setup>
-import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_SCOPE} from '@/utils/systemBrand'
 import { ref, nextTick, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 import { Position } from '@element-plus/icons-vue'
@@ -835,55 +836,66 @@ const handleDeleteProject = async (projectId) => {
   color: #334155;
 }
 
-.sidebar-header {
-  padding: 16px 12px 8px;
-  display: flex;
-  gap: 6px;
-}
-
-.new-session-btn,
-.new-project-btn {
-  flex: 1;
+.sidebar-caption {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border: none;
+  gap: 9px;
+  flex: none;
+  min-height: 58px;
+  padding: 10px 52px 10px 14px;
+  box-sizing: border-box;
+}
+.sidebar-caption h2 {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.sidebar-assistant-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  height: 30px;
   border-radius: 8px;
-  color: #fff;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  transition: all 0.2s;
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
 }
-
-.new-session-btn {
-  background: linear-gradient(135deg, #2563eb, #3b5de7);
-  box-shadow: 0 2px 6px rgba(79, 110, 247, 0.2);
-}
-
-.new-session-btn:hover {
-  background: linear-gradient(135deg, #5f7ef9, #4b6de9);
-  box-shadow: 0 3px 10px rgba(79, 110, 247, 0.3);
-  transform: translateY(-1px);
-}
-
-.new-project-btn {
-  background: #eaf0fb;
-  color: #42608d;
+.chat-sidebar:not(.collapsed) .sidebar-toggle {
+  inset: 13px 14px auto auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
   box-shadow: none;
 }
-
-.new-project-btn:hover {
-  background: #dfe9fa;
-  transform: translateY(-1px);
+.sidebar-header {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 14px 9px;
 }
-
-.sidebar-search {
-  padding: 0 12px 8px;
+.new-session-btn, .new-project-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 36px;
+  padding: 5px 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
 }
-
+.new-session-btn { background: var(--app-primary); color: white; }
+.new-session-btn:hover { background: var(--app-primary-hover, #204fc2); }
+.new-project-btn { background: white; border-color: var(--app-border-strong); color: var(--app-text-secondary); }
+.new-project-btn:hover { background: var(--app-primary-soft); color: var(--app-primary); }
+.sidebar-search { margin: 0 14px; }
 .search-input-wrapper {
   position: relative;
   display: flex;
@@ -892,14 +904,16 @@ const handleDeleteProject = async (projectId) => {
 
 .search-icon {
   position: absolute;
-  left: 8px;
-  color: #94a3b8;
+  left: 10px;
+  color: var(--app-text-secondary);
   pointer-events: none;
 }
 
 .search-input {
   width: 100%;
-  padding: 6px 28px 6px 28px;
+  box-sizing: border-box;
+  min-height: 35px;
+  padding: 6px 30px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   background: #fff;
@@ -915,7 +929,7 @@ const handleDeleteProject = async (projectId) => {
 }
 
 .search-input::placeholder {
-  color: #94a3b8;
+  color: var(--app-text-secondary);
 }
 
 .search-clear {
@@ -1289,7 +1303,7 @@ const handleDeleteProject = async (projectId) => {
   border-radius: 999px;
 }
 
-.sidebar-history-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px 0; color: #475569; font-size: 12px; }
+.sidebar-history-heading { display: flex; align-items: center; justify-content: space-between; margin: 14px 14px 0; padding-top: 8px; border-top: 1px solid var(--app-border); color: var(--app-text-secondary); font-size: 13px; font-weight: 600; }
 .sidebar-history-heading button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: #475569; cursor: pointer; transition: background-color 180ms, color 180ms; }
 .sidebar-history-heading button:hover:not(:disabled) { background: #eff6ff; color: #2563eb; }
 .sidebar-history-heading button:disabled { opacity: .5; cursor: wait; }
@@ -1313,7 +1327,7 @@ const handleDeleteProject = async (projectId) => {
 .chat-sidebar button:focus-visible, .chat-sidebar input:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .session-item:focus-within .session-more-btn { opacity: 1; }
 @media (hover: none) { .session-more-btn { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .session-item, .sidebar-history-heading button { transition: none; } .session-item.dragging { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .chat-sidebar, .session-item, .sidebar-history-heading button { transition: none; } .session-item.dragging { transform: none; } }
 </style>
 <style>
 .chat-project-dialog .el-dialog__body{max-height:65vh;max-height:65dvh;overflow:auto;overscroll-behavior:contain}

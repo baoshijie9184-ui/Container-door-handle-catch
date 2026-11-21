@@ -245,8 +245,6 @@
 #app .is-agent-section .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):not(.is-disabled):not(:disabled) { background:var(--app-primary); border-color:var(--app-primary); box-shadow:none; }
 #app .is-agent-workspace .chat-workspace { background: white; }
 #app .is-agent-workspace .chat-workspace .chat-sidebar { background:var(--app-bg-alt); border-color: var(--app-border); }
-#app .is-agent-workspace .chat-workspace .sidebar-header .new-session-btn { box-shadow: none; background: white; color: var(--app-primary); border: 1px solid var(--app-border-strong); }
-#app .is-agent-workspace .chat-workspace .sidebar-header .new-session-btn:hover { background: var(--app-primary-soft); color: var(--app-primary); }
 #app .is-agent-workspace .chat-workspace .chat-header { background: white; border-color: var(--app-border); }
 #app .is-agent-workspace .chat-workspace .chat-body:has(.msg-empty) { background: white; }
 #app .is-agent-workspace .msg-empty .empty-avatar { background:var(--app-primary-soft); color:var(--app-primary); box-shadow:none; border:1px solid var(--app-border); border-radius:16px; }

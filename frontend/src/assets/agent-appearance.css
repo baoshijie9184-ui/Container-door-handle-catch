@@ -20,15 +20,6 @@
   background: var(--agent-soft);
   border-right-color: var(--agent-line);
 }
-.agent-chat-page .sidebar-caption {
-  display: grid;
-  gap: 5px;
-  padding: 22px 18px 5px;
-}
-.agent-chat-page .sidebar-caption strong { font-size: 14px; font-weight: 650; }
-.agent-chat-page .sidebar-caption span { color: var(--app-text-secondary); font-size: 12px; }
-.agent-chat-page .sidebar-header { padding: 16px 12px 12px; }
-.agent-chat-page .sidebar-header .new-session-btn,
 .agent-shell .new-session.ant-btn {
   min-height: 40px;
   border: 1px solid #dce6fb;
@@ -38,10 +29,7 @@
   font-weight: 600;
   box-shadow: none;
 }
-.agent-chat-page .sidebar-header .new-session-btn:hover,
 .agent-shell .new-session.ant-btn:hover { background: #e1ebff; border-color: #c3d6fc; }
-.agent-chat-page .new-project-btn { background: #fff; color: var(--agent-muted); border: 1px solid var(--agent-line); }
-.agent-chat-page .sidebar-search .search-input { border-radius: 9px; padding-block: 9px; border-color: var(--agent-line); }
 .agent-chat-page .session-item { border-radius: 10px; margin-block: 4px; }
 .agent-chat-page .session-item.active,
 .agent-shell .session-item.selected { background: #eaf0fb; color: #254f9e; box-shadow: none; }
