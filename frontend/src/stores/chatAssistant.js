@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { accountSession } from '../utils/accountContext'
-import { ref, watch, onScopeDispose } from 'vue'
+import { computed, ref, watch, onScopeDispose } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   archiveSession,
@@ -37,6 +37,8 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
   const withExecution = (rows,sid) => {if(executionSession!==sid){executionCache.clear();executionSession=sid}return rows.map(item=>({...item,...(executionCache.get(sid+'|'+item.id)||{})}))}
   const loading = ref(false)
   const bootstrapped = ref(false)
+  const pendingOpens = ref(0)
+  const openingFirstSession = computed(() => !sessionId.value && pendingOpens.value > 0)
   const confirmingActionIds = ref(new Set())
 
   // 多会话
@@ -430,10 +432,15 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
 
   const open = async () => {
     visible.value = true
-    if (!loading.value && bootstrapped.value && sessionId.value) {
-      await loadSession(sessionId.value, true)
-      await loadSessionList()
-    } else await bootstrap()
+    pendingOpens.value++
+    try {
+      if (!loading.value && bootstrapped.value && sessionId.value) {
+        await loadSession(sessionId.value, true)
+        await loadSessionList()
+      } else await bootstrap()
+    } finally {
+      pendingOpens.value--
+    }
   }
 
   const close = () => {
@@ -616,6 +623,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     sessionStatus,
     messages,
     loading,
+    openingFirstSession,
     confirmingActionIds,
     sessions,
     sessionsLoading,

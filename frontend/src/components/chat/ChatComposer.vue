@@ -19,7 +19,7 @@
         ref="textareaRef"
         v-model="draft"
         class="composer-textarea"
-        :placeholder="loading ? '助手正在思考…' : '输入消息 或输入 / 选择技能命令'"
+        :placeholder="inputPlaceholder"
         :disabled="loading"
         rows="1"
         title="Enter 发送 · Shift + Enter 换行"
@@ -105,6 +105,10 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['send','stop'])
+const inputPlaceholder = computed(() => {
+  if (!props.loading) return '输入消息 或输入 / 选择技能命令'
+  return props.sessionId ? '助手正在思考…' : '正在打开会话…'
+})
 const draft = ref('')
 let draftRevision=0
 const commandListId='chat-skill-commands-'+getCurrentInstance().uid
