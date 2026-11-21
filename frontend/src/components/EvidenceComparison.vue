@@ -1,5 +1,5 @@
 <template>
-  <section class="evidence-comparison" :aria-labelledby="headingId">
+  <section class="evidence-comparison" :class="{ 'compact-comparison': compactCompare }" :aria-labelledby="headingId">
     <header>
       <div><h3 :id="headingId"><AppIcon name="Picture" :size="19" />图片对照</h3><p>按文件名查找，或在翻页区使用左右方向键逐张查看。</p></div>
       <el-select-v2 v-if="pairs.length" :model-value="current?.key" :options="options" filterable
@@ -20,7 +20,7 @@
     <p v-if="!pairs.length" class="comparison-note"><AppIcon name="Files" :size="16" />当前任务没有可对照的图片资料</p>
     <div v-else class="comparison-images">
       <figure v-for="side in sideViews" :key="side.key">
-        <figcaption><strong>{{ side.label }}</strong><a v-if="side.url" :href="side.url" :aria-label="'在新标签页打开'+side.label+'：'+(current.name || '名称未记录')" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">新标签页打开<AppIcon name="TopRight" :size="13" /></a></figcaption>
+        <figcaption><strong>{{ side.label }}</strong><a v-if="side.url" :href="side.url" :aria-label="'在新标签页打开'+side.label+'：'+(current.name || '名称未记录')" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"><span class="external-label">新标签页打开</span><AppIcon name="TopRight" :size="13" /></a></figcaption>
         <button v-if="side.url && !side.failed" type="button" class="comparison-image-button" :aria-label="'放大'+side.label+'：'+(current.name || '名称未记录')" @click="openZoom(side)"><img :key="side.url" :src="side.url" :alt="side.label+' '+(current.name || '名称未记录')" loading="lazy" decoding="async" @load="markLoaded(side.key,$event.currentTarget.getAttribute('src'))" @error="markFailed(side.key, $event.currentTarget.getAttribute('src'))"/><span :role="side.loaded ? undefined : 'status'"><AppIcon :name="side.loaded ? 'Search' : 'Connection'" :size="14" />{{ side.loaded ? '放大核对' : '正在读取图片' }}</span></button>
         <div v-else class="comparison-image-empty" :data-state="side.file ? 'unavailable' : 'missing'"><AppIcon :name="side.file ? 'Warning' : 'Picture'" :size="25" /><strong><OssPreviewFailure v-if="side.failed" :src="side.url" :fallback="side.emptyTitle" /><template v-else>{{ side.emptyTitle }}</template></strong><p v-if="!side.failed || !side.url">{{ side.emptyDescription }}</p><el-button v-if="side.url" size="small" :aria-label="'重新读取'+side.label" @click="retryImage(side)"><AppIcon name="Refresh" :size="14" />重新读取图片</el-button></div>
         <p class="comparison-filename">{{ side.file?.imageName || '名称未记录' }}</p>
@@ -43,7 +43,7 @@ import AppIcon from './AppIcon.vue'
 import {imageMaintenance} from '../utils/modelMaintenance'
 import ImageListNavigation from './ImageListNavigation.vue'
 import { evidenceComparisonPairs, evidencePreviewUrl } from '../utils/evidencePresentation'
-const props = defineProps({ editAnnotations:Boolean, maintenance:Object, defects:Array, taskId: String, initialAnnotationUrl: { type: String, default: '' }, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
+const props = defineProps({ compactCompare:Boolean, editAnnotations:Boolean, maintenance:Object, defects:Array, taskId: String, initialAnnotationUrl: { type: String, default: '' }, originals: { type: Array, default: () => [] }, annotations: { type: Array, default: () => [] } })
 const headingId = 'evidence-comparison-' + getCurrentInstance().uid
 const selection = ref(''), failed = ref(new Set()), loaded = ref(new Set()), zoomOpen = ref(false), zoomError = ref(false)
 const pager = ref(null), zoomPager = ref(null), zoomSide = ref('original')
@@ -133,6 +133,19 @@ defineExpose({ focusNavigation: () => pager.value?.focus() })
 .evidence-comparison :is(button,a):focus-visible,.comparison-zoom-actions :is(button,a):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .comparison-image-button > span { transition:background-color 180ms ease,color 180ms ease; }
 @media(max-width:640px) { .evidence-comparison { padding-bottom:18px; }.comparison-images { grid-template-columns:minmax(0,1fr); }.comparison-image-button { height:230px; }.comparison-image-empty { min-height:230px; } }
+@media(max-width:640px) {
+  .compact-comparison > header { gap:8px; margin-bottom:8px; }
+  .compact-comparison header p { display:none; }
+  .compact-comparison .comparison-toolbar { margin-bottom:8px; }
+  .compact-comparison .comparison-images { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .compact-comparison figcaption { padding:0 7px; gap:0 4px; }
+  .compact-comparison figcaption a { justify-content:center; width:36px; min-height:36px; }
+  .compact-comparison .external-label { display:none; }
+  .compact-comparison .comparison-image-button { height:clamp(104px, 34vw, 158px); }
+  .compact-comparison .comparison-image-button > span { right:4px; bottom:4px; gap:3px; padding:3px 4px; }
+  .compact-comparison .comparison-image-empty { min-height:132px; padding:8px; }
+  .compact-comparison .comparison-filename { padding:5px 7px; font-size:11px; }
+}
 @media(prefers-reduced-motion:reduce) { .comparison-image-button > span { transition:none; } }
 </style>
 

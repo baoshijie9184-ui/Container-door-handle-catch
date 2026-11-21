@@ -226,7 +226,7 @@
       <QualityTaskContext :compact="!!boardRequest" :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
       <div v-if="reviewImages" :class="{'board-review-evidence':boardRequest}"><ModelMaintenanceSummary :summary="reviewImages.maintenance" />
-      <EvidenceComparison edit-annotations :task-id="reviewTask?.taskId" :maintenance="reviewImages.maintenance" :defects="reviewImages.defects" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
+      <EvidenceComparison edit-annotations :compact-compare="!!boardRequest" :task-id="reviewTask?.taskId" :maintenance="reviewImages.maintenance" :defects="reviewImages.defects" :originals="reviewImages.originals" :annotations="reviewImages.annotations" /></div>
       <div v-else class="quality-feedback-note" role="status"><AppIcon name="Picture" :size="16" />{{ reviewImageError || '正在读取本次任务的原图与标注图…' }}
         <el-button v-if="reviewImageError" link type="primary" @click="reviewImageAttempt++">重新读取图片</el-button>
       </div>
