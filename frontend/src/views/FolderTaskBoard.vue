@@ -1,13 +1,17 @@
 <template>
   <main class="task-board">
-    <header class="board-heading"><div><h1>{{ uploadsOnly || taskList ? route.meta.title : inboxTitle || boardTitle }}</h1></div>
+    <header class="board-heading">
+      <div class="board-title">
+        <span class="board-mark" aria-hidden="true"><AppIcon :name="boardIcon" :size="22" /></span>
+        <h1>{{ uploadsOnly || taskList ? route.meta.title : inboxTitle || boardTitle }}</h1>
+      </div>
       <nav class="board-links" aria-label="相关操作">
         <router-link v-if="supervisor && (uploadsOnly || taskList)" to="/inspection/tasks"><AppIcon name="Tickets" :size="16"/>任务总表</router-link>
         <router-link v-if="!supervisor && uploadsOnly" :to="employeeScopeLink(true)"><AppIcon name="Tickets" :size="16"/>我的待办</router-link>
         <el-button v-if="supervisor && !uploadsOnly && !verificationList" type="primary" @click="openNew()"><AppIcon name="Plus"/>新建文件夹任务</el-button>
       </nav>
     </header>
-    <InspectionFlowNav />
+    <InspectionFlowNav class="board-flow" />
     <WorkUnitApplications v-if="!supervisor && !uploadsOnly && !inboxKind && !assignedTaskId && (!keyword || keyword.startsWith('WU-'))"
       :key="user.accountContext" :keyword="keyword" />
     <div v-if="applicationId" class="application-dispatch" aria-live="polite">
@@ -38,16 +42,33 @@
           </router-link>
         </nav>
       </div>
-      <div class="board-toolbar"><div v-if="(!uploadsOnly || supervisor || uploadScope==='mine') && !awaitingDispatch && inboxKind!=='verification'" class="phases" aria-label="按任务阶段筛选">
-        <button v-for="(label,key) in listPhases" :key="key" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
-      </div><form @submit.prevent="search">
-        <el-input v-if="uploadsOnly && uploadScope==='team'" v-model="uploaderInput" maxlength="50" placeholder="上传人工号" aria-label="上传人工号" clearable @clear="search"/>
-        <el-input v-model="query" maxlength="255" :placeholder="uploadsOnly ? '搜文件夹或任务号' : '搜目录、任务或工号'" aria-label="搜索任务" clearable @clear="search"/>
-        <el-button native-type="submit">查询</el-button>
-      </form></div>
-      <el-alert v-if="error" :title="error" type="error" :closable="false"/>
-      <el-table :data="rows" v-loading="loading" row-key="taskId" empty-text="当前筛选下没有任务">
-        <template #empty><span v-if="loading">正在读取…</span><span v-else-if="error">记录暂不可读取</span><template v-else-if="uploadsOnly && uploadScope==='mine' && !keyword && !phase">你还没有上传记录。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="awaitingDispatch">没有符合条件的待派文件夹。<router-link to="/inspection/uploads/all">查看全部上传</router-link></template><template v-else-if="inbox && !keyword && !phase">{{ inboxKind==='detection' ? '当前没有待你启动或重试的检测。' : inboxKind==='verification' ? '当前没有分派给你的待校验结果。' : '当前没有待你处理的任务。' }}<router-link :to="employeeScopeLink(false)">查看全部任务</router-link></template><template v-else-if="taskList==='detection' && keyword">当前没有符合条件的检测任务。<router-link :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link></template><span v-else>{{ uploadsOnly ? '没有符合条件的上传记录' : '当前筛选下没有任务' }}</span></template>
+      <div class="board-toolbar">
+        <div v-if="(!uploadsOnly || supervisor || uploadScope==='mine') && !awaitingDispatch && inboxKind!=='verification'" class="phases" role="group" aria-label="按任务阶段筛选">
+          <button v-for="(label,key) in listPhases" :key="key" type="button" :aria-pressed="phase===key" @click="filter(key)">{{ label }}</button>
+        </div>
+        <form class="task-search" role="search" aria-label="筛选任务" @submit.prevent="search">
+          <el-input v-if="uploadsOnly && uploadScope==='team'" v-model="uploaderInput" maxlength="50" placeholder="上传人工号" aria-label="上传人工号" clearable @clear="search"/>
+          <el-input v-model="query" maxlength="255" :placeholder="uploadsOnly ? '搜文件夹或任务号' : '搜目录、任务或工号'" aria-label="搜索任务" clearable @clear="search">
+            <template #prefix><AppIcon name="Search" :size="15" /></template>
+          </el-input>
+          <el-button native-type="submit" type="primary" plain>查询</el-button>
+        </form>
+      </div>
+      <div v-if="error" class="board-error" role="alert">
+        <AppIcon name="Warning" :size="17" /><span>{{ error }}</span>
+        <el-button link type="primary" :disabled="loading" @click="load()">重新读取</el-button>
+      </div>
+      <div class="board-results" v-loading="loading" :aria-busy="loading">
+      <div v-if="!rows.length" class="board-empty">
+        <template v-if="!loading && !error">
+          <AppIcon name="FolderOpened" :size="26" aria-hidden="true" />
+          <p>{{ emptyMessage }}</p>
+          <router-link v-if="awaitingDispatch || (uploadsOnly && uploadScope==='mine' && !keyword && !phase)" to="/inspection/uploads/all">查看全部上传</router-link>
+          <router-link v-else-if="inbox && !keyword && !phase" :to="employeeScopeLink(false)">查看全部任务</router-link>
+          <router-link v-else-if="taskList==='detection' && keyword" :to="{path:'/inspection/tasks/verification',query:{keyword}}">在校验列表查找</router-link>
+        </template>
+      </div>
+      <el-table v-else class="board-table" :data="rows" row-key="taskId">
         <el-table-column label="图片文件夹" min-width="195"><template #default="{row}">
           <strong class="folder-name" :title="recordFolderLabel(row)">{{ recordFolderLabel(row) }}</strong>
           <div class="folder-metadata">
@@ -73,53 +94,45 @@
           </template>
         </template></el-table-column>
         <el-table-column v-if="!uploadsOnly" label="模型检测" min-width="148"><template #default="{row}">
-          <strong class="phase" :data-phase="row.modelStatus">{{ modelStep(row) }}</strong>
-          <small v-if="row.totalImages != null">已处理 {{ row.processedImages ?? '—' }} / {{ row.totalImages }} 张<span v-if="row.failedImages"> · {{ row.failedImages }} 张失败</span></small>
-          <progress v-if="row.totalImages && ['QUEUED','DETECTING','RUNNING'].includes(row.modelStatus)" :value="row.processedImages" :max="row.totalImages" aria-label="模型图片处理进度"/>
-          <small v-if="!taskList && (row.detectionOperator || row.detector)">{{ row.detectionOperator ? '执行工号' : '受派工号' }} {{ row.detectionOperator || row.detector }}</small>
+          <TaskBoardStage :row="row" />
         </template></el-table-column>
         <el-table-column v-if="!uploadsOnly && taskList!=='detection'" label="人工校验" min-width="145"><template #default="{row}">
-          <strong class="phase" :data-phase="row.listPhase">{{ humanStep(row) }}</strong>
-          <small v-if="!taskList && (row.qualityOperator || row.qualityAssignee)">{{ row.qualityOperator ? '校验工号' : '受派工号' }} {{ row.qualityOperator || row.qualityAssignee }}</small>
+          <TaskBoardStage :row="row" verification />
         </template></el-table-column>
-        <el-table-column v-if="taskList==='detection'" label="检测员工" min-width="126"><template #default="{row}">{{ row.detectionOperator || row.detector || '—' }}<small v-if="row.detector">{{ row.detectionOperator ? '已执行检测' : '受派检测' }}</small></template></el-table-column>
-        <el-table-column v-if="verificationList" label="校验员工" min-width="126"><template #default="{row}">{{ row.qualityOperator || row.qualityAssignee || '—' }}<small v-if="row.qualityOperator || row.qualityAssignee">{{ row.reviewedAt ? '已提交校验' : '受派校验' }}</small></template></el-table-column>
         <el-table-column label="操作" min-width="245"><template #default="{row}">
-          <div class="row-actions">
+          <TaskBoardActions v-bind="rowActions(row)" @start="start" @assign="openAssign" @dispatch="openNew" />
+        </template></el-table-column>
+      </el-table>
+      <ul v-if="rows.length" class="board-cards" aria-label="任务与批次">
+        <li v-for="row in rows" :key="row.taskId" class="board-card">
+          <header class="board-card-heading">
+            <div>
+              <h2>{{ recordFolderLabel(row) }}</h2>
+              <small v-if="row.totalImages != null">{{ row.totalImages }} 张图片</small>
+            </div>
+            <FolderMetadataLink :task-id="row.taskId" />
+          </header>
+          <dl class="card-facts">
             <template v-if="uploadsOnly">
-              <router-link v-if="previewTaskId(row)" :to="actionLink(previewTaskId(row), 'images')">查看原图</router-link>
-              <el-button v-else link disabled>查看原图</el-button>
-              <template v-if="supervisor">
-                <el-button v-if="!dispatchUnavailable(row)" size="small" :type="awaitingDispatch ? 'primary' : 'default'" @click="openNew({ upload: row })">
-                  {{ applicationId ? '选用此批次' : '派发检测任务' }}
-                </el-button>
-                <router-link v-if="!awaitingDispatch && row.taskType!=='SINGLE' && ['WAITING_CHECK','VERIFYING'].includes(row.listPhase)" class="next-action"
-                  :to="{path:'/inspection/tasks/verification',query:{keyword:row.taskId}}">前往校验</router-link>
-                <small v-if="dispatchUnavailable(row)" class="dispatch-reason">{{ dispatchUnavailable(row) }}</small>
-              </template>
-              <template v-else>
-                <router-link v-if="row.myDetectionTaskId && ['READY','FAILED'].includes(row.myDetectionStatus)" class="next-action"
-                  :to="{path:'/inspection/tasks',query:{assignedTaskId:row.myDetectionTaskId}}">去完成检测任务</router-link>
-                <router-link v-else-if="row.myDetectionTaskId && row.myDetectionStatus!=='CANCELLED'"
-                  :to="assignedTrace(row.myDetectionTaskId)">{{ ['COMPLETED','PARTIAL_FAILED'].includes(row.myDetectionStatus) ? '查看检测结果' : '查看检测进度' }}</router-link>
-                <small v-else class="dispatch-reason">{{ row.myDetectionTaskId ? '检测任务已取消' : '未分派给我' }}</small>
+              <div><dt>上传人</dt><dd>{{ [row.creator, row.creatorName].filter(Boolean).join(' · ') || '未关联' }}</dd></div>
+              <div><dt>登记时间</dt><dd>{{ row.registeredAt || '—' }}</dd></div>
+              <template v-if="!awaitingDispatch">
+                <div v-if="Number(row.uploadPending) || !Number(row.canReadTask)"><dt>批次状态</dt><dd>{{ Number(row.uploadPending) ? '上传待确认' : '已登记' }}</dd></div>
+                <template v-else>
+                  <div><dt>模型检测</dt><dd><TaskBoardStage :row="row" /></dd></div>
+                  <div><dt>人工校验</dt><dd><TaskBoardStage :row="row" verification /></dd></div>
+                </template>
               </template>
             </template>
             <template v-else>
-            <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.modelStatus)" size="small" type="primary" @click="start(row)" :disabled="busy">{{ row.modelStatus==='FAILED'?'重试模型检测':'启动模型检测' }}</el-button>
-            <el-button v-if="supervisor && row.taskType==='OSS_FOLDER' && row.phase==='READY'" size="small" @click="openAssign(row)">改派检测</el-button>
-            <template v-if="canReview(row)">
-              <router-link v-if="supervisor && !row.qualityAssignee" class="next-action" :to="actionLink(row.taskId,'assign')">分派校验任务</router-link>
-              <router-link v-if="supervisor || row.qualityAssignee===user.username" :class="{ 'next-action': !!row.qualityAssignee }" :to="actionLink(row.taskId,'review')">核对模型结果</router-link>
-              <router-link v-if="supervisor && row.qualityAssignee" :to="actionLink(row.taskId,'assign')">改派校验</router-link>
+              <div><dt>模型检测</dt><dd><TaskBoardStage :row="row" /></dd></div>
+              <div v-if="taskList!=='detection'"><dt>人工校验</dt><dd><TaskBoardStage :row="row" verification /></dd></div>
             </template>
-            <button v-if="taskList==='detection' && !['SINGLE','OSS_FOLDER'].includes(row.taskType) && row.modelStatus!=='UPLOADING' && isOssFolder(row)" @click="openNew({ upload:row })">派发检测任务</button>
-            <button v-else-if="supervisor && !taskList && row.taskType!=='SINGLE' && isOssFolder(row)" @click="openNew({ prefix: row.prefix })">以此目录派单</button>
-            <router-link :to="actionLink(row.taskId,'trace')">任务详情</router-link>
-            </template>
-          </div>
-        </template></el-table-column>
-      </el-table>
+          </dl>
+          <TaskBoardActions v-bind="rowActions(row)" class="board-card-actions" @start="start" @assign="openAssign" @dispatch="openNew" />
+        </li>
+      </ul>
+      </div>
       <footer><span>{{ loading ? '正在读取…' : '共 '+total+' 项' }}</span><el-pagination v-if="total>20" layout="prev, pager, next" :pager-count="5" :page-size="20" :total="total" :current-page="page" @current-change="turn"/></footer>
     </section>
     <TaskDialogs v-if="activeAction" :key="activeAction.action + ':' + activeAction.taskId" :board-request="activeAction" @dismiss="closeAction" />
@@ -164,9 +177,11 @@ import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
 import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
 import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
+import TaskBoardActions from '@/components/TaskBoardActions.vue'
+import TaskBoardStage from '@/components/TaskBoardStage.vue'
 import WorkUnitApplications from '@/components/WorkUnitApplications.vue'
-import {humanStep,modelStep,canReview} from '@/utils/taskBoardStages'
-import {boardDialog,employeeInbox,listLocation,assignedTrace} from '@/utils/taskBoardNavigation'
+import {humanStep,modelStep} from '@/utils/taskBoardStages'
+import {boardDialog,employeeInbox,listLocation} from '@/utils/taskBoardNavigation'
 import {needsDetectionBatch} from '@/utils/workUnitApplications'
 import {useUserStore} from '@/stores/user'
 const TaskDialogs=defineAsyncComponent(()=>import('./ImageDetection.vue'))
@@ -196,6 +211,15 @@ const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.k
 const assignedTaskId=computed(()=>!uploadsOnly.value && typeof route.query.assignedTaskId==='string' ? route.query.assignedTaskId : '')
 const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number(route.query.page)>0 ? Number(route.query.page) : 1)
 const query=ref(''),uploaderInput=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
+const boardIcon=computed(()=>uploadsOnly.value ? 'FolderOpened' : verificationList.value || inboxKind.value==='verification' ? 'CircleCheck' : 'Tickets')
+const emptyMessage=computed(()=>{
+  if(awaitingDispatch.value)return '没有符合条件的待派文件夹。'
+  if(inbox.value && !keyword.value && !phase.value) {
+    return { detection:'当前没有待你启动或重试的检测。', verification:'当前没有分派给你的待校验结果。' }[inboxKind.value] || '当前没有待你处理的任务。'
+  }
+  if(uploadsOnly.value && uploadScope.value==='mine' && !keyword.value && !phase.value)return '你还没有上传记录。'
+  return uploadsOnly.value ? '没有符合条件的上传记录。' : '当前筛选下没有任务。'
+})
 const dialog=ref(false),target=ref(null),recipient=ref({}),busy=ref(false),saveError=ref(''),requestId=ref('')
 const sourceUpload=ref(null)
 const folder=ref('detection/'),pathInput=ref(''),children=ref([]),next=ref(null),folderImages=ref(0),folderError=ref(''),browsing=ref(false),ready=ref(false)
@@ -274,6 +298,13 @@ function dispatchUnavailable(row){
   if(applicationId.value && !application.value)return '请先读取领任务申请'
   if(application.value && row.totalImages>application.value.imageCount)return '超过申请的图片数量'
   return ''
+}
+function rowActions(row) {
+  return {
+    row, actionLink, previewTaskId: previewTaskId(row), dispatchReason: uploadsOnly.value && supervisor.value ? dispatchUnavailable(row) : '',
+    supervisor: supervisor.value, username: user.username, taskList: taskList.value, applicationId: applicationId.value,
+    uploadsOnly: uploadsOnly.value, awaitingDispatch: awaitingDispatch.value, busy: busy.value
+  }
 }
 function togglePath(){
   pathInput.value=folder.value
@@ -365,21 +396,145 @@ watch(()=>user.accountContext,()=>{read++;folderRead++;rows.value=[];total.value
 onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
 <style scoped>
-.application-dispatch { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 20px;padding:12px 16px;border:1px solid var(--app-border);border-radius:12px;background:var(--app-primary-soft);overflow-wrap:anywhere }
-.application-dispatch p { margin:4px 0;color:var(--app-text-secondary);font-size:13px }
-.application-dispatch a { display:inline-flex;align-items:center;min-height:44px;color:var(--app-primary) }
-.person-label{color:var(--app-text-secondary)}
-.row-actions .dispatch-reason{flex-basis:100%;white-space:normal}
-.folder-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.folder-metadata{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 12px;color:var(--app-text-secondary);font-size:12px}
-.picked-folder-metadata {font-size:12px}.picked-folder-metadata summary{cursor:pointer;color:var(--app-primary)}.picked-folder-metadata dd{margin:3px 0;overflow-wrap:anywhere}
-.folder-status strong{color:var(--app-text)}.folder-status button:last-child{margin-left:auto}
-.upload-navigation{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0 16px;padding:0 16px;border-bottom:1px solid var(--app-border)}
-.upload-scopes{display:flex;gap:20px}.upload-scopes a{padding:13px 3px 10px;border-bottom:3px solid transparent;text-decoration:none;color:var(--app-text-secondary);font-weight:600}.upload-scopes a[aria-current=page]{border-color:var(--app-primary);color:var(--app-primary)}
-.colleague-search{display:flex;align-items:center;gap:8px;width:290px;max-width:100%;padding:5px 0}.colleague-search .el-input{min-width:0}
-.board-toolbar form:has(input[aria-label="上传人工号"]){flex:1 1 400px;max-width:620px;flex-wrap:wrap}.board-toolbar form:has(input[aria-label="上传人工号"]) .el-input{flex:1 1 165px}
-.board-links,.board-links a,.directory-filter{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.board-links a{min-height:32px;padding:0 10px;color:var(--app-primary);text-decoration:none}.board-links a:hover,.row-actions a:hover{text-decoration:underline}.directory-filter{padding:12px 15px;background:var(--app-primary-soft);overflow-wrap:anywhere;font-size:13px}
-.task-board{display:grid;gap:18px;color:var(--app-text);min-width:0}.board-heading,.board-toolbar,.board-panel footer,.path-bar,.folder-status,.row-actions,.phases,.board-toolbar form{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.board-heading,.board-toolbar,.board-panel footer{justify-content:space-between}.board-heading h1{margin:0;font-size:28px}.board-heading p,.folder-status,.board-panel small,.board-panel footer>span{color:var(--app-text-secondary);font-size:12px}.board-heading p{margin:6px 0 0}.board-panel{min-width:0;border:1px solid var(--app-border);border-radius:12px;background:white;overflow:hidden}.board-toolbar,.board-panel footer{padding:15px}.board-toolbar form{flex-wrap:nowrap;max-width:100%}.board-panel small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phases{gap:3px}.phases button,.row-actions button:not(.el-button),.folder-status button,.folder-children button{border:0;cursor:pointer;background:transparent;color:var(--app-primary);font:inherit}.phases button{padding:7px 10px;border-radius:6px;color:var(--app-text-secondary)}.phases button[aria-pressed=true]{background:var(--app-primary-soft);color:var(--app-primary);font-weight:650}.phase{font-size:13px}.phase[data-phase=DETECTING],.phase[data-phase=DONE]{color:#2156af}.phase[data-phase=VERIFYING]{color:#895005}.phase[data-phase=FAILED]{color:#a53d32}.board-panel progress{display:block;height:5px;width:100px;max-width:100%;margin-top:5px;accent-color:#2866da}.row-actions{gap:7px 12px}.row-actions a,.row-actions button:not(.el-button){color:var(--app-primary);text-decoration:none;font-size:13px;padding:0}.folder-field,.path-bar,.folder-children{width:100%}.path-bar{flex-wrap:nowrap}.folder-status{margin:8px 0;overflow-wrap:anywhere;line-height:1.4}.folder-children{display:grid;max-height:190px;overflow:auto;background:var(--app-surface-muted);padding:6px;border-radius:6px;min-height:36px}.folder-children button{display:flex;align-items:center;gap:7px;padding:5px;text-align:left}.folder-children span{font-size:12px}.board-panel footer{border-top:1px solid var(--app-border)}
-.row-actions a.next-action{display:inline-flex;align-items:center;min-height:28px;padding:0 9px;border-radius:5px;background:var(--app-primary-soft);color:var(--app-primary);font-weight:650}
-.row-actions a:focus-visible,.upload-scopes a:focus-visible{outline:2px solid var(--app-primary);outline-offset:2px}
+.task-board {
+  display:grid; gap:14px; min-width:0; color:var(--app-text);
+  container:inspection-board / inline-size;
+}
+.board-heading,.board-title,.board-links,.board-links a {
+  display:flex; align-items:center; gap:10px;
+}
+.board-heading { justify-content:space-between; flex-wrap:wrap; min-height:44px; }
+.board-title { min-width:0; }
+.board-heading h1 { margin:0; font-size:clamp(23px, 2vw, 29px); font-weight:700; line-height:1.25; }
+.board-mark {
+  display:grid; place-items:center; flex:0 0 38px; height:38px; border-radius:8px;
+  background:var(--app-primary-soft); color:var(--app-primary);
+}
+.board-links { flex-wrap:wrap; }
+.board-links a { min-height:36px; color:var(--app-primary); text-decoration:none; font-size:13px; }
+.board-links a:hover { text-decoration:underline; }
+.board-flow { padding:5px 8px; }
+.board-flow :deep(.flow-steps) { grid-template-columns:repeat(4,minmax(0,1fr)); gap:4px; }
+.board-flow :deep(.flow-steps a) { min-height:44px; padding:6px 9px; }
+.board-flow :deep(.step-icon) { width:28px; height:28px; }
+
+.board-panel { min-width:0; overflow:hidden; border:1px solid var(--app-border); border-radius:12px; background:var(--app-surface); }
+.upload-navigation {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0 16px;
+  padding:0 16px; border-bottom:1px solid var(--app-border);
+}
+.upload-scopes { display:flex; flex-wrap:wrap; gap:8px 16px; }
+.upload-scopes a {
+  display:inline-flex; align-items:center; min-height:44px; padding:0 4px; border-bottom:2px solid transparent;
+  text-decoration:none; color:var(--app-text-secondary); font-size:14px; font-weight:600;
+}
+.upload-scopes a[aria-current=page] { border-color:var(--app-primary); color:var(--app-primary); }
+.colleague-search { display:flex; align-items:center; gap:8px; width:min(100%,290px); padding:5px 0; }
+.colleague-search .el-input { min-width:0; }
+.directory-filter {
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 15px;
+  background:var(--app-primary-soft); overflow-wrap:anywhere; font-size:13px;
+}
+.board-toolbar {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap;
+  gap:10px 16px; padding:12px 15px; border-bottom:1px solid var(--app-border);
+}
+.phases { display:flex; flex-wrap:wrap; gap:3px; }
+.phases button {
+  min-height:36px; padding:0 10px; border:0; border-radius:6px; cursor:pointer;
+  background:transparent; color:var(--app-text-secondary); font:inherit; font-size:13px;
+}
+.phases button:hover { background:var(--app-surface-muted); color:var(--app-primary); }
+.phases button[aria-pressed=true] { background:var(--app-primary-soft); color:var(--app-primary); font-weight:650; }
+.task-search { display:flex; flex:0 1 284px; gap:8px; max-width:100%; margin-left:auto; }
+.task-search :deep(.el-input) { min-width:0; }
+.task-search:has(input[aria-label="上传人工号"]) { flex-basis:450px; }
+.task-search :deep(.el-button) { flex:none; }
+.board-error {
+  display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 16px;
+  background:var(--app-warning-soft); color:var(--app-warning); font-size:13px; overflow-wrap:anywhere;
+}
+.board-error span { flex:1 1 145px; }
+.board-empty { display:grid; justify-items:center; gap:6px; padding:28px 16px; color:var(--app-text-secondary); text-align:center; }
+.board-empty:empty { min-height:90px; }
+.board-results[aria-busy=false] .board-empty:empty { display:none; }
+.board-empty p { margin:0; }
+.board-empty a { display:inline-flex; align-items:center; min-height:40px; color:var(--app-primary); text-decoration:none; }
+
+.board-table :deep(th.el-table__cell) { background:var(--app-surface-muted); font-size:12px; }
+.board-table :deep(td.el-table__cell) { padding:10px 0; }
+.board-table :deep(.el-table__cell .cell) { padding-inline:14px; }
+.board-panel small { color:var(--app-text-secondary); font-size:12px; line-height:1.55; }
+.board-table small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.folder-name { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.folder-metadata {
+  display:flex; align-items:center; gap:0 12px; flex-wrap:wrap; margin-top:1px;
+  color:var(--app-text-secondary); font-size:12px;
+}
+.person-label { color:var(--app-text-secondary); }
+.board-table progress { display:block; width:min(100%,126px); height:6px; margin-top:4px; accent-color:var(--app-primary); }
+.board-cards { display:none; }
+.board-panel footer {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;
+  padding:10px 15px; border-top:1px solid var(--app-border); color:var(--app-text-secondary); font-size:12px;
+}
+
+.application-dispatch {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 20px; padding:12px 16px;
+  border:1px solid var(--app-border); border-radius:12px; background:var(--app-primary-soft); overflow-wrap:anywhere;
+}
+.application-dispatch p { margin:4px 0; color:var(--app-text-secondary); font-size:13px; }
+.application-dispatch a { display:inline-flex; align-items:center; min-height:44px; color:var(--app-primary); }
+.folder-field,.path-bar,.folder-children { width:100%; }
+.path-bar,.folder-status { display:flex; align-items:center; gap:8px; }
+.folder-status { flex-wrap:wrap; margin:8px 0; color:var(--app-text-secondary); font-size:12px; overflow-wrap:anywhere; }
+.folder-status strong { color:var(--app-text); }
+.folder-status button:last-child { margin-left:auto; }
+.folder-status button,.folder-children button { border:0; background:transparent; color:var(--app-primary); cursor:pointer; font:inherit; }
+.folder-children {
+  display:grid; max-height:190px; overflow:auto; min-height:36px; padding:6px; border-radius:6px;
+  background:var(--app-surface-muted);
+}
+.folder-children button { display:flex; align-items:center; gap:7px; min-height:36px; padding:5px; text-align:left; }
+.folder-children span,.picked-folder-metadata { font-size:12px; }
+.picked-folder-metadata summary { color:var(--app-primary); cursor:pointer; }
+.picked-folder-metadata dd { margin:3px 0; overflow-wrap:anywhere; }
+.board-heading a:focus-visible,.upload-scopes a:focus-visible,.phases button:focus-visible,.board-empty a:focus-visible {
+  outline:2px solid var(--app-primary); outline-offset:2px;
+}
+
+@container inspection-board (max-width: 910px) {
+  .board-table { display:none; }
+  .board-cards {
+    display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px;
+    margin:0; padding:13px; list-style:none; background:var(--app-surface-muted);
+  }
+  .board-card { min-width:0; padding:12px 14px 8px; border-radius:9px; background:var(--app-surface); }
+  .board-card-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+  .board-card-heading > div { min-width:0; }
+  .board-card-heading h2 { margin:0 0 2px; overflow-wrap:anywhere; font-size:15px; line-height:1.45; }
+  .board-card-heading :deep(.metadata-link) { flex:none; }
+  .card-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:10px 0 0; }
+  .card-facts dt { color:var(--app-text-secondary); font-size:12px; line-height:1.5; }
+  .card-facts dd { margin:3px 0 0; overflow-wrap:anywhere; font-size:13px; }
+  .board-card-actions { margin-top:8px; padding-top:6px; border-top:1px solid var(--app-border); }
+}
+@container inspection-board (max-width: 560px) {
+  .board-flow :deep(.flow-steps) { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .board-toolbar { padding:9px 11px; gap:6px; }
+  .task-search,.task-search:has(input[aria-label="上传人工号"]) { flex-basis:100%; margin:0; }
+  .task-search:has(input[aria-label="上传人工号"]) { flex-wrap:wrap; }
+  .task-search:has(input[aria-label="上传人工号"]) :deep(.el-input) { flex:1 1 112px; }
+  .upload-navigation { padding-inline:11px; }
+  .board-cards { grid-template-columns:minmax(0,1fr); padding:9px; }
+  .board-card { padding-inline:12px; }
+  .board-panel footer { padding-inline:11px; }
+}
+@media (pointer:coarse), (max-width:600px) {
+  .board-heading .el-button,.board-heading a,.task-search :deep(.el-button),.task-search :deep(.el-input__wrapper),.phases button {
+    min-height:44px;
+  }
+  .task-search :deep(input),.colleague-search :deep(input) { font-size:16px; }
+  .board-card-heading :deep(.metadata-link) { min-height:44px; }
+}
 </style>

@@ -67,6 +67,7 @@ const domains = {
     RESULT_RECORDED: entry('已结束 · 结果待核对','warning','Search'),
     EXECUTION_FAILED: entry('任务异常','danger','Warning'),
     UPLOADING: entry('上传中', 'info', 'Upload'), UPLOADED: entry('已上传', 'info', 'Picture'),
+    READY: entry('待启动检测', 'warning', 'Clock'),
     QUEUED: entry('待检测', 'warning', 'Clock'), PENDING: entry('待检测', 'warning', 'Clock'),
     DETECTING: entry('检测中', 'info', 'Connection'), RUNNING: entry('检测中', 'info', 'Connection'),
     COMPLETED: entry('检测完成', 'success', 'CircleCheck'), PARTIAL_FAILED: entry('部分检测失败', 'warning', 'Warning'),
@@ -75,6 +76,13 @@ const domains = {
   review: {
     PENDING: entry('待复核', 'warning', 'Clock'), REVIEWING: entry('复核中', 'info', 'Search'),
     REVIEWED: entry('已复核', 'info', 'CircleCheck')
+  },
+  boardVerification: {
+    WAITING_CHECK: entry('待人工校验', 'warning', 'Clock'),
+    VERIFYING: entry('校验中', 'progress', 'Search'),
+    CHECKED: entry('校验完成', 'success', 'CircleCheck'),
+    FOLLOW_UP: entry('校验待跟进', 'warning', 'Warning'),
+    MODEL_DONE: entry('无校验记录')
   },
   qualityDisposition: { PENDING: entry('待处置', 'warning', 'Clock'), DISPOSED: entry('已记录处置', 'info', 'DocumentChecked') },
   dispositionAction: {

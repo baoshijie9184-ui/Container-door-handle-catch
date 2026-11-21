@@ -73,6 +73,9 @@ public class FolderTaskBoard {
         t.total_images AS totalImages,t.processed_images AS processedImages,t.failed_images AS failedImages,
         t.assignee AS qualityAssignee,t.reviewer AS qualityOperator,t.reviewed_at AS reviewedAt,
         w.assigned_user_name AS detector,w.version AS assignmentVersion,
+        w.assignee_user_id AS detectorNameId,
+        CASE WHEN t.reviewer_user_id IS NOT NULL OR NULLIF(t.reviewer,'') IS NOT NULL
+             THEN t.reviewer_user_id ELSE t.assignee_user_id END AS verifierNameId,
         CASE WHEN w.submitted_at IS NOT NULL AND t.status IN ('COMPLETED','PARTIAL_FAILED') THEN w.assigned_user_name END AS detectionOperator,
         CASE WHEN w.assignee_user_id=CAST(:actor AS CHAR) THEN 1 ELSE 0 END AS mine,
         t.created_at AS createdAt, t.created_by AS creator,
@@ -133,7 +136,9 @@ public class FolderTaskBoard {
                 """;
             args.addValue("q",keyword.strip());
         }
-        return readPage(columns,SOURCE,where,args,page,size);
+        var result = readPage(columns,SOURCE,where,args,page,size);
+        populateStageNames(result.items());
+        return result;
     }
 
     public PageRows uploads(String scope, String uploader, String keyword, String phase, boolean awaitingDispatch, int page, int size) {
@@ -201,9 +206,60 @@ public class FolderTaskBoard {
         var ids=new HashSet<Long>();
         var names=new HashSet<String>();
         for (var row:rows) {
-            if (row.get("recordedId") instanceof Number id) ids.add(id.longValue());
-            else if (row.get("recordedName") instanceof String name) names.add(name);
+            collectPerson(row.get("recordedId"), row.get("recordedName"), ids, names);
         }
+        var labels = resolveLabels(ids, names);
+        for (var row:rows) {
+            var uploaderLabel = labels.find(row.remove("recordedId"), row.remove("recordedName"));
+            row.put("creator",uploaderLabel == null ? null : uploaderLabel.employeeNumber());
+            row.put("creatorName",name(uploaderLabel));
+        }
+    }
+
+    private void populateStageNames(List<Map<String,Object>> rows) {
+        var ids = new HashSet<Long>();
+        var accounts = new HashSet<String>();
+        for (var row : rows) {
+            collectPerson(row.get("detectorNameId"), row.get("detector"), ids, accounts);
+            collectPerson(row.get("verifierNameId"), verifierAccount(row), ids, accounts);
+        }
+        var labels = resolveLabels(ids, accounts);
+        for (var row : rows) {
+            row.put("detectorName", name(labels.find(row.remove("detectorNameId"), row.get("detector"))));
+            row.put("verifierName", name(labels.find(row.remove("verifierNameId"), verifierAccount(row))));
+        }
+    }
+
+    private static Object verifierAccount(Map<String,Object> row) {
+        return row.get("qualityOperator") instanceof String reviewer && !reviewer.isBlank() ? reviewer : row.get("qualityAssignee");
+    }
+
+    private static void collectPerson(Object id, Object account, Set<Long> ids, Set<String> accounts) {
+        Long identifier = accountId(id);
+        if (identifier != null) ids.add(identifier);
+        else if (account instanceof String value && !value.isBlank()) accounts.add(value);
+    }
+
+    private static Long accountId(Object id) {
+        if (id instanceof Number number) return number.longValue();
+        if (id instanceof String value) {
+            try { return Long.valueOf(value); } catch (NumberFormatException legacy) { return null; }
+        }
+        return null;
+    }
+
+    private static String name(EmployeeLabel label) {
+        return label == null ? null : label.name();
+    }
+
+    private record EmployeeLabels(Map<Long,EmployeeLabel> byId, Map<String,EmployeeLabel> byAccount) {
+        EmployeeLabel find(Object id, Object account) {
+            Long identifier = accountId(id);
+            return identifier != null ? byId.get(identifier) : byAccount.get(account);
+        }
+    }
+
+    private EmployeeLabels resolveLabels(Set<Long> ids, Set<String> names) {
         var byId=new HashMap<Long,EmployeeLabel>();
         var byName=new HashMap<String,EmployeeLabel>();
         for (var person:staff.resolve(ids,names)) {
@@ -212,13 +268,7 @@ public class FolderTaskBoard {
         }
         names.removeAll(byName.keySet());
         for (var employee:personnel.findByNumbers(names)) byName.put(employee.employeeNumber(),employee);
-        for (var row:rows) {
-            var id=row.remove("recordedId");
-            var name=row.remove("recordedName");
-            var uploaderLabel=id instanceof Number n ? byId.get(n.longValue()) : byName.get(name);
-            row.put("creator",uploaderLabel == null ? null : uploaderLabel.employeeNumber());
-            row.put("creatorName",uploaderLabel == null ? null : uploaderLabel.name());
-        }
+        return new EmployeeLabels(byId, byName);
     }
 
     private static boolean permittedRow(Map<String,Object> row) {

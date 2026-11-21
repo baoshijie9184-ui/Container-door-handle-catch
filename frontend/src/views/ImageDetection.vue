@@ -222,7 +222,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="reviewDialogVisible" :top="boardRequest ? '5vh' : undefined" :append-to-body="!!boardRequest" class="quality-operation-dialog" :title="boardRequest ? '核对模型结果' : '人工复核'" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
+    <el-dialog v-model="reviewDialogVisible" :top="boardRequest ? '4dvh' : undefined" :append-to-body="!!boardRequest" class="quality-operation-dialog" :class="{ 'board-calibration-dialog': boardRequest }" :title="boardRequest ? '核对模型结果' : '人工复核'" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
       <QualityTaskContext :compact="!!boardRequest" :task="reviewTask" operation="review" />
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewImages && (reviewImages.originals.length || reviewImages.annotations.length) }">
       <div v-if="reviewImages" :class="{'board-review-evidence':boardRequest}"><ModelMaintenanceSummary :summary="reviewImages.maintenance" />
@@ -230,7 +230,7 @@
       <div v-else class="quality-feedback-note" role="status"><AppIcon name="Picture" :size="16" />{{ reviewImageError || '正在读取本次任务的原图与标注图…' }}
         <el-button v-if="reviewImageError" link type="primary" @click="reviewImageAttempt++">重新读取图片</el-button>
       </div>
-      <el-form :model="reviewForm" label-position="top" :disabled="reviewSubmitting||qualityActionAcknowledged.review||reviewTask?.mutationConflicted">
+      <el-form :model="reviewForm" label-position="top" :class="{ 'board-calibration-form': boardRequest }" :disabled="reviewSubmitting||qualityActionAcknowledged.review||reviewTask?.mutationConflicted">
         <el-form-item label="复核结论">
           <el-select v-model="reviewForm.reviewConclusion" placeholder="请选择复核结论" style="width: 100%">
             <el-option label="确认缺陷" value="CONFIRMED_DEFECT" />
@@ -252,7 +252,7 @@
         <el-form-item label="误报数量">
           <el-input-number v-model="reviewForm.falsePositiveCount" :min="0" :precision="0" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="复核备注">
+        <el-form-item class="calibration-notes" label="复核备注">
           <el-input
             v-model="reviewForm.reviewRemark"
             type="textarea"
@@ -273,7 +273,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="assignmentDialogVisible" :append-to-body="!!boardRequest" class="quality-operation-dialog" :title="boardRequest ? (assignmentTask?.assignee ? '改派校验任务' : '分派校验任务') : '分派质检任务'" width="min(640px, 96vw)" :close-on-click-modal="!assignmentSubmitting" :close-on-press-escape="!assignmentSubmitting" :show-close="!assignmentSubmitting">
+    <el-dialog v-model="assignmentDialogVisible" :top="boardRequest ? '4dvh' : undefined" :append-to-body="!!boardRequest" class="quality-operation-dialog" :class="{ 'board-calibration-dialog': boardRequest }" :title="boardRequest ? (assignmentTask?.assignee ? '改派校验任务' : '分派校验任务') : '分派质检任务'" width="min(640px, 96vw)" :close-on-click-modal="!assignmentSubmitting" :close-on-press-escape="!assignmentSubmitting" :show-close="!assignmentSubmitting">
       <QualityTaskContext :compact="!!boardRequest" :task="assignmentTask" operation="assignment" />
       <el-form :model="assignmentForm" label-position="top" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment||assignmentTask?.mutationConflicted">
         <el-form-item label="质检站点">
@@ -1022,6 +1022,20 @@ async function validateCollaborationAccess(){
 .board-task-dialogs{display:contents}
 .board-review-evidence{display:flex;flex-direction:column;gap:12px;min-width:0}
 .board-review-evidence > .evidence-comparison{order:-1}
+.board-calibration-form {
+  display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:12px; align-content:start;
+}
+.board-calibration-form :deep(.el-form-item) { min-width:0; }
+.calibration-notes { grid-column:1/-1; }
+:global(.board-calibration-dialog.el-dialog) { display:flex; flex-direction:column; max-height:92dvh; }
+:global(.board-calibration-dialog .el-dialog__body) { min-height:0; max-height:none; overflow-y:auto; }
+:global(.board-calibration-dialog .el-dialog__footer) {
+  flex:none; padding-top:12px; border-top:1px solid var(--app-border); background:var(--app-surface);
+}
+@media (max-width:600px) {
+  :global(.board-calibration-dialog .el-dialog__footer .el-button) { min-height:42px; }
+  .board-calibration-form :deep(.el-select__placeholder),.board-calibration-form :deep(input),.board-calibration-form :deep(textarea) { font-size:16px; }
+}
 .image-detection-container {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
