@@ -8,6 +8,16 @@
       </nav>
     </header>
     <InspectionFlowNav />
+    <WorkUnitApplications v-if="!supervisor && !uploadsOnly && !inboxKind && !assignedTaskId && (!keyword || keyword.startsWith('WU-'))"
+      :key="user.accountContext" :keyword="keyword" />
+    <div v-if="applicationId" class="application-dispatch" aria-live="polite">
+      <div v-if="application">
+        <strong>{{ application.status==='WAITING' ? '为领任务申请选择原图批次' : '为已批准的申请补选原图批次' }}</strong>
+        <p>{{ application.applicantUserId }} · {{ application.workUnitId }} · 最多 {{ application.imageCount }} 张</p>
+      </div>
+      <p v-else>{{ applicationError || '正在读取领任务申请…' }}</p>
+      <router-link to="/home">返回工作台</router-link>
+    </div>
     <section class="board-panel" :aria-label="uploadsOnly ? '上传记录' : '任务列表'">
       <div v-if="uploadsOnly" class="upload-navigation">
         <nav class="upload-scopes" aria-label="上传记录范围">
@@ -80,7 +90,9 @@
               <router-link v-if="previewTaskId(row)" :to="actionLink(previewTaskId(row), 'images')">查看原图</router-link>
               <el-button v-else link disabled>查看原图</el-button>
               <template v-if="supervisor">
-                <el-button v-if="!dispatchUnavailable(row)" size="small" :type="awaitingDispatch ? 'primary' : 'default'" @click="openNew({ upload: row })">派发检测任务</el-button>
+                <el-button v-if="!dispatchUnavailable(row)" size="small" :type="awaitingDispatch ? 'primary' : 'default'" @click="openNew({ upload: row })">
+                  {{ applicationId ? '选用此批次' : '派发检测任务' }}
+                </el-button>
                 <router-link v-if="!awaitingDispatch && row.taskType!=='SINGLE' && ['WAITING_CHECK','VERIFYING'].includes(row.listPhase)" class="next-action"
                   :to="{path:'/inspection/tasks/verification',query:{keyword:row.taskId}}">前往校验</router-link>
                 <small v-if="dispatchUnavailable(row)" class="dispatch-reason">{{ dispatchUnavailable(row) }}</small>
@@ -111,7 +123,7 @@
       <footer><span>{{ loading ? '正在读取…' : '共 '+total+' 项' }}</span><el-pagination v-if="total>20" layout="prev, pager, next" :pager-count="5" :page-size="20" :total="total" :current-page="page" @current-change="turn"/></footer>
     </section>
     <TaskDialogs v-if="activeAction" :key="activeAction.action + ':' + activeAction.taskId" :board-request="activeAction" @dismiss="closeAction" />
-    <el-dialog v-model="dialog" :title="target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
+    <el-dialog v-model="dialog" :title="applicationId ? '确认申请派单' : target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
       <el-form label-position="top" @submit.prevent>
         <el-form-item v-if="sourceUpload" label="原图文件夹">
           <strong>{{ recordFolderLabel(sourceUpload) }}</strong><FolderMetadataLink :task-id="sourceUpload.taskId" />
@@ -133,7 +145,10 @@
             <el-alert v-if="folderError" type="error" :title="folderError" :closable="false"/>
           </div>
         </el-form-item>
-        <el-form-item label="检测员工工号"><QualityAssigneePicker v-model="recipient.username" v-model:user-id="recipient.userId" v-model:revision="recipient.revision" account-label="检测员工工号" :disabled="busy"/></el-form-item>
+        <el-form-item label="检测员工工号">
+          <strong v-if="applicationId">{{ application?.applicantUserId }}</strong>
+          <QualityAssigneePicker v-else v-model="recipient.username" v-model:user-id="recipient.userId" v-model:revision="recipient.revision" account-label="检测员工工号" :disabled="busy"/>
+        </el-form-item>
         <el-alert v-if="saveError" type="error" :title="saveError" :closable="false"/>
       </el-form>
       <template #footer><el-button :disabled="busy" @click="dialog=false">取消</el-button><el-button type="primary" :loading="busy" :disabled="!canSubmit" @click="save">确认派发</el-button></template>
@@ -149,8 +164,10 @@ import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
 import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
 import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
+import WorkUnitApplications from '@/components/WorkUnitApplications.vue'
 import {humanStep,modelStep,canReview} from '@/utils/taskBoardStages'
 import {boardDialog,employeeInbox,listLocation,assignedTrace} from '@/utils/taskBoardNavigation'
+import {needsDetectionBatch} from '@/utils/workUnitApplications'
 import {useUserStore} from '@/stores/user'
 const TaskDialogs=defineAsyncComponent(()=>import('./ImageDetection.vue'))
 const employeeScopes=[{value:true,label:'待我处理'},{value:false,label:'全部任务'}]
@@ -158,6 +175,8 @@ const user=useUserStore(),supervisor=computed(()=>user.role==='SUPERVISOR'),api=
 const router=useRouter(),route=useRoute()
 const uploadScope=computed(()=>route.meta.uploadScope)
 const awaitingDispatch=computed(()=>Boolean(route.meta.awaitingDispatch))
+const applicationId=computed(()=>supervisor.value && awaitingDispatch.value && typeof route.query.application==='string' ? route.query.application : '')
+const application=ref(null),applicationError=ref('')
 const uploadsOnly=computed(()=>Boolean(uploadScope.value))
 const boardTitle=computed(()=>supervisor.value ? '任务总表' : '我的任务')
 const taskList=computed(()=>route.meta.taskList)
@@ -181,7 +200,8 @@ const dialog=ref(false),target=ref(null),recipient=ref({}),busy=ref(false),saveE
 const sourceUpload=ref(null)
 const folder=ref('detection/'),pathInput=ref(''),children=ref([]),next=ref(null),folderImages=ref(0),folderError=ref(''),browsing=ref(false),ready=ref(false)
 const editingPath=ref(false)
-const canSubmit=computed(()=>Boolean(recipient.value.userId && (target.value || sourceUpload.value || (ready.value && folderImages.value && folder.value===pathInput.value))))
+const canSubmit=computed(()=>applicationId.value ? Boolean(application.value && sourceUpload.value) :
+  Boolean(recipient.value.userId && (target.value || sourceUpload.value || (ready.value && folderImages.value && folder.value===pathInput.value))))
 const folderChoices=computed(()=>{
   const counts=new Map()
   const choices=children.value.map(path=>{
@@ -251,6 +271,8 @@ function dispatchUnavailable(row){
   if(row.taskType==='SINGLE')return '单图测试'
   if(Number(row.uploadPending))return '等待上传确认'
   if(!isOssFolder(row))return '未关联可派发的原图目录'
+  if(applicationId.value && !application.value)return '请先读取领任务申请'
+  if(application.value && row.totalImages>application.value.imageCount)return '超过申请的图片数量'
   return ''
 }
 function togglePath(){
@@ -293,9 +315,14 @@ async function save(){
   busy.value=true;saveError.value=''
   try{
     let taskId=target.value?.taskId
-    if(taskId)data(await api.post(url+'/'+taskId+'/assign',{version:target.value.assignmentVersion,recipient:recipient.value}))
+    if(applicationId.value){
+      taskId=data(await api.post(url+'/applications/'+encodeURIComponent(applicationId.value)+'/dispatch',{
+        uploadTaskId:sourceUpload.value.taskId,expectedVersion:application.value.version
+      },{timeout:60000}))
+    }else if(taskId)data(await api.post(url+'/'+taskId+'/assign',{version:target.value.assignmentVersion,recipient:recipient.value}))
     else taskId=data(await api.post(url,{requestId:requestId.value,prefix:sourceUpload.value?.prefix ?? folder.value,recipient:recipient.value},{timeout:60000}))
-    dialog.value=false;ElMessage.success('检测任务已派发给 '+recipient.value.username)
+    const assignedName=application.value?.applicantUserId || recipient.value.username
+    dialog.value=false;ElMessage.success('检测任务已派发给 '+assignedName)
     const destination={path:'/inspection/tasks/detection',query:{keyword:taskId}}
     if(router.resolve(destination).fullPath===route.fullPath)await load()
     else await router.push(destination)
@@ -314,6 +341,20 @@ async function start(row){
   }
   catch(e){ElMessage.error(message(e));await load()}finally{busy.value=false}
 }
+watch(applicationId,async (id,_,onCleanup)=>{
+  application.value=null;applicationError.value=''
+  if(!id)return
+  let stale=false
+  onCleanup(()=>{stale=true})
+  try {
+    const list=data(await api.get('/api/detection/supervisor/work-units/pending'))
+    if(stale)return
+    application.value=list.find(row=>row.workUnitId===id && needsDetectionBatch(row)) || null
+    if(!application.value)applicationError.value='申请已处理或已变化，请返回工作台核对。'
+  }catch{
+    if(!stale)applicationError.value='申请暂不可读取，请刷新页面重试。'
+  }
+},{immediate:true})
 watch(listPath,()=>{
   if(route.name!=='folderTaskBoard' && !uploadsOnly.value && !taskList.value)return
   query.value=assignedTaskId.value || keyword.value;uploaderInput.value=uploadScope.value==='team' && typeof route.query.uploader==='string' ? route.query.uploader : ''
@@ -324,6 +365,9 @@ watch(()=>user.accountContext,()=>{read++;folderRead++;rows.value=[];total.value
 onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
 </script>
 <style scoped>
+.application-dispatch { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 20px;padding:12px 16px;border:1px solid var(--app-border);border-radius:12px;background:var(--app-primary-soft);overflow-wrap:anywhere }
+.application-dispatch p { margin:4px 0;color:var(--app-text-secondary);font-size:13px }
+.application-dispatch a { display:inline-flex;align-items:center;min-height:44px;color:var(--app-primary) }
 .person-label{color:var(--app-text-secondary)}
 .row-actions .dispatch-reason{flex-basis:100%;white-space:normal}
 .folder-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

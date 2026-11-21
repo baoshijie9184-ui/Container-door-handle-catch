@@ -12,7 +12,7 @@
     </header>
     <section class="action-deck" aria-label="工作台快捷入口">
       <button v-if="isSupervisor" type="button" class="focus-action" :disabled="pageLoading" @click="focusApplications">
-        <span class="focus-stat">申请待办数<span><strong>{{ formatNumber(pendingApplications?.length) }}</strong>项</span></span>
+        <span class="focus-stat">申请待办数<span><strong>{{ formatNumber(pendingApplicationCount) }}</strong>项</span></span>
         <span class="focus-cta">查看领任务申请<AppIcon name="ArrowRight" :size="16" /></span>
       </button>
       <router-link v-else class="focus-action" :to="{path:'/inspection/tasks',query:{inbox:'1',kind:nextInboxKind}}">
@@ -52,12 +52,14 @@
           <el-alert v-if="applicationsError" :title="applicationsError" type="warning" :closable="false"/>
           <p v-else-if="!pendingApplications" role="status">正在读取领任务申请…</p>
           <div v-else-if="!pendingApplications.length" class="queue-empty">
-            <AppIcon name="CircleCheck" :size="22" /><strong>当前没有待审批的领任务申请</strong>
+            <AppIcon name="CircleCheck" :size="22" /><strong>当前没有待处理的领任务申请</strong>
           </div>
-          <ul v-else class="application-list" aria-label="待审批的领任务申请">
+          <ul v-else class="application-list" aria-label="待处理的领任务申请">
             <li v-for="row in pendingApplications" :key="row.workUnitId">
               <div><strong>工号：{{ row.applicantUserId }}</strong><small>{{ row.imageCount }} 张图片 · {{ row.workUnitId }}</small><small v-if="row.remark">{{ row.remark }}</small></div>
-              <el-button size="small" type="primary" :loading="approving===row.workUnitId" :disabled="!!approving" @click="approveApplication(row)">同意</el-button>
+              <router-link :to="{path:'/inspection/uploads/dispatch',query:{application:row.workUnitId}}">
+                {{ row.status==='WAITING' ? '选择批次并审批' : '补选原图批次' }}
+              </router-link>
             </li>
           </ul>
         </template>
@@ -459,6 +461,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useUserStore } from '../stores/user'
 import {beijingDateTime} from '@/utils/beijingTime'
 import { knownCount } from '@/utils/countPresentation'
+import { needsDetectionBatch } from '@/utils/workUnitApplications'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ChartDataDetails from '@/components/ChartDataDetails.vue'
 import HistoricalDetectionOverview from '@/components/HistoricalDetectionOverview.vue'
@@ -677,7 +680,8 @@ onBeforeUnmount(() => {
 // ── 数据获取 ──
 
 const taskPanel=ref(null)
-const pendingApplications=ref(null), applicationsLoading=ref(false), applicationsError=ref(''), approving=ref('')
+const pendingApplications=ref(null), applicationsLoading=ref(false), applicationsError=ref('')
+const pendingApplicationCount=computed(()=>pendingApplications.value?.filter(row=>row.status==='WAITING').length)
 let applicationRead=0
 function focusApplications() {
   taskPanel.value?.focus({preventScroll:true})
@@ -692,7 +696,7 @@ async function loadApplications() {
     const rows=response.data?.data
     if(response.data?.code!==200 || !Array.isArray(rows))throw Error()
     if(disposed || read!==applicationRead)return
-    pendingApplications.value=rows.filter(row=>row.status==='WAITING' && row.strategy!=='OSS_FOLDER' && row.applicantUserId?.trim() && !row.assigneeUserId)
+    pendingApplications.value=rows.filter(needsDetectionBatch)
     applicationsError.value=''
   } catch {
     if(!disposed && read===applicationRead){
@@ -701,21 +705,6 @@ async function loadApplications() {
     }
   } finally {
     if(!disposed && read===applicationRead)applicationsLoading.value=false
-  }
-}
-async function approveApplication(row) {
-  if(approving.value || !isSupervisor.value)return
-  approving.value=row.workUnitId
-  try {
-    const response=await request.post('/api/detection/supervisor/work-units/'+encodeURIComponent(row.workUnitId)+'/dispatch',{
-      expectedVersion:row.version,assigneeUserId:row.applicantUserId,remark:row.remark
-    })
-    if(response.data?.code!==200)throw Error(response.data?.message || '同意申请失败')
-    if(!disposed)ElMessage.success('已同意，任务已分配给 '+row.applicantUserId)
-  } catch(error) {
-    if(!disposed)ElMessage.warning(error.response?.data?.message || error.message || '请核对申请状态')
-  } finally {
-    if(!disposed){await loadApplications();approving.value=''}
   }
 }
 
@@ -1133,6 +1122,7 @@ button.focus-action { border:0;cursor:pointer;text-align:left;font:inherit }
 .application-list { list-style:none;padding:0;margin:0;max-height:340px;overflow:auto }
 .application-list li { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--app-border) }
 .application-list li>div { min-width:0;overflow-wrap:anywhere }.application-list small { display:block;margin-top:4px;color:var(--app-text-secondary) }
+.application-list li a { display:inline-flex;align-items:center;min-height:44px;color:var(--app-primary);font-weight:600;flex-shrink:0 }
 .team-quality { margin-top:16px }.team-quality summary { color:var(--app-text-secondary);cursor:pointer;font-size:13px }.team-quality[open] summary { margin-bottom:8px }
 .work-entry { min-width:0;display:grid;align-content:center;background:var(--app-surface,#fff);border:1px solid var(--app-border);border-radius:var(--app-radius-lg) }
 .work-entry :deep(.inspection-flow) { border:0;padding:12px 16px 6px }.work-entry :deep(.flow-steps a){padding:5px 4px;gap:6px}

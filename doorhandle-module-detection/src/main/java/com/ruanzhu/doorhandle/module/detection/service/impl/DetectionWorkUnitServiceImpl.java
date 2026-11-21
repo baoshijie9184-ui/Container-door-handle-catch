@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDispatchRequest;
@@ -13,9 +14,11 @@ import com.ruanzhu.doorhandle.module.detection.service.DetectionWorkUnitService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -29,12 +32,25 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
         int count = request.getImageCount() == null ? 5000 : request.getImageCount();
         if (count < 1 || count > 5000) throw new IllegalArgumentException("单个工作单元图片数量必须在 1-5000 之间");
         DetectionWorkUnit unit = new DetectionWorkUnit();
-        unit.setWorkUnitId("WU-" + UUID.randomUUID().toString().replace("-", ""));
+        UUID requestId = request.getRequestId();
+        UUID id = requestId == null ? UUID.randomUUID() : UUID.nameUUIDFromBytes((userId + ':' + requestId).getBytes(StandardCharsets.UTF_8));
+        unit.setWorkUnitId("WU-" + id.toString().replace("-", ""));
         unit.setApplicantUserId(userId); unit.setImageCount(count); unit.setCompletedCount(0);
         unit.setStrategy("ALL".equalsIgnoreCase(request.getStrategy()) ? "ALL" : "UNDETECTED_ONLY");
         unit.setModelVersion(request.getModelVersion()); unit.setRemark(request.getRemark());
         unit.setStatus("WAITING"); unit.setVersion(0); unit.setCreatedAt(LocalDateTime.now()); unit.setUpdatedAt(LocalDateTime.now());
-        mapper.insert(unit); return unit;
+        if (requestId == null) {
+            mapper.insert(unit);
+            return unit;
+        }
+        mapper.insertApplication(unit);
+        var saved = mapper.lock(unit.getWorkUnitId());
+        if (!userId.equals(saved.getApplicantUserId()) || !Objects.equals(unit.getImageCount(), saved.getImageCount())
+                || !Objects.equals(unit.getStrategy(), saved.getStrategy()) || !Objects.equals(unit.getModelVersion(), saved.getModelVersion())
+                || !Objects.equals(unit.getRemark(), saved.getRemark())) {
+            throw new BusinessException(409, "申请编号已用于其他内容，请重新发起申请");
+        }
+        return saved;
     }
 
     @Override public List<DetectionWorkUnit> listMine(String userId) { return mapper.findMine(userId); }
@@ -42,8 +58,7 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
 
     @Override @Transactional
     public DetectionWorkUnit submit(String workUnitId, DetectionWorkUnitSubmitRequest request, String userId) {
-        DetectionWorkUnit unit = mapper.selectOne(new LambdaQueryWrapper<DetectionWorkUnit>().eq(DetectionWorkUnit::getWorkUnitId, workUnitId));
-        if (unit == null || "OSS_FOLDER".equals(unit.getStrategy())) throw new IllegalArgumentException("工作单元不存在");
+        DetectionWorkUnit unit = find(workUnitId);
         if (userId == null || !userId.equals(unit.getAssigneeUserId())) throw new com.ruanzhu.doorhandle.common.BusinessException(403, "仅当前负责人可提交工作单元");
         if (!List.of("ASSIGNED", "PROCESSING").contains(unit.getStatus())) throw new IllegalStateException("当前工作单元状态不可提交");
         checkVersion(unit, request.getExpectedVersion());
@@ -78,8 +93,12 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
     }
 
     private DetectionWorkUnit find(String workUnitId) {
-        DetectionWorkUnit unit = mapper.selectOne(new LambdaQueryWrapper<DetectionWorkUnit>().eq(DetectionWorkUnit::getWorkUnitId, workUnitId));
+        DetectionWorkUnit unit = mapper.selectOne(new LambdaQueryWrapper<DetectionWorkUnit>()
+                .eq(DetectionWorkUnit::getWorkUnitId, workUnitId).last("FOR UPDATE"));
         if (unit == null || "OSS_FOLDER".equals(unit.getStrategy())) throw new IllegalArgumentException("工作单元不存在");
+        if (unit.getBatchId() != null && unit.getBatchId().startsWith("det_folder_")) {
+            throw new BusinessException(409, "申请已关联检测任务，请在任务列表处理");
+        }
         return unit;
     }
     private void checkVersion(DetectionWorkUnit unit, Integer expectedVersion) {

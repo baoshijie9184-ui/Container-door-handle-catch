@@ -16,6 +16,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import com.ruanzhu.doorhandle.module.detection.service.detection.UploadFolders;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 @Service
@@ -24,6 +25,7 @@ public class FolderTaskBoard {
     public record Recipient(String username, long userId, String revision) {}
     public record Create(UUID requestId, String prefix, Recipient recipient) {}
     public record Assign(int version, Recipient recipient) {}
+    public record ApplicationDispatch(Integer expectedVersion, String uploadTaskId) {}
     public record Folder(String prefix, List<String> folders, int imagesOnPage, String next) {}
 
     private final NamedParameterJdbcTemplate db;
@@ -121,7 +123,12 @@ public class FolderTaskBoard {
         }
         if (keyword != null && !keyword.isBlank()) {
             if(keyword.length()>255) throw bad("搜索内容过长");
-            where+=" AND (LOCATE(:q,t.task_id)>0 OR LOCATE(:q,t.image_folder_name)>0 OR LOCATE(:q,t.source_oss_prefix)>0 OR LOCATE(:q,t.created_by)>0 OR LOCATE(:q,w.assigned_user_name)>0 OR LOCATE(:q,t.assignee)>0 OR LOCATE(:q,t.reviewer)>0)";
+            where+="""
+                 AND (LOCATE(:q,t.task_id)>0 OR LOCATE(:q,t.image_folder_name)>0 OR LOCATE(:q,t.source_oss_prefix)>0
+                   OR LOCATE(:q,t.created_by)>0 OR LOCATE(:q,w.assigned_user_name)>0 OR LOCATE(:q,t.assignee)>0
+                   OR LOCATE(:q,t.reviewer)>0 OR EXISTS (SELECT 1 FROM detection_work_unit a
+                       WHERE a.work_unit_id=:q AND a.batch_id=w.work_unit_id AND a.strategy<>'OSS_FOLDER'))
+                """;
             args.addValue("q",keyword.strip());
         }
         return readPage(columns,SOURCE,where,args,page,size);
@@ -356,9 +363,67 @@ public class FolderTaskBoard {
         supervisor();
         if(request==null || request.requestId()==null)throw bad("缺少派单编号");
         validatePrefix(request.prefix());
-        var actor=users.authenticated();
-        var employee=recipient(request.recipient());
         String id="det_folder_"+request.requestId().toString().replace("-","");
+        return createFolder(id, request.prefix(), users.authenticated(), recipient(request.recipient()), maxImages);
+    }
+
+    @Transactional
+    public String dispatchApplication(String workUnitId, ApplicationDispatch request) {
+        supervisor();
+        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 0
+                || request.uploadTaskId() == null || request.uploadTaskId().isBlank() || request.uploadTaskId().length() > 64
+                || !workUnitId.matches("WU-[a-f0-9]{32}")) {
+            throw bad("请选择上传批次并核对领任务申请版本");
+        }
+        var jdbc = db.getJdbcTemplate();
+        var applications = jdbc.queryForList("""
+            SELECT applicant_user_id,assignee_user_id,status,version,image_count,source_batch_id,batch_id
+            FROM detection_work_unit WHERE work_unit_id=? AND strategy<>'OSS_FOLDER' FOR UPDATE
+            """, workUnitId);
+        if (applications.isEmpty()) throw new BusinessException(404, "领任务申请不存在");
+        var application = applications.get(0);
+        var applicationId = UUID.nameUUIDFromBytes(("folder-application:" + workUnitId).getBytes(StandardCharsets.UTF_8));
+        String id = "det_folder_" + applicationId.toString().replace("-", "");
+        if (id.equals(application.get("batch_id")) && request.uploadTaskId().equals(application.get("source_batch_id"))) {
+            return id;
+        }
+        String applicant = (String) application.get("applicant_user_id");
+        Object assignee = application.get("assignee_user_id");
+        String status = (String) application.get("status");
+        boolean assignable = ("WAITING".equals(status) && assignee == null)
+                || ("ASSIGNED".equals(status) && applicant.equals(assignee));
+        if (!assignable || application.get("batch_id") != null || application.get("source_batch_id") != null
+                || !request.expectedVersion().equals(((Number) application.get("version")).intValue())
+                || Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM detection_input WHERE work_unit_id=?)", Boolean.class, workUnitId))) {
+            throw new BusinessException(409, "领任务申请已变化或已有图片，请刷新核对");
+        }
+        var employee = employees.lockInspector(employees.inspector(applicant));
+        var uploads = jdbc.queryForList("""
+            SELECT task_id,source_oss_prefix FROM detection_task
+            WHERE task_id=? AND task_type IN ('BATCH','BATCH_DIRECT')
+              AND status NOT IN ('UPLOADING','CANCELLED') AND total_images>0 FOR UPDATE
+            """, request.uploadTaskId());
+        if (uploads.isEmpty()) throw new BusinessException(409, "上传批次已变化或图片尚未上传完成");
+        var upload = uploads.get(0);
+        String prefix = (String) upload.get("source_oss_prefix");
+        validatePrefix(prefix);
+        if (!jdbc.queryForList("""
+            SELECT id FROM detection_task WHERE task_type='OSS_FOLDER' AND status<>'CANCELLED'
+              AND source_oss_prefix=? AND BINARY source_oss_prefix=BINARY ? LIMIT 1 FOR UPDATE
+            """, prefix, prefix).isEmpty()) {
+            throw new BusinessException(409, "此批次已派单，请选择其他上传批次");
+        }
+        int requestedCount = ((Number) application.get("image_count")).intValue();
+        createFolder(id, prefix, users.authenticated(), employee, requestedCount);
+        jdbc.update("""
+            UPDATE detection_work_unit SET source_batch_id=?,batch_id=?,assignee_user_id=?,assigned_user_name=?,
+              status='ASSIGNED',assigned_at=COALESCE(assigned_at,NOW()),version=version+1 WHERE work_unit_id=?
+            """, upload.get("task_id"), id, employee.username(), employee.username(), workUnitId);
+        return id;
+    }
+
+    private String createFolder(String id, String prefix, BusinessUserDirectory.Identity actor,
+                                AgentUserDirectory.Inspector employee, int requestedCount) {
         var jdbc=db.getJdbcTemplate();
         // A retry reuses the same work unit and never replaces its original manifest.
         jdbc.update("""
@@ -369,13 +434,14 @@ public class FolderTaskBoard {
         var prior=jdbc.queryForList("SELECT source_oss_prefix,created_by FROM detection_task WHERE task_id=? FOR UPDATE",id);
         if(!prior.isEmpty()) {
             var row=prior.get(0);
-            if(!request.prefix().equals(row.get("source_oss_prefix")) || !actor.username().equals(row.get("created_by")) ||
+            if(!prefix.equals(row.get("source_oss_prefix")) || !actor.username().equals(row.get("created_by")) ||
                 !Long.toString(employee.userId()).equals(jdbc.queryForObject("SELECT assignee_user_id FROM detection_work_unit WHERE work_unit_id=?",String.class,id)))
                 throw new BusinessException(409,"派单编号已使用，请刷新");
             return id;
         }
-        var keys=manifest(request.prefix());
-        detection.registerFolder(id,request.prefix(),keys,actor.username());
+        var keys=manifest(prefix);
+        if (keys.size() > requestedCount) throw bad("原图批次的图片数量超过申请上限，请选择较小的批次");
+        detection.registerFolder(id,prefix,keys,actor.username());
         jdbc.update("UPDATE detection_work_unit SET image_count=? WHERE work_unit_id=?",keys.size(),id);
         return id;
     }

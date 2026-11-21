@@ -1,12 +1,15 @@
 package com.ruanzhu.doorhandle.module.detection.service;
 
 import com.ruanzhu.doorhandle.common.BusinessException;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnit;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitMapper;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitImageMapper;
 import com.ruanzhu.doorhandle.module.detection.service.impl.DetectionWorkUnitServiceImpl;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -80,5 +83,41 @@ class DetectionWorkUnitTransitionTest {
         when(mapper.selectOne(any())).thenReturn(unit);
         var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class));
         assertEquals(409, assertThrows(BusinessException.class, () -> service.recall("WU", 2, "主管")).getCode());
+    }
+
+    @Test void applyRetriesReturnTheExistingApplicationAndRejectChangedInput() {
+        var mapper = mock(DetectionWorkUnitMapper.class);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class));
+        var request = new DetectionWorkUnitApplyRequest();
+        request.setRequestId(UUID.randomUUID());
+        request.setImageCount(2);
+        var stored = new DetectionWorkUnit();
+        stored.setApplicantUserId("DET-0001");
+        stored.setImageCount(2);
+        stored.setStrategy("UNDETECTED_ONLY");
+        stored.setBatchId("det_folder_0123456789abcdef0123456789abcdef");
+        when(mapper.lock(anyString())).thenReturn(stored);
+
+        assertSame(stored, service.apply(request, "DET-0001"));
+        assertSame(stored, service.apply(request, "DET-0001"));
+        var applications = ArgumentCaptor.forClass(DetectionWorkUnit.class);
+        verify(mapper, times(2)).insertApplication(applications.capture());
+        assertEquals(applications.getAllValues().get(0).getWorkUnitId(), applications.getValue().getWorkUnitId());
+
+        request.setImageCount(3);
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.apply(request, "DET-0001")).getCode());
+    }
+
+    @Test void legacyRecallCannotDetachAnApplicationFromItsFolderTask() {
+        var mapper = mock(DetectionWorkUnitMapper.class);
+        var unit = new DetectionWorkUnit();
+        unit.setStatus("ASSIGNED");
+        unit.setVersion(2);
+        unit.setBatchId("det_folder_0123456789abcdef0123456789abcdef");
+        when(mapper.selectOne(any())).thenReturn(unit);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class));
+
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.recall("WU", 2, "主管")).getCode());
+        verify(mapper, never()).transition(any(), any(), any());
     }
 }

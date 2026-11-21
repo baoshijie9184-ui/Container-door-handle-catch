@@ -12,6 +12,7 @@ public class DetectionWorkUnit {
     @TableId(type = IdType.AUTO) private Long id;
     private String workUnitId;
     private String sourceBatchId;
+    private String batchId;
     private String applicantUserId;
     private String assigneeUserId;
     private Integer imageCount;

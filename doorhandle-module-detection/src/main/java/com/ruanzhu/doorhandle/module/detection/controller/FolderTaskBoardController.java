@@ -37,6 +37,10 @@ public class FolderTaskBoardController {
     }
     @PostMapping
     public Result<String> create(@RequestBody FolderTaskBoard.Create request){return Result.success(board.create(request));}
+    @PostMapping("/applications/{id}/dispatch")
+    public Result<String> dispatchApplication(@PathVariable String id, @RequestBody FolderTaskBoard.ApplicationDispatch request) {
+        return Result.success(board.dispatchApplication(id, request));
+    }
     @PostMapping("/{id}/assign")
     public Result<Void> assign(@PathVariable String id,@RequestBody FolderTaskBoard.Assign request){board.assign(id,request);return Result.success(null);}
     @PostMapping("/{id}/start")
