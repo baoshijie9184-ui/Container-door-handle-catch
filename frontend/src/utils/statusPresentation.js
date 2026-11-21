@@ -27,7 +27,8 @@ const domains = {
   },
   singleDetection: {
     IDLE:entry('尚未选图','info','Picture'), READY:entry('已选择图片','info','Picture'),
-    CREATING:entry('登记任务中','info','Tickets'), UPLOADING:entry('上传原图中','info','Upload'),
+    CREATING:entry('准备检测中','info','Tickets'), UPLOADING:entry('上传原图中','info','Upload'),
+    UPLOADING_RESULT:entry('正在保存标注图','info','Picture'),
     UPLOADED:entry('原图已上传','info','Picture'), QUEUED:entry('等待检测','warning','Clock'),
     PENDING_DETECTION:entry('等待检测','warning','Clock'), DETECTING:entry('正在检测','info','Connection'),
     RUNNING:entry('正在检测','info','Connection'), COMPLETED:entry('检测结果已返回','success','CircleCheck'),

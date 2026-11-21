@@ -33,7 +33,7 @@ const mapCompletedResult = (taskId, result, status) => {
   const confidenceMissing = summary?.confidence === null || summary?.confidence === undefined
   const noTargets = result.statistics?.noDetectionImages === 1 && result.statistics?.successfulImages === 1
   if ((!noTargets && (!summary?.category || confidenceMissing)) || !preview?.annotatedUrl) {
-    throw new Error(`远程结果不完整，任务编号：${taskId}`)
+    throw new Error('远程结果不完整，请核对检测记录')
   }
   return {
     taskId,
@@ -63,12 +63,12 @@ export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onSt
     }]
   })
   request.assert()
-  const task = requireSuccess(createResponse, '创建单图 Kafka 任务失败')
+  const task = requireSuccess(createResponse, '准备单图检测失败')
   const uploadVersion=responseResourceVersion(createResponse)
-  if (typeof task?.taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(task.taskId)) onStatus?.({taskId:task.taskId,stage:'CREATING',message:'任务已登记，正在核对上传资料'})
+  if (typeof task?.taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(task.taskId)) onStatus?.({taskId:task.taskId,stage:'CREATING',message:'正在准备上传原图'})
   const upload = task?.uploadUrls?.[0]
   if (!task?.taskId || !upload?.putUrl || !upload?.objectKey) {
-    throw new Error('创建单图 Kafka 任务失败：上传信息不完整')
+    throw new Error('未能取得完整的图片上传信息')
   }
 
   onStatus?.({ taskId: task.taskId, stage: 'UPLOADING', message: '正在上传原图' })
@@ -84,30 +84,30 @@ export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onSt
     threshold,
     uploadedFiles: [{ fileName: upload.fileName, objectKey: upload.objectKey }]
   },{headers:mutationHeaders(uploadVersion)})
-  requireSuccess(uploadedResponse, '提交 Kafka 检测任务失败')
+  requireSuccess(uploadedResponse, '提交图片检测失败')
 
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     const progressResponse = await request.get(`/api/detection/tasks/${task.taskId}`)
     request.assert()
-    const progress = requireSuccess(progressResponse, '查询 Kafka 检测进度失败') || {}
+    const progress = requireSuccess(progressResponse, '读取检测进度失败') || {}
     onStatus?.({
       taskId: task.taskId,
       stage: progress.stage || progress.status,
-      message: progress.message || ''
+      message: ''
     })
     if (progress.status === 'FAILED') {
-      const failure = new Error(`${progress.errorMessage || progress.message || '远程检测失败'}，任务编号：${task.taskId}`)
+      const failure = new Error(progress.errorMessage || '图片检测失败')
       failure.taskFailed = true
       throw failure
     }
     if (progress.status === 'COMPLETED' || progress.status === 'PARTIAL_FAILED') {
       const resultResponse = await request.get(`/api/detection/tasks/${task.taskId}/result`)
-      const result = requireSuccess(resultResponse, '获取 Kafka 远程检测结果失败') || {}
+      const result = requireSuccess(resultResponse, '读取检测结果失败') || {}
       request.assert()
       return mapCompletedResult(task.taskId, result, progress.status)
     }
     await wait(POLL_INTERVAL_MS)
   }
-  throw new Error(`Kafka 远程检测超时，任务编号：${task.taskId}`)
+  throw new Error('等待检测结果超时')
 }

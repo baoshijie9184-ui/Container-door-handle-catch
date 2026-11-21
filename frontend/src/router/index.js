@@ -290,6 +290,14 @@ router.beforeEach(async (to, from, next) => {
     }
   }
 
+  const tab = to.query.tab || to.meta.detectionTab
+  const taskId = to.query.taskId
+  if (to.meta.detectionTab && tab === 'workspace' && typeof taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(taskId)) {
+    const action = ['images', 'review', 'assign'].includes(to.query.boardAction) ? to.query.boardAction : 'trace'
+    next({ path: action === 'images' ? '/inspection/uploads/all' : '/inspection/tasks',
+      query: { keyword: taskId, taskId, boardAction: action }, replace: true })
+    return
+  }
   if (to.meta.supervisorOnly && !['SUPERVISOR','ADMIN'].includes(userStore.role)) {
     next({name:'home'})
     return

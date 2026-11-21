@@ -1,7 +1,6 @@
 <template>
   <section class="single-evidence" aria-label="本次单图检测图片与模型摘要">
     <dl class="single-evidence-summary"><div><dt>最高置信度目标</dt><dd><el-tag :type="categoryTone">{{ categoryLabel }}</el-tag></dd></div><div><dt>该目标的维修方式</dt><dd>{{ maintenanceFor(maintenance,categoryLabel)?.action || '待核对' }}</dd></div><div><dt>模型置信度</dt><dd>{{ confidenceLabel }}</dd></div></dl>
-    <p class="single-evidence-note">类别与置信度来自本次返回摘要，不代表人工复核、任务放行或模型准确率。图片可放大核对。</p>
     <ModelMaintenanceSummary v-if="maintenance?.groups?.some(group => group.categories.some(item => item.targetCount > 0 && item.label !== categoryLabel))" :summary="maintenance" />
     <div class="single-evidence-images">
       <figure v-for="image in images" :key="image.side">
@@ -11,7 +10,7 @@
           <span v-if="!loaded.has(image.stamp)" class="single-evidence-loading">正在读取图片</span>
           <span v-else class="single-evidence-zoom"><AppIcon name="Expand" :size="14" />放大核对</span>
         </button>
-        <div v-else class="single-evidence-unavailable"><AppIcon :name="image.url ? 'Warning' : 'Picture'" :size="23" /><strong><OssPreviewFailure v-if="image.url" :src="image.url" /><template v-else>没有可用预览地址</template></strong><p>{{ image.url ? '可重新读取当前图片，或从任务追溯核对原始资料。' : '请从任务追溯核对图片资料，不根据空预览推断没有检测结果。' }}</p><button v-if="image.url" type="button" @click="retryImage(image)"><AppIcon name="Refresh" :size="14" />重新读取图片</button></div>
+        <div v-else class="single-evidence-unavailable"><AppIcon :name="image.url ? 'Warning' : 'Picture'" :size="23" /><strong><OssPreviewFailure v-if="image.url" :src="image.url" /><template v-else>没有可用预览地址</template></strong><button v-if="image.url" type="button" @click="retryImage(image)"><AppIcon name="Refresh" :size="14" />重新读取图片</button></div>
       </figure>
     </div>
     <p class="single-evidence-file"><AppIcon name="Document" :size="14" /><span>{{ fileName || '提交文件名未记录' }}</span></p>
@@ -56,7 +55,6 @@ watch(sourceScope,()=>{zoomOpen.value=false;zoomImage.value=null;failed.value=ne
 .single-evidence-summary dt { font-size:12px; line-height:1.8; color:var(--app-text-secondary); }
 .single-evidence-summary dd { margin:7px 0 0; color:var(--app-text); font-size:19px; font-weight:600; overflow-wrap:anywhere; }
 .single-evidence-summary :deep(.el-tag) { max-width:100%; height:auto; white-space:normal; line-height:1.8; text-align:left; }
-.single-evidence-note { margin:12px 0 16px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
 .single-evidence-images { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 .single-evidence-images figure { min-width:0; margin:0; border:1px solid var(--app-border); border-radius:8px; overflow:hidden; }
 .single-evidence-images figcaption { display:grid; gap:4px; padding:10px; min-height:65px; background:var(--app-bg-alt); }

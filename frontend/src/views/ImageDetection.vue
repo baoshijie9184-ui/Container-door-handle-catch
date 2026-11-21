@@ -1,15 +1,15 @@
 <template>
   <div :class="boardRequest ? 'board-task-dialogs' : 'page-shell image-detection-container'">
     <template v-if="!boardRequest">
-    <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" :opened-version="collaborationOpenedTask?.version" :history-to="collaborationHistoryLink" @refresh="refreshCollaborationView" />
+    <CollaborationRefreshNotice v-if="activeTab !== 'workspace'" :changed="collaborationChanged" :editing="collaborationEditing" :opened-version="collaborationOpenedTask?.version" :history-to="collaborationHistoryLink" @refresh="refreshCollaborationView" />
     <PageHero class="page-hero detection-hero command-panel">
       <div>
         <h1 class="page-hero-title">{{ workspacePresentation.title }}</h1>
       </div>
-      <router-link v-if="activeTab === 'history' || activeTab === 'workspace'" class="upload-route" to="/upload"><AppIcon name="Upload" :size="16" />批量上传图片</router-link>
+      <router-link v-if="activeTab === 'history'" class="upload-route" to="/upload"><AppIcon name="Upload" :size="16" />批量上传图片</router-link>
     </PageHero>
 
-    <el-tabs v-model="activeTab" class="workspace-tabs" @tab-change="handleTabChange">
+    <el-tabs v-model="activeTab" class="workspace-tabs" :class="{'single-test-tabs':activeTab === 'workspace'}" @tab-change="handleTabChange">
       <el-tab-pane name="workspace" label="单图测试与对比">
         <div class="workspace-grid">
           <el-card class="detection-card detection-input-card" shadow="never">
@@ -23,7 +23,7 @@
               </div>
             </template>
             <SingleModelComparison v-if="activeTab === 'workspace'" v-show="singleMode === 'compare'"
-              :key="comparisonScope" @busy="comparisonBusy=$event" @trace="openTraceDialog" />
+              :key="comparisonScope" @busy="comparisonBusy=$event" />
             <el-form v-show="singleMode === 'single'" label-position="top">
               <div class="input-grid">
                 <div class="input-block">
@@ -76,7 +76,7 @@
                             </el-form-item>
                             <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
                             <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
-                            <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '执行版本见任务记录。' : '留空将自动选择模型。' }}</p>
+                            <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '使用所选模型检测。' : '留空将自动选择模型。' }}</p>
                           </div>
                           <div>
                             <el-form-item label="置信度阈值">
@@ -110,12 +110,7 @@
                         </div>
                       </div>
 
-                      <div v-if="singleDetectionTaskId || singleDetectionMessage" class="single-result-runtime">
-                        <code v-if="singleDetectionTaskId" class="single-result-task-id">
-                          {{ singleDetectionTaskId }}
-                        </code>
-                        <span v-if="singleDetectionMessage" role="status" aria-live="polite">{{ singleDetectionMessage }}</span>
-                      </div>
+                      <p v-if="loadingSingle && singleDetectionMessage" class="single-result-runtime" role="status">{{ singleDetectionMessage }}</p>
                       <dl v-if="singleSubmission" class="single-submission-summary"><div><dt>本次提交图片</dt><dd>{{ singleSubmission.fileName }}</dd></div><div><dt>提交模型选项</dt><dd>{{ singleSubmission.modelLabel }}</dd></div><div><dt>提交阈值</dt><dd>{{ formatEvidenceConfidence(singleSubmission.threshold) }}</dd></div></dl>
                       <el-alert
                         v-if="['FAILED','UNCONFIRMED'].includes(singleStageCode)"
@@ -125,15 +120,14 @@
                         :title="singleDetectionMessage"
                         class="single-result-error"
                       />
-                      <p v-if="singleStageCode === 'UNCONFIRMED'" id="single-result-reconcile-note" class="detection-input-note">连接或结果读取未完成不等于任务失败，请先<router-link to="/inspection/history">查看检测记录</router-link>。本页不会自动重新提交；选择新图片会开始新的提交。</p>
-                      <div v-if="singleDetectionTaskId" class="single-task-links"><button type="button" @click="openTraceDialog(singleDetectionTaskId)"><AppIcon name="Search" :size="14" />核对本次任务</button><router-link :to="{path:'/quality/reports',query:{taskId:singleDetectionTaskId}}">报告与审批</router-link></div>
+                      <p v-if="singleStageCode === 'UNCONFIRMED'" id="single-result-reconcile-note" class="detection-input-note">尚未收到完整结果，可先<router-link :to="{path:'/inspection/history',query:{keyword:singleDetectionTaskId || undefined}}">查看检测记录</router-link>，避免重复提交。</p>
 
                       <SingleDetectionEvidence v-if="detectionResult" :maintenance="detectionResult.modelMaintenance" :task-id="singleDetectionTaskId" :file-name="singleSubmission?.fileName || ''" :original-url="detectionResult.processedImagePath" :annotation-url="annotatedImageUrl" :local-preview="fileList[0]?.url || ''" :category-label="getCategoryText(detectionResult.category)" :category-tone="getCategoryType(detectionResult.category)" :confidence-label="formatConfidence(detectionResult.confidence)" />
                       <template v-else-if="fileList[0]?.url">
                         <div class="single-result-image single-result-preview">
                           <img :src="fileList[0].url" alt="待检测图片预览" />
                         </div>
-                        <p class="single-result-hint">{{ loadingSingle ? '当前图片正在处理，提交参数已锁定，请等待或核对任务记录。' : singleStageCode === 'UNCONFIRMED' ? '原图保留，先核对已有任务；不要根据预览推断检测已完成。' : '图片已选好，可以开始检测' }}</p>
+                        <p class="single-result-hint">{{ loadingSingle ? '正在处理图片…' : singleStageCode === 'UNCONFIRMED' ? '已保留原图预览。' : '图片已选好，可以开始检测' }}</p>
                       </template>
                       <el-empty v-else description="请先选择图片并开始检测" :image-size="54" />
                     </section>
@@ -143,199 +137,11 @@
             </el-form>
           </el-card>
 
-          <el-card class="detection-card task-card" shadow="never">
-            <template #header>
-              <div class="card-title-row">
-                <span>上传任务列表</span>
-                <el-badge v-if="taskList.length" :value="taskList.length"  />
-                <el-button size="small" link :loading="refreshingTasks" @click="refreshTaskList" title="刷新任务列表" aria-label="刷新任务列表">
-                  <template #icon><el-icon><Refresh /></el-icon></template>
-                </el-button>
-              </div>
-            </template>
-            <!-- 搜索栏 -->
-            <div class="task-search-bar">
-              <label class="workbench-task-filter" for="workbench-task-keyword"><span>任务或文件夹</span>
-              <el-input
-                id="workbench-task-keyword"
-                ref="taskKeywordInput"
-                v-model="taskSearchKeyword"
-                maxlength="200"
-                aria-label="搜索任务ID或文件夹名…" placeholder="搜索任务ID或文件夹名…"
-                clearable
-                size="small"
-                class="task-search-input"
-              >
-                <template #prefix><el-icon><Search /></el-icon></template>
-              </el-input>
-              </label>
-              <label class="workbench-task-filter" for="workbench-task-date"><span>最近更新日期</span>
-              <el-date-picker
-                id="workbench-task-date"
-                v-model="taskFilterDate"
-                aria-label="按最近更新日期筛选当前任务清单" placeholder="选择更新日期"
-                size="small"
-                class="task-date-picker"
-                value-format="YYYY-MM-DD"
-                clearable
-              />
-              </label>
-            </div>
-            <!-- 筛选标签 -->
-            <div v-if="taskList.length" class="task-filter-bar">
-              <el-radio-group v-model="taskFilter" size="small" aria-label="按已登记处理阶段筛选当前任务清单">
-                <el-radio-button value="all">全部</el-radio-button>
-                <el-radio-button value="pending">待检测</el-radio-button>
-                <el-radio-button value="running">检测中</el-radio-button>
-                <el-radio-button value="done">已完成</el-radio-button>
-                <el-radio-button value="failed">失败</el-radio-button>
-              </el-radio-group>
-            </div>
-            <div class="workbench-task-scope"><p>{{ businessTraceScope }} · 匹配 {{ filteredTaskList.length }} / 当前清单 {{ taskList.length }} 条。仅筛选本机记录与最近一次读取合并的清单，完整历史请查看<router-link to="/inspection/history">检测记录</router-link>。</p><button v-if="hasTaskFilters" type="button" @click="clearTaskFilters(true)"><AppIcon name="Filter" :size="14" />清空筛选</button></div>
-            <p v-if="refreshingTasks && filteredTaskList.length" class="detection-input-note" role="status">正在读取任务记录，当前保留已有清单。</p>
-            <el-alert v-if="taskReadError && filteredTaskList.length" :title="taskReadError+'；当前保留已有清单，请重新读取后核对。'" type="warning" :closable="false" show-icon />
-            <template v-if="filteredTaskList.length===0"><CollectionEmptyState :loading="refreshingTasks || (!taskReadLoaded && !taskReadError)" :error="taskReadError" :filtered="hasTaskFilters" empty-title="当前清单暂无上传任务" empty-description="可上传图片创建任务；这里不是全部历史任务数量。" @retry="refreshTaskList" @reset="clearTaskFilters(true)" /><router-link v-if="!taskList.length && !refreshingTasks && taskReadLoaded && !taskReadError" class="workbench-upload-link" to="/upload"><AppIcon name="Upload" :size="16" />前往上传图片</router-link></template>
-            <div v-else class="task-list">
-              <div
-                v-for="task in filteredTaskList"
-                :key="task.taskId"
-                class="task-item"
-                :class="{ 'task-item-selected': selectedTaskId === task.taskId }"
-              >
-                <!-- 可折叠行 -->
-                <div class="task-item-main">
-                  <div class="task-item-taskid">
-                    <span class="taskid-label">任务ID</span>
-                    <code class="taskid-value">{{ task.taskId }}</code><FolderMetadataLink :task-id="task.taskId" />
-                  </div>
-                  <button type="button" class="task-item-row1 task-item-toggle" :aria-expanded="selectedTaskId===task.taskId" :aria-controls="'workbench-task-detail-'+task.taskId" :aria-label="(selectedTaskId===task.taskId?'收起':'展开')+'任务详情：'+recordFolderLabel(task)" @click="selectedTaskId = selectedTaskId === task.taskId ? null : task.taskId">
-                    <span class="task-item-folder">{{ recordFolderLabel(task) }}</span>
-                    <StatusBadge domain="detection" :code="taskExecutionCode(task)" />
-                    <el-icon
-                      class="task-expand-icon"
-                      :class="{ 'task-expand-icon-open': selectedTaskId === task.taskId }"
-                    >
-                      <ArrowDown />
-                    </el-icon>
-                  </button>
-                  <div class="task-item-capture">
-                    <span v-if="task.batchNo">批次：{{ task.batchNo }}</span>
-                    <span v-if="task.workOrderNo">工单：{{ task.workOrderNo }}</span>
-                    <StatusBadge v-if="task.flowStatus" domain="flow" :code="task.flowStatus" :label="flowStatusText(task.flowStatus)" />
-                    <span v-if="task.reviewStatus">复核：{{ reviewStatusText(task.reviewStatus) }}</span>
-                    <span v-if="task.severityLevel">等级：{{ severityText(task.severityLevel) }}</span>
-                  </div>
-                  <div v-if="task.captureInfo" class="task-item-capture">
-                    <span v-if="task.captureInfo.captureDate">{{ task.captureInfo.captureDate }}</span>
-                    <span v-if="task.captureInfo.collector">{{ task.captureInfo.collector }}</span>
-                    <span v-if="task.captureInfo.deviceName">{{ task.captureInfo.deviceName }}</span>
-                  </div>
-                  <TaskExecutionProgress :task="task" />
-                  <ResourceMutationSummary v-if="userStore.capabilities?.changeHistory" :latest="taskChanges[task.taskId]" :revision="task.version" resource-type="DETECTION_TASK" :resource-id="task.taskId" domain="DETECTION" />
-                  <QualityStageGuidance v-if="selectedTaskId === task.taskId" :task="task" />
-                </div>
-
-                <!-- 操作按钮 -->
-                <div class="task-item-actions">
-                  <el-button v-if="task.stage !== 'uploading'" size="small" @click.stop="openImageBrowser(task.taskId)"><AppIcon name="Picture" :size="15" />浏览图片</el-button>
-                  <el-button
-                    v-if="task.stage === 'uploaded' && Array.isArray(task.uploadedFiles) && task.uploadedFiles.length"
-                    type="primary"
-                    size="small"
-                    :loading="task.stage === 'queued' || task.stage === 'detecting'"
-                    @click.stop="startTaskDetection(task, form.modelId, form.threshold)"
-                  >
-                    <el-icon><VideoPlay /></el-icon>开始检测
-                  </el-button>
-                  <el-tag v-if="task.stage === 'queued'" type="primary" style="font-size:12px">等待调度</el-tag>
-                  <el-tag v-if="task.stage === 'detecting'" type="primary" style="font-size:12px">远程检测中</el-tag>
-                  <el-button
-                    v-if="task.stage === 'completed' || task.stage === 'failed'"
-                    link
-                    size="small"
-                    type="primary"
-                    @click.stop="openTraceDialog(task.taskId)"
-                  >
-                    追溯详情
-                  </el-button>
-                  <el-button
-                    v-if="task.stage === 'completed' || task.stage === 'failed'"
-                    link
-                    size="small"
-                    type="success"
-                    @click.stop="downloadTaskQualityReport(task.taskId)"
-                  >
-                    导出任务摘要
-                  </el-button>
-                  <el-button
-                    v-if="task.stage === 'completed' || task.stage === 'failed'"
-                    link
-                    size="small"
-                    type="danger"
-                    :disabled="historyCacheBusy" @click.stop="clearHistoryTaskCache(task.taskId)"
-                  >
-                    <el-icon><Delete /></el-icon>清除本机缓存
-                  </el-button>
-                  <el-button
-                    v-if="canAssignQualityTask(task)"
-                    type="info"
-                    size="small"
-                    @click.stop="openAssignmentDialog(task)"
-                  >
-                    分派质检
-                  </el-button>
-                  <el-button
-                    v-if="canReviewTask(task)"
-                    type="success"
-                    size="small"
-                    @click.stop="openReviewDialog(task)"
-                  >
-                    确认复核
-                  </el-button>
-                  <el-button
-                    v-if="canDisposeTask(task)"
-                    type="warning"
-                    size="small"
-                    @click.stop="openDispositionDialog(task)"
-                  >
-                    质检处置
-                  </el-button>
-                  <el-button
-                    v-if="canSubmitReworkResult(task)"
-                    type="primary"
-                    size="small"
-                    @click.stop="openReworkDialog(task)"
-                  >
-                    返工回填
-                  </el-button>
-                </div>
-
-                <!-- 展开详情 -->
-                <Transition name="task-detail">
-                <div v-if="selectedTaskId === task.taskId" :id="'workbench-task-detail-'+task.taskId" class="task-item-detail">
-                  <details v-if="taskExecutionLogs(task).length" class="task-log-block">
-                    <summary class="task-log-head">最近动态 · 本机记录</summary>
-                    <p class="task-log-note">本机记录；旧记录可能缺少日期。</p>
-                    <ol class="task-log-list">
-                      <li v-for="log in taskExecutionLogs(task)" :key="log.key" class="task-log-item">
-                        <span class="task-log-time">{{ log.time }}</span>
-                        <span class="task-log-text">{{ log.text }}</span>
-                      </li>
-                    </ol>
-                  </details>
-
-                  <TaskResultSnapshot v-if="task.result" :task-id="task.taskId" :result="task.result" @trace="openTraceDialog" />
-                  <p v-else-if="task.stage==='completed' || task.stage==='failed'" class="task-result-unread">本机未缓存结果，可到“追溯详情”读取。</p>
-                </div>
-                </Transition>
-              </div>
-            </div>
-          </el-card>
         </div>
 
       </el-tab-pane>
 
-      <el-tab-pane name="history" label="检测记录">
+      <el-tab-pane lazy name="history" label="检测记录">
         <el-card class="detection-card history-page-card" shadow="never">
           <template #header><div class="card-title-row"><span><AppIcon name="Filter" :size="18" />筛选记录</span><el-tag type="info" effect="plain">{{ historyLoading ? '正在读取任务与结果' : historyError ? '本次读取未完成' : historyTotal!==null ? `共 ${historyTotal} 条` : historyLoaded ? '总数未提供' : '数量尚未读取' }}</el-tag><el-button size="small" :loading="historyLoading" @click="refreshHistory"><AppIcon name="Refresh" :size="15" />刷新已读范围</el-button></div></template>
           <p class="history-scope-note"><AppIcon name="Lock" :size="15" />{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测结果与人工结论分别记录。</p>
@@ -355,7 +161,7 @@
           <div v-if="historyTotal!==null" class="history-pagination"><el-pagination :current-page="historyPage" :page-size="historyPageSize" :total="historyTotal" :page-sizes="[10,20,50]" :disabled="historyLoading || !!historyError" layout="total, sizes, prev, pager, next, jumper" @current-change="onHistoryPageChange" @size-change="onHistorySizeChange" /></div>
         </el-card>
       </el-tab-pane>
-      <el-tab-pane name="quality" label="质检队列">
+      <el-tab-pane lazy name="quality" label="质检队列">
         <el-card class="detection-card quality-queue-card" shadow="never">
           <template #header>
             <div class="card-title-row">
@@ -469,7 +275,7 @@
         </el-card>
       </el-tab-pane>
 
-      <el-tab-pane name="work-order-trace" label="工单追溯">
+      <el-tab-pane lazy name="work-order-trace" label="工单追溯">
         <el-card class="detection-card batch-trace-card" shadow="never">
           <template #header>
             <div class="card-title-row">
@@ -495,7 +301,7 @@
         </el-card>
       </el-tab-pane>
 
-      <el-tab-pane name="batch-trace" label="批次追溯">
+      <el-tab-pane lazy name="batch-trace" label="批次追溯">
         <el-card class="detection-card batch-trace-card" shadow="never">
           <template #header>
             <div class="card-title-row">
@@ -717,7 +523,6 @@ import { useResourceChanges } from '../composables/useResourceChanges'
 import { useLatestChanges } from '../composables/useLatestChanges'
 import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
 import { resourceHistoryLink } from '../utils/changeHistory'
-import { resourceVersion } from '../utils/mutationVersion'
 import {captureAccountRequest} from '@/api/request'
 import { accountSession } from '../utils/accountContext'
 import ModelMaintenanceSummary from '@/components/ModelMaintenanceSummary.vue'
@@ -734,15 +539,14 @@ import { beijingDateTime as formatBusinessTime } from '../utils/beijingTime'
 import { detectionPresentation } from '../utils/pagePresentation'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, Delete, Download, Refresh, Search, Upload, VideoPlay, Warning } from '@element-plus/icons-vue'
+import { Download, Refresh, VideoPlay } from '@element-plus/icons-vue'
 import {
   fetchAvailableModels,
   fetchDetectionTaskTrace,
 } from '../api/detection'
 import { detectSingleImageViaKafka } from '../services/singleImageKafkaDetection'
-import { useTaskStore, useUploadStore, usePollingStore, CATEGORY_LABELS, CATEGORY_COLORS, CATEGORY_ALIASES } from '../stores/detectionTask'
+import { useTaskStore, usePollingStore, CATEGORY_LABELS, CATEGORY_COLORS, CATEGORY_ALIASES } from '../stores/detectionTask'
 import { useSingleImageUploadPreview } from '../composables/useSingleImageUploadPreview'
 import {
   canAssignQualityTask as stateCanAssignQualityTask,
@@ -768,13 +572,8 @@ import { useDetectionHistory } from '../composables/useDetectionHistory'
 import { useQualityReportDownloads } from '../composables/useQualityReportDownloads'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import TaskTracePanel from '../components/TaskTracePanel.vue'
-import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
-import { recordFolderLabel } from '@/utils/imageFolderLabel'
 import SingleModelComparison from '../components/SingleModelComparison.vue'
 import SingleDetectionEvidence from '../components/SingleDetectionEvidence.vue'
-import TaskExecutionProgress from '../components/TaskExecutionProgress.vue'
-import TaskResultSnapshot from '../components/TaskResultSnapshot.vue'
-import {taskExecutionCode,taskExecutionLogs} from '../utils/taskExecutionPresentation'
 import '@/assets/task-trace-dialog.css'
 
 const props=defineProps({boardRequest:Object})
@@ -786,13 +585,11 @@ const comparisonScope = computed(() => JSON.stringify([userStore.identity?.userI
 watch(comparisonScope, () => { comparisonBusy.value=false })
 const businessTraceScope = computed(() => userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权查看的业务范围')
 const taskStore = useTaskStore()
-const uploadStore = useUploadStore()
 const pollingStore = usePollingStore()
-const { taskList, selectedTaskId } = storeToRefs(taskStore)
 const {
   removeTask, saveTaskList
 } = taskStore
-const { startTaskDetection, stopAllPolling, restoreFromSession, fetchTaskList, fetchTaskResults } = pollingStore
+const { restoreFromSession, fetchTaskResults } = pollingStore
 const {
   activeQualityQueue,
   qualityQueueLoading,
@@ -893,8 +690,7 @@ const {
 const fileList = ref([])
 const modelList = ref([])
 const modelsLoading = ref(false), modelsLoaded = ref(false), modelsError = ref('')
-let modelReadVersion = 0, singleRunVersion = 0, taskReadVersion = 0, detectionPageActive = true
-const refreshingTasks = ref(false), taskReadLoaded = ref(false), taskReadError = ref('')
+let modelReadVersion = 0, singleRunVersion = 0, detectionPageActive = true
 const detectionResult = ref(null)
 const annotatedImageUrl = ref('')
 const loadingSingle = ref(false)
@@ -903,15 +699,6 @@ const singleDetectionStage = ref('IDLE')
 const singleDetectionMessage = ref('')
 const singleSubmission = ref(null)
 const singleStageCode = computed(() => singleDetectionStage.value === 'IDLE' && form.imageFile ? 'READY' : String(singleDetectionStage.value || 'IDLE').toUpperCase())
-const taskFilter = ref('all')
-const taskSearchKeyword = ref('')
-const taskFilterDate = ref('')
-const taskKeywordInput = ref(null)
-const hasTaskFilters = computed(()=>!!(taskSearchKeyword.value.trim() || taskFilterDate.value || taskFilter.value!=='all'))
-const clearTaskFilters = (restoreFocus=false)=>{
-  taskSearchKeyword.value='';taskFilterDate.value='';taskFilter.value='all'
-  if(restoreFocus){const version=taskReadVersion;nextTick(()=>{if(detectionPageActive && version===taskReadVersion)taskKeywordInput.value?.input?.focus({preventScroll:true})})}
-}
 const traceDialogVisible = ref(false)
 const browsingImages = ref(false), initialAnnotationUrl = ref(''), imageBrowser = ref(null)
 const traceLoading = ref(false)
@@ -923,7 +710,7 @@ const displayBusinessTime = value => value ? formatBusinessTime(value) || '时�
 const route = useRoute()
 watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]), () => { traceGeneration++; traceReadController?.abort(); traceReadController = null; traceDetail.value = null; traceRequestedId.value = ''; traceError.value = ''; traceLoading.value = false; traceDialogVisible.value = false }, { flush: 'sync' })
 const router = useRouter()
-const activeTab = ref('workspace')
+const activeTab = ref(route.query.keyword ? 'history' : route.meta.detectionTab || 'workspace')
 const workspacePresentation = computed(() => detectionPresentation[activeTab.value] || detectionPresentation.workspace)
 const validTabs = ['workspace', 'history', 'quality', 'work-order-trace', 'batch-trace']
 const tabRouteMap = {
@@ -940,41 +727,6 @@ const form = reactive({
 })
 const selectedDetectionModel = computed(()=>modelList.value.find(model=>model.modelId===form.modelId))
 
-// 筛选任务列表
-const filteredTaskList = computed(() => {
-  let list = [...taskList.value]
-
-  // 关键字搜索
-  const kw = taskSearchKeyword.value.trim().toLowerCase()
-  if (kw) {
-    list = list.filter(t =>
-      (t.taskId && t.taskId.toLowerCase().includes(kw)) ||
-      (t.folderName && t.folderName.toLowerCase().includes(kw))
-    )
-  }
-
-  // 日期过滤
-  if (taskFilterDate.value) {
-    list = list.filter(t => {
-      const date = t.updatedAt || t.createdAt
-      return date && formatBusinessTime(date).startsWith(taskFilterDate.value)
-    })
-  }
-
-  // 状态过滤
-  if (taskFilter.value !== 'all') {
-    if (taskFilter.value === 'pending') list = list.filter(t => t.stage === 'uploaded')
-    else if (taskFilter.value === 'running') list = list.filter(t => t.stage === 'queued' || t.stage === 'detecting')
-    else if (taskFilter.value === 'done') list = list.filter(t => t.stage === 'completed')
-    else if (taskFilter.value === 'failed') list = list.filter(t => t.stage === 'failed')
-  }
-
-  // 按 taskId 倒序（稳定不跳）
-  list.sort((a, b) => (b.taskId || '').localeCompare(a.taskId || ''))
-
-  return list
-})
-
 const traceCount = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'
 
 const refreshQualityQueueIfVisible = async () => {
@@ -985,6 +737,8 @@ const refreshQualityQueueIfVisible = async () => {
 
 const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
   const startingRoute = route.fullPath
+  if (tabName === 'workspace' && !modelsLoaded.value && !modelsLoading.value) fetchModels()
+  if (tabName === 'history' && !historyLoaded.value && !historyLoading.value) fetchHistoryWithFilters(1)
   if (tabName === 'quality' && !qualityQueueRecords.value.length) {
     await loadQualityQueue(1)
   }
@@ -1084,10 +838,7 @@ watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || 
   modelsLoading.value = false
   modelsLoaded.value = false
   modelsError.value = '账号或权限已变化，请重新读取模型目录'
-  taskReadVersion++
-  refreshingTasks.value=false;taskReadLoaded.value=false;taskReadError.value='账号或权限已变化，请重新读取任务列表'
-  clearTaskFilters()
-  singleDetectionMessage.value = '已清除本页原图与结果，原任务请到当前账号有权查看的检测记录核对。'
+  singleDetectionMessage.value = ''
 }, { flush:'sync' })
 
 const handleSingleDetection = async () => {
@@ -1101,12 +852,12 @@ const handleSingleDetection = async () => {
   const runVersion = ++singleRunVersion
   const file = form.imageFile, modelId = form.modelId, threshold = form.threshold
   const model = modelList.value.find(row => row.modelId === modelId)
-  singleSubmission.value = {fileName:file.name,threshold,modelLabel:modelId ? `${model?.modelName || '模型'} · #${modelId}${model?.version ? ' · '+model.version : ''}` : '由服务端选择，实际以任务记录为准'}
+  singleSubmission.value = {fileName:file.name,threshold,modelLabel:modelId ? `${model?.modelName || '模型'} · #${modelId}${model?.version ? ' · '+model.version : ''}` : '自动选择模型'}
   detectionResult.value = null
   annotatedImageUrl.value = ''
   singleDetectionTaskId.value = ''
   singleDetectionStage.value = 'CREATING'
-  singleDetectionMessage.value = '正在登记单图检测任务'
+  singleDetectionMessage.value = '正在准备检测'
 
   try {
     const result = await detectSingleImageViaKafka({
@@ -1115,7 +866,7 @@ const handleSingleDetection = async () => {
         if (!detectionPageActive || runVersion !== singleRunVersion) return
         singleDetectionTaskId.value = taskId || singleDetectionTaskId.value
         singleDetectionStage.value = stage || singleDetectionStage.value
-        singleDetectionMessage.value = message || singleDetectionMessage.value
+        singleDetectionMessage.value = message || ''
       }
     })
     if (!detectionPageActive || runVersion !== singleRunVersion) return
@@ -1123,8 +874,8 @@ const handleSingleDetection = async () => {
     annotatedImageUrl.value = result.annotatedImagePath
     singleDetectionTaskId.value = result.taskId
     singleDetectionStage.value = result.status === 'PARTIAL_FAILED' ? 'PARTIAL_FAILED' : 'COMPLETED'
-    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '检测返回部分失败，请核对任务记录' : '单图测试已完成，结果可在检测记录中查看'
-    if (result.status === 'PARTIAL_FAILED') ElMessage.warning('检测结果包含失败项，请核对任务')
+    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '部分检测结果未返回' : '单图测试已完成'
+    if (result.status === 'PARTIAL_FAILED') ElMessage.warning(singleDetectionMessage.value)
     else ElMessage.success('单图检测结果已返回')
   } catch (error) {
     if (!detectionPageActive || runVersion !== singleRunVersion) return
@@ -1166,7 +917,7 @@ const getCategoryText = (category) => {
 }
 
 const fetchModels = async () => {
-  if (!detectionPageActive) return
+  if (!detectionPageActive || modelsLoading.value) return
   const readVersion = ++modelReadVersion
   modelsLoading.value = true
   modelsError.value = ''
@@ -1180,34 +931,12 @@ const fetchModels = async () => {
   } catch (error) {
     if (!detectionPageActive || readVersion !== modelReadVersion) return
     if ([401,403].includes(error.response?.status)) { modelList.value = []; modelsLoaded.value = false }
-    modelsError.value = '模型目录暂不可读取；未指定模型时仍由服务端按原配置选择，请核对任务记录。'
+    modelsError.value = '模型目录暂不可读取；留空可自动选择模型。'
   } finally { if (detectionPageActive && readVersion === modelReadVersion) modelsLoading.value = false }
 }
 const detectionModelOptionLabel = model => `${model.modelName || '未命名模型'}${model.version ? ' · '+model.version : ''} · #${model.modelId}`
 
 // ==================== 生命周期 ====================
-
-const readWorkbenchTasks = async (notify=false) => {
-  if(!detectionPageActive || refreshingTasks.value || !userStore.isAuthenticated)return false
-  const version=++taskReadVersion,actor=JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated])
-  const current=()=>detectionPageActive && version===taskReadVersion && actor===JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated])
-  refreshingTasks.value = true
-  taskReadError.value=''
-  try {
-    const result=await fetchTaskList()
-    if(!current())return false
-    if(!result?.ok)throw new Error(result?.message || '任务记录暂不可读取')
-    taskReadLoaded.value=true
-    if(notify)ElMessage.success('任务记录已读取并合并到当前清单')
-    return true
-  } catch (e) {
-    if(current())taskReadError.value=e.message || '任务记录暂不可读取'
-    return false
-  } finally {
-    if(current())refreshingTasks.value = false
-  }
-}
-const refreshTaskList = ()=>readWorkbenchTasks(true)
 
 // All quality entry points share state guards and mutation feedback.
 const {
@@ -1349,10 +1078,12 @@ onMounted(async () => {
     historySearchKeyword.value = String(queryKeyword)
   }
 
-  fetchModels()
+  if (activeTab.value === 'workspace') {
+    fetchModels()
+    return
+  }
   await restoreFromSession()
-  await readWorkbenchTasks()
-  fetchHistoryWithFilters()
+  if (activeTab.value === 'history') fetchHistoryWithFilters()
   if (activeTab.value === 'quality') {
     loadQualityQueue()
   }
@@ -1360,7 +1091,6 @@ onMounted(async () => {
   // 从上传页跳转过来时自动选中对应任务
   const queryTaskId = route.query.taskId
   if (queryTaskId && route.fullPath === initialNavigation) {
-    selectedTaskId.value = String(queryTaskId)
     const action=route.query.boardAction
     if (action==='trace') openTraceDialog(String(queryTaskId))
     if (action==='images') openImageBrowser(String(queryTaskId))
@@ -1393,12 +1123,11 @@ onBeforeUnmount(() => {
   detectionPageActive = false
   modelReadVersion++
   singleRunVersion++
-  taskReadVersion++
   traceGeneration++
   traceReadController?.abort()
   // 不再停止轮询 — 轮询在 store 中，切换页面后继续
   // 只保存当前状态
-  if(!props.boardRequest)saveTaskList()
+  if(!props.boardRequest && activeTab.value !== 'workspace')saveTaskList()
 })
 const collaborationEditing=computed(()=>reviewDialogVisible.value||assignmentDialogVisible.value||dispositionDialogVisible.value||reworkDialogVisible.value||reviewSubmitting.value||assignmentSubmitting.value||dispositionSubmitting.value||reworkSubmitting.value)
 async function refreshCollaborationView(){
@@ -1409,7 +1138,6 @@ async function refreshCollaborationView(){
   else if(activeTab.value==='quality'){await loadQualityQueue(qualityQueuePage.value);updated=!qualityQueueError.value}
   else if(activeTab.value==='work-order-trace'&&workOrderTraceReport.value)await refreshWorkOrderTraceReport()
   else if(activeTab.value==='batch-trace'&&batchTraceReport.value)await refreshBatchTraceReport()
-  else updated=await readWorkbenchTasks()
   collaborationChanged.value=updated===false
   return updated
 }
@@ -1418,7 +1146,6 @@ function discardInaccessibleTasks({requestedIds,missingIds,isCurrent}) {
   const account=accountSession.stamp(),requested=new Set(requestedIds)
   const ids=[...new Set(missingIds.filter(id=>requested.has(id)))].slice(0,100)
   if(!ids.length||!accountSession.current(account)||!isCurrent())return
-  taskReadVersion++;refreshingTasks.value=false
   pollingStore.invalidateTaskReads()
   for(const forget of [forgetHistoryTasks,forgetQualityTasks,forgetTraceTasks]){
     if(!isCurrent()||!accountSession.current(account))return
@@ -1430,7 +1157,7 @@ const { latest:taskChanges } = useLatestChanges(computed(() => {
   if(props.boardRequest)return []
   const rows=activeTab.value==='history'?historyRecords.value:activeTab.value==='quality'?qualityQueueRecords.value
     :activeTab.value==='work-order-trace'?(workOrderTraceReport.value?.records||[])
-      :activeTab.value==='batch-trace'?(batchTraceReport.value?.records||[]):filteredTaskList.value.filter(task=>resourceVersion(task)!==null)
+      :activeTab.value==='batch-trace'?(batchTraceReport.value?.records||[]):[]
   return rows.map(task=>({taskId:task.taskId,version:task.version}))
 }), 'DETECTION_TASK', 'DETECTION', 'taskId', {onInaccessible:discardInaccessibleTasks})
 const collaborationOpenedTask = computed(() => {
@@ -1490,6 +1217,8 @@ async function validateCollaborationAccess(){
 .workspace-tabs :deep(.el-tabs__header) {
   padding: 0 4px;
 }
+
+.single-test-tabs :deep(.el-tabs__header) { display:none; }
 
 .workspace-tabs :deep(.el-tabs__item) {
   height: 48px;
@@ -1657,12 +1386,6 @@ async function validateCollaborationAccess(){
   line-height: 1.5;
 }
 
-.single-result-task-id {
-  color: #1d4ed8;
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-
 .single-result-error {
   margin-bottom: 12px;
 }
@@ -1707,216 +1430,11 @@ async function validateCollaborationAccess(){
 .threshold-text output { color:var(--app-primary); font-size:18px; font-weight:600; font-variant-numeric:tabular-nums; }
 .threshold-text output small { color:var(--app-text-secondary); font-size:12px; font-weight:400; }
 
-.task-card {
-  overflow: hidden;
-}
-
 .card-title-row {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-
-/* 筛选标签栏 */
-.task-search-bar {
-  display:grid;
-  grid-template-columns:minmax(0,1fr) minmax(165px,.85fr);
-  gap:12px;
-  margin-bottom:14px;
-}
-.workbench-task-filter { display:grid; gap:6px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-.workbench-task-filter :is(.task-search-input,.task-date-picker) { width:100%; min-width:0; }
-.workbench-task-filter :deep(.el-date-editor.el-input) { width:100%; }
-.workbench-task-scope { display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px 12px; margin:10px 0 14px; min-width:0; }
-.workbench-task-scope p { flex:1 1 200px; min-width:0; margin:0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
-.workbench-task-scope a { color:var(--app-primary); text-decoration:underline; text-underline-offset:3px; }
-.workbench-task-scope button { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:4px; padding:2px 0; background:transparent; color:var(--app-primary); font:inherit; font-size:12px; line-height:1.8; cursor:pointer; transition:color 180ms ease; }
-.workbench-upload-link { display:flex; align-items:center; justify-content:center; gap:6px; width:fit-content; max-width:100%; margin:0 auto 20px; padding:8px 12px; border-radius:6px; background:var(--app-primary); color:white; text-decoration:none; font-size:13px; line-height:1.8; transition:background-color 180ms ease; }
-.workbench-upload-link:hover { background:var(--app-primary-hover); }
-.workbench-task-scope :is(button,a):focus-visible,.workbench-upload-link:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
-@media(max-width:560px) { .task-search-bar { grid-template-columns:minmax(0,1fr); } }
-@media(prefers-reduced-motion:reduce) { .workbench-task-scope button,.workbench-upload-link { transition:none; } }
-
-.task-filter-bar {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--app-border);
-}
-
-.task-filter-bar :deep(.el-radio-button__inner) {
-  min-width: 80px;
-  text-align: center;
-}
-
-.task-list {
-  display: grid;
-  gap: 10px;
-}
-
-.task-item {
-  padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid var(--app-border);
-  background: var(--app-surface);
-  transition: border-color 180ms ease, background-color 180ms ease;
-}
-
-.task-item:hover {
-  border-color: rgba(37, 99, 235, 0.20);
-  background: #fff;
-  box-shadow: none;
-}
-
-.task-item-selected,
-.task-item-selected:hover {
-  border-color: var(--app-primary);
-  background: var(--app-surface);
-  box-shadow: none;
-}
-
-.task-item-main {
-  display: grid;
-  gap: 0;
-}
-
-.task-item-taskid {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.taskid-label {
-  font-size: 12px;
-  color: var(--app-text-secondary);
-  flex-shrink: 0;
-}
-
-.taskid-value {
-  font-size: 12px;
-  color: var(--app-primary);
-  background: var(--app-primary-soft);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-family: 'SF Mono', 'Consolas', monospace;
-  white-space: normal;
-  overflow-wrap:anywhere;
-}
-
-.task-item-row1 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.task-item-toggle { width:100%; min-width:0; padding:6px 0; border:0; background:transparent; text-align:left; font:inherit; cursor:pointer; }
-.task-item-toggle:hover .task-item-folder { color:var(--app-primary); }
-.task-item-toggle:focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; border-radius:4px; }
-.task-item-toggle > .business-status { flex-shrink:0; }
-
-.task-item-folder {
-  font-weight: 600;
-  color: var(--app-text);
-  font-size: 14px;
-  flex: 1;
-  min-width:0;
-  white-space:normal;
-  overflow-wrap:anywhere;
-}
-
-.task-item-capture {
-  display: flex;
-  gap: 12px;
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--app-text-secondary);
-  flex-wrap: wrap;
-}
-
-.task-expand-icon {
-  font-size: 12px;
-  color: var(--app-text-secondary);
-  transition: transform 180ms ease;
-  flex-shrink: 0;
-}
-
-.task-expand-icon-open {
-  transform: rotate(180deg);
-  color: var(--app-primary);
-}
-
-.task-item-actions {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--app-border);
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-}
-
-.task-item-actions :deep(.el-button.is-link) {
-  padding: 0 8px;
-  font-size: 12px;
-  height: 28px;
-}
-
-.task-item-detail {
-  margin-top: 0;
-  min-width: 0;
-  padding-block: 4px;
-}
-.task-detail-enter-active,.task-detail-leave-active { transition:opacity 180ms ease; }
-.task-detail-enter-from,.task-detail-leave-to { opacity:0; }
-.task-result-unread { margin:14px 0 0; color:var(--app-text-secondary); font-size:12px; line-height:1.9; overflow-wrap:anywhere; }
-
-.task-log-block {
-  margin: 12px 0;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--app-border);
-}
-
-.task-log-head {
-  width:fit-content;
-  color:var(--app-primary);
-  font-size:12px;
-  line-height:1.8;
-  cursor:pointer;
-}
-.task-log-head:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
-.task-log-note { margin:10px 0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-
-.task-log-list {
-  display: grid;
-  gap: 6px;
-  padding:0;
-  margin:10px 0 0;
-  list-style:none;
-}
-
-.task-log-item {
-  display:grid;
-  grid-template-columns:minmax(0,155px) minmax(0,1fr);
-  gap:6px 14px;
-  font-size: 12px;
-  line-height:1.8;
-  color:var(--app-text-secondary);
-}
-
-.task-log-time {
-  color:var(--app-text-secondary);
-  font-variant-numeric:tabular-nums;
-  overflow-wrap:anywhere;
-}
-
-.task-log-text {
-  min-width:0;
-  color:var(--app-text);
-  white-space:pre-wrap;
-  overflow-wrap:anywhere;
-}
-@media(max-width:480px) { .task-log-item { grid-template-columns:minmax(0,1fr); gap:2px; padding-block:6px; } }
-@media(prefers-reduced-motion:reduce) { .task-expand-icon,.task-item,.task-detail-enter-active,.task-detail-leave-active { transition:none; } }
 
 .quality-queue-card {
   overflow: hidden;
@@ -2066,9 +1584,7 @@ async function validateCollaborationAccess(){
 .single-submission-summary > div { min-width:0; }.single-submission-summary > div:first-child { grid-column:1/-1; }
 .single-submission-summary dt { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .single-submission-summary dd { margin:4px 0 0; color:var(--app-text); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
-.single-task-links { display:flex; align-items:center; flex-wrap:wrap; gap:8px 18px; margin:0 0 16px; }
-.single-task-links > :is(a,button) { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:5px; padding:5px 0; color:var(--app-primary); background:transparent; font-size:12px; font-family:inherit; text-decoration:none; cursor:pointer; }
-.single-task-links > :is(a,button):focus-visible, .detection-input-note button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+.detection-input-note button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 @media(max-width:480px) { .single-submission-summary { grid-template-columns:minmax(0,1fr); } }
 @media(max-width:580px) { .quality-queue-scope { font-size:11px; }.quality-pagination { justify-content:flex-start; overflow-x:auto; padding-bottom:5px; } }
 </style>

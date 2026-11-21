@@ -29,12 +29,12 @@
         </button>
         <div v-else class="image-area empty-image" aria-live="polite">
           <AppIcon :name="lane.imageError || ['UNCONFIRMED','FAILED'].includes(lane.stage) ? 'Warning' : 'Picture'" :size="24" />
-          <span>{{ lane.imageError ? '标注图读取失败' : lane.message || '等待检测' }}</span>
+          <span>{{ lane.imageError ? '标注图读取失败' : lane.message || (lane.stage==='IDLE' ? '等待检测' : stageLabel(lane.stage)) }}</span>
           <el-button v-if="lane.imageError" link type="primary" @click="lane.attempt++;lane.imageError=false">重新读取图片</el-button>
         </div>
-        <div v-if="lane.result || lane.taskId || lane.stage==='FAILED'" class="result-line">
+        <div v-if="lane.result || lane.stage==='UNCONFIRMED' || lane.stage==='FAILED'" class="result-line">
           <strong v-if="lane.result">{{ lane.result.targetCount }} 个目标<span v-if="lane.result.confidence != null"> · {{ category(lane.result.category) }} {{ Math.round(lane.result.confidence*100) }}%</span></strong>
-          <button v-if="lane.taskId" type="button" @click="$emit('trace',lane.taskId)">查看任务记录</button>
+          <router-link v-if="lane.stage==='UNCONFIRMED'" :to="{path:'/inspection/history',query:{keyword:lane.taskId || undefined}}">查看检测记录</router-link>
           <button v-if="lane.stage==='FAILED'" type="button" :disabled="busy" @click="runLane(lane)">重试模型 {{ lane.label }}</button>
         </div>
       </figure>
@@ -52,7 +52,7 @@ import { detectSingleImageViaKafka } from '../services/singleImageKafkaDetection
 import { CATEGORY_ALIASES, CATEGORY_LABELS } from '../stores/detectionTask'
 import { statusPresentation } from '../utils/statusPresentation'
 
-const emit = defineEmits(['trace','busy'])
+const emit = defineEmits(['busy'])
 const lanes = reactive(['A','B'].map(label=>({label,modelId:null,...initialResult()})))
 function initialResult() { return {stage:'IDLE',pending:false,message:'',taskId:'',result:null,imageError:false,attempt:0} }
 const models=ref([]), reading=ref(false), catalogError=ref(''), fileError=ref('')
@@ -102,14 +102,14 @@ function choose(next) {
 }
 async function runLane(lane) {
   if (!file.value || !lane.modelId || lane.pending) return
-  Object.assign(lane,initialResult(),{pending:true,stage:'CREATING',message:'正在登记检测任务'})
+  Object.assign(lane,initialResult(),{pending:true,stage:'CREATING',message:'正在准备检测'})
   try {
     const result=await detectSingleImageViaKafka({file:file.value,modelId:lane.modelId,threshold:threshold.value,
       onStatus:({taskId,stage,message})=>{
         if (!active) return
         if (taskId) lane.taskId=taskId
         if (stage) lane.stage=stage
-        if (message) lane.message=message
+        lane.message=message || ''
       }})
     if (!active) return
     lane.taskId=result.taskId
