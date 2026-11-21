@@ -1,4 +1,8 @@
+import base64
+import hmac
+import io
 import json
+import math
 import os
 import signal
 import threading
@@ -8,7 +12,9 @@ import re
 import tempfile
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 # Runtime settings are injected by the ECS deployment, never a working-directory .env.
 
@@ -21,6 +27,80 @@ from runtime_telemetry import RuntimeTelemetry
 DetectionFunction = Callable[[bytes, float], Tuple[Any, List[Dict[str, Any]]]]
 BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
 ORIGINAL_IMAGE_SUFFIX = "/Original/images/"
+PREVIEW_MAX_BYTES = 10 * 1024 * 1024
+
+
+def start_image_preview(token, detectors, port=9087):
+    from PIL import Image
+
+    slots = threading.BoundedSemaphore(2)
+    authorization = f"Bearer {token}".encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def setup(self):
+            self.request.settimeout(10)
+            super().setup()
+
+        def log_message(self, *_args):
+            pass
+
+        def respond(self, status, content):
+            body = json.dumps(content, allow_nan=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            if not hmac.compare_digest(self.headers.get("Authorization", "").encode("utf-8"), authorization):
+                return self.respond(403, {})
+            request = urlsplit(self.path)
+            if request.path != "/preview":
+                return self.respond(404, {})
+            try:
+                query = parse_qs(request.query)
+                model_id = int(query["modelId"][0])
+                threshold = float(query["threshold"][0])
+                size = int(self.headers.get("Content-Length", "0"))
+                if not math.isfinite(threshold) or not 0 <= threshold <= 1 or not 0 < size <= PREVIEW_MAX_BYTES:
+                    raise ValueError("Invalid preview parameters")
+            except (KeyError, ValueError):
+                return self.respond(400, {})
+            if model_id not in detectors:
+                return self.respond(404, {})
+            if not slots.acquire(blocking=False):
+                return self.respond(429, {})
+            try:
+                try:
+                    data = self.rfile.read(size)
+                    if len(data) != size:
+                        raise ValueError("Incomplete image")
+                    with Image.open(io.BytesIO(data)) as source:
+                        if source.format not in {"JPEG", "PNG"} or source.width * source.height > 40_000_000:
+                            raise ValueError("Unsupported image")
+                        source.verify()
+                    image, detections = detectors[model_id](data, threshold)
+                    counts = build_statistics([{"detections": detections}], 0)
+                    image.thumbnail((1800, 1800))
+                    with io.BytesIO() as buffer:
+                        image.save(buffer, format="JPEG", quality=90)
+                        annotation = base64.b64encode(buffer.getvalue()).decode("ascii")
+                    result = counts.get("singleImageResult") or {"category": "未检出目标", "confidence": None}
+                except (Image.DecompressionBombError, OSError, ValueError):
+                    return self.respond(400, {})
+                except Exception:
+                    logging.warning("Single image preview inference failed")
+                    return self.respond(500, {})
+                return self.respond(200, {**result, "modelId": model_id, "targetCount": len(detections),
+                                          "classCounts": counts["classCounts"], "annotationBase64": annotation})
+            finally:
+                slots.release()
+
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    threading.Thread(target=server.serve_forever, name="detection-preview", daemon=True).start()
+    return server
 
 
 def create_oss_bucket(settings: KafkaWorkerSettings) -> Any:
@@ -461,6 +541,18 @@ def run_worker() -> None:
         secondary = PthDetectionEngine(os.environ["DETECTION_SECONDARY_MODEL_MANIFEST"])
         if secondary.sha256 == ensure_model_loaded().sha256:
             raise ValueError("The two deployed checkpoints must be distinct")
+    inference_lock = threading.Lock()
+
+    def serialized(detector):
+        def detect(content, threshold):
+            with inference_lock:
+                return detector(content, threshold)
+        return detect
+
+    primary_detector = serialized(default_detector)
+    detectors = {expected_model_id: primary_detector}
+    if secondary is not None:
+        detectors[secondary_id] = serialized(secondary.detect_bytes)
     bucket = create_oss_bucket(settings)
     consumer = Consumer(
         {
@@ -520,9 +612,8 @@ def run_worker() -> None:
         with telemetry.span("worker.consume", attributes, headers=source_headers) as consume_span:
             def operation():
                 with telemetry.span("worker.infer", attributes) as inference_span:
-                    detector, model_id = default_detector, expected_model_id
-                    if secondary is not None and task.model_id == secondary_id:
-                        detector, model_id = secondary.detect_bytes, secondary_id
+                    model_id = secondary_id if secondary is not None and task.model_id == secondary_id else expected_model_id
+                    detector = detectors[model_id]
                     if task.task_id.startswith("det_folder_"):
                         report_progress = (lambda n, ok, failed: receipts.folder_progress(task,n,ok,failed)) if receipts else None
                         result = process_folder(task, bucket, detector, model_id, heartbeat, report_progress)
@@ -547,7 +638,10 @@ def run_worker() -> None:
                     key=message.key() or task.task_id.encode('utf-8'), payload=finished_payload.encode('utf-8'),
                     timeout_seconds=settings.delivery_timeout_seconds, telemetry=telemetry)
 
+    preview = None
     try:
+        if token := os.getenv("DETECTION_PREVIEW_TOKEN"):
+            preview = start_image_preview(token, detectors)
         while not stopped.is_set():
             message = consumer.poll(1.0)
             heartbeat()
@@ -580,6 +674,9 @@ def run_worker() -> None:
             write_health(False, expected_model_id)
             consumer.close()
         finally:
+            if preview is not None:
+                preview.shutdown()
+                preview.server_close()
             telemetry.set_ready(False)
             telemetry.close()
 

@@ -37,6 +37,7 @@ public class ModelController {
     @PreAuthorize("hasAnyRole('SUPERVISOR','INSPECTOR','ADMIN')")
     public Result<List<TestModel>> singleTestModels() {
         var models = modelService.getAllModels().stream()
+                .filter(m -> "PUBLISHED".equals(m.getStatus()))
                 .filter(m -> m.getModelId() == primaryModelId || m.getModelId().equals(secondaryModelId))
                 .sorted(java.util.Comparator.comparingInt(m -> m.getModelId() == primaryModelId ? 0 : 1))
                 .map(m -> new TestModel(m.getModelId(), m.getModelName(), m.getVersion()))

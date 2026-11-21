@@ -1,6 +1,6 @@
 <template>
   <section class="single-evidence" aria-label="本次单图检测图片与模型摘要">
-    <dl class="single-evidence-summary"><div><dt>最高置信度目标</dt><dd><el-tag :type="categoryTone">{{ categoryLabel }}</el-tag></dd></div><div><dt>该目标的维修方式</dt><dd>{{ maintenanceFor(maintenance,categoryLabel)?.action || '待核对' }}</dd></div><div><dt>模型置信度</dt><dd>{{ confidenceLabel }}</dd></div></dl>
+    <dl class="single-evidence-summary"><div><dt>最高置信度目标</dt><dd><el-tag :type="categoryTone">{{ categoryLabel }}</el-tag></dd></div><div><dt>该目标的维修方式</dt><dd>{{ maintenanceFor(maintenance,categoryLabel)?.action || '—' }}</dd></div><div><dt>模型置信度</dt><dd>{{ confidenceLabel }}</dd></div></dl>
     <ModelMaintenanceSummary v-if="maintenance?.groups?.some(group => group.categories.some(item => item.targetCount > 0 && item.label !== categoryLabel))" :summary="maintenance" />
     <div class="single-evidence-images">
       <figure v-for="image in images" :key="image.side">
@@ -10,12 +10,12 @@
           <span v-if="!loaded.has(image.stamp)" class="single-evidence-loading">正在读取图片</span>
           <span v-else class="single-evidence-zoom"><AppIcon name="Expand" :size="14" />放大核对</span>
         </button>
-        <div v-else class="single-evidence-unavailable"><AppIcon :name="image.url ? 'Warning' : 'Picture'" :size="23" /><strong><OssPreviewFailure v-if="image.url" :src="image.url" /><template v-else>没有可用预览地址</template></strong><button v-if="image.url" type="button" @click="retryImage(image)"><AppIcon name="Refresh" :size="14" />重新读取图片</button></div>
+        <div v-else class="single-evidence-unavailable"><AppIcon :name="image.url ? 'Warning' : 'Picture'" :size="23" /><strong>图片暂不可读取</strong><button v-if="image.url" type="button" @click="retryImage(image)"><AppIcon name="Refresh" :size="14" />重新读取图片</button></div>
       </figure>
     </div>
     <p class="single-evidence-file"><AppIcon name="Document" :size="14" /><span>{{ fileName || '提交文件名未记录' }}</span></p>
     <el-dialog v-model="zoomOpen" class="single-evidence-dialog" append-to-body :title="zoomImage?.label || '图片核对'" width="min(1100px, 94vw)" @closed="clearClosedImage">
-      <template v-if="zoomImage"><p class="single-evidence-dialog-note">{{ zoomImage.source }} · {{ fileName || '文件名未记录' }}</p><div class="single-evidence-large"><img v-if="!zoomFailed" :key="zoomAttempt" :data-preview-attempt="zoomAttempt" :src="zoomImage.url" :alt="zoomImage.label+' '+fileName" @error="markZoomFailed"/><p v-else role="alert"><OssPreviewFailure :src="zoomImage.url" /></p></div></template>
+      <template v-if="zoomImage"><p class="single-evidence-dialog-note">{{ zoomImage.source }} · {{ fileName || '文件名未记录' }}</p><div class="single-evidence-large"><img v-if="!zoomFailed" :key="zoomAttempt" :data-preview-attempt="zoomAttempt" :src="zoomImage.url" :alt="zoomImage.label+' '+fileName" @error="markZoomFailed"/><p v-else role="alert">图片暂不可读取</p></div></template>
       <template #footer><el-button v-if="zoomFailed" @click="zoomFailed=false;zoomAttempt++"><AppIcon name="Refresh" :size="15" />重新读取图片</el-button><el-button @click="zoomOpen=false"><AppIcon name="Close" :size="15" />关闭图片</el-button></template>
     </el-dialog>
   </section>
@@ -24,28 +24,25 @@
 <script setup>
 import ModelMaintenanceSummary from './ModelMaintenanceSummary.vue'
 import {maintenanceFor} from '../utils/modelMaintenance'
-import OssPreviewFailure from '@/components/OssPreviewFailure.vue'
 import { computed, ref, watch } from 'vue'
-import { evidencePreviewUrl } from '../utils/evidencePresentation'
-const props=defineProps({maintenance:Object,taskId:String,fileName:String,originalUrl:String,annotationUrl:String,localPreview:String,categoryLabel:String,categoryTone:String,confidenceLabel:String})
+const props=defineProps({maintenance:Object,fileName:String,annotationUrl:String,localPreview:String,categoryLabel:String,categoryTone:String,confidenceLabel:String})
 const failed=ref(new Set()),loaded=ref(new Set()),attempts=ref({})
 const zoomOpen=ref(false),zoomImage=ref(null),zoomFailed=ref(false),zoomAttempt=ref(0)
-const originalProvided=computed(()=>typeof props.originalUrl==='string' && !!props.originalUrl.trim())
 const localOriginal=computed(()=>{
   try {const url=new URL(props.localPreview);return url.protocol==='blob:' && url.origin===globalThis.location?.origin ? props.localPreview : ''} catch {return ''}
 })
-const sourceScope=computed(()=>JSON.stringify([props.taskId,props.fileName,props.originalUrl,props.annotationUrl,props.localPreview]))
+const generation=ref(0)
 const images=computed(()=>[
-  {side:'original',label:'原图',source:originalProvided.value?'服务端返回资料':'本机已选预览，未核验服务器存储',url:originalProvided.value?evidencePreviewUrl({previewUrl:props.originalUrl}):localOriginal.value},
-  {side:'annotation',label:'标注图',source:'本次检测返回预览',url:evidencePreviewUrl({previewUrl:props.annotationUrl})}
-].map(image=>({...image,scope:sourceScope.value,stamp:sourceScope.value+'|'+image.side+'|'+(attempts.value[image.side]||0)})))
+  {side:'original',label:'原图',source:'所选图片',url:localOriginal.value},
+  {side:'annotation',label:'标注图',source:'本次检测结果',url:props.annotationUrl?.startsWith('data:image/jpeg;base64,') ? props.annotationUrl : ''}
+].map(image=>({...image,stamp:`${generation.value}|${image.side}|${attempts.value[image.side]||0}`})))
 const isCurrent=image=>images.value.some(current=>current.side===image.side && current.stamp===image.stamp)
 function setImageState(image,isFailed){if(!isCurrent(image))return;const values=new Set(isFailed?failed.value:loaded.value);values.add(image.stamp);if(isFailed)failed.value=values;else loaded.value=values}
 function retryImage(image){if(isCurrent(image))attempts.value={...attempts.value,[image.side]:(attempts.value[image.side]||0)+1}}
 function openImage(image){if(!image.url || failed.value.has(image.stamp) || !isCurrent(image))return;zoomImage.value=image;zoomFailed.value=false;zoomAttempt.value++;zoomOpen.value=true}
 function clearClosedImage(){if(!zoomOpen.value)zoomImage.value=null}
 function markZoomFailed(event){if(zoomOpen.value && event.currentTarget?.dataset.previewAttempt===String(zoomAttempt.value) && event.currentTarget.getAttribute('src')===zoomImage.value?.url)zoomFailed.value=true}
-watch(sourceScope,()=>{zoomOpen.value=false;zoomImage.value=null;failed.value=new Set();loaded.value=new Set();attempts.value={}})
+watch(()=>[props.annotationUrl,props.localPreview],()=>{generation.value++;zoomOpen.value=false;zoomImage.value=null;failed.value=new Set();loaded.value=new Set();attempts.value={}})
 </script>
 
 <style scoped>

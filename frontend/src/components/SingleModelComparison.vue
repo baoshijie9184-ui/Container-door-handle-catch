@@ -28,13 +28,12 @@
           <img :key="lane.attempt" :src="lane.result.annotatedImagePath" :alt="'模型 '+lane.label+' 标注图'" @error="lane.imageError=true" />
         </button>
         <div v-else class="image-area empty-image" aria-live="polite">
-          <AppIcon :name="lane.imageError || ['UNCONFIRMED','FAILED'].includes(lane.stage) ? 'Warning' : 'Picture'" :size="24" />
+          <AppIcon :name="lane.imageError || lane.stage==='FAILED' ? 'Warning' : 'Picture'" :size="24" />
           <span>{{ lane.imageError ? '标注图读取失败' : lane.message || (lane.stage==='IDLE' ? '等待检测' : stageLabel(lane.stage)) }}</span>
           <el-button v-if="lane.imageError" link type="primary" @click="lane.attempt++;lane.imageError=false">重新读取图片</el-button>
         </div>
-        <div v-if="lane.result || lane.stage==='UNCONFIRMED' || lane.stage==='FAILED'" class="result-line">
+        <div v-if="lane.result || lane.stage==='FAILED'" class="result-line">
           <strong v-if="lane.result">{{ lane.result.targetCount }} 个目标<span v-if="lane.result.confidence != null"> · {{ category(lane.result.category) }} {{ Math.round(lane.result.confidence*100) }}%</span></strong>
-          <router-link v-if="lane.stage==='UNCONFIRMED'" :to="{path:'/inspection/history',query:{keyword:lane.taskId || undefined}}">查看检测记录</router-link>
           <button v-if="lane.stage==='FAILED'" type="button" :disabled="busy" @click="runLane(lane)">重试模型 {{ lane.label }}</button>
         </div>
       </figure>
@@ -47,20 +46,20 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
-import { captureAccountRequest } from '../api/request'
-import { detectSingleImageViaKafka } from '../services/singleImageKafkaDetection'
+import { fetchSingleImageModels, previewSingleImage } from '../services/singleImagePreview'
 import { CATEGORY_ALIASES, CATEGORY_LABELS } from '../stores/detectionTask'
 import { statusPresentation } from '../utils/statusPresentation'
 
 const emit = defineEmits(['busy'])
 const lanes = reactive(['A','B'].map(label=>({label,modelId:null,...initialResult()})))
-function initialResult() { return {stage:'IDLE',pending:false,message:'',taskId:'',result:null,imageError:false,attempt:0} }
+function initialResult() { return {stage:'IDLE',pending:false,message:'',result:null,imageError:false,attempt:0} }
 const models=ref([]), reading=ref(false), catalogError=ref(''), fileError=ref('')
 const picker=ref(null), file=shallowRef(null), sourceUrl=ref(''), zoom=ref(null), threshold=ref(0.5)
 let active=true
+const requests=new Set()
 const busy=computed(()=>lanes.some(lane=>lane.pending))
 watch(busy,value=>emit('busy',value),{flush:'sync'})
-const canStart=computed(()=>file.value && !busy.value && Number.isFinite(threshold.value) && lanes.every(l=>l.modelId && l.stage!=='UNCONFIRMED') && lanes[0].modelId!==lanes[1].modelId)
+const canStart=computed(()=>file.value && !busy.value && Number.isFinite(threshold.value) && lanes.every(l=>l.modelId) && lanes[0].modelId!==lanes[1].modelId)
 const category=label=>CATEGORY_LABELS[CATEGORY_ALIASES[label] || label] || label
 const stageLabel=stage=>statusPresentation('singleDetection',stage).label
 
@@ -69,7 +68,7 @@ async function readModels() {
   reading.value=true
   catalogError.value=''
   try {
-    const response=await captureAccountRequest().get('/api/models/single-test-models')
+    const response=await fetchSingleImageModels()
     if (!active) return
     if (response.data?.code!==200 || !Array.isArray(response.data.data)) throw new Error()
     models.value=response.data.data
@@ -102,28 +101,31 @@ function choose(next) {
 }
 async function runLane(lane) {
   if (!file.value || !lane.modelId || lane.pending) return
-  Object.assign(lane,initialResult(),{pending:true,stage:'CREATING',message:'正在准备检测'})
+  const controller=new AbortController()
+  requests.add(controller)
+  Object.assign(lane,initialResult(),{pending:true,stage:'DETECTING'})
   try {
-    const result=await detectSingleImageViaKafka({file:file.value,modelId:lane.modelId,threshold:threshold.value,
-      onStatus:({taskId,stage,message})=>{
-        if (!active) return
-        if (taskId) lane.taskId=taskId
-        if (stage) lane.stage=stage
-        lane.message=message || ''
-      }})
+    const result=await previewSingleImage({file:file.value,modelId:lane.modelId,threshold:threshold.value,signal:controller.signal})
     if (!active) return
-    lane.taskId=result.taskId
     lane.result=result
-    lane.stage=result.status
+    lane.stage='COMPLETED'
   } catch(error) {
     if (!active) return
-    lane.stage=error.taskFailed ? 'FAILED' : 'UNCONFIRMED'
-    lane.message=error.message || '请核对检测记录'
-  } finally { if (active) lane.pending=false }
+    lane.stage='FAILED'
+    lane.message=error.message || '图片检测失败，请重试'
+  } finally {
+    requests.delete(controller)
+    if (active) lane.pending=false
+  }
 }
 function start() { if (canStart.value) return Promise.all(lanes.map(runLane)) }
 onMounted(readModels)
-onBeforeUnmount(()=>{active=false;emit('busy',false);if(sourceUrl.value) URL.revokeObjectURL(sourceUrl.value)})
+onBeforeUnmount(()=>{
+  active=false
+  requests.forEach(controller=>controller.abort())
+  emit('busy',false)
+  if(sourceUrl.value) URL.revokeObjectURL(sourceUrl.value)
+})
 </script>
 
 <style scoped>

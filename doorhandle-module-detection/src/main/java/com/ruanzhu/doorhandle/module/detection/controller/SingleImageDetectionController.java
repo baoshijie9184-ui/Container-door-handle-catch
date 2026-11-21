@@ -4,16 +4,20 @@ import com.ruanzhu.doorhandle.common.Result;
 import com.ruanzhu.doorhandle.module.detection.dto.ImageDetectionResponse;
 import com.ruanzhu.doorhandle.module.detection.dto.SingleImageDetectionResponse;
 import com.ruanzhu.doorhandle.module.detection.service.ImageDetectionService;
+import com.ruanzhu.doorhandle.module.detection.service.SingleImagePreviewService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.List;
 
 /**
@@ -27,6 +31,18 @@ import java.util.List;
 public class SingleImageDetectionController {
 
     private final ImageDetectionService imageDetectionService;
+    private final SingleImagePreviewService previewService;
+
+    @PostMapping(value = "/preview", consumes = {MediaType.IMAGE_JPEG_VALUE, MediaType.IMAGE_PNG_VALUE})
+    @PreAuthorize("hasAnyRole('SUPERVISOR','INSPECTOR','ADMIN')")
+    @Operation(summary = "单图检测预览")
+    public ResponseEntity<Result<SingleImagePreviewService.Preview>> preview(
+            HttpServletRequest request,
+            @RequestParam(required = false) Integer modelId,
+            @RequestParam(defaultValue = "0.5") double threshold) throws IOException {
+        var result = previewService.detect(request.getInputStream(), request.getContentLengthLong(), modelId, threshold);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(Result.success(result));
+    }
 
     /**
      * 上传单个图像进行检测
@@ -133,4 +149,4 @@ public class SingleImageDetectionController {
             return Result.error("批量图像检测失败: " + e.getMessage());
         }
     }
-} 
+}

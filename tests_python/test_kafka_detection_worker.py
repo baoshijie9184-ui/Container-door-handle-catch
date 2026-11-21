@@ -1,3 +1,9 @@
+import base64
+import io
+import json
+from contextlib import closing
+from http.client import HTTPConnection
+
 import pytest
 
 from kafka_detection_worker import (
@@ -5,6 +11,7 @@ from kafka_detection_worker import (
     build_statistics,
     publish_finished_and_commit,
     process_created_event,
+    start_image_preview,
 )
 from kafka_event_models import DetectionTaskCreatedEvent
 
@@ -48,6 +55,54 @@ def test_single_image_statistics_expose_remote_category_and_confidence():
         "category": "Rusty",
         "confidence": 0.91,
     }
+
+
+def test_single_image_preview_uses_the_selected_live_detector():
+    from PIL import Image
+
+    with io.BytesIO() as buffer:
+        Image.new("RGB", (12, 8)).save(buffer, format="JPEG")
+        image_bytes = buffer.getvalue()
+    calls = []
+
+    def detector(model, detections):
+        def detect(content, threshold):
+            calls.append((model, threshold))
+            assert content == image_bytes
+            return Image.new("RGB", (12, 8)), detections
+        return detect
+
+    server = start_image_preview("private-preview", {
+        106: detector(106, [{"label": "Bent", "confidence": 0.73}]),
+        107: detector(107, []),
+    }, port=0)
+
+    def request(model, data=image_bytes, threshold="0.5", token="private-preview"):
+        with closing(HTTPConnection("127.0.0.1", server.server_port, timeout=3)) as connection:
+            connection.request("POST", f"/preview?modelId={model}&threshold={threshold}", data,
+                               {"Authorization": f"Bearer {token}"})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+
+    try:
+        assert request(106, token="incorrect")[0] == 403
+        assert request(110)[0] == 404
+        assert request(106, threshold="nan")[0] == 400
+        assert request(106, data=b"")[0] == 400
+        assert request(106, data=b"invalid image")[0] == 400
+        status, first = request(106)
+        assert status == 200
+        assert (first["modelId"], first["category"], first["confidence"]) == (106, "Bent", 0.73)
+        assert first["targetCount"] == first["classCounts"]["Bent"] == 1
+        with Image.open(io.BytesIO(base64.b64decode(first["annotationBase64"]))) as annotation:
+            assert annotation.format == "JPEG" and annotation.size == (12, 8)
+        status, second = request(107, threshold="1")
+        assert status == 200
+        assert (second["modelId"], second["targetCount"], second["confidence"]) == (107, 0, None)
+        assert calls == [(106, 0.5), (107, 1.0)]
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_defect_evidence_accepts_worker_score_and_list_box():

@@ -42,7 +42,7 @@ public class FolderTaskBoard {
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
 
     private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
-    private static final String UPLOAD_TYPES = "t.task_type IN ('BATCH','SINGLE','BATCH_DIRECT')";
+    private static final String UPLOAD_TYPES = "t.task_type IN ('BATCH','BATCH_DIRECT')";
     private static final Set<String> BOARD_PHASES = Set.of("READY","DETECTING","VERIFYING","DONE","FAILED","MODEL_DONE");
     private static final Map<String,Set<String>> SUPERVISOR_LISTS = Map.of(
             "detection", Set.of("UPLOADING","READY","DETECTING","FAILED","CANCELLED","MODEL_DONE"),

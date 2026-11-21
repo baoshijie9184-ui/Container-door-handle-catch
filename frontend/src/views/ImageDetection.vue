@@ -69,13 +69,11 @@
                                   :key="model.modelId"
                                   :value="model.modelId"
                                   :label="detectionModelOptionLabel(model)"
-                                >
-                                  <span class="detection-model-option"><span>{{ detectionModelOptionLabel(model) }}</span><StatusBadge domain="model" :code="model.status" /></span>
-                                </el-option>
+                                />
                               </el-select>
                             </el-form-item>
                             <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
-                            <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
+                            <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div></div>
                             <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '使用所选模型检测。' : '留空将自动选择模型。' }}</p>
                           </div>
                           <div>
@@ -90,8 +88,7 @@
                       <el-button
                         type="primary"
                         class="wide-button secondary-action"
-                        :disabled="!form.imageFile || singleStageCode === 'UNCONFIRMED'"
-                        :aria-describedby="singleStageCode === 'UNCONFIRMED' ? 'single-result-reconcile-note' : undefined"
+                        :disabled="!form.imageFile"
                         :loading="loadingSingle"
                         @click="handleSingleDetection"
                       >
@@ -111,23 +108,21 @@
                       </div>
 
                       <p v-if="loadingSingle && singleDetectionMessage" class="single-result-runtime" role="status">{{ singleDetectionMessage }}</p>
-                      <dl v-if="singleSubmission" class="single-submission-summary"><div><dt>本次提交图片</dt><dd>{{ singleSubmission.fileName }}</dd></div><div><dt>提交模型选项</dt><dd>{{ singleSubmission.modelLabel }}</dd></div><div><dt>提交阈值</dt><dd>{{ formatEvidenceConfidence(singleSubmission.threshold) }}</dd></div></dl>
+                      <dl v-if="singleSubmission" class="single-submission-summary"><div><dt>本次检测图片</dt><dd>{{ singleSubmission.fileName }}</dd></div><div><dt>检测模型</dt><dd>{{ singleSubmission.modelLabel }}</dd></div><div><dt>置信度阈值</dt><dd>{{ formatEvidenceConfidence(singleSubmission.threshold) }}</dd></div></dl>
                       <el-alert
-                        v-if="['FAILED','UNCONFIRMED'].includes(singleStageCode)"
-                        :type="singleStageCode === 'FAILED' ? 'error' : 'warning'"
+                        v-if="singleStageCode === 'FAILED'"
+                        type="error"
                         :closable="false"
                         show-icon
                         :title="singleDetectionMessage"
                         class="single-result-error"
                       />
-                      <p v-if="singleStageCode === 'UNCONFIRMED'" id="single-result-reconcile-note" class="detection-input-note">尚未收到完整结果，可先<router-link :to="{path:'/inspection/history',query:{keyword:singleDetectionTaskId || undefined}}">查看检测记录</router-link>，避免重复提交。</p>
-
-                      <SingleDetectionEvidence v-if="detectionResult" :maintenance="detectionResult.modelMaintenance" :task-id="singleDetectionTaskId" :file-name="singleSubmission?.fileName || ''" :original-url="detectionResult.processedImagePath" :annotation-url="annotatedImageUrl" :local-preview="fileList[0]?.url || ''" :category-label="getCategoryText(detectionResult.category)" :category-tone="getCategoryType(detectionResult.category)" :confidence-label="formatConfidence(detectionResult.confidence)" />
+                      <SingleDetectionEvidence v-if="detectionResult" :maintenance="detectionResult.modelMaintenance" :file-name="singleSubmission?.fileName || ''" :annotation-url="annotatedImageUrl" :local-preview="fileList[0]?.url || ''" :category-label="getCategoryText(detectionResult.category)" :category-tone="getCategoryType(detectionResult.category)" :confidence-label="formatConfidence(detectionResult.confidence)" />
                       <template v-else-if="fileList[0]?.url">
                         <div class="single-result-image single-result-preview">
                           <img :src="fileList[0].url" alt="待检测图片预览" />
                         </div>
-                        <p class="single-result-hint">{{ loadingSingle ? '正在处理图片…' : singleStageCode === 'UNCONFIRMED' ? '已保留原图预览。' : '图片已选好，可以开始检测' }}</p>
+                        <p v-if="singleStageCode !== 'FAILED'" class="single-result-hint">{{ loadingSingle ? '正在处理图片…' : '图片已选好，可以开始检测' }}</p>
                       </template>
                       <el-empty v-else description="请先选择图片并开始检测" :image-size="54" />
                     </section>
@@ -422,11 +417,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Refresh, VideoPlay } from '@element-plus/icons-vue'
-import {
-  fetchAvailableModels,
-  fetchDetectionTaskTrace,
-} from '../api/detection'
-import { detectSingleImageViaKafka } from '../services/singleImageKafkaDetection'
+import { fetchDetectionTaskTrace } from '../api/detection'
+import { fetchSingleImageModels, previewSingleImage } from '../services/singleImagePreview'
 import { useTaskStore, usePollingStore, CATEGORY_LABELS, CATEGORY_COLORS, CATEGORY_ALIASES } from '../stores/detectionTask'
 import { useSingleImageUploadPreview } from '../composables/useSingleImageUploadPreview'
 import {
@@ -554,7 +546,7 @@ let modelReadVersion = 0, singleRunVersion = 0, detectionPageActive = true
 const detectionResult = ref(null)
 const annotatedImageUrl = ref('')
 const loadingSingle = ref(false)
-const singleDetectionTaskId = ref('')
+let singleRequest
 const singleDetectionStage = ref('IDLE')
 const singleDetectionMessage = ref('')
 const singleSubmission = ref(null)
@@ -662,7 +654,6 @@ const { handleUploadChange, handleRemove } = useSingleImageUploadPreview({
   annotatedImageUrl,
   isLocked: () => loadingSingle.value,
   onReset: () => {
-    singleDetectionTaskId.value = ''
     singleDetectionStage.value = 'IDLE'
     singleDetectionMessage.value = ''
     singleSubmission.value = null
@@ -671,6 +662,8 @@ const { handleUploadChange, handleRemove } = useSingleImageUploadPreview({
 
 watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]), () => {
   singleRunVersion++
+  singleRequest?.abort()
+  singleRequest = undefined
   loadingSingle.value = false
   handleRemove()
   form.modelId = null
@@ -683,7 +676,7 @@ watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || 
 }, { flush:'sync' })
 
 const handleSingleDetection = async () => {
-  if (loadingSingle.value || singleStageCode.value === 'UNCONFIRMED') return
+  if (loadingSingle.value) return
   if (!form.imageFile) {
     ElMessage.error('请先选择图片')
     return
@@ -691,38 +684,30 @@ const handleSingleDetection = async () => {
 
   loadingSingle.value = true
   const runVersion = ++singleRunVersion
+  const controller = new AbortController()
+  singleRequest = controller
   const file = form.imageFile, modelId = form.modelId, threshold = form.threshold
   const model = modelList.value.find(row => row.modelId === modelId)
   singleSubmission.value = {fileName:file.name,threshold,modelLabel:modelId ? `${model?.modelName || '模型'} · #${modelId}${model?.version ? ' · '+model.version : ''}` : '自动选择模型'}
   detectionResult.value = null
   annotatedImageUrl.value = ''
-  singleDetectionTaskId.value = ''
-  singleDetectionStage.value = 'CREATING'
-  singleDetectionMessage.value = '正在准备检测'
+  singleDetectionStage.value = 'DETECTING'
+  singleDetectionMessage.value = '正在处理图片'
 
   try {
-    const result = await detectSingleImageViaKafka({
-      file, modelId, threshold,
-      onStatus: ({ taskId, stage, message }) => {
-        if (!detectionPageActive || runVersion !== singleRunVersion) return
-        singleDetectionTaskId.value = taskId || singleDetectionTaskId.value
-        singleDetectionStage.value = stage || singleDetectionStage.value
-        singleDetectionMessage.value = message || ''
-      }
-    })
+    const result = await previewSingleImage({ file, modelId, threshold, signal: controller.signal })
     if (!detectionPageActive || runVersion !== singleRunVersion) return
     detectionResult.value = result
     annotatedImageUrl.value = result.annotatedImagePath
-    singleDetectionTaskId.value = result.taskId
-    singleDetectionStage.value = result.status === 'PARTIAL_FAILED' ? 'PARTIAL_FAILED' : 'COMPLETED'
-    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '部分检测结果未返回' : '单图检测已完成'
-    if (result.status === 'PARTIAL_FAILED') ElMessage.warning(singleDetectionMessage.value)
-    else ElMessage.success('单图检测结果已返回')
+    singleSubmission.value.modelLabel = `${result.modelName} · #${result.modelId} · ${result.version}`
+    singleDetectionStage.value = 'COMPLETED'
+    singleDetectionMessage.value = ''
   } catch (error) {
     if (!detectionPageActive || runVersion !== singleRunVersion) return
-    singleDetectionStage.value = error.taskFailed === true ? 'FAILED' : 'UNCONFIRMED'
-    singleDetectionMessage.value = error.message || '单图检测提交或结果尚未核对'
+    singleDetectionStage.value = 'FAILED'
+    singleDetectionMessage.value = error.message || '单图检测失败，请重试'
   } finally {
+    if (singleRequest === controller) singleRequest = undefined
     if (detectionPageActive && runVersion === singleRunVersion) loadingSingle.value = false
   }
 }
@@ -763,7 +748,7 @@ const fetchModels = async () => {
   modelsLoading.value = true
   modelsError.value = ''
   try {
-    const response = await fetchAvailableModels()
+    const response = await fetchSingleImageModels()
     if (!detectionPageActive || readVersion !== modelReadVersion) return
     const rows = response.data?.data
     if (response.data?.code !== 200 || !Array.isArray(rows) || rows.some(row => !Number.isSafeInteger(row?.modelId) || row.modelId < 1)) throw new Error('模型目录返回内容不完整')
@@ -956,6 +941,7 @@ onBeforeUnmount(() => {
   detectionPageActive = false
   modelReadVersion++
   singleRunVersion++
+  singleRequest?.abort()
   traceGeneration++
   traceReadController?.abort()
   // 不再停止轮询 — 轮询在 store 中，切换页面后继续
@@ -1383,7 +1369,6 @@ async function validateCollaborationAccess(){
 .detection-input-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .detection-input-note.is-warning { padding:9px 11px; border-radius:8px; color:var(--app-warning); background:var(--app-warning-soft); }
 .detection-input-note button { margin:4px 0 0; padding:2px 0; border:0; border-radius:4px; color:var(--app-primary); background:transparent; cursor:pointer; font:inherit; }
-.detection-model-option { display:flex; align-items:center; gap:10px; min-width:0; }.detection-model-option > span:first-child { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.detection-model-option > .business-status { flex:0 0 auto; font-size:12px; }
 .detection-model-selection { display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px 10px; width:100%; margin:0 0 10px; padding:11px 0; border-top:1px solid var(--app-border); border-bottom:1px solid var(--app-border); }
 .detection-model-selection > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
 .detection-model-selection > div { display:grid; gap:4px; min-width:0; flex:1 1 150px; }
