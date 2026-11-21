@@ -68,18 +68,28 @@
             <dl class="folder-summary" v-if="folderInfo.imageCount"><div><dt>图片文件夹</dt><dd>{{ folderInfo.imageFolderName || imageFolderLabel(folderInfo.name) || '未命名文件夹' }}</dd></div><div><dt>图片数量</dt><dd>{{ folderInfo.imageCount }} 张</dd></div></dl>
             <p v-if="selectionNotice" class="upload-selection-note">{{ selectionNotice }}</p>
 
-            <el-alert
-              v-if="folderInfo.imageCount"
-              type="info"
-              show-icon
-              title="可识别文件夹层级中的采集信息，请在上传前核对"
-              style="margin-top: 12px;"
-            />
-            <SelectedImageFiles v-if="folderInfo.files.length" :files="folderInfo.files" :scope-key="accountScope()" />
+            <details v-if="folderInfo.files.length" :key="selectionVersion" class="upload-selection-note">
+              <summary>查看所选图片</summary>
+              <SelectedImageFiles :files="folderInfo.files" :scope-key="accountScope()" />
+            </details>
           </div>
 
-          <div v-if="folderInfo.imageCount" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading">
-            <h2 id="upload-capture-heading" class="capture-meta-heading"><AppIcon name="Document" :size="17" />采集信息</h2>
+          <section v-if="folderInfo.imageCount" class="capture-options" aria-labelledby="upload-capture-heading">
+            <div class="capture-options-header">
+              <h2 id="upload-capture-heading" class="capture-meta-heading"><AppIcon name="Document" :size="17" />采集信息</h2>
+              <el-button link type="primary" aria-controls="upload-capture-fields" :aria-expanded="captureExpanded" @click="captureExpanded=!captureExpanded">{{ captureExpanded ? '收起采集信息' : '编辑采集信息' }}</el-button>
+            </div>
+            <div class="capture-json-actions">
+              <input ref="metadataInput" type="file" accept="application/json,.json" hidden @change="chooseMetadata" />
+              <el-button link type="primary" :disabled="uploadingToOss || uploadAttempted || metadataReading" @click="metadataInput?.click()">导入 JSON</el-button>
+              <el-button v-if="!metadataName" link :disabled="metadataReading" @click="downloadTemplate">下载模板</el-button>
+              <span v-if="metadataReading" role="status">正在读取元数据…</span>
+              <span v-else-if="metadataName" role="status">已导入 {{ metadataName }}<template v-if="batchMetadata.images.length"> · {{ batchMetadata.images.length }} 张有图片资料</template></span>
+              <span v-else>文件夹内的 metadata.json 会自动读取</span>
+              <el-button v-if="metadataName || metadataError" link :disabled="uploadingToOss || uploadAttempted" @click="clearMetadata">移除 JSON</el-button>
+            </div>
+            <p v-if="metadataError" class="capture-read-error" role="alert">{{ metadataError }}</p>
+          <div v-show="captureExpanded" id="upload-capture-fields" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading">
             <el-form-item label="采集日期" required>
               <el-date-picker
                 v-model="folderInfo.captureDate"
@@ -144,18 +154,13 @@
               <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="例如 批次A" />
             </el-form-item>
           </div>
-          <details v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">
-            <summary>文件夹元数据</summary>
-            <dl class="folder-summary"><div><dt>本地所选目录</dt><dd>{{ folderInfo.name || '未提供' }}</dd></div>
-              <div><dt>计划上传位置</dt><dd>图片上传 / {{ userStore.role==='SUPERVISOR' ? '主管上传' : '员工上传' }} / {{ userStore.identity?.employeeNumber || '账号绑定工号' }}</dd></div>
-            </dl>
-          </details>
+          </section>
 
           <p v-if="folderInfo.imageCount" class="upload-readiness" :data-ready="!missingCaptureFields.length"><AppIcon :name="missingCaptureFields.length ? 'Warning' : 'CircleCheck'" :size="16" />{{ missingCaptureFields.length ? '还需补全：'+missingCaptureFields.join('、') : '采集信息已填写，请核对后上传' }}</p>
           <el-button
             type="primary"
             class="wide-button upload-action"
-            :disabled="!folderInfo.imageCount || uploadingToOss || !!missingCaptureFields.length || uploadAttempted"
+            :disabled="!folderInfo.imageCount || uploadingToOss || metadataReading || !!metadataError || !!missingCaptureFields.length || uploadAttempted"
             :loading="uploadingToOss"
             @click="handleUploadBatch"
             size="large"
@@ -254,11 +259,6 @@
             :key="task.taskId"
             class="history-item"
           >
-            <!-- 任务ID -->
-            <div class="history-item-taskid">
-              <span class="taskid-label">任务ID</span>
-              <code class="taskid-value">{{ task.taskId }}</code>
-            </div>
             <!-- 第一行：名称 + 数量 + 状态 -->
             <div class="history-item-row1">
               <span class="history-item-folder">{{ recordFolderLabel(task) }}</span>
@@ -266,12 +266,6 @@
               <el-tag :type="taskStore.taskTagType(task)" class="history-item-tag">
                 {{ taskStore.taskTagText(task) }}
               </el-tag>
-            </div>
-            <!-- 采集信息（如果有） -->
-            <div v-if="task.captureInfo" class="history-item-capture">
-              <span v-if="task.captureInfo.captureDate">{{ task.captureInfo.captureDate }}</span>
-              <span v-if="task.captureInfo.collector">{{ task.captureInfo.collector }}</span>
-              <span v-if="task.captureInfo.deviceName">{{ task.captureInfo.deviceName }}</span>
             </div>
             <!-- 进度条（仅上传中显示） -->
             <el-progress
@@ -327,6 +321,7 @@ import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
 import { assignedTrace } from '@/utils/taskBoardNavigation'
 import FolderMetadataLink from '@/components/FolderMetadataLink.vue'
 import { imageFolderLabel, recordFolderLabel } from '@/utils/imageFolderLabel'
+import { downloadMetadata, folderRoot, MAX_METADATA_BYTES, parseUploadMetadata } from '@/utils/uploadMetadata'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -346,7 +341,11 @@ const { uploadingToOss } = storeToRefs(uploadStore)
 const { taskList } = storeToRefs(taskStore)
 
 const folderInput = ref(null)
+const metadataInput = ref(null)
 const resumeFolderInput = ref(null)
+const batchMetadata=ref({notes:'',images:[]}), metadataName=ref(''), metadataError=ref(''), metadataReading=ref(false)
+const captureExpanded=ref(true), selectionVersion=ref(0)
+let metadataRead=0
 const collectionCities = ref([])
 const loadingCities = ref(false)
 const cityError = ref(false)
@@ -403,7 +402,14 @@ const folderInfo = reactive({
 const missingCaptureFields = computed(() => [
   ['captureDate', '采集日期'], ['region', '城市'], ['collector', '采集员'],
   ['deviceName', '采集设备'], ['imageFolderName', '图片文件夹名称']
-].filter(([key]) => !String(folderInfo[key] || '').trim()).map(([, label]) => label))
+].filter(([key]) => {
+  if (!String(folderInfo[key] || '').trim()) return true
+  if (key==='region') return !collectionCities.value.includes(folderInfo.region)
+  if (!metadataName.value) return false
+  if (key==='collector') return !employeeList.value.some(item=>item.employeeNumber===folderInfo.collector)
+  if (key==='deviceName') return !deviceList.value.some(item=>item.deviceCode===folderInfo.deviceName)
+  return false
+}).map(([, label]) => label))
 
 // 当前正在上传的任务
 const uploadingTask = computed(() => {
@@ -464,7 +470,7 @@ async function loadCities() {
     if (data?.code !== 200 || !Array.isArray(data.data) || !data.data.length) throw new Error()
     if (!pageActive) return
     collectionCities.value = data.data
-    if (!folderInfo.region) folderInfo.region = cityFromFolder(folderCityHint)
+    folderInfo.region = cityFromFolder(folderInfo.region || folderCityHint) || folderInfo.region
   } catch {
     if (pageActive) cityError.value = true
   } finally {
@@ -477,6 +483,48 @@ const triggerFolderSelect = () => {
   folderInput.value?.click()
 }
 
+function clearMetadata() {
+  metadataRead++
+  metadataName.value='';metadataError.value='';metadataReading.value=false
+  batchMetadata.value={notes:'',images:[]}
+  captureExpanded.value=true
+}
+
+async function readMetadata(file) {
+  const read=++metadataRead, scope=accountScope()
+  const current=()=>pageActive && read===metadataRead && scope===accountScope()
+  metadataReading.value=true
+  metadataError.value=''
+  try {
+    if (file.size>MAX_METADATA_BYTES) throw new Error('JSON 文件不能超过 256 KB')
+    const contents=await file.text()
+    if (!current()) return
+    const {captureInfo,notes,images}=parseUploadMetadata(contents,folderInfo.files,folderRoot(folderInfo.files))
+    if (captureInfo.region) captureInfo.region=cityFromFolder(captureInfo.region) || captureInfo.region
+    Object.assign(folderInfo,captureInfo)
+    batchMetadata.value={notes,images}
+    metadataName.value=file.name
+    captureExpanded.value=missingCaptureFields.value.length>0
+  } catch (error) {
+    if (current()) metadataError.value=error.message || 'JSON 文件暂不可读取'
+  } finally {
+    if (current()) metadataReading.value=false
+  }
+}
+
+function chooseMetadata(event) {
+  const file=event.target.files?.[0]
+  event.target.value=''
+  if (file && !uploadingToOss.value && !uploadAttempted.value) readMetadata(file)
+}
+
+function downloadTemplate() {
+  const {captureDate,region,collector,deviceName,imageFolderName,files}=folderInfo
+  const root=folderRoot(files)
+  downloadMetadata({schemaVersion:1,captureInfo:{captureDate,region,collector,deviceName,imageFolderName},notes:'',
+    images:files.map(file=>({path:root ? file.relativePath.slice(root.length+1) : file.relativePath,notes:''}))})
+}
+
 const handleFolderSelect = (event) => {
   if (uploadingToOss.value) return
   const files = Array.from(event.target.files || [])
@@ -485,9 +533,10 @@ const handleFolderSelect = (event) => {
     ElMessage.warning('所选文件夹中没有可用图片')
     return
   }
+  clearMetadata()
+  selectionVersion.value++
   uploadAttempted.value = false
   registeredTaskId.value = ''
-  selectionNotice.value = `本次选入 ${imageFiles.length} 张图片${files.length > imageFiles.length ? `，另有 ${files.length - imageFiles.length} 个文件未列入本次上传` : ''}`
 
   // Only the shared directory describes the selection when several subfolders are chosen.
   const dirSegments = (imageFiles[0].webkitRelativePath || '').split('/').slice(0, -1)
@@ -509,9 +558,6 @@ const handleFolderSelect = (event) => {
   folderInfo.deviceName = autoParse ? (dirSegments[3] || '') : ''
   folderInfo.imageFolderName = autoParse ? (dirSegments[4] || '') : ''
 
-  if (!autoParse) {
-    ElMessage.info('未能自动解析文件夹结构，请手动填写采集信息')
-  }
   folderInfo.files = imageFiles.map(file => ({
     file,
     fileName: file.name,
@@ -519,10 +565,16 @@ const handleFolderSelect = (event) => {
     relativePath: file.webkitRelativePath || file.name,
     fileSize: file.size
   }))
+  const root=folderRoot(folderInfo.files)
+  const metadata=files.filter(file => (file.webkitRelativePath || file.name).toLowerCase()===(root ? `${root}/metadata.json` : 'metadata.json').toLowerCase())
+  const skipped=files.length-imageFiles.length-metadata.length
+  selectionNotice.value=skipped ? `${skipped} 个其他文件未列入上传` : ''
+  if (metadata.length===1) readMetadata(metadata[0])
+  if (metadata.length>1) metadataError.value='文件夹内有多个同名 JSON，请选择其中一份导入'
 }
 
 const handleUploadBatch = () => {
-  if (uploadingToOss.value || uploadAttempted.value) return
+  if (uploadingToOss.value || uploadAttempted.value || metadataReading.value || metadataError.value) return
   if (!folderInfo.files.length) {
     ElMessage.error('请先选择图片文件夹')
     return
@@ -554,11 +606,12 @@ const handleUploadBatch = () => {
   const scope = accountScope()
   uploadStore.uploadBatchToOss(filesData, captureInfo, taskId => {
     if (pageActive && scope === accountScope()) registeredTaskId.value = taskId
-  })
+  }, { rootDirectory:folderRoot(filesData), ...toRaw(batchMetadata.value) })
 }
 
 const resetBatchState = () => {
   if (uploadingToOss.value) return
+  clearMetadata()
   uploadAttempted.value = false
   registeredTaskId.value = ''
   selectionNotice.value = ''
@@ -792,7 +845,11 @@ onMounted(async () => {
 .folder-summary > div { display:grid; gap:3px; margin-top:9px; min-width:0; }
 .folder-summary dt { color:var(--app-text-secondary); }
 .folder-summary dd { margin:0; overflow-wrap:anywhere; }
-.capture-meta-heading { display:flex; align-items:center; gap:7px; margin:0 0 14px; font-size:15px; font-weight:600; line-height:1.8; color:var(--app-text); }
+.capture-options-header,.capture-json-actions { display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px }
+.capture-options-header { justify-content:space-between }
+.capture-json-actions { font-size:12px;color:var(--app-text-secondary);overflow-wrap:anywhere }
+.capture-json-actions :deep(.el-button),.capture-options-header :deep(.el-button) { min-height:34px;margin:0 }
+.capture-meta-heading { display:flex; align-items:center; gap:7px; margin:0; font-size:15px; font-weight:600; line-height:1.8; color:var(--app-text); }
 .capture-meta-heading > .el-icon { flex:0 0 auto; color:var(--app-primary); }
 .capture-option-detail { color:var(--app-text-secondary); margin-left:8px; font-size:12px; }
 
@@ -879,31 +936,6 @@ onMounted(async () => {
 }
 .history-item:last-child { border-bottom:0; }
 
-.history-item-taskid {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.taskid-label {
-  font-size: 11px;
-  color: #94a3b8;
-  flex-shrink: 0;
-}
-
-.taskid-value {
-  font-size: 11px;
-  color: #5b6475;
-  background: rgba(15, 23, 42, 0.04);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-family: 'SF Mono', 'Consolas', monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .history-item-row1 {
   display: flex;
   align-items: center;
@@ -918,25 +950,6 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.history-item-capture {
-  display: flex;
-  gap: 12px;
-  margin-top: 4px;
-  font-size: 12px;
-  color: #8b95a5;
-  flex-wrap: wrap;
-}
-
-.history-item-capture span::before {
-  content: '·';
-  margin-right: 4px;
-}
-
-.history-item-capture span:first-child::before {
-  content: '';
-  margin-right: 0;
 }
 
 .history-item-count {

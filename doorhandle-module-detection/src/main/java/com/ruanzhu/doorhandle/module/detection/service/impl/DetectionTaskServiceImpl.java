@@ -39,6 +39,7 @@ import com.ruanzhu.doorhandle.module.detection.service.DetectionNotificationPort
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskDispatchService;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
 import com.ruanzhu.doorhandle.module.detection.service.detection.UploadFolders;
+import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionUploadMetadataStore;
 import com.ruanzhu.doorhandle.module.model.service.ModelService;
 import com.ruanzhu.doorhandle.module.infra.service.OssStorageService;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
@@ -134,6 +135,9 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     private final ObjectMapper objectMapper;
     private final DetectionTaskAccessPolicy accessPolicy;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private DetectionUploadMetadataStore uploadMetadata;
+
     @Value("${detection.max-images-per-batch:200}")
     private int maxImagesPerBatch;
 
@@ -197,6 +201,9 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         if ("OSS_FOLDER".equalsIgnoreCase(request.getTaskType())) throw new BusinessException(400,"请从文件夹派单入口创建");
         if (!ossStorageService.isConfigured()) {
             throw new BusinessException("OSS 未配置，暂时无法创建云端检测任务");
+        }
+        if (request.getMetadata() != null && uploadMetadata == null) {
+            throw new BusinessException(503, "上传元数据暂不可登记");
         }
         if (request.getFiles() == null || request.getFiles().isEmpty()) {
             throw new BusinessException("请至少选择一张图片");
@@ -263,6 +270,9 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         detectionTaskMapper.insert(task);
+        if (request.getMetadata() != null) {
+            uploadMetadata.save(taskId, captureInfo, request.getFiles(), request.getMetadata());
+        }
         if(identities!=null)identities.recordCreation(task);
         if (modelInfo != null && modelInfo.getModelId() != null) {
             modelService.incrementUsageStats(modelInfo.getModelId(), now);

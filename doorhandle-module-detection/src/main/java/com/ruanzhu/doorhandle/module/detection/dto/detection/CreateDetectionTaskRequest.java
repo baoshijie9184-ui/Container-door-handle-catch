@@ -19,6 +19,8 @@ public class CreateDetectionTaskRequest {
     @NotNull(message = "采集信息不能为空")
     @Valid
     private DetectionCaptureInfo captureInfo;
+    @Valid
+    private DetectionUploadMetadata metadata;
     private Integer modelId;
     @DecimalMin(value = "0.0", message = "阈值不能小于 0")
     @DecimalMax(value = "1.0", message = "阈值不能大于 1")

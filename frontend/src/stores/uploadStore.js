@@ -12,7 +12,7 @@ export const useUploadStore = defineStore('upload', () => {
 
   // ==================== OSS 上传（可跨页面继续执行） ====================
 
-  const uploadBatchToOss = async (filesData, captureInfo, onRegistered) => {
+  const uploadBatchToOss = async (filesData, captureInfo, onRegistered, metadata) => {
     const account=accountSession.stamp(),current=()=>accountSession.current(account)
     accountSession.assert(account)
     // 立即提取所有数据（函数入口处），避免后续引用外部 reactive 对象
@@ -39,6 +39,7 @@ export const useUploadStore = defineStore('upload', () => {
           deviceName: captureInfo.deviceName,
           imageFolderName: captureInfo.imageFolderName
         },
+        metadata,
         files: filesData.map(item => ({
           fileName: item.fileName,
           contentType: item.contentType,
@@ -175,7 +176,7 @@ export const useUploadStore = defineStore('upload', () => {
     } catch (error) {
       if(!current())return
       console.error('上传 OSS 失败:', error)
-      ElMessage.error(`上传失败: ${error.message || '未知错误'}`)
+      ElMessage.error(error.response?.data?.message || error.message || '上传未完成')
     } finally {
       if(current())uploadingToOss.value = false
     }

@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import com.ruanzhu.doorhandle.module.detection.service.detection.UploadFolders;
+import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionUploadMetadataStore;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +38,7 @@ public class FolderTaskBoard {
     private final EmployeeNumberDirectory personnel;
     private final AgentUserDirectory employees;
     private final com.ruanzhu.doorhandle.module.infra.service.OssStorageService uploadStorage;
+    private final DetectionUploadMetadataStore uploadMetadata;
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
 
     private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
@@ -252,6 +254,7 @@ public class FolderTaskBoard {
                        CASE WHEN %1$s THEN COALESCE(NULLIF(u.region,''),t.region) END AS city,
                        CASE WHEN %1$s THEN COALESCE(NULLIF(u.collector,''),t.collector) END AS collector,
                        CASE WHEN %1$s THEN COALESCE(NULLIF(u.device_name,''),t.device_name) END AS device,
+                       CASE WHEN %1$s THEN COALESCE(u.task_id,t.task_id) END AS metadataTaskId,
                        CASE WHEN %1$s THEN u.image_folder_name END AS uploadFolder
                 %2$s
                 LEFT JOIN detection_task u ON t.task_type='OSS_FOLDER' AND t.source_oss_prefix<>'' AND u.id=(
@@ -263,6 +266,11 @@ public class FolderTaskBoard {
         if (rows.isEmpty()) throw new BusinessException(404,"文件夹登记不存在或无权查看");
         populateUploaderLabels(rows);
         var row = rows.get(0);
+        String metadataTaskId = (String) row.remove("metadataTaskId");
+        if (metadataTaskId != null) {
+            var metadata = uploadMetadata.read(metadataTaskId);
+            if (metadata != null) row.put("metadataJson", metadata);
+        }
         row.put("folder",shortName((String) row.get("folder")));
         row.put("uploadFolder",shortName((String) row.get("uploadFolder")));
         return row;

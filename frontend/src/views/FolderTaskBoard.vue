@@ -141,7 +141,7 @@
               <button v-if="next" type="button" @click="browse(folder,next)">更多目录</button>
               <span v-if="!browsing && ready">本目录{{ folderImages ? '已找到 '+folderImages+' 张图片' : '当前尚未找到图片' }}</span>
             </div>
-            <details v-if="ready && !browsing" class="picked-folder-metadata" :key="folder"><summary>文件夹元数据</summary><dl><dt>OSS 目录</dt><dd><code>{{ folder }}</code></dd></dl></details>
+            <details v-if="ready && !browsing" class="picked-folder-metadata" :key="folder"><summary>详细数据</summary><dl><dt>OSS 目录</dt><dd><code>{{ folder }}</code></dd></dl></details>
             <el-alert v-if="folderError" type="error" :title="folderError" :closable="false"/>
           </div>
         </el-form-item>
