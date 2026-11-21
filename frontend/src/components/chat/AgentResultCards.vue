@@ -68,7 +68,7 @@
                 <dl class="operation-details"><div v-for="row in modelOperationDetails(item)" :key="row.label"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div></dl>
               </details>
               <p v-if="item.invalidFields?.length" class="result-error">部分登记字段异常 请到模型页面核对</p>
-              <p class="card-note">指标为登记值，未检出率排除执行失败，Normal 检出也算检出。FPS 测试环境见模型详情；发布策略为配置记录，实际分流尚未核验。</p>
+              <p class="card-note">指标为登记值，未检出率排除执行失败，Normal 检出也算检出。FPS 评估环境见模型详情；发布策略为配置记录，实际分流尚未核验。</p>
               <a class="record-action" :href="cardRoute('MODEL_OPERATIONS', String(item.model.modelId))">查看模型</a>
             </div>
           </template>

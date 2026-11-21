@@ -47,6 +47,6 @@ Chroma 及旧 hash256 向量只保留作明确的历史来源核验，不是新�
 
 ## 部署状态和运维入口
 
-本页说明源码中的实现能力与操作条件。实际部署版本、服务状态及旧知识迁移结果，分别查当前固定提交的本地 Jenkins/ECS 回执；文档或配置存在不表示已经上线或完成验收。
+本页说明源码中的实现能力与操作条件。实际部署版本、服务状态和知识迁移状态以当前环境的提交号、健康检查与迁移回执为准。
 
-应用、中间件、数据和测试都在 ECS，部署复用仓库的 Compose 和本地 Jenkins 流水线；本地只编辑和构建，不在电脑上启动 Qdrant、Chroma、后端或前端预览。运维配置与验收入口见 `docs/ECS-only-runtime.md`、`docs/本地Jenkins-CICD.md` 和 `docs/agent/middleware/semantic-vector-storage.md`，私有凭据不写入知识文档。
+个人 Ubuntu 的单体使用仓库的 Docker Compose 运行，沿用独立数据库、Redis 和检测 Worker。另行启用的 ECS 流程由本地 Jenkins 调度。运行入口见 `docs/monolith/服务器单机部署方案.md`、`docs/monolith/README.md` 和 `docs/agent/middleware/semantic-vector-storage.md`。

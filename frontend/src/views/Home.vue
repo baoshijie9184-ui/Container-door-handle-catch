@@ -24,7 +24,7 @@
         <div class="work-tools">
           <router-link to="/inspection/history"><AppIcon name="Picture" :size="15" />检测记录</router-link>
           <router-link to="/quality/reports"><AppIcon name="DocumentChecked" :size="15" />质检报告</router-link>
-          <router-link to="/inspection/workbench"><AppIcon name="Operation" :size="15" />单图测试与对比</router-link>
+          <router-link to="/inspection/workbench"><AppIcon name="Operation" :size="15" />单图检测与对比</router-link>
         </div>
       </div>
     </section>

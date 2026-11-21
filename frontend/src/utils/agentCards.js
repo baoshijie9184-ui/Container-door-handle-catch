@@ -46,7 +46,7 @@ export function cardRoute(type, id) {
 
 export const cardTitle = card => card.type === 'MODEL_OPERATIONS' ? '模型指标与发布配置' : card.type === 'DEVICE_ALERTS' ? '采集告警' : card.type === 'DEVICES' ? '设备状态记录' : card.type === 'MODELS' ? '检测模型' : card.type === 'METRICS' ? '工作统计' : card.type === 'REPORTS' ? (['create_report_draft', 'edit_report_draft'].includes(card.tool) ? '报告草稿结果' : '报告查询') : ['get_my_quality_records', 'get_quality_records'].includes(card.tool) ? '质检记录' : '检测任务'
 
-const rolloutLabels = { FULL: '全量', CANARY: '灰度', AB_TEST: 'A/B 测试', ROLLBACK: '回滚' }
+const rolloutLabels = { FULL: '全量', CANARY: '灰度', AB_TEST: 'A/B 对比', ROLLBACK: '回滚' }
 const validationLabels = { PASSED: '校验通过', FAILED: '校验失败', PENDING: '待校验' }
 const mlopsLabels = { UNASSESSED: '未评估', EVALUATED: '已登记评估', ROLLOUT: '已登记发布策略', ROLLED_BACK: '已登记回滚' }
 const invalidOperationField = (item, field) => Array.isArray(item?.invalidFields) && item.invalidFields.includes(field)

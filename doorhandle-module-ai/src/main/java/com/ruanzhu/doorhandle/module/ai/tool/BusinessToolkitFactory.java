@@ -150,7 +150,7 @@ public class BusinessToolkitFactory {
                 case "list_device_alerts" -> "主管按状态、级别、设备主键查询数据库最新入库的采集告警摘要，默认 OPEN 未处理、级别 ALL。按主键降序游标分页；有更多时用 nextCursor 作为下一次 beforeId，保持其他筛选一致。只读，不确认或关闭告警；不返回自由文本说明、运行快照、文件路径或人员备注。结果是 queriedAt 时的记录，不代表设备当前仍故障或已修复，不能从一页记录推断总数。";
                 case "get_device_alert" -> "主管按告警数据库主键 alertId 查询当前状态摘要，编号 alertCode 不能代替主键。不确认或关闭告警，未处理/已确认/已解决仅表示告警记录状态，不是设备实时健康证明。";
                 case "list_models" -> "主管分页查询模型名称、版本、状态及是否默认，不返回模型文件路径";
-                case "get_model_operations" -> "主管按检测模型主键 modelId 查询当前登记的 Precision/Recall/mAP/F1、平均推理耗时、测试集、校验/MLOps 状态、发布策略、配置灰度比例、A/B 分组、回滚来源和登记使用次数。只读，不运行评估或发布/回滚，不属于 LLM 供应商管理。指标是登记值而非在线实测，策略是配置而非分流已生效的证据。null 表示未记录或异常字段已隐藏，零是有效值；存在 invalidFields 时提示核对。没有评估协议、数据集版本和在线分流证据时不能推断模型优劣或线上流量。";
+                case "get_model_operations" -> "主管按检测模型主键 modelId 查询当前登记的 Precision/Recall/mAP/F1、平均推理耗时、评估数据集、校验/MLOps 状态、发布策略、配置灰度比例、A/B 分组、回滚来源和登记使用次数。只读，不运行评估或发布/回滚，不属于 LLM 供应商管理。指标是登记值而非在线实测，策略是配置而非分流已生效的证据。null 表示未记录或异常字段已隐藏，零是有效值；存在 invalidFields 时提示核对。没有评估协议、数据集版本和在线分流证据时不能推断模型优劣或线上流量。";
                 case "get_system_health" -> "主管查询单体应用已接入的存活、就绪、磁盘、数据库、Redis 固定 Actuator 探针摘要。无参数，只读，不执行修复、SSH、Shell 或容器操作。checkedAt/expiresAt 是服务端检查时间及缓存有效期，最多复用 30 秒；status 只汇总 components，不能称全部服务健康。notMonitored 明确列出无实际探针的组件，配置启用不能当作可用。UNKNOWN、超时、繁忙、未注册或读取失败均不能解释为健康，也不能仅凭本结果推断故障根因。";
                 default -> "分页查询当前身份可见的检测任务";
             };

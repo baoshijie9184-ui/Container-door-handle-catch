@@ -10,12 +10,12 @@
     </PageHero>
 
     <el-tabs v-model="activeTab" class="workspace-tabs" :class="{'single-test-tabs':activeTab === 'workspace'}" @tab-change="handleTabChange">
-      <el-tab-pane name="workspace" label="单图测试与对比">
+      <el-tab-pane name="workspace" label="单图检测与对比">
         <div class="workspace-grid">
           <el-card class="detection-card detection-input-card" shadow="never">
             <template #header>
               <div class="single-mode-header">
-                <h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />单图检测（测试）</h2>
+                <h2 class="detection-card-heading"><AppIcon name="Operation" :size="19" />单图检测</h2>
                 <el-radio-group v-model="singleMode" aria-label="单图检测模式" :disabled="comparisonBusy || loadingSingle" size="small">
                   <el-radio-button value="compare">双模型对比</el-radio-button>
                   <el-radio-button value="single">单模型检测</el-radio-button>
@@ -874,7 +874,7 @@ const handleSingleDetection = async () => {
     annotatedImageUrl.value = result.annotatedImagePath
     singleDetectionTaskId.value = result.taskId
     singleDetectionStage.value = result.status === 'PARTIAL_FAILED' ? 'PARTIAL_FAILED' : 'COMPLETED'
-    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '部分检测结果未返回' : '单图测试已完成'
+    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '部分检测结果未返回' : '单图检测已完成'
     if (result.status === 'PARTIAL_FAILED') ElMessage.warning(singleDetectionMessage.value)
     else ElMessage.success('单图检测结果已返回')
   } catch (error) {

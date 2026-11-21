@@ -200,7 +200,7 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
         if (fps != null && !StringUtils.hasText(model.getCompatibilityNote()))
             throw new BusinessException("登记实测 FPS 时请注明设备、CPU/GPU、输入尺寸、批大小和计时范围");
         if (model.getCompatibilityNote() != null && model.getCompatibilityNote().length() > 500)
-            throw new BusinessException("测试环境说明不能超过 500 字");
+            throw new BusinessException("评估环境说明不能超过 500 字");
     }
 
     @Override

@@ -84,7 +84,7 @@ test('tests\\single-image-preview-contract.test.cjs', () => {
   assert.match(activeDetectionPage, /singleDetectionTaskId/)
   assert.match(activeDetectionPage, /\['FAILED','UNCONFIRMED'\]\.includes\(singleStageCode\)/)
   assert.match(activeDetectionPage, /error\.taskFailed === true \? 'FAILED' : 'UNCONFIRMED'/)
-  assert.match(activeDetectionPage, /单图测试已完成/)
+  assert.match(activeDetectionPage, /单图检测已完成/)
   assert.match(activeDetectionPage, /class="single-detection-workspace"/)
   assert.match(activeDetectionPage, /class="single-detection-result"/)
   assert.match(activeDetectionPage, /class="single-upload-file-name"/)

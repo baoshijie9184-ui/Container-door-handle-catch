@@ -268,7 +268,7 @@ function turn(value){if(value!==page.value)changeFilters({page:value===1 ? undef
 const isOssFolder=row=>row.prefix?.startsWith('detection/') && row.prefix.endsWith('/')
 function previewTaskId(row){return Number(row.canReadTask) ? row.taskId : row.myDetectionTaskId}
 function dispatchUnavailable(row){
-  if(row.taskType==='SINGLE')return '单图测试'
+  if(row.taskType==='SINGLE')return '单图检测'
   if(Number(row.uploadPending))return '等待上传确认'
   if(!isOssFolder(row))return '未关联可派发的原图目录'
   if(applicationId.value && !application.value)return '请先读取领任务申请'

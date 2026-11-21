@@ -191,7 +191,7 @@ const navGroups = [
       { path: '/inspection/tasks/detection', label: '检测任务列表', desc: '检测派单与模型进度', supervisorOnly: true },
       { path: '/inspection/tasks/verification', label: '校验任务列表', desc: '分派校验与核对检测结果', supervisorOnly: true },
       { path: '/inspection/history', label: '检测记录', desc: '历史结果与报告' },
-      { path: '/inspection/workbench', label: '单图测试与对比', desc: '单张图片与双模型对比' }
+      { path: '/inspection/workbench', label: '单图检测与对比', desc: '单张图片与双模型对比' }
     ]
   },
   {

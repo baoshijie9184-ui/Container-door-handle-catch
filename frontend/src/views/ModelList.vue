@@ -231,8 +231,8 @@
         <el-form-item label="平均推理耗时（毫秒）">
           <el-input-number v-model="evaluationForm.avgInferenceMs" :min="0" :precision="0" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="测试环境与兼容性说明（有 FPS 时必填）">
-          <el-input v-model="evaluationForm.compatibilityNote" type="textarea" :rows="3" maxlength="500" show-word-limit aria-label="测试环境与兼容性说明" placeholder="记录 PyTorch 版本、CPU/GPU 型号、输入尺寸、batch、样本数、阈值、计时是否包含预处理和后处理" />
+        <el-form-item label="评估环境与兼容性说明（有 FPS 时必填）">
+          <el-input v-model="evaluationForm.compatibilityNote" type="textarea" :rows="3" maxlength="500" show-word-limit aria-label="评估环境与兼容性说明" placeholder="记录 PyTorch 版本、CPU/GPU 型号、输入尺寸、batch、样本数、阈值、计时是否包含预处理和后处理" />
         </el-form-item>
       </el-form>
       <template #footer>

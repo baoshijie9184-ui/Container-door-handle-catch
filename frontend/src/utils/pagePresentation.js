@@ -31,7 +31,7 @@ const sections = [
 ]
 
 export const detectionPresentation = {
-  workspace: { title: '单图测试与对比', icon: 'Picture', description: '上传一张图片，查看模型标注或对比两个模型的检测结果。' },
+  workspace: { title: '单图检测与对比', icon: 'Picture', description: '上传一张图片，查看模型标注或对比两个模型的检测结果。' },
   history: { title: '检测记录', icon: 'DocumentCopy', description: '按时间、采集信息和任务状态查找结果，查看原图、标注与历史结论。' },
   quality: { title: '质检队列', icon: 'CircleCheck', description: '集中处理分派、复核和处置，核对责任人、截止时间及后续复检要求。' },
   'work-order-trace': { title: '工单追溯', icon: 'Connection', description: '按工单串联检测结果、复核结论和处置记录。' },

@@ -25,13 +25,13 @@
       <dl class="model-detail-facts"><dt>训练图片数量</dt><dd>{{ modelTrainingImages(model.trainingImageCount) }}</dd><dt>训练完成日期</dt><dd>{{ modelTime(model.trainingCompletedAt) }}</dd></dl>
       <details v-if="legacyMetrics.length" class="model-storage-details"><summary><AppIcon name="Document" :size="15" />其他历史指标<AppIcon class="model-storage-chevron" name="ArrowDown" :size="13" /></summary><p class="model-detail-note">保留已有登记，不作为当前模型的主评估指标。</p><dl class="model-detail-metrics"><div v-for="[key,label] in legacyMetrics" :key="key"><dt>{{ label }}</dt><dd>{{ modelMetricNumber(model[key])==null ? '待核对' : modelMetric(model[key]) }}</dd></div></dl></details>
       <dl class="model-detail-facts"><dt>评估数据集</dt><dd>{{ model.evaluationDataset || '未记录' }}</dd><dt>登记的平均耗时</dt><dd>{{ modelMilliseconds(model.avgInferenceMs) }}</dd><dt>资料状态</dt><dd><StatusBadge domain="modelEvaluation" :code="model.mlopsStatus" /></dd></dl>
-      <div v-if="model.compatibilityNote" class="model-compatibility-note"><h5><AppIcon name="Connection" :size="15" />测试环境与兼容性说明</h5><div :key="model.compatibilityNote" class="model-detail-copy" :class="{'is-long':longText(model.compatibilityNote)}" :tabindex="longText(model.compatibilityNote) ? 0 : undefined" :role="longText(model.compatibilityNote) ? 'region' : undefined" :aria-label="longText(model.compatibilityNote) ? '兼容性完整说明，可使用方向键滚动' : undefined"><p>{{ model.compatibilityNote }}</p></div><p v-if="longText(model.compatibilityNote)" class="model-detail-reading-hint"><AppIcon name="Rank" :size="13" />完整兼容性说明可在上方区域内滚动阅读</p></div>
+      <div v-if="model.compatibilityNote" class="model-compatibility-note"><h5><AppIcon name="Connection" :size="15" />评估环境与兼容性说明</h5><div :key="model.compatibilityNote" class="model-detail-copy" :class="{'is-long':longText(model.compatibilityNote)}" :tabindex="longText(model.compatibilityNote) ? 0 : undefined" :role="longText(model.compatibilityNote) ? 'region' : undefined" :aria-label="longText(model.compatibilityNote) ? '兼容性完整说明，可使用方向键滚动' : undefined"><p>{{ model.compatibilityNote }}</p></div><p v-if="longText(model.compatibilityNote)" class="model-detail-reading-hint"><AppIcon name="Rank" :size="13" />完整兼容性说明可在上方区域内滚动阅读</p></div>
     </section>
 
     <section class="model-detail-group">
       <h4><AppIcon name="Operation" :size="17" />登记策略与使用</h4>
       <dl class="model-detail-facts"><dt>默认模型</dt><dd>{{ modelDefault(model.isDefault) }}</dd><dt>部署策略</dt><dd>{{ modelStrategy(model) }}</dd><dt>使用次数</dt><dd>{{ modelUsage(model.usageCount) }}</dd><dt>最近使用</dt><dd>{{ modelTime(model.lastUsedAt) }}</dd></dl>
-      <p class="model-detail-note">策略为登记资料，不是实际灰度比例、A/B 测试结果或服务器部署回执。</p>
+      <p class="model-detail-note">发布策略展示登记资料。实际分流比例以运行记录为准，部署状态以服务器回执为准。</p>
     </section>
 
     <section class="model-detail-group">
