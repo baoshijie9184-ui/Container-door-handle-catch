@@ -6,24 +6,24 @@
     <!-- 断点续传提示卡片 -->
     <el-alert
       v-if="resumeTaskInfo"
+      class="resume-alert"
       type="warning"
       show-icon
       :closable="!uploadingToOss"
-      style="border-radius: 16px;"
       @close="dismissResume"
     >
       <template #default>
-        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div class="resume-content">
           <div>
-            <strong>检测到未完成的上传任务</strong>
-            <div style="margin-top: 4px; font-size: 13px; color: #5b6475;">
+            <strong>继续上传</strong>
+            <p>
               「{{ recordFolderLabel(resumeTaskInfo) }}」
               已完成 {{ resumeTaskInfo.uploadedCount }}/{{ resumeTaskInfo.totalCount }} 张，
               {{ resumeTaskInfo.failedCount > 0 ? `失败 ${resumeTaskInfo.failedCount} 张，` : '' }}
               请重新选择同一文件夹继续上传。
-            </div>
+            </p>
           </div>
-          <div style="display: flex; gap: 8px;">
+          <div class="resume-actions">
             <el-button type="primary" size="small" :disabled="uploadingToOss" @click="triggerResumeFolderSelect">
               选择文件夹继续
             </el-button>
@@ -46,141 +46,155 @@
 
     <div class="upload-grid">
       <!-- 上传表单 -->
-      <el-card class="upload-card" header="上传配置" shadow="never">
-        <el-form label-position="top">
-          <div class="input-block">
-            <div class="input-block-title"><el-icon aria-hidden="true"><FolderOpened /></el-icon>选择图片文件夹</div>
-            <p id="upload-image-format" class="upload-format-note">支持 JPG、JPEG、PNG</p>
+      <el-card class="upload-card upload-editor" shadow="never">
+        <template #header><h2 class="upload-card-title">新建上传批次</h2></template>
+        <el-form label-position="top" @submit.prevent>
+          <section aria-label="本次上传图片">
             <input
               ref="folderInput"
               type="file"
               webkitdirectory
               directory
               multiple
-              style="display: none"
+              hidden
               @change="handleFolderSelect"
             />
-            <el-button type="primary" class="wide-button" aria-describedby="upload-image-format" :disabled="uploadingToOss" @click="triggerFolderSelect">
-              <el-icon><FolderOpened /></el-icon>
-              选择图片文件夹
-            </el-button>
-
-            <dl class="folder-summary" v-if="folderInfo.imageCount"><div><dt>图片文件夹</dt><dd>{{ folderInfo.imageFolderName || imageFolderLabel(folderInfo.name) || '未命名文件夹' }}</dd></div><div><dt>图片数量</dt><dd>{{ folderInfo.imageCount }} 张</dd></div></dl>
-            <p v-if="selectionNotice" class="upload-selection-note">{{ selectionNotice }}</p>
-
-            <details v-if="folderInfo.files.length" :key="selectionVersion" class="upload-selection-note">
-              <summary>查看所选图片</summary>
-              <SelectedImageFiles :files="folderInfo.files" :scope-key="accountScope()" />
-            </details>
-          </div>
+            <button v-if="!folderInfo.imageCount" type="button" class="folder-picker" aria-labelledby="upload-folder-label" aria-describedby="upload-image-format" :disabled="uploadingToOss" @click="triggerFolderSelect">
+              <span class="folder-picker-icon"><el-icon><FolderOpened /></el-icon></span>
+              <strong id="upload-folder-label">选择图片文件夹</strong>
+              <span id="upload-image-format">支持 JPG、JPEG、PNG，会自动读取文件夹内的 metadata.json</span>
+            </button>
+            <template v-else>
+              <div class="selected-folder">
+                <span class="selected-folder-icon"><el-icon><FolderOpened /></el-icon></span>
+                <div class="selected-folder-name">
+                  <strong :title="folderInfo.name">{{ imageFolderLabel(folderInfo.name) || folderInfo.imageFolderName || '所选文件夹' }}</strong>
+                  <span>{{ folderInfo.imageCount }} 张图片</span>
+                </div>
+                <el-button class="replace-folder" :disabled="uploadingToOss" @click="triggerFolderSelect">更换文件夹</el-button>
+              </div>
+              <p v-if="selectionNotice" class="upload-selection-note" role="status">{{ selectionNotice }}</p>
+              <SelectedImageFiles :key="selectionVersion" :files="folderInfo.files" :scope-key="accountScope()" />
+            </template>
+          </section>
 
           <section v-if="folderInfo.imageCount" class="capture-options" aria-labelledby="upload-capture-heading">
             <div class="capture-options-header">
-              <h2 id="upload-capture-heading" class="capture-meta-heading"><AppIcon name="Document" :size="17" />采集信息</h2>
+              <h3 id="upload-capture-heading" class="capture-meta-heading">采集信息</h3>
               <el-button link type="primary" aria-controls="upload-capture-fields" :aria-expanded="captureExpanded" @click="captureExpanded=!captureExpanded">{{ captureExpanded ? '收起采集信息' : '编辑采集信息' }}</el-button>
             </div>
-            <div class="capture-json-actions">
+            <div class="capture-json-row">
               <input ref="metadataInput" type="file" accept="application/json,.json" hidden @change="chooseMetadata" />
-              <el-button link type="primary" :disabled="uploadingToOss || uploadAttempted || metadataReading" @click="metadataInput?.click()">导入 JSON</el-button>
-              <el-button v-if="!metadataName" link :disabled="metadataReading" @click="downloadTemplate">下载模板</el-button>
-              <span v-if="metadataReading" role="status">正在读取元数据…</span>
-              <span v-else-if="metadataName" role="status">已导入 {{ metadataName }}<template v-if="batchMetadata.images.length"> · {{ batchMetadata.images.length }} 张有图片资料</template></span>
-              <span v-else>文件夹内的 metadata.json 会自动读取</span>
-              <el-button v-if="metadataName || metadataError" link :disabled="uploadingToOss || uploadAttempted" @click="clearMetadata">移除 JSON</el-button>
+              <div class="capture-json-state">
+                <AppIcon name="Document" :size="16" />
+                <span v-if="metadataReading" role="status">正在读取 JSON…</span>
+                <span v-else-if="metadataName" role="status">已导入 {{ metadataName }}<template v-if="batchMetadata.images.length"> · {{ batchMetadata.images.length }} 张有图片资料</template></span>
+                <span v-else>采集资料 JSON</span>
+              </div>
+              <div class="capture-json-actions">
+                <el-button link type="primary" :disabled="uploadingToOss || uploadAttempted || metadataReading" @click="metadataInput?.click()">{{ metadataName ? '更换 JSON' : '导入 JSON' }}</el-button>
+                <el-button v-if="!metadataName" link :disabled="metadataReading" @click="downloadTemplate">下载模板</el-button>
+                <el-button v-if="metadataName || metadataError" link :disabled="uploadingToOss || uploadAttempted" @click="clearMetadata">移除 JSON</el-button>
+              </div>
             </div>
             <p v-if="metadataError" class="capture-read-error" role="alert">{{ metadataError }}</p>
-          <div v-show="captureExpanded" id="upload-capture-fields" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading">
-            <el-form-item label="采集日期" required>
-              <el-date-picker
-                v-model="folderInfo.captureDate"
-                :disabled="uploadingToOss || uploadAttempted"
-                value-format="YYYY-MM-DD"
-                aria-label="采集日期" placeholder="选择采集日期"
-                style="width: 100%"
-              />
-            </el-form-item>
-            <el-form-item label="城市" required>
-              <el-select v-model="folderInfo.region" filterable aria-label="采集城市" placeholder="选择采集城市"
-                :loading="loadingCities" :disabled="uploadingToOss || uploadAttempted || !collectionCities.length">
-                <el-option v-for="city in collectionCities" :key="city" :label="city" :value="city" />
-              </el-select>
-              <p v-if="cityError" class="capture-read-error" role="alert">采集城市读取失败<button type="button" @click="loadCities">重新读取</button></p>
-            </el-form-item>
-            <el-form-item label="采集员" required>
-              <el-select
-                v-model="folderInfo.collector"
-                aria-label="选择采集员" placeholder="选择采集员"
-                filterable
-                :disabled="uploadingToOss || uploadAttempted"
-                :no-data-text="employeeError ? '候选读取失败，请重新读取' : loadingEmployees || !employeeLoaded ? '正在核对候选' : '当前已加载范围无候选'"
-                :loading="loadingEmployees"
-                clearable
-              >
-                <el-option
-                  v-for="emp in employeeList"
-                  :key="emp.id"
-                  :value="emp.employeeNumber"
-                  :label="`${emp.name} (${emp.employeeNumber || ''})`"
+            <dl v-if="!captureExpanded" class="capture-summary">
+              <div><dt>采集日期</dt><dd>{{ folderInfo.captureDate || '待填写' }}</dd></div>
+              <div><dt>城市</dt><dd>{{ folderInfo.region || '待填写' }}</dd></div>
+              <div><dt>采集员</dt><dd>{{ collectorLabel || '待填写' }}</dd></div>
+              <div><dt>采集设备</dt><dd>{{ folderInfo.deviceName || '待填写' }}</dd></div>
+              <div class="capture-batch-name"><dt>批次名称</dt><dd>{{ folderInfo.imageFolderName || '待填写' }}</dd></div>
+            </dl>
+            <div v-show="captureExpanded" id="upload-capture-fields" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading">
+              <el-form-item label="采集日期" required>
+                <el-date-picker
+                  v-model="folderInfo.captureDate"
+                  :disabled="uploadingToOss || uploadAttempted"
+                  value-format="YYYY-MM-DD"
+                  aria-label="采集日期" placeholder="选择采集日期"
+                  />
+              </el-form-item>
+              <el-form-item label="城市" required>
+                <el-select v-model="folderInfo.region" filterable aria-label="采集城市" placeholder="选择采集城市"
+                  :loading="loadingCities" :disabled="uploadingToOss || uploadAttempted || !collectionCities.length">
+                  <el-option v-for="city in collectionCities" :key="city" :label="city" :value="city" />
+                </el-select>
+                <p v-if="cityError" class="capture-read-error" role="alert">采集城市读取失败<button type="button" @click="loadCities">重新读取</button></p>
+              </el-form-item>
+              <el-form-item label="采集员" required>
+                <el-select
+                  v-model="folderInfo.collector"
+                  aria-label="选择采集员" placeholder="选择采集员"
+                  filterable
+                  :disabled="uploadingToOss || uploadAttempted"
+                  :no-data-text="employeeError ? '候选读取失败，请重新读取' : loadingEmployees || !employeeLoaded ? '正在核对候选' : '当前已加载范围无候选'"
+                  :loading="loadingEmployees"
+                  clearable
                 >
-                  <span>{{ emp.name }}</span>
-                  <span class="capture-option-detail">{{ emp.employeeNumber }}</span>
-                </el-option>
-              </el-select>
-              <p v-if="employeeError" class="capture-read-error" role="alert">{{ employeeError }}<button type="button" :disabled="loadingEmployees || uploadingToOss" @click="fetchEmployees">重新读取</button></p>
-            </el-form-item>
-            <el-form-item label="采集设备" required>
-              <el-select
-                v-model="folderInfo.deviceName"
-                aria-label="选择采集设备" placeholder="选择采集设备"
-                filterable
-                :disabled="uploadingToOss || uploadAttempted"
-                :no-data-text="deviceError ? '候选读取失败，请重新读取' : loadingDevices || !deviceLoaded ? '正在核对候选' : '当前已加载范围无候选'"
-                :loading="loadingDevices"
-                clearable
-              >
-                <el-option
-                  v-for="dev in deviceList"
-                  :key="dev.id"
-                  :value="dev.deviceCode"
-                  :label="`${dev.deviceCode} ${dev.modelName || ''}`"
+                  <el-option
+                    v-for="emp in employeeList"
+                    :key="emp.id"
+                    :value="emp.employeeNumber"
+                    :label="`${emp.name} (${emp.employeeNumber || ''})`"
+                  >
+                    <span>{{ emp.name }}</span>
+                    <span class="capture-option-detail">{{ emp.employeeNumber }}</span>
+                  </el-option>
+                </el-select>
+                <p v-if="employeeError" class="capture-read-error" role="alert">{{ employeeError }}<button type="button" :disabled="loadingEmployees || uploadingToOss" @click="fetchEmployees">重新读取</button></p>
+              </el-form-item>
+              <el-form-item label="采集设备" required>
+                <el-select
+                  v-model="folderInfo.deviceName"
+                  aria-label="选择采集设备" placeholder="选择采集设备"
+                  filterable
+                  :disabled="uploadingToOss || uploadAttempted"
+                  :no-data-text="deviceError ? '候选读取失败，请重新读取' : loadingDevices || !deviceLoaded ? '正在核对候选' : '当前已加载范围无候选'"
+                  :loading="loadingDevices"
+                  clearable
                 >
-                  <span>{{ dev.deviceCode }}</span>
-                  <span class="capture-option-detail">{{ dev.modelName }}</span>
-                </el-option>
-              </el-select>
-              <p v-if="deviceError" class="capture-read-error" role="alert">{{ deviceError }}<button type="button" :disabled="loadingDevices || uploadingToOss" @click="fetchDevices">重新读取</button></p>
-            </el-form-item>
-            <el-form-item label="图片文件夹名称" required>
-              <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="例如 批次A" />
-            </el-form-item>
-          </div>
+                  <el-option
+                    v-for="dev in deviceList"
+                    :key="dev.id"
+                    :value="dev.deviceCode"
+                    :label="`${dev.deviceCode} ${dev.modelName || ''}`"
+                  >
+                    <span>{{ dev.deviceCode }}</span>
+                    <span class="capture-option-detail">{{ dev.modelName }}</span>
+                  </el-option>
+                </el-select>
+                <p v-if="deviceError" class="capture-read-error" role="alert">{{ deviceError }}<button type="button" :disabled="loadingDevices || uploadingToOss" @click="fetchDevices">重新读取</button></p>
+              </el-form-item>
+              <el-form-item label="批次名称" required class="capture-batch-name">
+                <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="输入批次名称" />
+              </el-form-item>
+            </div>
           </section>
 
-          <p v-if="folderInfo.imageCount" class="upload-readiness" :data-ready="!missingCaptureFields.length"><AppIcon :name="missingCaptureFields.length ? 'Warning' : 'CircleCheck'" :size="16" />{{ missingCaptureFields.length ? '还需补全：'+missingCaptureFields.join('、') : '采集信息已填写，请核对后上传' }}</p>
-          <el-button
-            type="primary"
-            class="wide-button upload-action"
-            :disabled="!folderInfo.imageCount || uploadingToOss || metadataReading || !!metadataError || !!missingCaptureFields.length || uploadAttempted"
-            :loading="uploadingToOss"
-            @click="handleUploadBatch"
-            size="large"
-          >
-            <el-icon><UploadFilled /></el-icon>
-            {{ uploadingToOss ? '正在上传原图…' : uploadAttempted ? '本次上传已发起' : '上传原图并提交检测' }}
-          </el-button>
-          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><router-link :to="{path:'/inspection/uploads/mine',query:registeredTaskId ? {keyword:registeredTaskId} : {}}">{{ registeredTaskId ? '查看本次上传记录' : '查看我的上传记录' }}</router-link><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
-
-          <Transition name="upload-feedback"><div v-if="uploadingTask" class="upload-progress-card">
-            <div class="upload-progress-header">
-              <span>{{ recordFolderLabel(uploadingTask) }}</span>
-              <span>{{ uploadingTask.imageCount }} 张</span>
+          <div v-if="folderInfo.imageCount || uploadingToOss" class="upload-footer">
+            <div v-if="folderInfo.imageCount && (!uploadAttempted || uploadingToOss)" class="upload-submit-row">
+              <p v-if="missingCaptureFields.length" id="upload-readiness" class="upload-readiness" role="status"><AppIcon name="Warning" :size="16" />请补全{{ missingCaptureFields.join('、') }}</p>
+              <el-button type="primary" class="upload-action" size="large"
+                :aria-describedby="missingCaptureFields.length ? 'upload-readiness' : undefined"
+                :disabled="uploadingToOss || metadataReading || !!metadataError || !!missingCaptureFields.length || uploadAttempted"
+                :loading="uploadingToOss" @click="handleUploadBatch">
+                <el-icon v-if="!uploadingToOss"><UploadFilled /></el-icon>
+                {{ uploadingToOss ? '正在上传原图…' : '上传原图并提交检测' }}
+              </el-button>
             </div>
-            <el-progress
-              :percentage="uploadingTask.progressPercent"
-              :stroke-width="8"
-            />
-            <p class="upload-progress-msg">{{ uploadingTask.message }}</p>
-          </div></Transition>
+            <Transition name="upload-feedback"><div v-if="uploadingTask" class="upload-progress-card">
+              <div class="upload-progress-header">
+                <span>{{ recordFolderLabel(uploadingTask) }}</span>
+                <span>{{ uploadingTask.imageCount }} 张</span>
+              </div>
+              <el-progress :percentage="uploadingTask.progressPercent" :stroke-width="8" />
+              <p class="upload-progress-msg">{{ uploadingTask.message }}</p>
+            </div></Transition>
+            <div v-if="uploadAttempted && !uploadingToOss" class="upload-attempt-note" role="status">
+              <router-link :to="{path:'/inspection/uploads/mine',query:registeredTaskId ? {keyword:registeredTaskId} : {}}">{{ registeredTaskId ? '查看本次上传记录' : '查看我的上传记录' }}</router-link>
+              <el-button @click="resetBatchState">清空本次选择</el-button>
+            </div>
+          </div>
 
         </el-form>
       </el-card>
@@ -189,59 +203,47 @@
       <el-card class="upload-card history-card" shadow="never">
         <template #header>
           <div class="card-title-row">
-            <span>最近任务</span>
-            <el-badge v-if="taskList.length" :value="taskList.length"  />
-            <el-button size="small" link :loading="refreshing || historyLoading" @click="refreshHistory" title="刷新上传历史" aria-label="刷新上传历史">
+            <h2 class="upload-card-title">最近任务</h2>
+            <el-button class="refresh-history" size="small" :loading="refreshing || historyLoading" @click="refreshHistory" title="刷新上传历史" aria-label="刷新上传历史">
               <template #icon><el-icon><Refresh /></el-icon></template>
             </el-button>
           </div>
         </template>
         <!-- 搜索和筛选栏 -->
         <div class="history-search-bar">
-          <label class="upload-history-filter" for="upload-history-keyword"><span>任务或文件夹</span>
           <el-input
             id="upload-history-keyword"
             v-model="searchKeyword"
             aria-label="搜索任务ID或文件夹名…" placeholder="搜索任务ID或文件夹名…"
             clearable
-            size="small"
             class="history-search-input"
           >
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
-          </label>
+          <el-button aria-controls="upload-history-filters" :aria-expanded="advancedFiltersOpen" @click="advancedFiltersOpen=!advancedFiltersOpen">
+            <AppIcon name="Filter" :size="15" />筛选
+          </el-button>
+        </div>
+        <div v-show="advancedFiltersOpen" id="upload-history-filters" class="history-fields">
           <label class="upload-history-filter" for="upload-history-status"><span>处理阶段</span>
-          <el-select
-            id="upload-history-status"
-            v-model="statusFilter"
-            aria-label="全部状态" placeholder="全部状态"
-            clearable
-            size="small"
-            class="history-status-select"
-          >
-            <el-option label="全部状态" value="" />
-            <el-option label="上传中" value="UPLOADING" />
-            <el-option label="已上传" value="UPLOADED" />
-            <el-option label="已排队" value="QUEUED" />
-            <el-option label="检测中" value="DETECTING" />
-            <el-option label="已完成" value="COMPLETED" />
-            <el-option label="失败" value="FAILED" />
-          </el-select>
+            <el-select id="upload-history-status" v-model="statusFilter" aria-label="全部状态" placeholder="全部状态" clearable>
+              <el-option label="全部状态" value="" />
+              <el-option label="上传中" value="UPLOADING" />
+              <el-option label="已上传" value="UPLOADED" />
+              <el-option label="已排队" value="QUEUED" />
+              <el-option label="检测中" value="DETECTING" />
+              <el-option label="已完成" value="COMPLETED" />
+              <el-option label="失败" value="FAILED" />
+            </el-select>
           </label>
           <label class="upload-history-filter" for="upload-history-date"><span>最近更新日期</span>
-          <el-date-picker
-            id="upload-history-date"
-            v-model="filterDate"
-            aria-label="选择日期" placeholder="选择日期"
-            size="small"
-            class="history-date-picker"
-            value-format="YYYY-MM-DD"
-            clearable
-          />
+            <el-date-picker id="upload-history-date" v-model="filterDate" aria-label="选择日期" placeholder="选择日期" value-format="YYYY-MM-DD" clearable />
           </label>
         </div>
-        <p class="upload-history-cache-note">仅筛选已加载任务。<router-link to="/inspection/uploads/all">查询全部图片上传记录</router-link></p>
-        <div class="upload-history-scope"><span>{{ historyLoading ? '正在核对上传记录…' : `已加载 ${taskList.length} 条，当前匹配 ${uploadHistory.length} 条` }}</span><el-button v-if="hasHistoryFilters" link size="small" @click="resetHistoryFilters">清空筛选</el-button></div>
+        <div class="upload-history-scope">
+          <span role="status">{{ historyLoading ? '正在读取…' : hasHistoryFilters ? `匹配 ${uploadHistory.length} 条已加载记录` : `已加载 ${taskList.length} 条` }}</span>
+          <el-button v-if="hasHistoryFilters && uploadHistory.length" link size="small" @click="resetHistoryFilters">清空筛选</el-button>
+        </div>
         <el-alert v-if="historyError && uploadHistory.length" :title="historyError + '；以下为先前已加载的记录，请刷新核对。'" type="error" show-icon :closable="false" />
         <CollectionEmptyState
           v-if="uploadHistory.length === 0"
@@ -249,20 +251,19 @@
           :error="historyError"
           :filtered="hasHistoryFilters"
           empty-title="暂无上传记录"
-          empty-description="选择图片文件夹并核对采集信息后，点击上传原图开始。"
+          empty-description="上传批次后可在这里查看进度。"
           @retry="refreshHistory"
           @reset="resetHistoryFilters"
         />
         <div v-else class="history-list">
           <div
-            v-for="task in uploadHistory"
+            v-for="task in visibleHistory"
             :key="task.taskId"
             class="history-item"
           >
             <!-- 第一行：名称 + 数量 + 状态 -->
             <div class="history-item-row1">
-              <span class="history-item-folder">{{ recordFolderLabel(task) }}</span>
-              <span class="history-item-count">{{ task.imageCount }} 张</span><FolderMetadataLink :task-id="task.taskId" />
+              <span class="history-item-folder" :title="recordFolderLabel(task)">{{ recordFolderLabel(task) }}</span>
               <el-tag :type="taskStore.taskTagType(task)" class="history-item-tag">
                 {{ taskStore.taskTagText(task) }}
               </el-tag>
@@ -291,13 +292,12 @@
                 {{ taskStore.taskStatusDetail(task).text }}
               </span>
               <span class="history-item-time">
-                最近更新：
-                <el-icon style="margin-right: 2px; font-size: 11px;"><Calendar /></el-icon>
                 {{ formatUploadTime(task.updatedAt || task.createdAt) }}
               </span>
             </div>
             <!-- 操作按钮 -->
             <div class="history-item-actions">
+              <FolderMetadataLink :task-id="task.taskId" />
               <el-button v-if="task.stage === 'uploading' && task.uploadConfirmation" link type="primary"
                 :loading="uploadingToOss && activeUploadTaskId===task.taskId" :disabled="uploadingToOss"
                 @click="uploadStore.retryUploadConfirmation(task.taskId)">重试上传确认</el-button>
@@ -314,6 +314,10 @@
             </div>
           </div>
         </div>
+        <div class="history-footer">
+          <el-button v-if="uploadHistory.length > historyPreviewSize" link @click="showFullHistory=!showFullHistory">{{ showFullHistory ? '收起记录' : '显示更多已加载记录' }}</el-button>
+          <router-link class="upload-next-link" to="/inspection/uploads/all">全部上传记录<AppIcon name="ArrowRight" :size="14" /></router-link>
+        </div>
       </el-card>
     </div>
   </div>
@@ -328,7 +332,7 @@ import { downloadMetadata, folderRoot, MAX_METADATA_BYTES, parseUploadMetadata }
 import { computed, onMounted, onBeforeUnmount, reactive, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Calendar, CircleCheck, Clock, Delete, FolderOpened, Refresh, Right, Search, UploadFilled, Warning } from '@element-plus/icons-vue'
+import { CircleCheck, Clock, Delete, FolderOpened, Refresh, Right, Search, UploadFilled, Warning } from '@element-plus/icons-vue'
 import { fetchCollectionCities, fetchDevicesForSelect, fetchEmployeesForSelect } from '../api/resourceOptions'
 import { useTaskStore, useUploadStore, usePollingStore } from '../stores/detectionTask'
 import { beijingDateTime } from '../utils/beijingTime'
@@ -386,6 +390,9 @@ const resumeTaskInfo = ref(null) // { taskId, folderName, uploadedCount, totalCo
 const searchKeyword = ref('')
 const statusFilter = ref('')
 const filterDate = ref('')
+const advancedFiltersOpen = ref(false)
+const showFullHistory = ref(false)
+const historyPreviewSize = 4
 const hasHistoryFilters = computed(() => !!(searchKeyword.value.trim() || statusFilter.value || filterDate.value))
 const historyLoading = ref(true)
 const historyError = ref('')
@@ -402,9 +409,14 @@ const folderInfo = reactive({
   files: []
 })
 
+const collectorLabel = computed(() => {
+  const employee = employeeList.value.find(item => item.employeeNumber === folderInfo.collector)
+  return employee ? `${employee.name}（${employee.employeeNumber}）` : folderInfo.collector
+})
+
 const missingCaptureFields = computed(() => [
   ['captureDate', '采集日期'], ['region', '城市'], ['collector', '采集员'],
-  ['deviceName', '采集设备'], ['imageFolderName', '图片文件夹名称']
+  ['deviceName', '采集设备'], ['imageFolderName', '批次名称']
 ].filter(([key]) => {
   if (!String(folderInfo[key] || '').trim()) return true
   if (key==='region') return !collectionCities.value.includes(folderInfo.region)
@@ -461,6 +473,7 @@ const uploadHistory = computed(() => {
 
   return list
 })
+const visibleHistory = computed(() => showFullHistory.value ? uploadHistory.value : uploadHistory.value.slice(0, historyPreviewSize))
 
 function cityFromFolder(value) {
   return collectionCities.value.find(city => city === value || city.slice(0, -1) === value) || ''
@@ -484,8 +497,9 @@ async function loadCities() {
 }
 
 const triggerFolderSelect = () => {
-  if (uploadingToOss.value) return
-  folderInput.value?.click()
+  if (uploadingToOss.value || !folderInput.value) return
+  folderInput.value.value = ''
+  folderInput.value.click()
 }
 
 function clearMetadata() {
@@ -795,240 +809,307 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.upload-container {
-  display: grid;
-  gap: 24px;
-}
+.upload-container { display:grid; }
 
 .upload-grid {
-  display: grid;
-  grid-template-columns: 2fr 3fr;
-  gap: 16px;
-  align-items: start;
+  display:grid;
+  grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);
+  align-items:start;
+  gap:20px;
 }
 
-.upload-card {
-  border-radius: 24px;
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
-  align-self: start;
-  min-width: 0;
-  width: 100%;
+.upload-card { min-width:0; }
+.upload-card-title {
+  margin:0;
+  color:var(--app-text);
+  font-size:var(--app-font-section);
+  font-weight:650;
 }
 
-.input-block {
-  padding: 0 0 16px;
-  border-bottom: 1px solid var(--app-border);
-  margin-bottom: 16px;
+.resume-alert { border-radius:var(--app-radius-sm); }
+.resume-alert :deep(.el-alert__content) { flex:1; }
+.resume-content,.resume-actions {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px 12px;
 }
+.resume-content { justify-content:space-between; padding-right:12px; }
+.resume-content p { margin:3px 0 0; overflow-wrap:anywhere; }
+.resume-actions :deep(.el-button) { margin:0; }
 
-.input-block-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 7px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--app-text);
+.folder-picker {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:9px;
+  width:100%;
+  min-height:184px;
+  padding:24px;
+  border:1px dashed var(--app-border-focus);
+  border-radius:var(--app-radius-md);
+  background:var(--app-primary-light);
+  color:var(--app-primary-deep);
+  font:inherit;
+  text-align:center;
+  cursor:pointer;
 }
-.input-block-title > .el-icon { flex:0 0 auto; color:var(--app-primary); }
+.folder-picker:hover:not(:disabled) {
+  border-color:var(--app-primary);
+  background:var(--app-primary-soft);
+}
+.folder-picker:disabled { cursor:not-allowed; opacity:.6; }
+.folder-picker strong { font-size:16px; font-weight:650; }
+#upload-image-format { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.folder-picker-icon,.selected-folder-icon {
+  display:grid;
+  place-items:center;
+  flex:none;
+  width:44px;
+  height:44px;
+  border-radius:var(--app-radius-sm);
+  color:var(--app-primary);
+  background:var(--app-primary-soft);
+  font-size:23px;
+}
+.selected-folder {
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:12px;
+  border:1px solid var(--app-border);
+  border-radius:var(--app-radius-sm);
+  background:var(--app-primary-light);
+}
+.selected-folder-name {
+  display:grid;
+  flex:1;
+  gap:3px;
+  min-width:0;
+}
+.selected-folder-name strong {
+  font-size:14px;
+  font-weight:650;
+  color:var(--app-text);
+  overflow-wrap:anywhere;
+}
+.selected-folder-name span { font-size:12px; color:var(--app-text-secondary); }
+.upload-selection-note { margin:9px 0 0; color:var(--app-text-secondary); font-size:12px; }
 
-.wide-button {
-  width: 100%;
+.capture-options {
+  margin-top:14px;
+  padding-top:14px;
+  border-top:1px solid var(--app-border);
+  container-type:inline-size;
 }
+.capture-options-header,.capture-json-row,.capture-json-state,.capture-json-actions {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:6px 12px;
+}
+.capture-options-header,.capture-json-row { justify-content:space-between; }
+.capture-meta-heading { margin:0; color:var(--app-text); font-size:15px; font-weight:650; }
+.capture-json-row {
+  margin-top:7px;
+  padding:4px 10px;
+  border-radius:var(--app-radius-sm);
+  background:var(--app-surface-muted);
+}
+.capture-json-state {
+  flex:1 1 180px;
+  align-items:flex-start;
+  flex-wrap:nowrap;
+  gap:7px;
+  min-width:0;
+  color:var(--app-text-secondary);
+  font-size:12px;
+  line-height:1.8;
+  overflow-wrap:anywhere;
+}
+.capture-json-state > .el-icon { flex:none; margin-top:3px; color:var(--app-primary); }
+.capture-json-actions :deep(.el-button) { margin:0; }
+.capture-option-detail { margin-left:8px; color:var(--app-text-secondary); font-size:12px; }
+.capture-summary,.capture-meta-form {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px 16px;
+  margin:14px 0 0;
+}
+.capture-summary { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.capture-summary > div { min-width:0; }
+.capture-summary dt { color:var(--app-text-secondary); font-size:12px; }
+.capture-summary dd {
+  margin:4px 0 0;
+  font-size:13px;
+  font-weight:550;
+  color:var(--app-text);
+  overflow-wrap:anywhere;
+}
+.capture-batch-name { grid-column:1/-1; }
+.capture-meta-form :deep(.el-form-item) { min-width:0; margin:0; }
+.capture-meta-form :deep(.el-form-item__label) { margin-bottom:6px; }
+.capture-meta-form :deep(.el-select),.capture-meta-form :deep(.el-date-editor.el-input) { width:100%; }
+.capture-read-error {
+  flex-basis:100%;
+  margin:7px 0 0;
+  color:var(--app-warning);
+  font-size:12px;
+  line-height:1.8;
+  overflow-wrap:anywhere;
+}
+.capture-read-error button {
+  margin-left:7px;
+  padding:3px 0;
+  border:0;
+  background:transparent;
+  color:var(--app-primary);
+  font:inherit;
+  cursor:pointer;
+}
+.capture-read-error button:disabled { color:var(--app-text-muted); cursor:default; }
 
-.upload-action {
-  margin-top: 16px;
+.upload-footer { margin-top:18px; padding-top:14px; border-top:1px solid var(--app-border); }
+.upload-submit-row,.upload-attempt-note {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  flex-wrap:wrap;
+  gap:8px 12px;
 }
-
-.folder-summary {
-  margin-top: 14px;
-  color: var(--app-text);
-  padding: 0;
-  font-size: 12px;
-  line-height: 1.8;
+.upload-readiness {
+  display:flex;
+  align-items:flex-start;
+  flex:1 1 200px;
+  gap:6px;
+  margin:0;
+  color:var(--app-warning);
+  font-size:12px;
+  line-height:1.8;
 }
-.folder-summary > div { display:grid; gap:3px; margin-top:9px; min-width:0; }
-.folder-summary dt { color:var(--app-text-secondary); }
-.folder-summary dd { margin:0; overflow-wrap:anywhere; }
-.capture-options-header,.capture-json-actions { display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px }
-.capture-options-header { justify-content:space-between }
-.capture-json-actions { font-size:12px;color:var(--app-text-secondary);overflow-wrap:anywhere }
-.capture-json-actions :deep(.el-button),.capture-options-header :deep(.el-button) { min-height:34px;margin:0 }
-.capture-meta-heading { display:flex; align-items:center; gap:7px; margin:0; font-size:15px; font-weight:600; line-height:1.8; color:var(--app-text); }
-.capture-meta-heading > .el-icon { flex:0 0 auto; color:var(--app-primary); }
-.capture-option-detail { color:var(--app-text-secondary); margin-left:8px; font-size:12px; }
-
-.capture-meta-form {
-  margin-top: 16px;
-}
-
-.capture-meta-form :deep(.el-form-item) {
-  margin-bottom: 12px;
-}
-
-.threshold-text {
-  margin-top: 8px;
-  color: #5b6475;
-}
+.upload-readiness > .el-icon { flex:none; margin-top:3px; }
+.upload-action { min-width:176px; }
+.upload-attempt-note { justify-content:space-between; }
+.upload-attempt-note a { font-size:13px; }
 
 .upload-progress-card {
-  margin-top: 20px;
-  padding: 16px;
-  border-radius: 16px;
-  background: #f0f6ff;
-  border: 1px solid rgba(22, 119, 255, 0.15);
+  display:grid;
+  gap:8px;
+  padding:13px;
+  border:1px solid var(--app-border);
+  border-radius:var(--app-radius-sm);
+  background:var(--app-primary-light);
 }
-
+.upload-submit-row + .upload-progress-card { margin-top:12px; }
 .upload-progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-  font-weight: 600;
-  color: #172033;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:8px;
+  color:var(--app-text);
+  font-weight:600;
+  overflow-wrap:anywhere;
 }
+.upload-progress-msg { margin:0; color:var(--app-text-secondary); font-size:12px; }
+.upload-feedback-enter-active,.upload-feedback-leave-active { transition:opacity var(--app-transition-base); }
+.upload-feedback-enter-from,.upload-feedback-leave-to { opacity:0; }
 
-.upload-progress-msg {
-  margin-top: 8px;
-  color: #5b6475;
-  font-size: 13px;
+.card-title-row,.history-search-bar,.upload-history-scope,.history-footer {
+  display:flex;
+  align-items:center;
+  gap:8px;
 }
-
-.history-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.history-card :deep(.el-card-body) {
-  flex: 1;
-  padding: 16px;
-}
-
-.history-card :deep(.el-empty) {
-  margin-top: 40px;
-}
-
-.card-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.history-search-bar {
-  display: grid;
+.card-title-row,.upload-history-scope { justify-content:space-between; }
+.refresh-history:not(.is-loading) { width:32px; padding-inline:0; }
+.history-search-input { min-width:0; }
+.history-search-bar > .el-button { margin:0; }
+.history-fields {
+  display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));
-  gap: 12px;
-  margin-bottom: 12px;
+  gap:9px;
+  margin-top:10px;
 }
-.upload-history-filter { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-.upload-history-filter:first-child { grid-column:1/-1; }
-.upload-history-filter :is(.history-search-input,.history-status-select,.history-date-picker) { width:100%; min-width:0; }
+.upload-history-filter { display:grid; gap:5px; min-width:0; color:var(--app-text-secondary); font-size:12px; }
 .upload-history-filter :deep(.el-date-editor.el-input) { width:100%; }
-.upload-history-cache-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
-
-.history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.upload-history-scope {
+  min-height:28px;
+  margin-top:6px;
+  color:var(--app-text-secondary);
+  font-size:12px;
 }
-
+.history-card :deep(.collection-empty) { min-height:180px; padding:18px 12px; }
+.history-list { margin-top:2px; }
 .history-item {
-  padding: 16px 0;
-  border-radius: 0;
-  border: 0;
-  border-bottom:1px solid var(--app-border);
-  background: var(--app-surface);
+  padding:12px 0 9px;
+  border-top:1px solid var(--app-border);
 }
-.history-item:last-child { border-bottom:0; }
-
-.history-item-row1 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.history-item-row1,.history-item-row2,.history-item-actions {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:6px 8px;
 }
-
+.history-item-row1 { justify-content:space-between; }
 .history-item-folder {
-  flex: 1;
-  font-weight: 600;
-  color: #172033;
-  font-size: 14px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex:1 1 160px;
+  min-width:0;
+  color:var(--app-text);
+  font-size:14px;
+  font-weight:600;
+  overflow-wrap:anywhere;
 }
-
-.history-item-count {
-  font-size: 12px;
-  color: #8b95a5;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
+.history-item-tag { flex:none; }
+.history-item-row2 { margin-top:6px; color:var(--app-text-secondary); font-size:12px; }
+.history-item-status { display:inline-flex; align-items:flex-start; gap:4px; min-width:0; overflow-wrap:anywhere; }
+.history-item-status > .el-icon { flex:none; margin-top:2px; }
+.history-item-status.status-error { color:var(--app-danger); }
+.history-item-status.status-warn { color:var(--app-warning); }
+.history-item-status.status-ok { color:var(--app-success); }
+.history-item-time { margin-left:auto; }
+.history-item-actions { gap:4px 8px; margin-top:4px; }
+.history-item-actions :deep(.el-button) { margin:0; padding-inline:4px; font-size:12px; }
+.upload-next-link {
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  min-height:30px;
+  padding:0 4px;
+  border-radius:var(--app-radius-xs);
+  color:var(--app-primary);
+  font-size:12px;
+  text-decoration:none;
 }
-
-.history-item-tag {
-  flex-shrink: 0;
-  font-size: 12px;
-  line-height: 20px;
+.upload-next-link:hover { background:var(--app-primary-soft); }
+.history-footer {
+  justify-content:flex-end;
+  flex-wrap:wrap;
+  padding-top:9px;
+  border-top:1px solid var(--app-border);
 }
+.history-footer > .el-button { margin-right:auto; }
 
-.history-item-row2 {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
-  gap: 8px;
+@container (max-width:480px) {
+  .capture-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
-
-.history-item-status {
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #5b6475;
+@media (max-width:1000px) {
+  .upload-grid { grid-template-columns:minmax(0,1fr); }
 }
-
-.history-item-status.status-error { color: #e84749; }
-.history-item-status.status-warn { color: #d48806; }
-.history-item-status.status-ok { color: #389e0d; }
-
-.history-item-time {
-  font-size: 11px;
-  color: #b0b8c4;
-  white-space: nowrap;
-  flex-shrink: 0;
+@media (max-width:500px) {
+  .upload-grid { gap:16px; }
+  .folder-picker { min-height:158px; padding:15px; }
+  .selected-folder { gap:8px; padding:9px; }
+  .selected-folder-icon { width:34px; height:34px; font-size:19px; }
+  .replace-folder { padding-inline:8px; font-size:12px; }
+  .capture-meta-form { gap:9px; }
+  .capture-json-row { padding:6px 9px; }
+  .upload-submit-row { align-items:stretch; flex-direction:column; }
+  .upload-readiness { flex:auto; }
+  .upload-action { width:100%; }
+  .history-item-time { margin-left:0; }
 }
-
-.history-item-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(15, 23, 42, 0.04);
+@media (prefers-reduced-motion:reduce) {
+  .upload-feedback-enter-active,.upload-feedback-leave-active { transition:none; }
 }
-
-.history-item-actions :deep(.el-button.is-link) {
-  padding: 0 8px;
-  font-size: 12px;
-  height: 28px;
-}
-
-@media (max-width: 900px) {
-  .upload-grid {
-    grid-template-columns: 1fr;
-  }
-}
-@media(max-width:480px) { .history-search-bar { grid-template-columns:minmax(0,1fr); }.upload-history-filter:first-child { grid-column:auto; } }
-.upload-selection-note { margin:10px 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
-.capture-read-error { flex-basis:100%; margin:8px 0 0; color:var(--app-warning); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
-.capture-read-error button, .upload-attempt-note button { display:inline-flex; align-items:center; border:0; border-radius:4px; padding:3px 0; margin-left:8px; color:var(--app-primary); background:transparent; font:inherit; cursor:pointer; }
-.upload-attempt-note { display:flex; align-items:flex-start; gap:9px; margin-top:14px; padding:13px; border-radius:9px; color:var(--app-text-secondary); background:var(--app-primary-light); font-size:12px; line-height:1.85; }
-.upload-attempt-note > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
-.upload-attempt-note > div { min-width:0; display:flex; align-items:center; flex-wrap:wrap; gap:5px 14px; }
-.upload-attempt-note button { margin:0; }
-.capture-read-error button:disabled, .upload-attempt-note button:disabled { color:var(--app-text-muted); opacity:.6; cursor:default; }
-.capture-read-error button:focus-visible, .upload-attempt-note button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 </style>

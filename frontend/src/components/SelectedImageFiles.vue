@@ -1,11 +1,13 @@
 <template>
-  <el-button class="browse-selection" plain @click="openViewer(0)">
-    <AppIcon name="Picture" :size="16" />浏览所选图片
-  </el-button>
+  <div class="selection-tools">
+    <dl class="selected-image-total"><dt>图片总大小</dt><dd :title="totalBytes===null ? undefined : totalBytes.toLocaleString('zh-CN')+' 字节'">{{ byteLabel(totalBytes) }}</dd></dl>
+    <el-button class="browse-selection" @click="openViewer(0)">
+      <AppIcon name="Picture" :size="16" />浏览所选图片
+    </el-button>
+  </div>
   <details ref="detailsElement" class="selected-image-review" @toggle="toggle">
-    <summary><AppIcon name="Picture" :size="16" /><span>核对所选图片</span><span class="selected-image-count">{{ entries.length }} 张</span><AppIcon class="selected-image-chevron" name="ArrowDown" :size="14" /></summary>
+    <summary><AppIcon name="Files" :size="16" /><span>图片清单</span><AppIcon class="selected-image-chevron" name="ArrowDown" :size="14" /></summary>
     <div v-if="opened" class="selected-image-content">
-      <dl class="selected-image-total"><dt>所选文件总大小</dt><dd :title="totalBytes===null ? undefined : totalBytes+' 字节'">{{ byteLabel(totalBytes) }}<span v-if="totalBytes!==null">（{{ totalBytes.toLocaleString('zh-CN') }} 字节）</span></dd></dl>
       <p class="selected-image-note">前 {{ previews.length }} 张缩略图 · 选择任意一张开始浏览</p>
       <div class="selected-image-previews">
         <figure v-for="preview in previews" :key="preview.key">
@@ -145,8 +147,9 @@ watch(()=>[props.files,props.scopeKey],()=>{
 onBeforeUnmount(releasePreviews)
 </script>
 <style scoped>
-.browse-selection { margin-top: 12px; }
-.browse-selection .el-icon { margin-right: 6px; }
+.selection-tools { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;margin-top:12px }
+.selected-image-total { display:flex;align-items:baseline;gap:7px;margin:0;color:var(--app-text-secondary);font-size:12px;font-variant-numeric:tabular-nums }
+.selected-image-total dd { margin:0;color:var(--app-text);font-weight:600 }
 .local-image-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .local-image-toolbar .el-select-v2 { flex: 1 1 260px; min-width: 0; max-width: 100%; }
 .local-image-view { margin: 16px 0 0; }
@@ -156,13 +159,13 @@ onBeforeUnmount(releasePreviews)
 .local-image-view figcaption { display: grid; gap: 4px; margin-top: 10px; overflow-wrap: anywhere; }
 .local-image-view figcaption span { font-size: 12px; color: var(--app-text-secondary); }
 :global(.local-image-dialog .el-dialog__body) { max-height: 70dvh; overflow-y: auto; }
-.selected-image-review{margin:14px 0 4px;padding-top:12px;border-top:1px solid var(--app-border);min-width:0}
-.selected-image-review>summary{display:flex;align-items:center;gap:7px;cursor:pointer;color:var(--app-primary);font-size:13px;line-height:1.8;list-style:none;transition:color 180ms ease}
+.selected-image-review{margin:6px 0 0;min-width:0}
+.selected-image-review>summary{display:flex;align-items:center;gap:7px;min-height:36px;cursor:pointer;color:var(--app-text-secondary);font-size:13px;line-height:1.8;list-style:none;transition:color 180ms ease}
+.selected-image-review>summary:hover,.selected-image-review[open]>summary{color:var(--app-primary)}
 .selected-image-review>summary::-webkit-details-marker{display:none}
-.selected-image-review>summary>.el-icon{flex:0 0 auto}.selected-image-count{margin-left:auto;font-size:12px;color:var(--app-text-secondary)}
-.selected-image-chevron{transition:transform 180ms ease}.selected-image-review[open]>summary .selected-image-chevron{transform:rotate(180deg)}
+.selected-image-review>summary>.el-icon{flex:0 0 auto}
+.selected-image-chevron{margin-left:auto;transition:transform 180ms ease}.selected-image-review[open]>summary .selected-image-chevron{transform:rotate(180deg)}
 .selected-image-content{padding-top:8px;min-width:0}.selected-image-note{margin:7px 0 12px;font-size:12px;line-height:1.85;color:var(--app-text-secondary);overflow-wrap:anywhere}
-.selected-image-total{margin:12px 0;display:grid;gap:4px;font-size:12px;line-height:1.85}.selected-image-total dt{color:var(--app-text-secondary)}.selected-image-total dd{margin:0;color:var(--app-text);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.selected-image-total dd span{color:var(--app-text-secondary)}
 .selected-image-previews{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 9px}.selected-image-previews figure{margin:0;min-width:0}
 .selected-image-frame{position:relative;width:100%;padding:0;cursor:pointer;aspect-ratio:4/3;display:grid;place-items:center;overflow:hidden;border-radius:6px;background:var(--app-surface-muted);border:1px solid var(--app-border)}
 .selected-image-frame:hover{border-color:var(--app-primary)}
@@ -178,6 +181,6 @@ onBeforeUnmount(releasePreviews)
 .selected-image-manifest small{font-size:12px;line-height:1.8;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--app-text-secondary)}
 .selected-image-empty{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 0;color:var(--app-text-secondary);font-size:12px;line-height:1.8}.selected-image-empty p{margin:0}.selected-image-empty button{border:0;padding:3px 0;background:transparent;color:var(--app-primary);font:inherit;cursor:pointer}
 .selected-image-review :is(summary,button):focus-visible{outline:2px solid var(--app-primary);outline-offset:3px;border-radius:3px}.selected-image-manifest:focus-visible{outline:2px solid var(--app-primary);outline-offset:-2px}
-@media(max-width:420px){.selected-image-previews{grid-template-columns:repeat(2,minmax(0,1fr))}.selected-image-count{white-space:nowrap}.local-image-stage{height:min(38vh,320px)}}
+@media(max-width:420px){.selected-image-previews{grid-template-columns:repeat(2,minmax(0,1fr))}.local-image-stage{height:min(38vh,320px)}}
 @media(prefers-reduced-motion:reduce){.selected-image-review>summary,.selected-image-chevron{transition:none}}
 </style>

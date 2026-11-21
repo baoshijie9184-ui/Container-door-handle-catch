@@ -71,19 +71,6 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .table-panel > .el-alert { margin: 14px; width: calc(100% - 28px); }
 .statistics-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 15px; background: var(--app-warning-soft); border: 1px solid #f3e1b9; border-radius: 9px; font-size: 12px; line-height: 1.8; color: var(--app-warning); }
 .statistics-notice > span { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
-.upload-format-note { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary); margin: 0 0 14px; }
-.upload-readiness { display: flex; align-items: flex-start; gap: 6px; padding: 10px 12px; border-radius: 8px; color: var(--app-warning); background: var(--app-warning-soft); font-size: 12px; line-height: 1.8; }
-.upload-readiness .el-icon { flex-shrink: 0; margin-top: 3px; }
-.upload-readiness[data-ready=true] { color: var(--app-primary); background: var(--app-primary-soft); }
-.upload-history-scope { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: space-between; font-size: 12px; color: var(--app-text-muted); margin: 12px 0; }
-#app .upload-container .history-item { border-radius: 0; border-color: var(--app-border); box-shadow: none; }
-#app .upload-container :is(.history-item-folder, .taskid-value, .upload-progress-header > span:first-child) { min-width: 0; overflow-wrap: anywhere; }
-#app .upload-container :is(.history-item-row1, .history-item-row2, .history-item-capture, .upload-progress-header) { flex-wrap: wrap; gap: 8px; }
-#app .upload-container .history-item-time { white-space: normal; font-size: 12px; }
-.upload-next-link { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px; padding: 0 8px; border-radius: 6px; color: var(--app-primary); font-size: 12px; text-decoration: none; }
-.upload-next-link:hover { color: var(--app-primary-hover); background: var(--app-primary-soft); }
-.upload-feedback-enter-active, .upload-feedback-leave-active { transition: opacity var(--app-transition-base), transform var(--app-transition-base); }
-.upload-feedback-enter-from, .upload-feedback-leave-to { opacity: 0; transform: translateY(3px); }
 .el-button { gap:6px; font-weight:550; min-height:var(--app-control-height); border-radius:7px; padding-inline:13px; }
 .el-button--small { min-height:28px; padding-inline:10px; }
 .el-button.is-link,.el-button.is-text { min-height:30px; }
