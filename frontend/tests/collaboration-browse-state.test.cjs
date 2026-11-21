@@ -211,11 +211,11 @@ test('resource shrink clears exactly A rows and owned cache while B draft, zero 
   const affectedLists=['forgetHistoryTasks','forgetQualityTasks','forgetTraceTasks']
   const lists=affectedLists.map(()=>({value:[...rows]})),draft={taskId:'B',text:'未提交内容',expectedVersion:'0',requestId:'original-b-command'},before=JSON.stringify(draft)
   let invalidated=0
-  const env={accountSession,refreshingTasks:{value:true},pollingStore:{invalidateTaskReads:()=>invalidated++},taskStore:{forgetTaskAccess}}
+  const env={accountSession,pollingStore:{invalidateTaskReads:()=>invalidated++},taskStore:{forgetTaskAccess}}
   for(const [index,name] of affectedLists.entries())env[name]=ids=>{lists[index].value=lists[index].value.filter(row=>!ids.includes(row.taskId))}
   const page=readFrontendFile('src','views','ImageDetection.vue'),pageStart=page.indexOf('function discardInaccessibleTasks('),pageEnd=page.indexOf('\nconst { latest:taskChanges }',pageStart)
   assert.ok(pageStart>0&&pageEnd>pageStart)
-  const discard=new Function('env',`const {accountSession,refreshingTasks,pollingStore,taskStore,forgetHistoryTasks,forgetQualityTasks,forgetTraceTasks}=env;let taskReadVersion=1;${page.slice(pageStart,pageEnd)};return discardInaccessibleTasks`)(env)
+  const discard=new Function('env',`const {accountSession,pollingStore,taskStore,forgetHistoryTasks,forgetQualityTasks,forgetTraceTasks}=env;${page.slice(pageStart,pageEnd)};return discardInaccessibleTasks`)(env)
   discard({requestedIds:['A','B'],missingIds:['A','not-requested'],isCurrent:()=>true})
   assert.equal(invalidated,1);assert.equal(JSON.stringify(draft),before);assert.equal(selectedTaskId.value,'B')
   for(const list of [...lists,taskList])assert.deepEqual(list.value.map(row=>row.taskId),['B','local-pending'])
@@ -226,10 +226,14 @@ test('resource shrink clears exactly A rows and owned cache while B draft, zero 
   const identity=readFrontendFile('src','utils','requestIdentity.js'),identityUrl='data:text/javascript;base64,'+Buffer.from(identity).toString('base64')
   const versionCode=readFrontendFile('src','utils','mutationVersion.js').replace("'./requestIdentity'",JSON.stringify(identityUrl))
   const {resourceVersion}=await import('data:text/javascript;base64,'+Buffer.from(versionCode).toString('base64'))
-  const predicate=page.match(/\.filter\((task=>resourceVersion\(task\)!==null)\)/)?.[1]
-  assert.ok(predicate);const known=new Function('resourceVersion',`return (${predicate})`)(resourceVersion)
-  assert.equal(known({version:0}),true);assert.equal(known({version:'0'}),true)
-  for(const row of [{},{version:null},{version:undefined},{version:''}])assert.equal(known(row),false)
+  assert.equal(resourceVersion({version:0}),'0');assert.equal(resourceVersion({version:'0'}),'0')
+  for(const row of [{},{version:null},{version:undefined},{version:''}])assert.equal(resourceVersion(row),null)
+  const selectionStart=page.indexOf('useLatestChanges(computed(() => {',pageEnd)
+  const selectionEnd=page.indexOf("}), 'DETECTION_TASK'",selectionStart)
+  assert.ok(selectionStart>0 && selectionEnd>selectionStart)
+  const select=new Function('props','activeTab','historyRecords',page.slice(page.indexOf('{',selectionStart)+1,selectionEnd))
+  assert.deepEqual(select({},{value:'workspace'},{value:rows}),[])
+  assert.deepEqual(select({},{value:'history'},{value:rows}),rows.map(({taskId,version})=>({taskId,version})))
   const saveLine=storeCode.split(/\r?\n/).find(line=>line.includes('const saveFileState ='))
   const lateSave=new Function('env',`const {accountSession,cache,taskList}=env;${saveLine};return saveFileState`)({accountSession,cache,taskList})
   assert.equal(lateSave('A',{late:true},stamp),false);assert.equal(cache.readFile('A'),null)
