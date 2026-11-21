@@ -1,6 +1,6 @@
 <template>
   <span class="business-status" :data-tone="presentation.tone" :title="presentation.label + (presentation.code ? ' · ' + presentation.code : '')">
-    <AppIcon :name="presentation.icon" :size="13" /><span>{{ presentation.label }}</span>
+    <AppIcon :name="presentation.icon" :size="13" /><span><slot>{{ presentation.label }}</slot></span>
   </span>
 </template>
 <script setup>
