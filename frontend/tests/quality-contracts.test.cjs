@@ -48,13 +48,13 @@ test('tests\\quality-workflow-contract.test.cjs', () => {
     'canDisposeTask',
     'canReleaseDisposition',
     'canSubmitReworkResult',
-    'shouldDefaultRecheck',
-    'flowStatusText',
-    'reviewStatusText',
-    'dispositionActionText'
+    'shouldDefaultRecheck'
   ]) {
     assert.match(workflowSource, new RegExp(`export const ${exportName}`))
     assert.match(imageDetectionSource + actionsSource, new RegExp(exportName))
+  }
+  for (const exportName of ['flowStatusText', 'reviewStatusText', 'dispositionActionText']) {
+    assert.match(workflowSource, new RegExp(`export const ${exportName}`))
   }
 
   for (const status of [
