@@ -1,0 +1,25 @@
+# Ubuntu 单体开发构建：使用现有 Dockerfile，宿主机无需另外安装 JDK、Maven 或 Node。
+# 从仓库根目录运行：sudo docker compose --project-directory . -f deploy/compose/compose.dev.yml --profile build build
+# 仅构建制品。本文件不启动业务和中间件、不配置端口、不运行项目测试。
+name: doorhandle-lab-dev
+
+services:
+  backend-build:
+    profiles: [build]
+    image: doorhandlecatch/backend:${APP_IMAGE_TAG:-lab-dev}
+    build:
+      context: .
+      dockerfile: deploy/backend/Dockerfile
+      args:
+        MAVEN_MIRROR_URL: ${DOORHANDLE_BUILD_MAVEN_MIRROR_URL:-https://repo.maven.apache.org/maven2}
+        UBUNTU_MIRROR: ${DOORHANDLE_BUILD_UBUNTU_MIRROR:-}
+
+  web-build:
+    profiles: [build]
+    image: doorhandlecatch/web:${APP_IMAGE_TAG:-lab-dev}
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+      args:
+        NGINX_CONFIG: deploy/nginx/nginx.monolith.conf
+        NPM_REGISTRY: ${DOORHANDLE_BUILD_NPM_REGISTRY:-https://registry.npmjs.org}
