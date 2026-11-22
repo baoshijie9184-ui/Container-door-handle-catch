@@ -109,12 +109,12 @@ class AgentScopeChatServiceImplTest {
     }
     @Test void restoredCardAnswerIsWithheldWhenTheFallbackHasNoProvenanceReader() throws Exception {
         var message=new ChatMessageResponse();message.setRole("assistant");message.setMessageType("AGENT_CARDS");
-        message.setContent(new ObjectMapper().writeValueAsString(new AgentCards.Envelope(1,"先前回答","run-old",List.of(new AgentCards.Reference("TASKS","get_task_detail",List.of("private-task-ref"),null)))));
+        message.setContent(new ObjectMapper().writeValueAsString(new AgentCards.Envelope(1,"早期业务卡片正文","run-old",List.of(new AgentCards.Reference("TASKS","get_task_detail",List.of("private-task-ref"),null)))));
         when(sessions.listMessages("alice","s1")).thenReturn(List.of(message));
-        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{assertThat(inv.getArgument(2,List.class).toString()).contains("业务事实请重新查询").doesNotContain("先前回答","private-task-ref","run-old");return new AgentConversationApi.Run(CompletableFuture.completedFuture("新的回答"),()->{});});
+        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{assertThat(inv.getArgument(2,List.class).toString()).contains("业务事实请重新查询").doesNotContain("早期业务卡片正文","private-task-ref","run-old");return new AgentConversationApi.Run(CompletableFuture.completedFuture("新的回答"),()->{});});
         when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(new ChatMessageResponse());
         service.handleUserMessage("alice",request());
-        assertThat(message.getContent()).contains("先前回答","private-task-ref");
+        assertThat(message.getContent()).contains("早期业务卡片正文","private-task-ref");
     }
     @Test void unavailableFrameworkNeverFallsBackToALegacyClient() {
         when(provider.getIfAvailable()).thenReturn(null);
