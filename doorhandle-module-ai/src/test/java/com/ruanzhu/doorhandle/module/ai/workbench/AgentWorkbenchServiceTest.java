@@ -6,6 +6,7 @@ import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
 import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
+import com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext;
 import com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactory;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
@@ -414,15 +415,25 @@ class AgentWorkbenchServiceTest {
     @Order(1)
     @Test @Timeout(120) void specialistKeepsHistoryForFollowUpAndWakesOnlyItsOwnParent()throws Exception{
         closeService(service);var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-child");var observed=new CopyOnWriteArrayList<List<Msg>>();
-        when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{observed.add(List.copyOf(inv.getArgument(0)));return Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("专业分析已完成").build())).build());});
+        var budgets=new CopyOnWriteArrayList<ModelBudgetContext>();
+        when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{
+            observed.add(List.copyOf(inv.getArgument(0)));
+            return Flux.deferContextual(context->{
+                budgets.add(context.get(ModelBudgetContext.CONTEXT_KEY));
+                return Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("专业分析已完成").build())).build());
+            });
+        });
         var toolkits=mock(BusinessToolkitFactory.class);when(toolkits.create(any(),any(),anyString())).thenAnswer(inv->new Toolkit());var roles=new RoleAgentFactory(new AgentScopeProperties(),toolkits,id->model);
         var journalSettings=new com.ruanzhu.doorhandle.module.ai.config.AgentJournalProperties();journalSettings.setEnabled(true);
         var journal=new com.ruanzhu.doorhandle.module.ai.journal.JdbcAgentJournal(store.jdbc(),new DataSourceTransactionManager(store.jdbc().getDataSource()),new ObjectMapper(),journalSettings);journal.verifySchema();
         var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(app);service=new AgentWorkbenchService(store,properties,users,provider,roles,journal);
         var main=scope("查看任务");call(main,"start_background_task","child-1",Map.of("specialist","detection-task","question","查询批次 A"));service.dispatch();
         org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(30)).until(()->item("CHILD").status().equals("COMPLETED")&&item("EXECUTION").status().equals("READY"));
-        var child=item("CHILD");service.command(alice,"s1",child.id(),child.revision(),UUID.randomUUID().toString(),"child-message",Map.of("content","再补充缺陷类型"));service.dispatch();
+        var child=item("CHILD");String firstRun=(String)child.data().get("runId");service.command(alice,"s1",child.id(),child.revision(),UUID.randomUUID().toString(),"child-message",Map.of("content","再补充缺陷类型"));service.dispatch();
         org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(30)).until(()->item("CHILD").status().equals("COMPLETED")&&Boolean.TRUE.equals(store.require(1,"s1",item("CHILD").id()).data().get("yieldReady")));
+        String secondRun=(String)item("CHILD").data().get("runId");
+        assertThat(secondRun).isNotEqualTo(firstRun);
+        assertThat(budgets).containsExactly(new ModelBudgetContext(alice,firstRun),new ModelBudgetContext(alice,secondRun));
         assertThat(observed).hasSize(2);assertThat(observed.get(1).stream().map(Msg::getTextContent).toList()).anyMatch(text->text!=null&&text.contains("查询批次 A")).anyMatch(text->text!=null&&text.contains("再补充缺陷类型"));
         var subscribed=new java.util.concurrent.atomic.AtomicBoolean();var cancelled=new java.util.concurrent.atomic.AtomicBoolean();when(model.stream(anyList(),anyList(),any())).thenReturn(Flux.<ChatResponse>never().doOnSubscribe(value->subscribed.set(true)).doOnCancel(()->cancelled.set(true)));
         child=item("CHILD");service.command(alice,"s1",child.id(),child.revision(),UUID.randomUUID().toString(),"child-message",Map.of("content","继续核对"));service.dispatch();org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(30)).untilTrue(subscribed);

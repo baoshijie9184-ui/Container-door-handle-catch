@@ -5,6 +5,7 @@ import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
 import com.ruanzhu.doorhandle.module.ai.model.AgentModelService;
+import com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.*;
 import io.agentscope.core.event.*;
@@ -276,7 +277,10 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             if(store.require(actor.userId(),session,job.id()).status().equals("CANCELLED"))throw new CancellationException();
             var context=RuntimeContext.builder().userId(Long.toString(actor.userId())).sessionId(scope.sdkSession()).build();
             scope.repairState();
-            String text=agent.call(List.of(new UserMessage((String)job.data().get("question"))),context).timeout(Duration.ofMinutes(10)).block().getTextContent();
+            var modelBudget=new ModelBudgetContext(actor,attemptRun);
+            String text=agent.call(List.of(new UserMessage((String)job.data().get("question"))),context)
+                    .contextWrite(reactorContext->reactorContext.put(ModelBudgetContext.CONTEXT_KEY,modelBudget))
+                    .timeout(Duration.ofMinutes(10)).block().getTextContent();
             scope.finish("COMPLETED",text);String settled=store.require(actor.userId(),session,job.id()).status();audit.finish(settled.equals("CANCELLED")?"CANCELLED":settled.startsWith("WAITING_")?"INTERRUPTED":"COMPLETED");
         }catch(RuntimeException error){interrupted=Thread.interrupted();org.slf4j.LoggerFactory.getLogger(getClass()).warn("专业任务未完成：item={}, errorType={}",job.id(),error.getClass().getSimpleName());if(scope!=null){if(scope.waiting())scope.checkpointStatus();else scope.finish("NEEDS_REVIEW","");}else{var current=store.require(actor.userId(),session,job.id());if(current.status().equals("RUNNING")&&Objects.equals(current.claimToken(),job.claimToken())&&current.fence()==job.fence())store.update(current,"NEEDS_REVIEW",current.data(),"CHILD_START_FAILED");}if(audit!=null)audit.finish(store.require(actor.userId(),session,job.id()).status().equals("CANCELLED")?"CANCELLED":"INTERRUPTED");}
         finally{interrupted=Thread.interrupted()||interrupted;try{if(agent!=null)agent.close();}finally{try{if(scope!=null)scope.release();}finally{releaseAttempt(job.id(),scope==null?"claim:"+job.revision():scope.runId());childSlots.release();try{wakeParent(actor,session,job.id());}catch(RuntimeException ignored){}if(interrupted)Thread.currentThread().interrupt();}}}
