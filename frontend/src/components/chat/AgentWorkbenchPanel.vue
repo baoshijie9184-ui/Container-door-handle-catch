@@ -60,6 +60,17 @@
    <template #footer><div class="file-preview-actions"><el-button @click="previewOpen=false">关闭预览</el-button><el-button v-if="canDownloadPreview" type="primary" :disabled="busy" @click="download(previewFile)"><AppIcon name="Download" :size="15" />下载原文件</el-button></div></template>
   </el-dialog>
  </section>
+ <div v-else class="agent-workbench compact-workbench">
+  <div class="wb-empty">
+   <p v-if="!sessionId">打开一个对话后即可查看任务与资料。</p>
+   <p v-else-if="state.sessionId!==sessionId||state.capabilityPending" role="status">正在读取任务与资料…</p>
+   <template v-else-if="state.capabilityError">
+    <p class="wb-error" role="alert">{{ state.capabilityError }}</p>
+    <button type="button" @click="client.open(sessionId)">重试读取</button>
+   </template>
+   <p v-else role="status">当前环境未启用任务与资料。</p>
+  </div>
+ </div>
 </template>
 <script setup>
 import {nextTick,ref,reactive,computed,watch,onBeforeUnmount} from 'vue'

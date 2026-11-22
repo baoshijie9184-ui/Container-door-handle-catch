@@ -10,7 +10,7 @@ export const useUserStore = defineStore('user', () => {
   const username = ref(hint.value || ''), role = ref('INSPECTOR'), identity = ref(null), userId = ref(null)
   const accountContext = ref(''), accountEpoch = ref(accountSession.state.epoch), accountNotice = ref(''), capabilities = ref({})
   const displayCacheAvailable = ref(hint.available), isAuthenticated = ref(false), hasCheckedAuth = ref(false)
-  let pendingCheck, checkEpoch = -1
+  let pendingCheck, checkEpoch = -1, loginPending = false
   accountSession.subscribe(state => {
     accountEpoch.value = state.epoch; accountContext.value = state.accountContext; accountNotice.value = state.reason
     isAuthenticated.value = state.authenticated
@@ -22,13 +22,14 @@ export const useUserStore = defineStore('user', () => {
     }
   })
   const clearSession = (reason = '') => { accountSession.clear(reason); hasCheckedAuth.value = true; writeAccountPreference('username', null); writeAccountPreference('role', null) }
-  const checkAuth = () => {
+  const verifySession = (expectedContext) => {
     const epoch = accountSession.state.epoch
     if (pendingCheck && checkEpoch === epoch) return pendingCheck
     checkEpoch = epoch
     const task = request.get('/api/auth/check', { headers: { 'Cache-Control': 'no-cache' } }).then(response => {
       if (accountSession.state.epoch !== epoch) return false
       const data = response.data?.data || response.data
+      if (expectedContext && data?.accountContext !== expectedContext) return false
       accountSession.accept(data, epoch); hasCheckedAuth.value = true
       if (!writeAccountPreference('username', data.username)) displayCacheAvailable.value = false
       return true
@@ -40,6 +41,8 @@ export const useUserStore = defineStore('user', () => {
     }).finally(() => { if (pendingCheck === task) pendingCheck = undefined })
     pendingCheck = task; return task
   }
+  // Before the login response arrives, the browser may still send the previous session cookie.
+  const checkAuth = () => loginPending ? Promise.resolve(false) : verifySession()
   onIdentitySignal(checkAuth)
   globalThis.addEventListener?.('doorhandle-account-recheck', checkAuth)
   globalThis.addEventListener?.('focus', checkAuth)
@@ -49,18 +52,21 @@ export const useUserStore = defineStore('user', () => {
     return Promise.reject(error)
   })
   const login = async form => {
-    clearSession()
-    const started=accountSession.stamp()
-    identityChanged()
+    if (loginPending) throw new Error('正在确认登录，请稍候')
+    loginPending = true
     try {
+      clearSession()
+      const started=accountSession.stamp()
+      identityChanged()
       const response = await request.post('/api/auth/login', form)
       accountSession.assert(started)
       if (response.data?.code !== 200) throw new Error(response.data?.message || '登录失败')
       const expectedContext=response.data?.data?.accountContext
-      if (!await checkAuth()) throw new Error('登录身份未确认，请重试')
+      if (!await verifySession(expectedContext)) throw new Error('登录身份未确认，请重试')
       if(accountSession.state.epoch!==started.epoch||expectedContext&&accountSession.state.accountContext!==expectedContext)throw new Error('登录流程已变化，请核对当前身份')
       identityChanged(); return { username: username.value }
     } catch (error) { throw new Error(loginErrorMessage(error)) }
+    finally { loginPending = false }
   }
   const logout = async () => {
     const context = accountSession.state.accountContext

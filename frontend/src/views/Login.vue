@@ -28,7 +28,7 @@
           <p id="login-remember-note" class="login-remember-note">仅记住用户名，不保存密码</p>
           <p v-if="!preferenceAvailable || !userStore.displayCacheAvailable" class="login-inline-note" role="status"><AppIcon name="Document" :size="14" />浏览器暂不能保存账号偏好，本次登录仍可继续</p>
           <el-button v-if="!loginAccepted" type="primary" :loading="loading" class="login-button" size="large" native-type="submit"><span>{{ loading ? '正在登录' : '登录系统' }}</span><AppIcon v-if="!loading" name="ArrowRight" :size="17" /></el-button>
-          <a v-else class="login-open-workspace" :href="router.resolve('/home').href" @click.prevent="reloadRoute(router, '/home')">{{ loading ? '正在打开工作空间' : '重新打开工作空间' }}<AppIcon name="ArrowRight" :size="17" /></a>
+          <a v-else class="login-open-workspace" :href="router.resolve(loginDestination).href" @click.prevent="reloadRoute(router, loginDestination)">{{ loading ? '正在打开工作空间' : '重新打开工作空间' }}<AppIcon name="ArrowRight" :size="17" /></a>
         </el-form>
         <p class="login-card-footer"><AppIcon name="Lock" :size="14" />账号权限与操作记录随登录身份生效</p>
       </div>
@@ -47,17 +47,19 @@ import BeijingClock from '@/components/BeijingClock.vue'
 import {SYSTEM_NAME, SYSTEM_SHORT_NAME, SYSTEM_TAGLINE} from '@/utils/systemBrand'
 import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue'
 import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { readAccountPreference, writeAccountPreference } from '@/utils/accountPreferences'
 import { isRouteAssetError, reloadRoute } from '@/utils/navigationFeedback'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const loading = ref(false)
 const loginError = ref('')
 const loginAccepted = ref(false)
+const loginDestination = ref('/home')
 const loginFormRef = ref(null)
 const loginErrorRef = ref(null)
 const online = ref(typeof navigator === 'undefined' || navigator.onLine !== false)
@@ -69,6 +71,11 @@ let pageActive = true
 
 function updateNetwork() { online.value = navigator.onLine !== false }
 function updateCapsLock(event) { capsLock.value = event.getModifierState?.('CapsLock') === true }
+function resolveLoginDestination(candidate) {
+  if (typeof candidate !== 'string' || !candidate.startsWith('/') || candidate.startsWith('//') || candidate.includes('\\')) return '/home'
+  const destination = router.resolve(candidate)
+  return destination.name && destination.name !== 'notFound' && destination.meta.requiresAuth ? destination.fullPath : '/home'
+}
 
 const loginForm = reactive({
   username: '',
@@ -117,6 +124,7 @@ const handleLogin = async () => {
   if (!pageActive) return
 
   try {
+    loginDestination.value = resolveLoginDestination(route.query.redirect)
     await userStore.login({ username: loginForm.username, password: loginForm.password })
     if (!pageActive) return
     loginAccepted.value = true
@@ -124,13 +132,13 @@ const handleLogin = async () => {
     preferenceAvailable.value = writeAccountPreference('rememberedUser', rememberMe.value ? loginForm.username : null)
     if (preferenceAvailable.value && userStore.displayCacheAvailable) ElMessage.success('登录成功，欢迎回来')
     else ElMessage.warning('已登录，浏览器暂不能保存账号偏好，下次可能需要重新填写用户名')
-    await router.push('/home')
+    await router.push(loginDestination.value)
   } catch (error) {
     if (!pageActive) return
     // Only this successful form submission gets one automatic recovery. A fresh
     // document restores the cookie session and never enters this handler again.
     if (loginAccepted.value && online.value && isRouteAssetError(error)) {
-      reloadRoute(router, '/home')
+      reloadRoute(router, loginDestination.value)
       return
     }
     loginError.value = loginAccepted.value ? '已登录，请重新打开工作空间。' : error.message || '登录失败，请检查账号信息或稍后重试'

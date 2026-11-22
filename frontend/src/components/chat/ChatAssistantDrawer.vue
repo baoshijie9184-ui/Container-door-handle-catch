@@ -123,6 +123,7 @@ import AgentDiagnostics from './AgentDiagnostics.vue'
 import { Operation } from '@element-plus/icons-vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
 import { observeTranscriptLayout } from '@/utils/transcriptLayout'
+import { hasForegroundDialog, keepTabInWorkspace } from '@/utils/workspaceFocus'
 
 const props = defineProps({
   fullScreen: { type: Boolean, default: false }
@@ -151,14 +152,25 @@ const closeContext=()=>{
   contextOpen.value=false
   nextTick(()=>(contextToggleRef.value||workspaceRef.value?.querySelector('.drawer-sidebar-actions .chat-menu-button'))?.focus({preventScroll:true}))
 }
+const contextElement = () => workspaceRef.value?.querySelector('#chat-workspace-context')
 const contextKey=event=>{
-  if(event.key!=='Escape')return
-  // Capture before the dialog library closes its overlay, including when a
-  // disabled PDF paging button has moved focus back to the document body.
-  if(event.target?.closest?.('[role="dialog"]')||Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).some(dialog=>dialog.getClientRects().length>0))return
-  if(contextOpen.value&&!diagnosticsVisible.value)closeContext()
+  if (!contextOpen.value || !['Escape', 'Tab'].includes(event.key)) return
+  const panel = contextElement()
+  if (!panel || diagnosticsVisible.value || hasForegroundDialog(panel, event.target)) return
+  if (event.target?.closest?.('[role="menu"], [role="listbox"], [aria-haspopup="menu"][aria-expanded="true"]')) return
+  if (event.key === 'Tab' && !contextDocked.value) keepTabInWorkspace(event, panel)
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeContext()
+  }
 }
-watch(contextOpen,async open=>{if(open){await nextTick();workspaceRef.value?.querySelector('#chat-workspace-context button')?.focus()}})
+watch(contextOpen, async open => {
+  if (!open) return
+  await nextTick()
+  const panel = contextElement()
+  if (panel && !hasForegroundDialog(panel)) panel.querySelector('button')?.focus({ preventScroll: true })
+})
 const questionItems = computed(() => buildQuestionItems(chatStore.messages))
 
 const handleLocateQuestion = (key) => {

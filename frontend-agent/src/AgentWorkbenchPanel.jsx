@@ -74,7 +74,14 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],attentionPhas
  function cancelChild(item){if(operationBusy.current)return;const generation=client.generation;confirmWorkbench({title:'取消此专业任务',content:`取消所选专业任务 ${item.id}（V${item.revision}）？已完成的业务操作不会回滚，主任务和其他专业任务状态需分别核对。`,okText:'确认取消此任务',cancelText:'保留当前状态',okButtonProps:{danger:true},onOk:()=>{if(generation!==client.generation || operationBusy.current)return;const current=client.value.items.find(row=>row.id===item.id);if(!current || current.kind!=='CHILD' || current.revision!==item.revision){setError('子任务记录已变化，请重新核对后再确认取消');return}return act(item,'cancel')}})}
  async function show(file,download=false,page=1){if(operationBusy.current)return;const version=download?previewVersion.current:++previewVersion.current;if(!download&&preview?.type==='pdf')pdfFocusPending.current=true;await run(async()=>{const generation=client.generation;if(download){const blob=await client.content(file);if(generation!==client.generation)return;const href=URL.createObjectURL(blob),link=document.createElement('a');link.href=href;link.download=file.name;link.click();setTimeout(()=>URL.revokeObjectURL(href),1000);return}const value=await readFilePreview(sessionId,file,{base:client.base,fetcher:client.fetcher,limit:client.value.limits?.previewBytes,page});if(generation!==client.generation||version!==previewVersion.current)return;if(previewUrl.current)URL.revokeObjectURL(previewUrl.current);previewUrl.current=value.kind==='text'?'':URL.createObjectURL(value.kind==='pdf'?value.blob:new Blob([value.blob],{type:file.contentType}));pdfFocusPending.current=value.kind==='pdf';setPreviewError('');setPreview({...value,type:value.kind,file,name:file.name,url:previewUrl.current})},!download)}
  async function showBusiness(file){if(operationBusy.current)return;pdfFocusPending.current=false;const version=++previewVersion.current;await run(async()=>{const generation=client.generation;const value=['image/png','image/jpeg','image/webp'].includes(file.contentType)?{type:'image',url:client.base+file.previewPath}:{type:'text',text:await boundedTextPreview(await (await client.read(file.previewPath)).blob(),client.value.limits?.previewBytes)};if(generation===client.generation&&version===previewVersion.current){setPreviewError('');setPreview({...value,file,name:file.name})}},true)}
- if(!state.enabled||state.sessionId!==sessionId)return null;
+ if(!state.enabled||state.sessionId!==sessionId)return <div className="agent-workbench compact-workbench">
+  <div className="wb-empty">
+   {!sessionId?<p>打开一个对话后即可查看任务与资料。</p>
+    :state.sessionId!==sessionId||state.capabilityPending?<p role="status">正在读取任务与资料…</p>
+    :state.capabilityError?<><p className="wb-error" role="alert">{state.capabilityError}</p><button type="button" onClick={()=>client.open(sessionId)}>重试读取</button></>
+    :<p role="status">当前环境未启用任务与资料。</p>}
+  </div>
+ </div>;
  const tabs=availableWorkbenchTabs(state.capabilities);
  const historyTabs=tabs.filter(([key])=>key!=='FILE');
  const activeHistory=historyTabs.some(([key])=>key===tab);
@@ -110,7 +117,7 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],attentionPhas
   <nav ref={workbenchTabs} className="wb-primary-views" aria-label="工作台视图">
    <button type="button" className={tab==='TASK'?'active':''} aria-pressed={tab==='TASK'} onClick={()=>setTab('TASK')}><ListChecks size={15} aria-hidden="true"/>任务</button>
    {tabs.some(([key])=>key==='FILE')&&<button type="button" className={tab==='FILE'?'active':''} aria-pressed={tab==='FILE'} onClick={()=>setTab('FILE')}><Files size={15} aria-hidden="true"/>资料</button>}
-   {!!historyTabs.length&&<Dropdown trigger={['click']} menu={{items:historyTabs.map(([key,label])=>({key,label:workbenchHistoryLabels[key]||label,icon:<WorkbenchIcon name={workbenchTabIcon(key)} size={14}/>})),onClick:({key})=>openWorkbenchView(key)}}>
+   {!!historyTabs.length&&<Dropdown autoFocus trigger={['click']} menu={{items:historyTabs.map(([key,label])=>({key,label:workbenchHistoryLabels[key]||label,icon:<WorkbenchIcon name={workbenchTabIcon(key)} size={14}/>})),onClick:({key})=>openWorkbenchView(key)}}>
     <button type="button" className={activeHistory?'active':''} aria-label="更多工作台视图" aria-pressed={activeHistory} title="更多工作台视图"><Ellipsis size={16} aria-hidden="true"/></button>
    </Dropdown>}
    <button className="wb-refresh-button" type="button" disabled={busy} aria-label="刷新工作台" title="刷新工作台" onClick={()=>client.poll()}><RefreshCw size={14} aria-hidden="true"/></button>

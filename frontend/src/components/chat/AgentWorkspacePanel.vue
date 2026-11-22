@@ -1,5 +1,5 @@
 <template>
-  <aside class="workspace-context" aria-label="Agent 工作面板" @keydown.esc.stop="$emit('close')">
+  <aside class="workspace-context" aria-label="Agent 工作面板">
     <header class="context-heading">
       <h3>任务与资料</h3>
       <button type="button" aria-label="关闭工作面板" @click="$emit('close')"><el-icon><Close /></el-icon></button>

@@ -32,7 +32,30 @@ export class AgentWorkbenchClient {
  constructor({base='',fetcher=captureWorkspaceFetch(),onState=()=>{}}={}){Object.assign(this,{base,fetcher,onState});this.generation=0;this.pending=new Map();this.busy=false;this.value={enabled:false,items:[],files:[],capabilities:{}}}
  async read(path,options={}){const response=await this.fetcher(this.base+path,{credentials:'include',cache:'no-store',...options});if(!response.ok){const error=Error(response.status===409?'状态已变化，请刷新核对；不会自动重试':response.status===403?'当前账号无法执行此操作':response.status===415?'文件格式、编码或内容无效，请核对后重新上传':response.status===429?'文件解析繁忙，请稍后重试':response.status===413?'文件大小、尺寸或存储配额超出限制':'结果尚未确认，请刷新核对；不会自动重试');error.status=response.status;throw error}return response}
  publish(value){this.value={...this.value,...value};this.onState(this.value)}
- async open(session){clearTimeout(this.timer);const generation=++this.generation;this.session=session;this.publish({sessionId:session,enabled:false,items:[],files:[],businessFiles:[],limits:null,loaded:false,loading:false,lineage:null,error:'',capabilities:{},notifications:[],recoveryModels:[],recoveryConfigVersion:0,recoveryDefault:'',recoveryModelError:'',recoveryModelsLoading:false});if(!session)return;try{const capability=await (await this.read('/api/agent/workbench/capabilities')).json();if(generation!==this.generation)return;if(capability.enabled===true){this.publish({enabled:true,capabilities:capability});await this.poll(generation);if(capability.modelConfig===true)await this.loadRecoveryModels(generation)}}catch{/* Older backend: keep its existing workspace. */}}
+ async open(session){
+  clearTimeout(this.timer)
+  const generation=++this.generation
+  this.session=session
+  this.publish({sessionId:session,enabled:false,items:[],files:[],businessFiles:[],limits:null,loaded:false,loading:false,lineage:null,error:'',capabilities:{},capabilityPending:!!session,capabilityError:'',notifications:[],recoveryModels:[],recoveryConfigVersion:0,recoveryDefault:'',recoveryModelError:'',recoveryModelsLoading:false})
+  if(!session)return
+  let capability
+  try{
+   capability=await (await this.read('/api/agent/workbench/capabilities')).json()
+   if(typeof capability?.enabled!=='boolean')throw Error('工作台能力响应无效')
+  }catch(error){
+   if(generation!==this.generation)return
+   const message=error.status===404?'':error.status===401||error.status===403
+    ?'当前无法读取任务与资料，请核对登录身份。'
+    :'任务与资料暂时无法读取，请重试。'
+   this.publish({capabilityPending:false,capabilityError:message})
+   return
+  }
+  if(generation!==this.generation)return
+  this.publish({enabled:capability.enabled,capabilities:capability,capabilityPending:false})
+  if(!capability.enabled)return
+  await this.poll(generation)
+  if(capability.modelConfig===true)await this.loadRecoveryModels(generation)
+ }
  async loadRecoveryModels(generation=this.generation){
   if(generation!==this.generation||!this.value.enabled)return
   const readVersion=this.modelReadVersion=(this.modelReadVersion||0)+1

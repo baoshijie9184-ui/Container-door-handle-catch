@@ -35,6 +35,39 @@ test('late recovery catalog cannot overwrite another session or leave its spinne
 })
 const snapshot={items:[{id,kind:'QUESTION',status:'PENDING',revision:0,data:{text:'<script>plain text</script>',questionType:'TEXT'}}],files:[],lineage:{sourceSessionId:'parent'}}
 const response=(body,ok=true,status=200)=>({ok,status,json:async()=>body})
+test('a failed capability read is distinct from disabled and can be retried without a write',async()=>{
+ const {AgentWorkbenchClient,normalizeWorkbench}=await utility
+ const requests=[]
+ let capability=response({},false,503)
+ const client=new AgentWorkbenchClient({fetcher:async(path,options)=>{
+  requests.push({path,method:options.method})
+  return path.endsWith('/capabilities')?capability:response(snapshot)
+ }})
+ try{
+  const first=client.open('mine')
+  assert.equal(client.value.capabilityPending,true)
+  await first
+  assert.equal(client.value.capabilityPending,false)
+  assert.match(client.value.capabilityError,/暂时无法读取/)
+  assert.equal(client.value.enabled,false)
+  capability=response({enabled:false})
+  await client.open('mine')
+  assert.equal(client.value.capabilityError,'')
+  assert.equal(client.value.enabled,false)
+  capability=response({enabled:true})
+  await client.open('mine')
+  assert.equal(client.value.enabled,true)
+  assert.equal(client.value.loaded,true)
+  assert.deepEqual(client.value.items,normalizeWorkbench(snapshot).items)
+  assert.deepEqual(requests.map(row=>row.path),[
+   '/api/agent/workbench/capabilities',
+   '/api/agent/workbench/capabilities',
+   '/api/agent/workbench/capabilities',
+   '/api/agent/conversations/mine/workbench'
+  ])
+  assert.ok(requests.every(row=>!row.method))
+ }finally{client.close()}
+})
 test('workbench projection validates private IDs, versions and files while preserving plain text',async()=>{const {normalizeWorkbench}=await utility;assert.equal(normalizeWorkbench(snapshot).items[0].data.text,snapshot.items[0].data.text);assert.throws(()=>normalizeWorkbench({...snapshot,items:[snapshot.items[0],snapshot.items[0]]}));assert.throws(()=>normalizeWorkbench({...snapshot,items:[{...snapshot.items[0],revision:-1}]}));assert.throws(()=>normalizeWorkbench({...snapshot,files:[{id,name:'x',bytes:-1,contentType:'text/plain'}]}))})
 test('unknown answers retain request identity and never automatically resubmit',async()=>{const {AgentWorkbenchClient}=await utility;let attempts=0;const posts=[];const client=new AgentWorkbenchClient({fetcher:async(path,options)=>{if(options.method){posts.push(JSON.parse(options.body));if(++attempts===1)throw Error('network')}return response(snapshot)}});client.session='s1';client.value.enabled=true;try{await assert.rejects(()=>client.command(snapshot.items[0],'answer',{answer:'A'}));assert.equal(posts.length,1);await client.command(snapshot.items[0],'answer',{answer:'A'});assert.equal(posts.length,2);assert.equal(posts[0].requestId,posts[1].requestId)}finally{client.close()}})
 test('late reads cannot replace the selected conversation',async()=>{const {AgentWorkbenchClient}=await utility;let release;const client=new AgentWorkbenchClient({fetcher:async path=>path.endsWith('/capabilities')?response({enabled:true}):path.includes('/old/')?new Promise(resolve=>release=()=>resolve(response(snapshot))):response({...snapshot,items:[]})});try{const old=client.open('old');await new Promise(resolve=>setImmediate(resolve));await client.open('new');release();await old;assert.equal(client.session,'new');assert.equal(client.value.items.length,0)}finally{client.close()}})

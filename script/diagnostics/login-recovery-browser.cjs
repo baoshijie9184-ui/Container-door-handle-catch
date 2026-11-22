@@ -1,17 +1,23 @@
-// Run against the review site with its two test accounts in the process environment.
+// Pass --isolated to exercise login recovery with stubbed APIs and no account writes.
+// The original review workflow uses the two accounts supplied in the process environment.
 const assert = require('node:assert/strict')
 const { chromium } = require('playwright')
 
-const base = process.env.REVIEW_BASE_URL || 'http://127.0.0.1:8081'
+const isolated = process.argv.includes('--isolated')
+const base = process.env.REVIEW_BASE_URL || (isolated ? 'http://127.0.0.1:8080' : 'http://127.0.0.1:8081')
 const headings = { SUPERVISOR: '企业质量工作台', INSPECTOR: '我的检测工作台' }
 const homeScript = /\/assets\/Home-[\w-]+\.js$/
 
 async function openLogin(context, role) {
   const page = await context.newPage()
   await page.goto(base + '/#/login')
-  await page.locator('input[name=username]').fill(process.env[role + '_USERNAME'])
-  await page.locator('input[name=password]').fill(process.env[role + '_PASSWORD'])
+  await fillLogin(page, process.env[role + '_USERNAME'], process.env[role + '_PASSWORD'])
   return page
+}
+
+async function fillLogin(page, username, password) {
+  await page.locator('input[name=username]').fill(username)
+  await page.locator('input[name=password]').fill(password)
 }
 
 async function submit(page) {
@@ -69,6 +75,69 @@ async function readDashboard(page) {
   return { annual, counts, ...snapshot }
 }
 
+async function checkIsolatedLogin(browser, entry, expectation) {
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  const identity = { username: 'fixture-local', role: 'SUPERVISOR', accountContext: 'new-session', authenticated: true }
+  let releaseLogin, releaseOldCheck
+  const mayAcknowledgeLogin = new Promise(resolve => { releaseLogin = resolve })
+  const mayCompleteOldCheck = new Promise(resolve => { releaseOldCheck = resolve })
+  let submitted = false, signedIn = false, duringLogin = 0, confirmations = 0
+  try {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/auth/login') {
+        submitted = true
+        await mayAcknowledgeLogin
+        signedIn = true
+        return route.fulfill({ json: { code: 200, data: identity } })
+      }
+      if (path === '/api/auth/check' && signedIn) {
+        confirmations++
+        return route.fulfill({ json: { code: 200, data: { ...identity, accountContext: expectation.context || identity.accountContext } } })
+      }
+      if (path === '/api/auth/check' && submitted) {
+        duringLogin++
+        await mayCompleteOldCheck
+      }
+      return route.fulfill({ status: 403, json: { code: 403 } })
+    })
+    await page.goto(base + '/#' + entry)
+    await page.waitForURL(url => url.hash.startsWith('#/login'))
+    await fillLogin(page, identity.username, 'isolated-placeholder')
+    await Promise.all([page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/auth/login'), submit(page)])
+    if (expectation.focus) {
+      await page.evaluate(() => new Promise(resolve => {
+        window.dispatchEvent(new Event('focus'))
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      }))
+    }
+    releaseLogin()
+    releaseOldCheck()
+    if (expectation.destination) {
+      await page.waitForURL(url => url.hash === '#' + expectation.destination)
+    } else {
+      await page.getByText('登录身份未确认，请重试', { exact: true }).waitFor()
+      assert.equal(new URL(page.url()).hash, '#/login')
+    }
+    assert.equal(duringLogin, 0, 'Background checks must not run before the login response')
+    assert.ok(confirmations >= 1, 'Login must verify the new cookie session')
+  } finally {
+    releaseLogin()
+    releaseOldCheck()
+    await context.close()
+  }
+}
+
+async function exerciseIsolated(browser) {
+  await checkIsolatedLogin(browser, '/agent/actions?sessionId=existing-session', {
+    destination: '/agent/actions?sessionId=existing-session', focus: true
+  })
+  await checkIsolatedLogin(browser, '/login?redirect=%2F%2Fexample.invalid%2F', { destination: '/home' })
+  await checkIsolatedLogin(browser, '/login', { context: 'previous-session' })
+  console.log('PASS fresh login verification, original protected routes, same-site fallback, and context matching')
+}
+
 async function exercise(browser) {
   const supervisorContext = await browser.newContext()
   const inspectorContext = await browser.newContext()
@@ -119,6 +188,6 @@ async function exercise(browser) {
 
 async function main() {
   const browser = await chromium.launch({ executablePath: process.env.CHROME_EXECUTABLE || undefined })
-  try { await exercise(browser) } finally { await browser.close() }
+  try { await (isolated ? exerciseIsolated(browser) : exercise(browser)) } finally { await browser.close() }
 }
 main().catch(error => { console.error(error.name + ': ' + error.message.split('\n')[0]); process.exitCode = 1 })
