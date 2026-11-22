@@ -126,7 +126,7 @@ def test_bounded_profile_changes_real_cgroups_jvm_heaps_and_keeps_source_unchang
                              for name in set(runtime.SERVICE_MEMORY_MIB) - set(runtime.TRANSIENT_SERVICE_MEMORY_MIB)}}
     bounded = runtime.bounded_config(original)
     assert original['services']['backend']['mem_limit'] == 10 * runtime.GIB
-    assert sum(v['mem_limit'] for v in bounded['services'].values()) == 9024 * runtime.MIB
+    assert sum(v['mem_limit'] for v in bounded['services'].values()) == 8896 * runtime.MIB
     assert 'chroma' not in bounded['services'] and 'bge-qdrant' not in bounded['services']
     assert bounded['services']['qdrant']['mem_limit'] == 512 * runtime.MIB
     assert all(v['mem_limit'] == v['memswap_limit'] for v in bounded['services'].values())
@@ -250,7 +250,7 @@ def transient_monitor(tmp_path, monkeypatch, *, manual=False):
     monitor = runtime.RuntimeResources(ctx); ctx.resources = monitor
     monitor.thread = SimpleNamespace(is_alive=lambda: True)
     monkeypatch.setattr(monitor, 'rows', lambda: [])
-    monitor.admit('runtime-start', runtime.GIB, {'fixed': True}, 9024 * runtime.MIB)
+    monitor.admit('runtime-start', runtime.GIB, {'fixed': True}, 8896 * runtime.MIB)
     return ctx, monitor
 
 
@@ -388,7 +388,7 @@ def staged_evidence(*, manual=False):
     def emit(active=None):
         current = probe()
         if phase[0] not in plans:
-            memory = 9024 * runtime.MIB if phase[0] == 'runtime-start' else runtime.BROWSER_MEMORY if phase[0] == 'runtime-browser' else 0
+            memory = 8896 * runtime.MIB if phase[0] == 'runtime-start' else runtime.BROWSER_MEMORY if phase[0] == 'runtime-browser' else 0
             plans[phase[0]] = runtime.phase_admission(phase[0], current, runtime.GIB, memory,
                 {'observabilityWritableGrowthEnvelopeBytes': runtime.OBSERVABILITY_GROWTH_BYTES})
         events.append({'probe': {**current, 'phase': phase[0], 'hostDiskLossUpperBoundBytes': 0,
@@ -436,7 +436,7 @@ def resource_raw(summary, events):
 def test_staged_raw_evidence_proves_each_transient_and_keeps_four_original_disk_phases(manual):
     summary, events, context, project = staged_evidence(manual=manual)
     assert runtime.validate_resource_evidence(summary, resource_raw(summary, events), context, project)['status'] == 'VERIFIED'
-    assert summary['phasePlans']['runtime-start']['memoryAdmissionBytes'] == 9024 * runtime.MIB
+    assert summary['phasePlans']['runtime-start']['memoryAdmissionBytes'] == 8896 * runtime.MIB
     assert len(summary['phases']) == 4
 
 
