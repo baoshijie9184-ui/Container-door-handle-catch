@@ -29,6 +29,8 @@ class BusinessUserDirectoryImplTest {
         var user=new User();user.setUsername("boss");user.setRole("SUPERVISOR");when(mapper.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
         assertThat(directory.current(3,"boss").supervisor()).isTrue();user.setRole("INSPECTOR");
         assertThat(directory.current(3,"boss").supervisor()).isFalse();
+        user.setEnabled(false);
+        assertThatThrownBy(()->directory.current(3,"boss")).isInstanceOf(SecurityException.class);
     }
     @Test void missingOrMismatchedIdentityIsRejected(){
         var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);

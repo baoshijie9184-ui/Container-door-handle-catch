@@ -23,9 +23,11 @@ class MemoryBridgeEmbeddingClientTest {
         var embedded = new AtomicInteger();
         List<JsonNode> requests = new CopyOnWriteArrayList<>();
         List<String> tokens = new CopyOnWriteArrayList<>();
+        var upgradeRequests = new AtomicInteger();
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/internal/embeddings", exchange -> {
             calls.incrementAndGet();
+            if (exchange.getRequestHeaders().containsKey("Upgrade")) upgradeRequests.incrementAndGet();
             var request = json.readTree(exchange.getRequestBody());
             requests.add(request);
             tokens.add(exchange.getRequestHeaders().getFirst("x-doorhandle-memory-token"));
@@ -44,6 +46,7 @@ class MemoryBridgeEmbeddingClientTest {
                 .mapToObj(i -> "知识片段-" + i + "：鹈鹕🚲\n第二行 保留原文").toList();
             var actual = client.embed(texts, new EmbeddingClient.RequestContext("SYSTEM_RAG", "doorhandlecatch:system"));
             assertThat(calls.get()).isEqualTo(3);
+            assertThat(upgradeRequests.get()).isZero();
             assertThat(requests).extracting(node -> node.path("texts").size()).containsExactly(8, 8, 1);
             assertThat(tokens).containsExactly("fixture-private-token", "fixture-private-token", "fixture-private-token");
             var transmitted = new ArrayList<String>();

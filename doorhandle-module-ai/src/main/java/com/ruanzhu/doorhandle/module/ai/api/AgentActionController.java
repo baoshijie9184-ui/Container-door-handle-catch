@@ -31,7 +31,7 @@ public class AgentActionController {
         if (!"confirm".equals(header) || body==null || !body.keySet().equals(Set.of("decision","version"))
                 || !(body.get("decision") instanceof String decision) || !(body.get("version") instanceof Number version)
                 || !Double.isFinite(version.doubleValue()) || version.doubleValue()!=version.longValue()) throw bad();
-        return actions.decide(AgentIdentity.from(auth),id,version.longValue(),decision);
+        return requireReadableDecision(actions.decide(AgentIdentity.from(auth),id,version.longValue(),decision));
     }
     @PostMapping("/{id}/cancel") public AgentActionService.View cancel(Authentication auth,@PathVariable String id,@RequestBody Map<String,Object> body,
             @RequestHeader(value="X-Agent-Action",defaultValue="") String header,
@@ -39,7 +39,11 @@ public class AgentActionController {
         trustedOrigin(origin,fetchSite);
         if (!"cancel".equals(header) || body==null || !body.keySet().equals(Set.of("version")) || !(body.get("version") instanceof Number v)
                 || !Double.isFinite(v.doubleValue()) || v.doubleValue()!=v.longValue()) throw bad();
-        return actions.decide(AgentIdentity.from(auth),id,v.longValue(),"CANCEL");
+        return requireReadableDecision(actions.decide(AgentIdentity.from(auth),id,v.longValue(),"CANCEL"));
+    }
+    private static AgentActionService.View requireReadableDecision(AgentActionService.View view) {
+        if (!view.hasReadableSnapshot()) throw new SecurityException("当前身份没有操作权限");
+        return view;
     }
     private static ResponseStatusException bad() {return new ResponseStatusException(HttpStatus.BAD_REQUEST,"确认请求只允许决策、版本及指定请求头");}
     private void trustedOrigin(String origin,String fetchSite) {

@@ -36,6 +36,10 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     public AgentJournalMiddleware withEvolution(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=service;next.mcp=mcp;next.detectionRetry=detectionRetry;next.detectionCreation=detectionCreation;return next;}
     public AgentJournalMiddleware withMcp(com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=evolution;next.mcp=service;next.detectionRetry=detectionRetry;next.detectionCreation=detectionCreation;return next;}
     public String runId() { return run.id(); }
+    public void recordToolAccessDenied(String agent) {
+        run.event("AUTHORIZATION_DENIED", Map.of("agent", agent, "decision", "DENY",
+                "scope", "CURRENT_ACCOUNT", "policyVersion", "agent-tool-access-v1"));
+    }
     public void recordContext(String type,Map<String,Object> metadata){var payload=fields((String)metadata.get("agent"));payload.putAll(metadata);run.event(type,payload);}
     private Map<String,Object> fields(String agent) {
         var result=new LinkedHashMap<String,Object>();result.put("agent",agent);

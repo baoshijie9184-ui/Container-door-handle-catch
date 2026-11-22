@@ -6,10 +6,12 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceCaptureAlert;
 import com.ruanzhu.doorhandle.module.device.mapper.*;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import com.ruanzhu.doorhandle.module.device.service.EmployeeService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -20,9 +22,13 @@ import static org.mockito.Mockito.*;
 class ResourceAgentAlertApiTest {
     final DeviceCaptureAlertMapper mapper=mock(DeviceCaptureAlertMapper.class);
     final DeviceMapper devices=mock(DeviceMapper.class);
-    final ResourceAgentReadApiImpl api=new ResourceAgentReadApiImpl(devices,mapper,mock(EmployeeService.class));
+    final BusinessUserDirectory accounts=mock(BusinessUserDirectory.class);
+    final ResourceAgentReadApiImpl api=new ResourceAgentReadApiImpl(devices,mapper,mock(EmployeeService.class),accounts);
     final AgentActor boss=new AgentActor(1,"boss",AgentActor.Role.SUPERVISOR);
     @BeforeAll static void metadata(){TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(),"alert-test"),DeviceCaptureAlert.class);}
+    @BeforeEach void currentAccount() {
+        when(accounts.current(1, "boss")).thenReturn(new BusinessUserDirectory.Identity(1, "boss", true));
+    }
     DeviceCaptureAlert row(long id){
         var row=new DeviceCaptureAlert();row.setId(id);row.setAlertId("ALERT-CODE-"+id);row.setDeviceId(9L);row.setDeviceCode("LINE-A");
         row.setAlertType("CAPTURE_EXCEPTION");row.setAlertLevel("MAJOR");row.setStatus("OPEN");

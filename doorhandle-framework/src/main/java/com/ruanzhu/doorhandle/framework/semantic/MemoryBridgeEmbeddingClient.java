@@ -33,7 +33,8 @@ public final class MemoryBridgeEmbeddingClient implements EmbeddingClient {
                 ||base.getUserInfo()!=null||base.getQuery()!=null||base.getFragment()!=null)
             throw new IllegalArgumentException("Invalid internal embedding endpoint");
         endpoint=URI.create(serviceUrl.replaceAll("/+$","")+"/internal/embeddings");
-        client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
+        // Uvicorn's internal port serves HTTP/1.1 and does not accept an h2c upgrade.
+        client=HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
     }
 

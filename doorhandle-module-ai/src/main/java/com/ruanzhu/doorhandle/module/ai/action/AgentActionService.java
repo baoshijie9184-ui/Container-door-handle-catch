@@ -49,6 +49,9 @@ public class AgentActionService {
                     String reasonCode,LocalDateTime createdAt,LocalDateTime expiresAt,DetectionExecutionApi.RetryPreview retry,DetectionExecutionApi.Receipt execution) {
             this(actionId,runId,sessionId,operation,status,version,command,before,result,reasonCode,createdAt,expiresAt,retry,execution,null,null);
         }
+        public boolean hasReadableSnapshot() {
+            return command!=null||retry!=null||creation!=null;
+        }
     }
     public record Audit(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt,String clockStatus,Map<String,String> sourceWallTimes) {
         public Audit(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt){this(id,eventType,actorRole,result,reasonCode,occurredAt,null,null);}
@@ -170,17 +173,22 @@ public class AgentActionService {
     }
     public View get(AgentActor actor,String id) {
         requireEnabled();validateId(id);
-        return tx.execute(ignored->{var action=expire(actor,load(actor,id,true));
-            if(action.view().retry()!=null){
-                if(detection==null)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"检测执行功能尚未启用");
-                detection.assertReadable(actor,action.view().retry().taskId());
-            }
-            if(action.view().creation()!=null){
-                if(creation==null)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"会话图片创建检测尚未启用");
-                creation.assertReadable(actor,action.view().creation());action=reconcileCreation(actor,action);
-            }
-            return action.view();
+        return tx.execute(ignored->{
+            var action=expire(actor,load(actor,id,true));
+            assertReadable(actor,action.view());
+            return action.view().creation()==null?action.view():reconcileCreation(actor,action).view();
         });
+    }
+    private void assertReadable(AgentActor actor,View view) {
+        if (view.retry()!=null) {
+            if(detection==null)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"检测执行功能尚未启用");
+            detection.assertReadable(actor,view.retry().taskId());
+        } else if (view.creation()!=null) {
+            if(creation==null)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"会话图片创建检测尚未启用");
+            creation.assertReadable(actor,view.creation());
+        } else {
+            actor.requireSupervisor();
+        }
     }
     public List<Audit> audit(AgentActor actor,String id) {
         get(actor,id);
@@ -189,7 +197,7 @@ public class AgentActionService {
     public View decide(AgentActor actor,String id,long expectedVersion,String decision) {
         requireEnabled();validateId(id);
         if (expectedVersion<1 || !Set.of("APPROVE","REJECT","CANCEL").contains(Objects.toString(decision,""))) throw bad("确认决策或版本不正确");
-        return tx.execute(ignored->{
+        var resultView=tx.execute(ignored->{
             // 与提议一致采用 run -> action -> resource 的锁顺序，取消先提交时拒绝执行。
             var initial=load(actor,id,false);
             if(initial.clock()!=null)throw conflict("历史确认时钟待核对，不能重新执行或决策");
@@ -197,7 +205,10 @@ public class AgentActionService {
             var action=expire(actor,load(actor,id,true));
             if (!"PENDING".equals(action.view().status())) {if(action.view().creation()!=null)return reconcileCreation(actor,action).view();return action.view();}
             if (action.view().version()!=expectedVersion) throw conflict("操作版本已变化，请刷新卡片");
-            if (!"APPROVE".equals(decision)) return close(actor,action,"REJECT".equals(decision)?"REJECTED":"CANCELLED","USER_"+decision,"CONFIRMATION_DECIDED").view();
+            if (!"APPROVE".equals(decision)) {
+                assertReadable(actor,action.view());
+                return close(actor,action,"REJECT".equals(decision)?"REJECTED":"CANCELLED","USER_"+decision,"CONFIRMATION_DECIDED").view();
+            }
             if("RETRY_DETECTION".equals(action.view().operation()))return approveRetry(actor,action,origin);
             if("CREATE_DETECTION".equals(action.view().operation()))return approveCreation(actor,action,origin);
             if (!actor.supervisor()) return close(actor,action,"INVALIDATED","ROLE_REVOKED","AUTHORIZATION_DENIED").view();
@@ -221,6 +232,18 @@ public class AgentActionService {
             audit(actor,action,"BUSINESS_CHANGED","SUCCEEDED",null);
             return close(actor,action,"SUCCEEDED",null,"TOOL_EXECUTION_COMPLETED").view();
         });
+        // Authorization failures can close the proposal, but cannot return its resource snapshot.
+        if ("ROLE_REVOKED".equals(resultView.reasonCode())) return withoutSnapshot(resultView);
+        try {
+            assertReadable(actor,resultView);
+            return resultView;
+        } catch (SecurityException|DetectionExecutionApi.ResourceChanged denied) {
+            return withoutSnapshot(resultView);
+        }
+    }
+    private static View withoutSnapshot(View view) {
+        return new View(view.actionId(),null,null,view.operation(),view.status(),view.version(),
+                null,null,null,view.reasonCode(),null,null);
     }
     private View approveCreation(AgentActor actor,Stored action,List<Map<String,Object>> origin){
         if(!creationEnabled())throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"会话图片创建检测尚未启用");

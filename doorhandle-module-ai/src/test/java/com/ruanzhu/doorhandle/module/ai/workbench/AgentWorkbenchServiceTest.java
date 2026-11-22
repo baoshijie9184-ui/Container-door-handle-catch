@@ -189,7 +189,7 @@ class AgentWorkbenchServiceTest {
     }
     @Test void planContinuationKeepsCapturedModelVersionAfterAnAdministratorPublishes(){
         var configuration=versionedModels();when(configuration.active()).thenReturn(new ModelConfigurationApi.Active(7,"dashscope:old","dashscope:memory"));
-        var original=scope("分析任务并生成报告");assertThat(original.modelConfigVersion()).isEqualTo(7);assertThat(original.modelId("fallback")).isEqualTo("dashscope:old");
+        var original=scope("/plan 分析任务并生成报告");assertThat(original.modelConfigVersion()).isEqualTo(7);assertThat(original.modelId("fallback")).isEqualTo("dashscope:old");
         call(original,"submit_plan","version-plan",Map.of("title","分析计划","text","先查询再汇总"));
         when(configuration.active()).thenReturn(new ModelConfigurationApi.Active(8,"deepseek:new","dashscope:memory"));
         var plan=item("PLAN");service.command(alice,"s1",plan.id(),plan.revision(),"approve-version-plan","approve-plan",Map.of());
@@ -238,7 +238,7 @@ class AgentWorkbenchServiceTest {
         assertThat(preferences.modelSelection(bob,"bob-1").modelId()).isEqualTo("dashscope:max");
     }
     @Test void unapprovedPlanDoesNotAdvertiseProfessionalOrArtifactTools(){
-        var scope=scope("查询任务，不修改或审批");var toolkit=new Toolkit();
+        var scope=scope("/plan 查询任务，不修改或审批");var toolkit=new Toolkit();
         var delegate=mock(AgentTool.class);when(delegate.getName()).thenReturn("delegate_detection_quality");toolkit.registerAgentTool(delegate);scope.install(toolkit);
         assertThat(toolkit.getToolNames()).contains("submit_plan","read_workspace_file").doesNotContain("delegate_detection_quality","start_background_task","create_artifact");
         assertThat(scope.prompt()).contains("第一步调用 submit_plan");
@@ -260,7 +260,7 @@ class AgentWorkbenchServiceTest {
             assertThat(org.springframework.aop.support.AopUtils.isCglibProxy(store)).isTrue();
             var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(app);var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);
             closeService(service);service=new AgentWorkbenchService(store,properties,users,provider,factory,journal);service.validate();
-            var scope=scope("分析任务并生成文件");call(scope,"submit_plan","proxy-plan",Map.of("title","代理环境计划","text","先审阅再执行"));
+            var scope=scope("/plan 分析任务并生成文件");call(scope,"submit_plan","proxy-plan",Map.of("title","代理环境计划","text","先审阅再执行"));
             assertThat(item("PLAN").status()).isEqualTo("PENDING");
             var sdk=new JdbcWorkbenchStateStore(store);var state=AgentState.builder().userId("1").sessionId("proxy-sdk").context(List.of(new UserMessage("persistent"))).build();
             assertThat(sdk.saveIfVersion("1","proxy-sdk","agent_state",state,0)).isEqualTo(1);
@@ -268,11 +268,43 @@ class AgentWorkbenchServiceTest {
             service.recoverStale();
         }
     }
-    @Test void onlyClearReadQueriesBypassPlanReviewAndCombinedOrArtifactRequestsDoNot(){assertThat(AgentWorkbenchService.simple("查看本人报告")).isTrue();assertThat(AgentWorkbenchService.simple("查询任务并导出 CSV")).isFalse();assertThat(AgentWorkbenchService.simple("列出任务然后分配质检")).isFalse();assertThat(AgentWorkbenchService.simple("请处理这个批次")).isFalse();assertThat(AgentWorkbenchService.simple("/plan 查看任务")).isFalse();}
+    @Test void ordinaryRequestsKeepAuthorizedToolsWithoutCreatingPlanWaits(){
+        assertThat(AgentWorkbenchService.requestsPlan("  /plan\t查看任务")).isTrue();
+        assertThat(AgentWorkbenchService.requestsPlan("/plan")).isTrue();
+        assertThat(AgentWorkbenchService.requestsPlan("/planner 查看任务")).isFalse();
+        assertThat(AgentWorkbenchService.requestsPlan("查看 /plan 的用法")).isFalse();
+
+        var scope=scope("请查询任务当前状态并汇总图片数量");
+        var toolkit=new Toolkit();
+        var delegate=mock(AgentTool.class);
+        when(delegate.getName()).thenReturn("delegate_detection_task");
+        when(delegate.isReadOnly()).thenReturn(true);
+        toolkit.registerAgentTool(delegate);
+        scope.install(toolkit);
+
+        assertThat(toolkit.getToolNames()).contains("delegate_detection_task","ask_user_question","update_task_list")
+                .doesNotContain("submit_plan");
+        assertThat(scope.resolveReply("直接返回查询结果")).isEqualTo("直接返回查询结果");
+        assertThat(scope.waiting()).isFalse();
+        var input=Map.<String,Object>of("question","查询已授权的任务");
+        var call=ToolCallParam.builder().toolUseBlock(new ToolUseBlock("read-task",delegate.getName(),input)).input(input).build();
+        assertThat(toolkit.getTool(delegate.getName()).callAsync(call).block()).isNotNull();
+        assertThat(service.waitingPhase(alice,"s1")).isEqualTo("WAITING_CHILD");
+        assertThat(item("CHILD").status()).isEqualTo("QUEUED");
+        assertThat(service.list(alice,"s1")).noneMatch(row->row.kind().equals("PLAN"));
+        commitBoundary(scope);
+        scope.release();
+    }
     AgentWorkbenchApi.Item item(String kind){return service.list(alice,"s1").stream().filter(value->value.kind().equals(kind)).findFirst().orElseThrow();}
     ToolResultBlock call(AgentWorkbenchService.Scope scope,String tool,String id,Map<String,Object> input){var toolkit=new Toolkit();scope.install(toolkit);var result=toolkit.getTool(tool).callAsync(ToolCallParam.builder().toolUseBlock(new ToolUseBlock(id,tool,input)).input(input).build()).block();if(scope.waiting()){commitBoundary(scope);scope.release();}return result;}
     @Test void planApprovalIsVersionedIdempotentAndDoesNotGrantBusinessAuthority(){
-        var scope=scope("分析检测情况并生成报告");call(scope,"submit_plan","plan-1",Map.of("title","分析计划","text","先查询再汇总"));
+        var scope=scope("分析检测情况并生成报告");
+        // The previous policy could require a plan for requests without the slash command.
+        var historical=store.require(1,"s1",item("EXECUTION").id());
+        var data=new LinkedHashMap<>(historical.data());
+        data.put("planRequired",true);
+        store.update(historical,"RUNNING",data,"RESTORE_LEGACY_PLAN_POLICY");
+        call(scope,"submit_plan","plan-1",Map.of("title","分析计划","text","先查询再汇总"));
         assertThat(service.waitingPhase(alice,"s1")).isEqualTo("WAITING_PLAN");var plan=item("PLAN");String request=UUID.randomUUID().toString();
         var approved=service.command(alice,"s1",plan.id(),plan.revision(),request,"approve-plan",Map.of());assertThat(approved.status()).isEqualTo("APPROVED");
         assertThat(service.command(alice,"s1",plan.id(),plan.revision(),request,"approve-plan",Map.of())).isEqualTo(approved);
@@ -388,7 +420,7 @@ class AgentWorkbenchServiceTest {
         var runtimeProperties=new AgentScopeProperties();runtimeProperties.setWorkspace(workspace.toString());var toolkits=mock(BusinessToolkitFactory.class);var roles=new RoleAgentFactory(runtimeProperties,toolkits,id->model);
         var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);when(journal.begin(any(),anyString(),anyString(),anyString(),anyString(),anyString())).thenAnswer(inv->{var run=mock(AgentJournal.Run.class);when(run.id()).thenReturn(UUID.randomUUID().toString());return run;});
         var facade=new com.ruanzhu.doorhandle.module.ai.service.AgentScopeConversationService(roles,new AgentRunRegistry(),runtimeProperties,journal);facade.setWorkbench(service);
-        var first=facade.start(alice,"s1",List.of(new AgentConversationApi.Message("user","分析检测情况并生成报告")),"",event->{});
+        var first=facade.start(alice,"s1",List.of(new AgentConversationApi.Message("user","/plan 分析检测情况并生成报告")),"",event->{});
         assertThat(first.result().get(30,TimeUnit.SECONDS)).contains("计划已保存");org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).until(()->Boolean.TRUE.equals(store.require(1,"s1",item("EXECUTION").id()).data().get("yieldReady")));
         var plan=item("PLAN");String originalTask=(String)store.require(1,"s1",item("EXECUTION").id()).data().get("logicalTaskId");service.command(alice,"s1",plan.id(),plan.revision(),UUID.randomUUID().toString(),"approve-plan",Map.of());
         var second=facade.start(alice,"s1",List.of(new AgentConversationApi.Message("user","按已批准的计划继续")),"",event->{});assertThat(second.result().get(30,TimeUnit.SECONDS)).isEqualTo("已按计划完成分析");assertThat(calls.get()).isEqualTo(2);assertThat(store.require(1,"s1",item("EXECUTION").id()).data().get("logicalTaskId")).isEqualTo(originalTask);

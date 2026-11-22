@@ -34,4 +34,5 @@ public interface AgentConversationApi {
     Status status();
     default int maxRunSeconds() { return 180; }
     default void checkRequest(AgentActor actor, String entryPoint, String requestId) {}
+    default boolean requestsCredentialRead(String content) { return false; }
 }

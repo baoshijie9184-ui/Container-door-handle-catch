@@ -7,6 +7,7 @@ import com.ruanzhu.doorhandle.module.device.entity.Employee;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.agent.ResourceAgentReadApi;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceCaptureAlert;
@@ -23,16 +24,19 @@ public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
     private final DeviceMapper mapper;
     private final DeviceCaptureAlertMapper alerts;
     private final EmployeeService employees;
+    private final BusinessUserDirectory accounts;
 
-    public ResourceAgentReadApiImpl(DeviceMapper mapper, DeviceCaptureAlertMapper alerts, EmployeeService employees) {
+    public ResourceAgentReadApiImpl(DeviceMapper mapper, DeviceCaptureAlertMapper alerts, EmployeeService employees,
+                                    BusinessUserDirectory accounts) {
         this.mapper = mapper;
         this.alerts = alerts;
         this.employees = employees;
+        this.accounts = accounts;
     }
 
     @Override
     public EmployeeCounts employeeCounts(AgentActor actor) {
-        Objects.requireNonNull(actor, "需要已认证的账号");
+        requireCurrentAccount(actor);
         Map<String, Object> stats = employees.getEmployeeStats();
         return new EmployeeCounts(count(stats, "total"), count(stats, "active"),
                 count(stats, "vacation"), count(stats, "resigned"));
@@ -40,7 +44,7 @@ public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
 
     @Override
     public EmployeeMatches employeesByName(AgentActor actor, String name, int page) {
-        Objects.requireNonNull(actor, "需要已认证的账号");
+        requireCurrentAccount(actor);
         String query = name == null ? "" : name.strip();
         if (query.isBlank() || query.codePointCount(0, query.length()) > 50 || query.codePoints().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("请提供有效的人员姓名");
@@ -66,18 +70,18 @@ public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
 
     @Override
     public List<DeviceView> devices(AgentActor actor, int page, int size) {
-        actor.requireSupervisor();
+        requireSupervisor(actor);
         if (page < 1 || page > 10000 || size < 1 || size > 100) throw new IllegalArgumentException("分页参数超出范围");
-        return mapper.selectList(new LambdaQueryWrapper<Device>().orderByAsc(Device::getId)
+        return mapper.selectList(deviceSummaryColumns().orderByAsc("id")
                         .last("LIMIT " + size + " OFFSET " + ((page - 1) * size)))
                 .stream().map(this::view).toList();
     }
 
     @Override
     public DeviceView device(AgentActor actor, long deviceId) {
-        actor.requireSupervisor();
+        requireSupervisor(actor);
         if (deviceId < 1) throw new IllegalArgumentException("设备 ID 不合法");
-        Device device = mapper.selectById(deviceId);
+        Device device = mapper.selectOne(deviceSummaryColumns().eq("id", deviceId));
         if (device == null) throw new BusinessException(404, "设备不存在");
         return view(device);
     }
@@ -87,9 +91,14 @@ public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
                 d.getPlcStatus(), d.getCameraStatus(), d.getCaptureStatus());
     }
 
+    private QueryWrapper<Device> deviceSummaryColumns() {
+        return new QueryWrapper<Device>().select("id", "device_code", "status", "online_status",
+                "plc_status", "camera_status", "capture_status");
+    }
+
     @Override
     public AlertPage alerts(AgentActor actor, AlertQuery query) {
-        actor.requireSupervisor();
+        requireSupervisor(actor);
         Objects.requireNonNull(query, "缺少查询参数");
         var wrapper = alertSummaryColumns();
         if (!query.status().equals("ALL")) wrapper.eq(DeviceCaptureAlert::getStatus, query.status());
@@ -104,7 +113,7 @@ public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
 
     @Override
     public AlertView alert(AgentActor actor, long alertId) {
-        actor.requireSupervisor();
+        requireSupervisor(actor);
         if (alertId < 1) throw new IllegalArgumentException("告警 ID 不合法");
         var alert = alerts.selectOne(alertSummaryColumns().eq(DeviceCaptureAlert::getId, alertId));
         if (alert == null) throw new BusinessException(404, "告警不存在");
@@ -120,5 +129,19 @@ public class ResourceAgentReadApiImpl implements ResourceAgentReadApi {
     private AlertView alertView(DeviceCaptureAlert alert) {
         return new AlertView(alert.getId().toString(), alert.getAlertId(), Objects.toString(alert.getDeviceId(), null),
                 alert.getDeviceCode(), alert.getAlertType(), alert.getAlertLevel(), alert.getStatus(), alert.getCreatedAt(), alert.getUpdatedAt());
+    }
+
+    private void requireSupervisor(AgentActor actor) {
+        Objects.requireNonNull(actor, "需要已认证的账号").requireSupervisor();
+        if (!requireCurrentAccount(actor).supervisor()) throw new SecurityException("此工具仅对检测主管开放");
+    }
+
+    private BusinessUserDirectory.Identity requireCurrentAccount(AgentActor actor) {
+        Objects.requireNonNull(actor, "需要已认证的账号");
+        var current = accounts.current(actor.userId(), actor.username());
+        if (current.userId() != actor.userId() || !current.username().equals(actor.username())) {
+            throw new SecurityException("当前账号身份已失效");
+        }
+        return current;
     }
 }

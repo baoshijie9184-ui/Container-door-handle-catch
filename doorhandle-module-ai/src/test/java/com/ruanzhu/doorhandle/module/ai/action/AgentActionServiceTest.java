@@ -82,7 +82,16 @@ class AgentActionServiceTest {
     @Test void staffCannotProposeAndRevokedRoleInvalidatesPending(){
         assertThatThrownBy(()->actions.propose(employee,"run-1",null,command)).isInstanceOf(SecurityException.class);
         var a=propose();var revoked=new AgentActor(boss.userId(),boss.username(),AgentActor.Role.INSPECTOR);
-        assertThat(actions.decide(revoked,a.actionId(),1,"APPROVE").reasonCode()).isEqualTo("ROLE_REVOKED");assertThat(writes()).isZero();
+        assertThat(actions.list(revoked,null,null,10)).isEmpty();
+        assertThatThrownBy(()->actions.get(revoked,a.actionId())).isInstanceOf(SecurityException.class);
+        assertThatThrownBy(()->actions.audit(revoked,a.actionId())).isInstanceOf(SecurityException.class);
+        var denied=actions.decide(revoked,a.actionId(),1,"APPROVE");
+        assertThat(denied.status()).isEqualTo("INVALIDATED");
+        assertThat(denied.reasonCode()).isEqualTo("ROLE_REVOKED");
+        assertThat(denied.hasReadableSnapshot()).isFalse();
+        assertThat(denied.before()).isNull();
+        assertThat(actions.get(boss,a.actionId()).status()).isEqualTo("INVALIDATED");
+        assertThat(writes()).isZero();
     }
     @Test void proposalIdempotencyAndChangedParametersInvalidateOldDraft(){
         var a=propose();assertThat(propose().actionId()).isEqualTo(a.actionId());
@@ -212,6 +221,22 @@ class AgentActionServiceTest {
         assertThatThrownBy(()->actions.get(boss,pending.actionId())).isInstanceOf(SecurityException.class);
         assertThat(actions.list(boss,null,null,50)).isEmpty();
         assertThatThrownBy(()->actions.audit(boss,pending.actionId())).isInstanceOf(SecurityException.class);assertThat(writes()).isZero();
+        assertThatThrownBy(()->actions.decide(boss,pending.actionId(),1,"CANCEL")).isInstanceOf(SecurityException.class);
+        assertThat(jdbc.queryForObject("SELECT status FROM workflow_instance WHERE kind='AGENT_ACTION' AND request_id=?",String.class,pending.actionId())).isEqualTo("PENDING");
+    }
+    @Test void successfulRetryReplayHidesItsSourceAndResultAfterReadAccessIsRevoked(){
+        var execution=retryFixture();
+        var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE").execution()).isNotNull();
+        doThrow(new SecurityException("access revoked")).when(execution).assertReadable(boss,"task-1");
+
+        var replay=actions.decide(boss,pending.actionId(),1,"APPROVE");
+
+        assertThat(replay.status()).isEqualTo("SUCCEEDED");
+        assertThat(replay.hasReadableSnapshot()).isFalse();
+        assertThat(replay.execution()).isNull();
+        assertThat(writes()).isEqualTo(1);
+        verify(execution,times(1)).retry(any(),anyString(),anyString(),any());
     }
     @Test void simultaneousRetryApprovalsProduceOneWrite() throws Exception {
         retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
@@ -244,5 +269,10 @@ class AgentActionServiceTest {
         assertThat(actions.get(boss,pending.actionId()).status()).isEqualTo("SUCCEEDED");assertThat(writes()).isEqualTo(1);
         verify(creation,times(1)).reserve(any(),eq(pending.actionId()),eq(pending.actionId()),eq(preview));
         assertThat(actions.audit(boss,pending.actionId())).extracting(AgentActionService.Audit::eventType).contains("TOOL_EXECUTION_UNCONFIRMED","TOOL_EXECUTION_COMPLETED");
+        doThrow(new DetectionExecutionApi.ResourceChanged()).when(creation).assertReadable(boss,preview);
+        var hidden=actions.decide(boss,pending.actionId(),1,"APPROVE");
+        assertThat(hidden.hasReadableSnapshot()).isFalse();
+        assertThat(hidden.creationResult()).isNull();
+        assertThat(writes()).isEqualTo(1);
     }
 }

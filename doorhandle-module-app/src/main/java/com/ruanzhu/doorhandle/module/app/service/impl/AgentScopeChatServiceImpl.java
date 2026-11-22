@@ -167,10 +167,12 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             for (var message : textHistory.subList(Math.max(0, textHistory.size() - keep), textHistory.size()))
                 history.add(new AgentConversationApi.Message(message.getRole(), message.getContent()));
             history.add(new AgentConversationApi.Message("user", request.getContent()));
-            output.accept(ChatStreamEvent.status(sessionId, "AgentScope 正在检索并处理问题"));
+            boolean credentialRead = api.requestsCredentialRead(request.getContent());
             boolean command=request.getContent().stripLeading().startsWith("/");
-            String context = command?"":Objects.toString(knowledge.retrieveContext(request.getContent(),new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(actor.userId(),actor.username(),false)), "");
-            if(!command){var memories = memory.searchAccountMemories(tenant, sessionId, request.getContent(), 10);
+            boolean usePrivateContext = !command && !credentialRead;
+            if (!credentialRead) output.accept(ChatStreamEvent.status(sessionId, "AgentScope 正在检索并处理问题"));
+            String context = usePrivateContext ? Objects.toString(knowledge.retrieveContext(request.getContent(),new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(actor.userId(),actor.username(),false)), "") : "";
+            if(usePrivateContext){var memories = memory.searchAccountMemories(tenant, sessionId, request.getContent(), 10);
                 if (memories != null && !memories.isEmpty()) {
                     String personal=Objects.toString(memory.formatMemoriesAsContext(memories),"");
                     if(personal.length()>2000)personal=personal.substring(0,2000);
@@ -192,7 +194,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                     : api.start(actor, sessionId, history, context, consume, "AGUI", requestId);
             holder.set(run); if (run.runId() != null) runId = run.runId(); if (disconnected.get()) run.cancel().run();
             if (disconnected.get()) throw new CancellationException();
-            sessions.appendUserMessage(tenant, sessionId, request.getContent());
+            sessions.appendUserMessage(tenant, sessionId, credentialRead ? "请求读取受保护的凭据" : request.getContent());
             String reply = run.result().get(Math.max(185,api.maxRunSeconds()+5), TimeUnit.SECONDS);
             if (disconnected.get()) throw new CancellationException();
             var cards = run.cards().get();
@@ -209,7 +211,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             try {
                 // Personal facts come from the user's message. Generated answers and retrieved
                 // business context must not become assertions attributed to the user.
-                if(!command)memory.addMemoryAsync(tenant, sessionId, request.getContent(),
+                if(usePrivateContext)memory.addMemoryAsync(tenant, sessionId, request.getContent(),
                         Map.of("source", "agentscope-chat", "timestamp", System.currentTimeMillis(),"turn_id",saved.getId()!=null?saved.getId():run.runId()));
             } catch (RuntimeException error) { log.warn("对话记忆保存失败：errorType={}", error.getClass().getSimpleName()); }
             state = "COMPLETED";

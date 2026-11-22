@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.ai.api;
 
+import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.module.ai.action.AgentActionService;
 import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
 import org.junit.jupiter.api.Test;
@@ -27,5 +28,23 @@ class AgentActionControllerTest {
             mvc.perform(post("/api/agent/actions/action-1/confirm").header(header,header.equals("Origin")?"https://foreign.invalid":"cross-site")
                     .header("X-Agent-Action","confirm").contentType("application/json").content("{\"decision\":\"APPROVE\",\"version\":1}")).andExpect(status().isForbidden());
         verifyNoInteractions(service);
+    }
+    @Test void confirmationCannotReturnAnUnreadableSnapshot() throws Exception {
+        var service=mock(AgentActionService.class);
+        var mvc=MockMvcBuilders.standaloneSetup(new AgentActionController(service)).build();
+        var roles=List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"));
+        var auth=new UsernamePasswordAuthenticationToken(new TenantPrincipal(1L,"former-supervisor","",roles),null,roles);
+        var actor=new AgentActor(1L,"former-supervisor",AgentActor.Role.INSPECTOR);
+        when(service.decide(actor,"action-1",1,"APPROVE")).thenReturn(new AgentActionService.View(
+                "action-1",null,null,"ASSIGN_QUALITY_TASK","INVALIDATED",2,
+                null,null,null,"ROLE_REVOKED",null,null));
+
+        mvc.perform(post("/api/agent/actions/action-1/confirm").principal(auth)
+                .header("X-Agent-Action","confirm").contentType("application/json")
+                .content("{\"decision\":\"APPROVE\",\"version\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.reasonCode").doesNotExist())
+                .andExpect(jsonPath("$.command").doesNotExist());
+        verify(service).decide(actor,"action-1",1,"APPROVE");
     }
 }

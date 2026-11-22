@@ -49,7 +49,8 @@ public class AgentScopeConfiguration {
     public RoleAgentFactory roleAgentFactory(AgentScopeProperties properties, BusinessToolkitFactory toolkits,
             AgentModelService models,org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService> evolution,
             org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService> mcp,
-            org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.context.DurableContextStore> contexts) {
-        var factory=new RoleAgentFactory(properties, toolkits, models::resolve,evolution.getIfAvailable(),mcp.getIfAvailable());factory.setVersionedModels(models::resolveAt,models::currentDefault);factory.setDurableContexts(contexts.getIfAvailable());return factory;
+            org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.context.DurableContextStore> contexts,
+            com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory users) {
+        var factory=new RoleAgentFactory(properties, toolkits, models::resolve,evolution.getIfAvailable(),mcp.getIfAvailable(),users);factory.setVersionedModels(models::resolveAt,models::currentDefault);factory.setDurableContexts(contexts.getIfAvailable());return factory;
     }
 }

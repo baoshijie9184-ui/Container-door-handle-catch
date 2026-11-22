@@ -36,7 +36,7 @@ public class BusinessUserDirectoryImpl implements BusinessUserDirectory,com.ruan
     public String username(long userId){var user=users.selectOne(publicFields().eq("id",userId));return user==null?null:user.getUsername();}
     private com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<com.ruanzhu.doorhandle.module.system.entity.User> publicFields() {
         return new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<com.ruanzhu.doorhandle.module.system.entity.User>()
-                .select("id", "username", "role", "created_at", "updated_at");
+                .select("id", "username", "role", "enabled", "created_at", "updated_at");
     }
     @Override public Account describe(long userId) {
         if(userId<1)return null;
@@ -74,7 +74,7 @@ public class BusinessUserDirectoryImpl implements BusinessUserDirectory,com.ruan
         return identity(user,userId,username);
     }
     private Identity identity(com.ruanzhu.doorhandle.module.system.entity.User user,long userId,String username) {
-        if (user == null || userId <= 0 || username == null || !username.equals(user.getUsername()))
+        if (user == null || Boolean.FALSE.equals(user.getEnabled()) || userId <= 0 || username == null || !username.equals(user.getUsername()))
             throw new SecurityException("当前账号身份已失效");
         String role=user.getRole()==null?"":user.getRole().toUpperCase(java.util.Locale.ROOT);
         if(!java.util.Set.of("SUPERVISOR","ADMIN","INSPECTOR","OPERATOR").contains(role))

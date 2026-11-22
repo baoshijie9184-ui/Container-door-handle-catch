@@ -140,13 +140,31 @@ public class DetectionTaskAccessPolicy {
     }
 
     public void applyScope(QueryWrapper<DetectionTask> query, AgentActor actor) {
+        applyAgentScope(query, actor, false);
+    }
+
+    /** A detector assigned through a folder work unit may read the task without gaining mutation rights. */
+    public boolean applyAgentReadScope(QueryWrapper<DetectionTask> query, AgentActor actor) {
+        return applyAgentScope(query, actor, folderAssignments != null);
+    }
+
+    private boolean applyAgentScope(QueryWrapper<DetectionTask> query, AgentActor actor, boolean includeFolderAssignment) {
         if (actor == null) throw new SecurityException("缺少认证身份");
         var fresh=current(actor);
-        if (!fresh.supervisor()) {
-            if(stableIdentityActive()){query.apply(actorPredicate("","{0}","{0}"),fresh.userId());return;}
-            query.and(q -> {q.eq("created_by", fresh.username()).or().eq("assignee", fresh.username());
-                if(candidateReadsEnabled)q.or().apply(DetectionClaimCandidates.predicate("","{0}"),fresh.userId());});
-        }
+        if (fresh.supervisor()) return true;
+        boolean stableIdentity = stableIdentityActive();
+        query.and(scope -> {
+            if (stableIdentity) {
+                scope.apply(actorPredicate("", "{0}", "{0}"), fresh.userId());
+            } else {
+                scope.eq("created_by", fresh.username()).or().eq("assignee", fresh.username());
+                if (candidateReadsEnabled) scope.or().apply(DetectionClaimCandidates.predicate("", "{0}"), fresh.userId());
+            }
+            if (includeFolderAssignment) {
+                scope.or().apply("(detection_task.task_type = 'OSS_FOLDER' AND " + FOLDER_READER + ")", fresh.userId());
+            }
+        });
+        return false;
     }
 
     /** JDBC 与 MyBatis 使用相同规则；别名只能来自固定服务代码，身份采用绑定参数。 */
