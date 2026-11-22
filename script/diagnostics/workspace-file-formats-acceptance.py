@@ -96,9 +96,9 @@ with sync_playwright() as p:
             download=event.value;assert download.suggested_filename==file['name'];assert Path(download.path()).read_bytes()==contents[file['id']]
             checks.append(kind+' '+extension+' authorized download preserves original bytes')
         # The same safe PDF page flow is available from the workbench file tree.
-        if kind=='vue':page.get_by_role('button',name='展开工作面板',exact=True).click()
-        elif page.get_by_role('button',name='查看助手信息',exact=True).is_visible():page.get_by_role('button',name='查看助手信息',exact=True).click()
-        workbench=page.get_by_role('region',name='Agent 持久工作台');expect(workbench).to_be_visible();workbench.get_by_role('button',name='文件产物',exact=True).click()
+        toggle=page.get_by_role('button',name='任务与资料',exact=True)
+        if toggle.get_attribute('aria-expanded')!='true':toggle.click()
+        workbench=page.get_by_role('region',name='Agent 持久工作台' if kind=='vue' else '任务与资料工作台');expect(workbench).to_be_visible();workbench.get_by_role('button',name='资料',exact=True).click()
         workbench.locator('article').filter(has_text='验收.pdf').get_by_role('button',name='预览',exact=True).click()
         dialog=page.get_by_role('dialog',name='文件预览' if kind=='vue' else '验收.pdf',exact=True);expect(dialog).to_contain_text('第 1 / 2 页');dialog.get_by_role('button',name='下一页').click();expect(dialog).to_contain_text('第 2 / 2 页')
         expect(dialog.get_by_role('navigation',name='PDF 页码')).to_be_focused()
@@ -106,8 +106,8 @@ with sync_playwright() as p:
         checks.append(kind+' Escape after the last PDF page closes only the preview')
         if kind=='vue':
             page.keyboard.press('Escape');expect(workbench).not_to_be_visible()
-            page.get_by_role('button',name='展开工作面板',exact=True).click();expect(workbench).to_be_visible()
-            workbench.get_by_role('button',name='文件产物',exact=True).click()
+            page.get_by_role('button',name='任务与资料',exact=True).click();expect(workbench).to_be_visible()
+            workbench.get_by_role('button',name='资料',exact=True).click()
             checks.append(kind+' a separate Escape still closes the work panel')
         workbench.locator('article').filter(has_text='验收.pdf').get_by_role('button',name='预览',exact=True).click()
         expect(dialog).to_contain_text('第 1 / 2 页');dialog.get_by_role('button',name='下一页').click();expect(dialog).to_contain_text('第 2 / 2 页')

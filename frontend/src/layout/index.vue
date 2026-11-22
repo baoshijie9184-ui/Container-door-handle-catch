@@ -5,9 +5,25 @@
       <router-link to="/home" class="agent-rail-brand" aria-label="返回业务系统" title="返回业务系统"><el-icon><HomeFilled /></el-icon></router-link>
       <button type="button" class="rail-find" aria-label="查找功能" title="查找功能" @click="finder.open()"><AppIcon name="Search" /><span>查找功能</span></button>
       <div class="agent-rail-links">
-        <el-tooltip v-for="item in agentNavigation" :key="item.path" :content="item.label" placement="right" :show-after="300">
-          <router-link :to="item.path" class="agent-rail-link" :class="{ selected: route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined" :aria-label="item.label"><el-icon><component :is="item.icon" /></el-icon><span class="rail-item-name">{{ item.label }}</span></router-link>
-        </el-tooltip>
+        <router-link v-for="item in agentNavigation" :key="item.path" :to="item.path" class="agent-rail-link"
+          :class="{ selected: route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined"
+          :aria-label="item.label" :title="item.label">
+          <AppIcon :name="item.icon" /><span class="rail-item-name">{{ item.label }}</span>
+        </router-link>
+        <el-dropdown trigger="click" placement="right-start" popper-class="agent-more-menu" @command="openAgentManagement">
+          <button type="button" class="agent-rail-link agent-more-button" :class="{ selected: agentManagementActive }"
+            aria-label="更多助手功能" title="更多助手功能">
+            <AppIcon name="MoreFilled" /><span class="rail-item-name">更多</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu aria-label="助手管理">
+              <el-dropdown-item v-for="item in agentManagement" :key="item.path" :command="item.path"
+                :class="{ 'is-current': route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined">
+                <AppIcon :name="item.icon" :size="16" />{{ item.label }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
       <AppAccountMenu compact :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @logout="handleLogout" />
     </nav>
@@ -32,7 +48,7 @@
       <button type="button" class="sidebar-finder" aria-label="查找功能" title="查找功能" @click="finder.open()">
         <AppIcon name="Search" :size="17" /><span v-if="!collapsed">查找功能</span><kbd v-if="!collapsed">{{ finderShortcut }}</kbd>
       </button>
-      <WorkspaceNavigation :groups="visibleNavGroups" home-group="inspection" :active="activeMenu" :collapsed="collapsed" />
+      <WorkspaceNavigation :groups="sidebarNavGroups" home-group="inspection" :active="activeMenu" :collapsed="collapsed" />
 
       <ChatAssistantLauncher v-if="!isMobile" :compact="collapsed" @open="handleOpenAssistant" />
     </aside>
@@ -40,13 +56,13 @@
     <el-drawer v-model="mobileNavVisible" title="工作空间导航" direction="ltr" size="min(310px, 88vw)" class="mobile-system-navigation">
       <div class="mobile-nav-scope"><AppIcon name="User" />{{ accountPresentation.role }} · {{ accountPresentation.scope }}</div>
       <button type="button" class="sidebar-finder drawer-assistant" @click="mobileNavVisible=false;handleOpenAssistant()"><AppIcon name="ChatDotRound" />打开侧边助手</button>
-      <WorkspaceNavigation id="mobile-system-menu" :groups="visibleNavGroups" home-group="inspection" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
+      <WorkspaceNavigation id="mobile-system-menu" :groups="sidebarNavGroups" home-group="inspection" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
     </el-drawer>
 
     <div class="layout-main">
       <header v-if="!isAgentChatRoute" class="layout-header">
         <div class="header-left">
-          <button
+          <button v-if="!isAgentSection"
             class="collapse-btn"
             type="button"
             @click="toggleNavigation"
@@ -69,7 +85,7 @@
         <div class="header-actions">
           <BeijingClock />
           <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
-          <router-link v-if="!isAgentChatRoute" to="/agent/chat" class="assistant-entry-link" aria-label="AI 工作助手">
+          <router-link v-if="!isAgentSection" to="/agent/chat" class="assistant-entry-link" aria-label="AI 工作助手">
             <el-icon aria-hidden="true"><ChatDotRound /></el-icon><span>AI 工作助手</span>
           </router-link>
           <AppAccountMenu :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @logout="handleLogout" />
@@ -115,11 +131,6 @@ import {
   HomeFilled,
   Tickets,
   Picture,
-  Monitor,
-  User,
-  DocumentCopy,
-  Upload,
-  DataAnalysis,
   Search,
   ChatDotRound,
   Operation
@@ -156,17 +167,6 @@ watch(() => route.path, () => {
 const showBackTop = ref(false)
 const isAgentChatRoute = computed(() => route.path === '/agent/chat')
 const isAgentSection = computed(() => route.path.startsWith('/agent/'))
-const agentNavigation = computed(() => [
-  { path:'/agent/chat', label:'智能对话', icon:ChatDotRound },
-  { path:'/agent/trace', label:'执行追溯', icon:DataAnalysis },
-  { path:'/agent/actions', label:'操作确认', icon:Tickets },
-  { path:'/agent/skills', label:'技能管理', icon:DocumentCopy },
-  { path:'/agent/markets', label:'资源市场', icon:Search },
-  { path:'/agent/memory', label:'个人记忆', icon:User },
-  { path:'/agent/mcp', label:'MCP 工具', icon:Monitor },
-  { path:'/agent/model-quotas', label:'模型与额度', icon:DataAnalysis },
-  ...(['SUPERVISOR','ADMIN'].includes(userStore.role) ? [{ path:'/agent/model-budgets', label:'企业额度', icon:Tickets },{ path:'/agent/model-config', label:'模型配置', icon:Operation }] : [])
-])
 
 const navGroups = [
   {
@@ -222,7 +222,9 @@ const navGroups = [
       { path: '/devices', label: '设备管理', desc: '采集与检测设备' },
       { path: '/device-records', label: '设备使用记录', desc: '设备调用与维护记录' },
       { path: '/employees', label: '人员管理', desc: '采集、检测、维修人员' },
-      { path: '/organization', label: '账号与组织', desc: '个人身份与账号关联' }
+      { path: '/organization', label: '账号与组织', desc: '个人身份与账号关联' },
+      { path: '/operations/identity', label: '任务账号关联', desc: '历史身份核对与迁移', supervisorOnly:true },
+      { path: '/operations/audit', label: '操作审计', desc: '业务变更与交付记录' }
     ]
   },
   {
@@ -230,18 +232,16 @@ const navGroups = [
     label: '智能助手',
     icon: Operation,
     items: [
-      { path: '/agent/chat', label: '智能对话助手', desc: '完整页面对话工作区' },
-      { path: '/agent/model-config', label: 'Agent 模型配置', desc: '版本策略与连接凭证', supervisorOnly:true },
-      { path: '/agent/model-quotas', label: '模型与额度', desc: '可用模型、个人额度与申请审批' },
-      { path: '/agent/model-budgets', label: '企业模型额度', desc: '企业用量与供应商核对', supervisorOnly:true },
-      { path: '/operations/identity', label: '任务账号关联', desc: '历史身份核对与迁移', supervisorOnly:true },
-      { path: '/operations/audit', label: '操作审计', desc: '业务变更与交付记录' },
-      { path: '/agent/trace', label: '执行追溯', desc: '查看调用过程与关联结果' },
-      { path: '/agent/actions', label: '助手操作确认', desc: '核对分配提议与审计' },
-      { path: '/agent/skills', label: '助手技能', desc: '经验提炼与审核发布' },
-      { path: '/agent/markets', label: '资源市场', desc: '发现 Agent、MCP 与 Skill' },
-      { path: '/agent/memory', label: '个人记忆', desc: '本人记忆与保存设置' },
-      { path: '/agent/mcp', label: 'MCP工具', desc: '本人本地 Stdio 服务' }
+      { path: '/agent/chat', label: '对话', icon: 'ChatDotRound', desc: '与智能助手对话' },
+      { path: '/agent/actions', label: '待确认', icon: 'CircleCheck', desc: '处理助手操作确认' },
+      { path: '/agent/skills', label: '技能管理', icon: 'Collection', advanced: true, desc: '经验提炼、安装与审核发布' },
+      { path: '/agent/mcp', label: 'MCP 工具', icon: 'Connection', advanced: true, desc: '安装和管理本人 Fetch 工具' },
+      { path: '/agent/memory', label: '个人记忆', icon: 'User', advanced: true, desc: '本人记忆与保存设置' },
+      { path: '/agent/model-quotas', label: '模型与额度', icon: 'Cpu', advanced: true, desc: '可用模型、个人额度与申请审批' },
+      { path: '/agent/trace', label: '执行追溯', icon: 'DataAnalysis', advanced: true, desc: '查看调用过程与关联结果' },
+      { path: '/agent/markets', label: '资源市场', icon: 'Compass', advanced: true, desc: '发现 Agent、MCP 与 Skill' },
+      { path: '/agent/model-budgets', label: '企业额度', icon: 'Tickets', advanced: true, desc: '企业用量与供应商核对', supervisorOnly:true },
+      { path: '/agent/model-config', label: '模型配置', icon: 'Setting', advanced: true, desc: '版本策略与连接凭证', supervisorOnly:true }
     ]
   }
 ]
@@ -250,6 +250,16 @@ const visibleNavGroups = computed(()=>{
   const supervisor=['SUPERVISOR','ADMIN'].includes(userStore.role)
   return navGroups.map(group=>({...group,items:group.items.filter(item=>supervisor ? !item.inspectorOnly : !item.supervisorOnly)})).filter(group=>group.items.length)
 })
+const sidebarNavGroups = computed(() => visibleNavGroups.value.map(group => group.key === 'agent'
+  ? { ...group, items: group.items.filter(item => !item.advanced) }
+  : group))
+const agentItems = computed(() => visibleNavGroups.value.find(group => group.key === 'agent')?.items || [])
+const agentNavigation = computed(() => agentItems.value.filter(item => !item.advanced))
+const agentManagement = computed(() => agentItems.value.filter(item => item.advanced))
+const agentManagementActive = computed(() => agentManagement.value.some(item => item.path === route.path))
+function openAgentManagement(path) {
+  if (agentManagement.value.some(item => item.path === path)) router.push(path)
+}
 const menuTitleMap = navGroups
   .flatMap(group => group.items.map(item => [item.path, { ...item, group: group.label }]))
   .reduce((map, [path, item]) => {

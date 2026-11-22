@@ -58,15 +58,8 @@ with sync_playwright() as p:
             assert editor.evaluate('(element) => document.activeElement === element')
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
             page.screenshot(path=str(OUT / f'{kind}-{size}-conversation.png'), full_page=True)
-            toggle = page.get_by_role('button', name='展开工作面板', exact=True)
-            if toggle.is_visible():
-                toggle.click()
-            else:
-                # The independent entry labels this control as a workspace toggle.
-                candidates = page.locator('.info-toggle')
-                if candidates.count():
-                    candidates.click()
-            panel = page.get_by_role('complementary', name='Agent 工作面板') if kind == 'vue' else page.locator('.agent-info')
+            page.get_by_role('button', name='任务与资料', exact=True).click()
+            panel = page.get_by_role('complementary', name='Agent 工作面板' if kind == 'vue' else '任务与资料', exact=True)
             expect(panel).to_be_visible()
             page.screenshot(path=str(OUT / f'{kind}-{size}-workspace.png'), full_page=True)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')

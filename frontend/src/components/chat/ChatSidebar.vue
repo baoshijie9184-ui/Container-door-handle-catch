@@ -23,14 +23,6 @@
           </svg>
           <span>新建对话</span>
         </button>
-        <button type="button" class="new-project-btn" @click="openCreateProjectModal">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            <line x1="12" y1="11" x2="12" y2="17" />
-            <line x1="9" y1="14" x2="15" y2="14" />
-          </svg>
-          <span>新建项目</span>
-        </button>
       </div>
 
       <!-- 搜索框 -->
@@ -59,9 +51,18 @@
         </div>
       </div>
 
-      <div class="sidebar-history-heading"><span>{{ searchQuery.trim() ? `匹配 ${searchResults.length} 条` : '对话历史' }}</span><button type="button" aria-label="重新读取会话列表" title="重新读取会话列表" :disabled="store.sessionsLoading" @click="store.loadSessionList()"><AppIcon name="Refresh" :size="15" /></button></div>
+      <div class="sidebar-history-heading">
+        <span>{{ searchQuery.trim() ? `匹配 ${searchResults.length} 条` : '对话历史' }}</span>
+        <el-dropdown trigger="click" placement="bottom-end" :teleported="false" @command="handleHistoryCommand">
+          <button type="button" aria-label="更多历史操作" title="更多历史操作"><AppIcon name="MoreFilled" :size="16" /></button>
+          <template #dropdown><el-dropdown-menu>
+            <el-dropdown-item command="project"><AppIcon name="FolderOpened" :size="15" />新建项目</el-dropdown-item>
+            <el-dropdown-item command="refresh" :disabled="store.sessionsLoading"><AppIcon name="Refresh" :size="15" />重新读取会话列表</el-dropdown-item>
+          </el-dropdown-menu></template>
+        </el-dropdown>
+      </div>
       <p v-if="searchQuery.trim()" class="sidebar-search-scope">搜索范围：已加载的对话</p>
-      <p v-if="store.sessionsError" class="sidebar-read-error" role="alert">{{ store.sessionsError }}</p>
+      <p v-if="store.sessionsError" class="sidebar-read-error" role="alert">{{ store.sessionsError }}<button type="button" :disabled="store.sessionsLoading" @click="store.loadSessionList()">重新读取</button></p>
       <p v-if="renameError" class="sidebar-read-error" role="alert">{{ renameError }}<button v-if="renameUncertain" type="button" @click="cancelEdit(); store.loadSessionList()">关闭编辑并重新读取</button></p>
       <!-- 会话列表 -->
       <div class="session-list" :aria-busy="store.sessionsLoading">
@@ -754,6 +755,11 @@ const openCreateProjectModal = () => {
   showProjectModal.value = true
 }
 
+function handleHistoryCommand(command) {
+  if (command === 'project') openCreateProjectModal()
+  if (command === 'refresh') store.loadSessionList()
+}
+
 const openEditProjectModal = (project) => {
   if(projectBusy.value)return
   projectError.value='';projectUncertain.value=false
@@ -871,11 +877,9 @@ const handleDeleteProject = async (projectId) => {
 }
 .sidebar-header {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
   padding: 0 14px 9px;
 }
-.new-session-btn, .new-project-btn {
+.new-session-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -893,8 +897,6 @@ const handleDeleteProject = async (projectId) => {
 }
 .new-session-btn { background: var(--app-primary); color: white; }
 .new-session-btn:hover { background: var(--app-primary-hover, #204fc2); }
-.new-project-btn { background: white; border-color: var(--app-border-strong); color: var(--app-text-secondary); }
-.new-project-btn:hover { background: var(--app-primary-soft); color: var(--app-primary); }
 .sidebar-search { margin: 0 14px; }
 .search-input-wrapper {
   position: relative;

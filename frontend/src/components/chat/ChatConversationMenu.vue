@@ -7,6 +7,7 @@
       </button>
       <template #dropdown>
         <el-dropdown-menu>
+          <el-dropdown-item v-if="workspaceEnabled" command="workspace"><AppIcon name="Files" :size="15" />任务与资料</el-dropdown-item>
           <el-dropdown-item v-if="tasksEnabled" command="tasks"><AppIcon name="List" :size="15" />任务操作</el-dropdown-item>
           <el-dropdown-item command="trace"><AppIcon name="Connection" :size="15" />执行追溯</el-dropdown-item>
           <el-dropdown-item command="memory"><AppIcon name="Collection" :size="15" />个人记忆</el-dropdown-item>
@@ -24,7 +25,7 @@ import { ref } from 'vue'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 
-defineProps({ tasksEnabled: Boolean, showLabel: Boolean, placement: { type: String, default: 'bottom-end' } })
+defineProps({ tasksEnabled: Boolean, workspaceEnabled: Boolean, showLabel: Boolean, placement: { type: String, default: 'bottom-end' } })
 const emit = defineEmits(['command'])
 const chat = useChatAssistantStore()
 const menu = ref(null)

@@ -37,10 +37,8 @@
         <input ref="fileInputRef" type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" @change="uploadFiles" />
         <button class="composer-add" type="button" aria-label="添加附件" :title="composerUploadHint(resources,loading)" :disabled="!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon aria-hidden="true"><Plus /></el-icon></button>
         <el-dropdown v-if="!loading&&showPresets" trigger="click" @command="sendPreset"><button type="button" class="composer-add" aria-label="快捷提问" title="快捷提问" :disabled="resources.busy"><AppIcon name="MagicStick" :size="17" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="chip in quickChips" :key="chip.text" :command="chip.text" :disabled="resources.busy"><AppIcon :name="chip.icon" :size="14" />{{ chip.label }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
-        <span class="composer-permission" title="工具按当前账号权限执行，敏感操作仍需人工确认"><el-icon aria-hidden="true"><Lock /></el-icon><span>按账号权限</span></span>
         <span v-if="resources.busy" class="composer-upload-status" role="status">处理中</span>
         <select aria-label="使用模型" :title="composerModelTitle(resources,modelLocked,loading)" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">{{ composerDefaultModel(resources) }}</option><option v-if="selectedModelMissing(resources)" :value="resources.modelId" disabled>{{ resources.modelId }}（已不可用）</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ modelLabel(model) }}</option></select>
-        <span class="composer-context" title="使用本会话历史与已授权的资料"><el-icon aria-hidden="true"><Document /></el-icon><span>会话上下文</span></span>
       </div>
 
       <button
@@ -93,7 +91,7 @@ import { captureAccountRequest } from '@/api/request'
 const request=captureAccountRequest()
 import { useUserStore } from '@/stores/user'
 import { filterSkillCommands } from '@/utils/skillCommands'
-import {Plus,Document,Close,Lock} from '@element-plus/icons-vue'
+import {Plus,Close} from '@element-plus/icons-vue'
 import {ComposerResources,modelLabel,selectedModelMissing} from '@/utils/composerResources'
 import {composerAttachment,composerDefaultModel,composerUploadHint,composerModelTitle} from '@/utils/composerPresentation'
 import {canGuide} from '@/utils/conversationControl'

@@ -1,13 +1,21 @@
 <template>
-  <DetectionCreationReview :session-id="sessionId" :refresh-key="refreshKey" @changed="refresh" />
+  <DetectionCreationReview :session-id="sessionId" :refresh-key="refreshKey" :quiet-unavailable="compact" @changed="refresh" />
   <section v-if="standalone || (!disabled && (actions.length || error))" class="agent-actions agent-action-list" aria-label="助手操作确认">
-    <header class="actions-heading"><strong><AppIcon name="DocumentChecked" :size="16" />助手操作确认</strong><el-button size="small" :loading="loading" @click="refresh">刷新</el-button></header>
+    <header class="actions-heading" :class="{ 'standalone-heading': standalone }">
+      <strong v-if="!standalone"><AppIcon name="DocumentChecked" :size="16" />助手操作确认</strong>
+      <div class="actions-tools">
+        <el-button v-if="(standalone || compact) && finishedCount" size="small" :aria-pressed="showFinished" @click="showFinished = !showFinished">
+          {{ showFinished ? '隐藏已结束' : '查看已结束' }}（{{ finishedCount }}）
+        </el-button>
+        <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
+      </div>
+    </header>
     <p v-if="error" role="alert" class="action-error">{{ error }}</p>
     <p v-if="loading" class="action-read-feedback" role="status">{{ actions.length ? '正在核对操作状态，当前保留上次卡片；读取完成前不能确认。' : '正在读取操作提议…' }}</p>
     <p v-else-if="actions.length && !verified" class="action-read-feedback" role="status">当前卡片尚未重新核实，请刷新后再确认。刷新不会重发业务操作。</p>
     <p v-if="disabled" class="empty-note">此环境尚未启用人工确认</p>
-    <p v-else-if="!loading && !error && !actions.length" class="empty-note">暂无操作提议 提议保存后仍需明确确认</p>
-    <article v-for="action in actions" :key="action.actionId" class="action-card" :data-operation="action.operation" :data-status="action.status" :aria-busy="busy.has(action.actionId)">
+    <p v-else-if="!compact && !loading && !error && !visibleActions.length" class="empty-note">{{ standalone ? '暂无待处理事项' : '暂无操作提议' }}</p>
+    <article v-for="action in visibleActions" :key="action.actionId" class="action-card" :data-operation="action.operation" :data-status="action.status" :aria-busy="busy.has(action.actionId)">
       <header><strong><AppIcon name="Lock" :size="16" />{{ action.operation === 'CREATE_DETECTION' ? '创建检测任务' : action.operation === 'RETRY_DETECTION' ? '重新检测任务' : '分配质检任务' }}</strong><StatusBadge domain="confirmation" :code="action.status" :label="['RETRY_DETECTION', 'CREATE_DETECTION'].includes(action.operation) && action.status === 'SUCCEEDED' ? '已提交检测' : labels[action.status]" /></header>
       <p class="action-review-meta">业务操作确认 · 提议 V{{ action.version }}<span v-if="action.status === 'PENDING'"> · 有效至 {{ beijingDateTime(action.expiresAt ?? null) || '时间未记录' }}</span></p>
       <p v-if="action.status === 'PENDING'" class="action-impact"><AppIcon name="Warning" :size="16" /><span>{{ action.creation ? '确认将复制本卡片的已授权图片并创建检测任务。' : action.operation === 'RETRY_DETECTION' ? '确认将提交新的检测，并重置当前检测结果与复核处置。' : '确认将修改下方任务的质检分配信息。' }}请核对本卡片参数，计划批准或普通回答不代替此处确认。</span></p>
@@ -59,11 +67,21 @@ import AgentActionAudit from './AgentActionAudit.vue'
 import AgentAssignmentReview from './AgentAssignmentReview.vue'
 import ProposalImageGallery from './ProposalImageGallery.vue'
 import { useUserStore } from '@/stores/user'
-const props = defineProps({ sessionId: String, runId: String, refreshKey: [String, Number], standalone: Boolean })
+const props = defineProps({ sessionId: String, runId: String, refreshKey: [String, Number], standalone: Boolean, compact: Boolean })
 const actions = ref([]), busy = ref(new Set()), loading = ref(false), error = ref(''), disabled = ref(false)
 const userStore = useUserStore()
 const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]))
 const verified = ref(false)
+const showFinished = ref(false), handledHere = ref(new Set())
+const activeStatuses = new Set(['PENDING', 'APPROVED', 'EXECUTING', 'NEEDS_REVIEW'])
+const finishedCount = computed(() => actions.value.filter(action => !activeStatuses.has(action.status)).length)
+const visibleActions = computed(() => {
+  if (!props.standalone && !props.compact) return actions.value
+  const active = actions.value.filter(action => activeStatuses.has(action.status))
+  const finished = actions.value.filter(action => !activeStatuses.has(action.status)
+    && (showFinished.value || handledHere.value.has(action.actionId)))
+  return [...active, ...finished]
+})
 let generation = 0
 const labels = { PENDING: '待确认', APPROVED: '已批准', EXECUTING: '执行中', NEEDS_REVIEW: '待核对', SUCCEEDED: '已分配', REJECTED: '已拒绝', CANCELLED: '已取消', EXPIRED: '已过期', INVALIDATED: '已失效' }
 const reasons = { RESOURCE_CHANGED: '任务已变化 原提议失效 请重新生成', ROLE_REVOKED: '当前账号已无操作权限', PARAMETERS_SUPERSEDED: '已有新的操作参数 原提议失效', POLICY_CHANGED: '操作规则已更新 请重新生成', CONFIRMATION_EXPIRED: '确认已过期 未执行操作', ORIGIN_RUN_TERMINATED: '原运行已取消或中断 未执行操作', BUSINESS_PRECONDITION_CHANGED: '任务或责任人条件已变化 未执行操作', EXECUTION_NEEDS_REVIEW: '上次检测结果待核对 未提交新的检测 不会自动重试', USER_REJECT: '用户已拒绝 未执行操作', USER_CANCEL: '用户已取消 未执行操作' }
@@ -92,17 +110,19 @@ async function decide(action, decision) {
     if (version !== generation) return
     if (!validAgentAction(response.data) || response.data.actionId !== action.actionId) throw new Error('操作结果未核实 请刷新')
     actions.value = actions.value.map(item => item.actionId === action.actionId ? response.data : item)
+    if (props.standalone || props.compact) handledHere.value.add(action.actionId)
   } catch (e) {
     if (version === generation) { verified.value = false; error.value = e.response?.data?.message || '确认结果尚未核实 请刷新状态后再操作' }
   } finally { busy.value = new Set([...busy.value].filter(id => id !== action.actionId)) }
 }
 watch(() => [props.sessionId, props.runId, actor.value], () => {
   generation++; actions.value = []; error.value = ''; disabled.value = false; verified.value = false; loading.value = false
+  showFinished.value = false; handledHere.value = new Set()
   if (userStore.isAuthenticated) refresh()
 }, { immediate: true, flush: 'sync' })
 watch(() => props.refreshKey, () => { if (userStore.isAuthenticated) refresh() })
 onBeforeUnmount(() => generation++)
 </script>
 <style scoped>
-.agent-actions{padding:0;background:transparent;border:0;min-width:0}.actions-heading,.action-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.action-card{margin-top:14px;padding:16px;background:white;border:1px solid #e1e8f3;border-radius:12px;animation:action-in .2s ease}.action-card dl{display:grid;grid-template-columns:84px minmax(0,1fr);gap:10px;font-size:13px}.action-card dt{color:#68758b}.action-card dd{margin:0;overflow-wrap:anywhere}.action-note,.empty-note,.audit-events{font-size:12px;color:#637087;line-height:1.7}.action-buttons{display:flex;flex-wrap:wrap;gap:8px}.action-buttons :deep(button){margin-left:0;transition:transform .15s ease}.action-buttons :deep(button:not(:disabled):hover){transform:scale(1.02)}.action-error{font-size:13px;color:#b42318}.audit-events{padding-left:18px}@keyframes action-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.action-card{animation:none}.action-buttons :deep(button){transition:none;transform:none!important}}
+.agent-actions{padding:0;background:transparent;border:0;min-width:0}.actions-heading,.action-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.standalone-heading{justify-content:flex-end}.actions-tools{display:flex;align-items:center;gap:8px}.actions-tools :deep(.el-button+.el-button){margin-left:0}.action-card{margin-top:14px;padding:16px;background:white;border:1px solid #e1e8f3;border-radius:12px;animation:action-in .2s ease}.action-card dl{display:grid;grid-template-columns:84px minmax(0,1fr);gap:10px;font-size:13px}.action-card dt{color:#68758b}.action-card dd{margin:0;overflow-wrap:anywhere}.action-note,.empty-note,.audit-events{font-size:12px;color:#637087;line-height:1.7}.action-buttons{display:flex;flex-wrap:wrap;gap:8px}.action-buttons :deep(button){margin-left:0;transition:transform .15s ease}.action-buttons :deep(button:not(:disabled):hover){transform:scale(1.02)}.action-error{font-size:13px;color:#b42318}.audit-events{padding-left:18px}@keyframes action-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.action-card{animation:none}.action-buttons :deep(button){transition:none;transform:none!important}}
 </style>

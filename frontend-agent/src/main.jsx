@@ -2,13 +2,13 @@ import { beijingDateTime as formatClock, subscribeClock } from '../../frontend/s
 import '../../frontend/src/assets/beijing-clock.css';
 import { AccountBoundary } from './AccountBoundary';
 import { accountFetch as fetch } from '../../frontend/src/utils/accountFetch';
-import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE,AGENT_WORKSPACE_NAME} from '../../frontend/src/utils/systemBrand';
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE} from '../../frontend/src/utils/systemBrand';
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Button, Layout, message,Skeleton } from 'antd';
+import { Button, Dropdown, Layout, message,Skeleton } from 'antd';
 import ConfigProvider from '@agentscope-ai/design/lib/components/commonComponents/ConfigProvider';
-import { RobotOutlined, PlusOutlined } from '@ant-design/icons';
-import { PanelLeft, PanelRight, ArrowUpRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw, List, Cpu } from 'lucide-react';
+import { PlusOutlined } from '@ant-design/icons';
+import { PanelLeft, PanelRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw, List, Cpu, Ellipsis } from 'lucide-react';
 import { Bubble, Sender } from '@agentscope-ai/chat';
 import '../../frontend/src/assets/design-tokens.css';
 import '../../frontend/src/assets/status-badge.css';
@@ -33,7 +33,6 @@ import { AgentActionList } from './AgentActionList';
 import { skillInstallNavigation } from '../../frontend/src/utils/skillInstallNavigation';
 import { SessionHistory } from './SessionHistory';
 import AgentModelOverview from './AgentModelOverview';
-import StatusBadge from './StatusBadge';
 import {readAgentRoleCatalog,readAgentModelCatalog} from '../../frontend/src/utils/agentCatalogPresentation';
 import { AgentErrorBoundary } from './AgentErrorBoundary';
 import {useReadableMessageRegions} from './useReadableMessageRegions';
@@ -43,7 +42,10 @@ import {useReducedMotion} from './useReducedMotion';
 const API = import.meta.env.VITE_AGENT_API_URL || '/agui/run';
 const LOGIN = new URL(import.meta.env.VITE_BUSINESS_LOGIN_URL || '/#/login', window.location.href).toString();
 const ACTIONS = LOGIN.replace(/#.*$/, '') + '#/agent/actions';
-const MEMORIES=LOGIN.replace(/#.*$/,'')+'#/agent/memory';
+const MEMORIES = LOGIN.replace(/#.*$/, '') + '#/agent/memory';
+const SKILLS = LOGIN.replace(/#.*$/, '') + '#/agent/skills';
+const MCP = LOGIN.replace(/#.*$/, '') + '#/agent/mcp';
+const MARKETS = LOGIN.replace(/#.*$/, '') + '#/agent/markets';
 const MODEL_QUOTAS=LOGIN.replace(/#.*$/,'')+'#/agent/model-quotas';
 const BUSINESS = LOGIN.replace(/#.*$/, '') + '#/home';
 const TRACE = LOGIN.replace(/#.*$/, '') + '#/agent/trace';
@@ -70,8 +72,14 @@ function App() {
   const resourcesRef=useRef(null);
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 900);
   const [infoOpen, setInfoOpen] = useState(false);
-  const [infoTab,setInfoTab]=useState('workspace');
-  useEffect(()=>{if(['WAITING_PLAN','WAITING_INPUT','AWAITING_RECOVERY'].includes(controlState.run?.phase)){setInfoOpen(true);setInfoTab('workspace')}},[controlState.run?.phase]);
+  const [showModels,setShowModels]=useState(false);
+  const attentionPhase=controlState.run?.phase;
+  useEffect(()=>{
+    if(['WAITING_PLAN','WAITING_INPUT','AWAITING_RECOVERY'].includes(attentionPhase)){
+      setShowModels(false);
+      setInfoOpen(true);
+    }
+  },[attentionPhase]);
   const senderRef = useRef(null);
   const infoToggleRef = useRef(null);
   const sidebarToggleRef = useRef(null);
@@ -105,14 +113,14 @@ function App() {
   useEffect(() => {
     const compact = window.matchMedia('(max-width: 900px)');
     const enterCompactLayout = event => {
-      if (event.matches) { setSidebarOpen(false); setInfoOpen(false); }
+      if (event.matches) { setSidebarOpen(false); setInfoOpen(false); setShowModels(false); }
     };
     compact.addEventListener('change', enterCompactLayout);
     return () => compact.removeEventListener('change', enterCompactLayout);
   }, []);
   useEffect(() => {
     const dismiss = event => { if(event.target?.closest?.('[role="dialog"]')||document.querySelector('.ant-modal-wrap:not([style*="display: none"])'))return; if (event.key === 'Escape') {
-      if (infoOpen) { setInfoOpen(false); infoToggleRef.current?.focus(); }
+      if (infoOpen) { setInfoOpen(false); setShowModels(false); infoToggleRef.current?.focus(); }
       else if (sidebarOpen && window.innerWidth <= 900) closeSessionSidebar();
     } };
     window.addEventListener('keydown', dismiss);
@@ -302,36 +310,56 @@ function App() {
   const displayedItems=visibleItems.map(item=>{if(typeof item.content!=='string')return item;const files=splitFileReferences(item.content,item.role);if(files.ids.length)return {...item,content:'',cards:[{code:'ChatFileReferences',component:ChatFileReferences,data:{...files,sessionId:threadId,base:new URL(API,window.location.href).origin}}]};if(item.role==='assistant'){const link=skillInstallNavigation(item.content,LOGIN);if(link)return {...item,content:'',cards:[{code:'SkillInstallNavigation',component:SkillInstallLinkBubble,data:link}]};}if(item.loading&&!item.content&&!Object.keys(item.execution?.tools||{}).length&&!item.runId)return item;return {...item,content:'',cards:[{code:'WorkbenchMessage',component:WorkbenchMessageBubble,data:{text:item.text||item.content,role:item.role,createdAt:item.createdAt,status:item.msgStatus,execution:item.execution,runId:item.runId,controlRun:item.controlRun,executionClockStatus:item.executionClockStatus,executionSourceWallTimes:item.executionSourceWallTimes,references:item.references||[],sessionId:threadId,businessBase:LOGIN.replace(/#.*$/,''),onFollowUp:question=>sendUiFollowUp(question),surfaces:item.surfaces}}]};});
   const activeSession = sessions.find(session => session.sessionId === threadId);
   const prompts = [
-    { icon: ScanLine, title: '查看检测进度', description: '最近任务与处理状态', query: '查询最近的检测任务和处理进度' },
-    { icon: ClipboardCheck, title: '梳理质检记录', description: '整理有权限查看的质检结果', query: '查询我有权限查看的质检记录' },
-    { icon: ChartNoAxesCombined, title: '了解工作统计', description: '本周检测与缺陷情况', query: '查询本周工作统计和缺陷数量' },
-    { icon: Compass, title: '找到业务入口', description: '批次、工单与报告入口', query: '显示系统业务地图和功能入口' },
+    { icon: ScanLine, title: '查看检测进度', query: '查询最近的检测任务和处理进度' },
+    { icon: ClipboardCheck, title: '查询校验结果', query: '查询我有权限查看的校验结果' },
   ];
   const prepareQuestion = query => { setDraft(query); senderRef.current?.focus?.(); };
-  const workspaceResources=[
-    {title:'技能 Skills',note:'查看技能与安装记录',path:'/agent/skills',icon:Blocks},
-    {title:'固定 Fetch MCP',note:'查看本人安装、启用与执行状态',path:'/agent/mcp',icon:Plug},
-    {title:'资源市场',note:'查看外部资源目录与接入条件',path:'/agent/markets',icon:Compass},
-    {title:'个人记忆',note:'查看和管理本人记忆',path:'/agent/memory',icon:BrainCircuit},
-    {title:'LLM模型管理',note:'查看个人额度、提交申请与跟进审批',path:'/agent/model-quotas',icon:Cpu},
-    {title:'执行与调研',note:'工具轨迹、模型路由与来源',path:'/agent/trace'+(threadId?'?sessionId='+encodeURIComponent(threadId):''),icon:ChartNoAxesCombined},
+  const traceHref=TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'');
+  const moreActions=[
+    ...(controlState.enabled?[{key:'task-control',label:'任务控制',icon:<List size={15} aria-hidden="true"/>}]:[]),
+    {key:'trace',label:<a href={traceHref}>执行追溯</a>,icon:<ChartNoAxesCombined size={15} aria-hidden="true"/>},
+    {key:'models',label:'模型与能力',icon:<Cpu size={15} aria-hidden="true"/>},
+    {type:'divider'},
+    {key:'skill',label:<a href={SKILLS}>技能</a>,icon:<Blocks size={15} aria-hidden="true"/>},
+    {key:'mcp',label:<a href={MCP}>Fetch MCP</a>,icon:<Plug size={15} aria-hidden="true"/>},
+    {key:'memory',label:<a href={MEMORIES}>个人记忆</a>,icon:<BrainCircuit size={15} aria-hidden="true"/>},
+    {key:'management',label:'管理入口',children:[
+      {key:'markets',label:<a href={MARKETS}>资源市场</a>,icon:<Compass size={15} aria-hidden="true"/>},
+      {key:'quotas',label:<a href={MODEL_QUOTAS}>模型额度</a>,icon:<Cpu size={15} aria-hidden="true"/>},
+      {key:'reports',label:<a href={REPORTS}>报告与审批</a>,icon:<ClipboardCheck size={15} aria-hidden="true"/>},
+      {key:'audit',label:<a href={OPERATIONS_AUDIT}>操作与交付审计</a>,icon:<ShieldCheck size={15} aria-hidden="true"/>},
+    ]},
   ];
-  const infoTabKey=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=event.key==='Home'?0:event.key==='End'?1:infoTab==='workspace'?1:0;setInfoTab(index?'models':'workspace');event.currentTarget.querySelectorAll('[role="tab"]')[index]?.focus();};
+  function showWorkbench(){
+    if(showModels){
+      setShowModels(false);
+      setInfoOpen(true);
+    }else setInfoOpen(value=>!value);
+  }
+  function closeWorkbench(){
+    setInfoOpen(false);
+    setShowModels(false);
+    infoToggleRef.current?.focus();
+  }
+  function selectMoreAction({key}){
+    if(key==='task-control')controlsRef.current?.openOptions();
+    if(key==='models'){
+      setShowModels(true);
+      setInfoOpen(true);
+    }
+  }
   return <ConfigProvider prefixCls="ant" iconfont="" theme={{ cssVar:{key:'doorhandle-workbench'}, token: { colorPrimary: '#2563eb', colorSuccess: '#375c85', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#181b23', colorTextSecondary: '#525b6a', colorBorder: '#e6e8ec', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
     <Layout className={`agent-shell ${sidebarOpen ? 'with-sessions' : ''} ${infoOpen ? 'with-info' : ''}`}>
       <nav id="agent-sessions" className="session-sidebar" aria-label="对话历史" hidden={!sidebarOpen}>
         <a className="agent-brand" href={BUSINESS} title={SYSTEM_NAME} aria-label={SYSTEM_NAME}><span className="brand-symbol"><ScanLine size={20} /></span><span>{SYSTEM_SHORT_NAME}<strong>{SYSTEM_TAGLINE}</strong></span></a>
         <Button className="new-session" aria-label="新建对话" type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={newSession} disabled={loading||sessionLoading}>新建对话</Button>
         <SessionHistory sessions={sessions} selectedId={threadId} disabled={loading||sessionLoading} loading={sessionLoading} error={sessionError} currentTaskActive={!!controlState.run&&controlState.run.phase!=='IDLE'} base={SESSIONS} traceBase={TRACE} businessBase={LOGIN.replace(/#.*$/,'')} onSelect={selectHistorySession} onRefresh={()=>loadSession(threadId)} onChanged={(id,patch)=>{sessionMetadataVersion.current++;setSessions(current=>current.map(session=>session.sessionId===id?{...session,...patch}:session));}}/>
-        <div className="sidebar-links"><a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')}><ChartNoAxesCombined size={16} />执行追溯</a><a href={MODEL_QUOTAS}><Cpu size={16} />LLM模型管理</a><a href={MEMORIES}><BrainCircuit size={16} />个人记忆</a><a href={REPORTS}><ClipboardCheck size={16} />报告与审批</a><a href={OPERATIONS_AUDIT}><ShieldCheck size={16} />操作与交付审计</a><a href={BUSINESS}><ArrowLeft size={16} />返回业务系统</a></div>
-        <p className="account-note"><ShieldCheck size={14} />会话与记忆按账号隔离</p>
+        <div className="sidebar-links"><a href={BUSINESS}><ArrowLeft size={16} aria-hidden="true"/>返回业务系统</a></div>
       </nav>
       {!sidebarOpen && <nav className="agent-rail" aria-label="Agent 快捷导航">
         <Button type="text" aria-label="展开会话列表" title="展开会话列表" aria-expanded={sidebarOpen} aria-controls="agent-sessions" icon={<PanelLeft size={18} aria-hidden="true"/>} onClick={()=>setSidebarOpen(true)}/>
         <Button type="text" aria-label="新建对话" title={sessionLoading?'正在读取会话，暂不能新建':loading?'当前消息正在处理，暂不能新建':'新建对话'} disabled={loading||sessionLoading} icon={<PlusOutlined aria-hidden="true"/>} onClick={newSession}/>
         <div aria-hidden="true"/>
-        <a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')} aria-label="执行追溯" title="执行追溯"><ChartNoAxesCombined size={18} aria-hidden="true"/></a>
-        <a href={MODEL_QUOTAS} aria-label="LLM模型管理" title="LLM模型管理"><Cpu size={18} aria-hidden="true"/></a>
         <a href={BUSINESS} aria-label="返回业务系统" title="返回业务系统"><ArrowLeft size={18} aria-hidden="true"/></a>
       </nav>}
       {sidebarOpen && <button className="sidebar-scrim" aria-label="收起会话列表" onClick={closeSessionSidebar} />}
@@ -340,16 +368,25 @@ function App() {
           <Button ref={sidebarToggleRef} type="text" aria-label={sidebarOpen?'收起会话列表':'展开会话列表'} title={sidebarOpen?'收起会话列表':'展开会话列表'} aria-expanded={sidebarOpen} aria-controls="agent-sessions" icon={<PanelLeft size={18} aria-hidden="true" />} onClick={()=>setSidebarOpen(!sidebarOpen)} />
           <div className="conversation-heading"><h1>{activeSession?.title||'智能对话助手'}</h1><span>{catalog?.role === 'SUPERVISOR' ? '主管工作助手' : catalog ? '员工工作助手' : '检测与质检工作助手'}</span></div>
           {window.self === window.top && <BeijingClock />}
-          {catalog && <span className="capability-tag"><StatusBadge domain="agentMode" code={catalog.mode}/></span>}
-          {controlState.enabled&&<Button type="text" aria-label="任务操作" title="任务操作" icon={<List size={17} aria-hidden="true"/>} onClick={()=>controlsRef.current?.openOptions()}/>}
-          <Button ref={infoToggleRef} className="info-toggle" type="text" aria-label={infoOpen?'收起助手信息':'查看助手信息'} title={infoOpen?'收起助手信息':'查看助手信息'} aria-expanded={infoOpen} aria-controls="agent-info" icon={<PanelRight size={18} aria-hidden="true" />} onClick={()=>setInfoOpen(!infoOpen)} />
+          <Button ref={infoToggleRef} className="info-toggle" type="text" aria-label="任务与资料" title="任务与资料" aria-expanded={infoOpen&&!showModels} aria-controls="agent-info" icon={<PanelRight size={17} aria-hidden="true"/>} onClick={showWorkbench}><span className="agent-toolbar-label">任务与资料</span></Button>
+          <Dropdown trigger={['click']} menu={{items:moreActions,onClick:selectMoreAction}}>
+            <Button className="agent-more-toggle" type="text" aria-label="更多对话操作" title="更多对话操作" icon={<Ellipsis size={19} aria-hidden="true"/>}><span className="agent-toolbar-label">更多</span></Button>
+          </Dropdown>
         </header>
         <section className="chat-panel" aria-label="智能对话">
           {sessionError&&<p role="alert" className="session-error">{sessionError} <a href={LOGIN}>前往登录</a> · <button onClick={()=>loadSession(threadId)}>重试</button></p>}
           <div ref={transcriptRef} className="bubble-list transcript-reading-region" tabIndex={0} role="region" aria-label="对话消息，可在此区域滚动阅读" onScroll={handleTranscriptScroll}>
-            {!items.length && !sessionLoading && <div className="chat-welcome"><span className="welcome-symbol"><RobotOutlined /></span><span className="welcome-eyebrow">{SYSTEM_SHORT_NAME}</span><h2>今天，想先解决什么？</h2><div className="welcome-prompts">{prompts.map(({icon: Icon,...prompt})=><button type="button" key={prompt.title} disabled={!catalog||!threadId} onClick={()=>prepareQuestion(prompt.query)}><span className="prompt-icon"><Icon size={19} /></span><strong>{prompt.title}</strong><span>{prompt.description}</span><ArrowUpRight className="prompt-arrow" size={15} /></button>)}</div></div>}
+            {!items.length && !sessionLoading && (
+              <div className="chat-welcome">
+                <h2>开始对话</h2>
+                <div className="welcome-shortcuts">
+                  {prompts.map(({icon: Icon,...prompt})=><button type="button" key={prompt.title} disabled={!catalog||!threadId} onClick={()=>prepareQuestion(prompt.query)}><Icon size={16} aria-hidden="true"/>{prompt.title}</button>)}
+                </div>
+              </div>
+            )}
             {sessionLoading ? <div className="workbench-skeleton" role="status" aria-label="正在加载对话"><Skeleton active paragraph={{rows:4}}/></div> : items.length > 0 && <Bubble.List classNames={{wrapper: 'conversation-transcript', list: 'conversation-messages'}} items={displayedItems} />}
-            {streamNotice&&<p className="stream-notice" role="status">{streamNotice} <a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')}>核对执行记录</a></p>}
+            {streamNotice&&<p className="stream-notice" role="status">{streamNotice} <a href={traceHref}>核对执行记录</a></p>}
+            {!sessionLoading&&<AgentActionList key={threadId} sessionId={threadId} base={new URL(API,window.location.href).origin} refreshKey={loading+':'+(items.at(-1)?.key||'')}/>}
           </div>
           {showTranscriptReturn && items.length > 0 && <div className="transcript-return"><button type="button" onClick={handleReturnToLatest}><ArrowDown size={16} aria-hidden="true"/>回到最新消息</button></div>}
           {(catalogError || catalogAuthRequired || modelAuthRequired) && <p className="agent-service-error agent-service-gate" role="alert">{catalogError || modelCatalogError || '正在核对目录访问权限'}<button type="button" disabled={catalogLoading || modelCatalogLoading} onClick={refreshServiceCatalogs}><RefreshCw size={13} aria-hidden="true"/>重新读取目录</button>{(catalogAuthRequired || modelAuthRequired) && <a href={LOGIN}>前往登录</a>}</p>}
@@ -357,13 +394,18 @@ function App() {
           <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={text=>submit(text)} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} streaming={loading} onStop={()=>loading?stopStream():controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
-      <aside id="agent-info" className="agent-info" aria-label="助手信息" hidden={!infoOpen}>
-        <header className="info-heading"><strong>助手信息</strong><Button type="text" aria-label="关闭助手信息" icon={<X size={17} />} onClick={()=>{setInfoOpen(false);infoToggleRef.current?.focus();}} /></header>
-        <div className="workspace-tabs" role="tablist" aria-label="助手信息视图" onKeyDown={infoTabKey}><button type="button" id="workspace-tab" role="tab" aria-selected={infoTab==='workspace'} aria-controls="workspace-content" tabIndex={infoTab==='workspace'?0:-1} onClick={()=>setInfoTab('workspace')}>工作区</button><button type="button" id="models-tab" role="tab" aria-selected={infoTab==='models'} aria-controls="models-content" tabIndex={infoTab==='models'?0:-1} onClick={()=>setInfoTab('models')}>模型与能力</button></div>
-        <section id="workspace-content" role="tabpanel" aria-labelledby="workspace-tab" hidden={infoTab!=='workspace'}><div className="workspace-session"><span>当前会话</span><strong>{activeSession?.title||'新对话'}</strong></div><AgentWorkbenchPanel sessionId={threadId} base={new URL(API,window.location.href).origin} messages={items} onFork={loadSession} onReference={value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){setDraft(current=>(current?current.trimEnd()+' ':'')+value+' ');senderRef.current?.focus()}}}/><AgentActionList sessionId={threadId} base={new URL(API,window.location.href).origin} refreshKey={loading}/><p className="workspace-section-label">资源与能力</p>{workspaceResources.map(({icon:Icon,...resource})=><a className="workspace-resource" key={resource.path} href={new URL('#'+resource.path,LOGIN).toString()}><span className="workspace-resource-icon"><Icon size={17}/></span><span><strong>{resource.title}</strong><small>{resource.note}</small></span><ArrowUpRight size={13}/></a>)}<p className="info-note workspace-privacy"><ShieldCheck size={14}/>会话与记忆按账号隔离<br/>需要确认的操作请在确认页面核对</p></section>
-        <div id="models-content" role="tabpanel" aria-labelledby="models-tab" hidden={infoTab!=='models'}>
-          <AgentModelOverview catalog={catalog} modelCatalog={modelCatalog} catalogLoading={catalogLoading} modelLoading={modelCatalogLoading} catalogError={catalogError} modelError={modelCatalogError} authRequired={catalogAuthRequired || modelAuthRequired} onRefresh={refreshServiceCatalogs} loginHref={LOGIN} traceHref={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')} actionsHref={ACTIONS} reportsHref={REPORTS} modelQuotasHref={MODEL_QUOTAS}/>
+      <aside id="agent-info" className="agent-info" aria-labelledby="agent-info-heading" hidden={!infoOpen}>
+        <header className="info-heading">
+          {showModels&&<Button type="text" aria-label="返回任务与资料" title="返回任务与资料" icon={<ArrowLeft size={17} aria-hidden="true"/>} onClick={()=>setShowModels(false)}/>}
+          <strong id="agent-info-heading">{showModels?'模型与能力':'任务与资料'}</strong>
+          <Button type="text" aria-label="关闭侧栏" title="关闭侧栏" icon={<X size={17} aria-hidden="true"/>} onClick={closeWorkbench}/>
+        </header>
+        <div className="agent-info-body" hidden={showModels}>
+          <AgentWorkbenchPanel sessionId={threadId} base={new URL(API,window.location.href).origin} messages={items} attentionPhase={attentionPhase} onFork={loadSession} onReference={value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){setDraft(current=>(current?current.trimEnd()+' ':'')+value+' ');senderRef.current?.focus()}}}/>
         </div>
+        {showModels&&<div className="agent-info-body">
+          <AgentModelOverview catalog={catalog} modelCatalog={modelCatalog} catalogLoading={catalogLoading} modelLoading={modelCatalogLoading} catalogError={catalogError} modelError={modelCatalogError} authRequired={catalogAuthRequired || modelAuthRequired} onRefresh={refreshServiceCatalogs} loginHref={LOGIN} traceHref={traceHref} actionsHref={ACTIONS} reportsHref={REPORTS} modelQuotasHref={MODEL_QUOTAS}/>
+        </div>}
       </aside>
     </Layout>
   </ConfigProvider>;

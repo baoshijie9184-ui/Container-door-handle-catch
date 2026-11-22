@@ -1,5 +1,5 @@
 <template>
-  <section v-if="rows.length || error || availability" class="detection-transfer-reviews" :class="{'is-unavailable':compact}" aria-label="检测创建结果核对">
+  <section v-if="rows.length || error || (availability && (!quietUnavailable || !compact))" class="detection-transfer-reviews" :class="{'is-unavailable':compact}" aria-label="检测创建结果核对">
     <details v-if="availability" class="transfer-availability"><summary><AppIcon name="DocumentChecked" :size="15" />检测创建核对暂不可用</summary><p role="status">{{ availabilityMessage }}</p><el-button size="small" :loading="loading" :disabled="hasCurrentWrite()" @click="refresh">重新读取能力与状态</el-button></details>
     <header v-if="!compact" class="transfer-heading"><strong><AppIcon name="DocumentChecked" :size="17" />检测创建结果核对</strong><el-button size="small" :loading="loading" :disabled="hasCurrentWrite()" @click="refresh">刷新状态</el-button></header>
     <p v-if="!compact" class="transfer-intro">核对原创建命令的文件与回执，再决定是否完成创建。此处不重新上传图片。</p>
@@ -45,7 +45,7 @@ import { validTransferReview, canCheckTransfer, transferDecision, transferCount,
 import { beijingDateTime } from '@/utils/beijingTime'
 import { cardRoute } from '@/utils/agentCards'
 import '@/assets/detection-creation-review.css'
-const props = defineProps({ sessionId: String, refreshKey: [String, Number] })
+const props = defineProps({ sessionId: String, refreshKey: [String, Number], quietUnavailable:Boolean })
 const emit = defineEmits(['changed'])
 const userStore = useUserStore()
 const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]))

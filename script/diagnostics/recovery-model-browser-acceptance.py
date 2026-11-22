@@ -38,9 +38,9 @@ with sync_playwright() as playwright:
    context.route('**/api/**',api);context.route('**/agui/**',api)
    page=context.new_page();page.on('pageerror',lambda error:errors.append(str(error)))
    page.goto(url);page.wait_for_load_state('networkidle')
-   page.get_by_role('button',name='展开工作面板' if kind=='Vue' else '查看助手信息',exact=True).click()
-   panel=page.get_by_role('region',name='Agent 持久工作台');expect(panel).to_be_visible()
-   panel.get_by_role('button',name='恢复',exact=True).click()
+   toggle=page.get_by_role('button',name='任务与资料',exact=True)
+   if toggle.get_attribute('aria-expanded')!='true':toggle.click()
+   panel=page.get_by_role('region',name='Agent 持久工作台' if kind=='Vue' else '任务与资料工作台');expect(panel).to_be_visible()
    select=panel.get_by_label('恢复任务使用模型',exact=True)
    expect(select).to_have_value('KEEP');expect(panel).to_contain_text('dashscope:old · V7')
    panel.get_by_role('button',name='确认从检查点恢复',exact=True).click()
@@ -48,7 +48,7 @@ with sync_playwright() as playwright:
    assert len(state['posts'])==1 and state['posts'][-1]['input']=={}
    checks.append(f'{kind} {size} retains original configuration without an implicit switch')
    item['status']='NEEDS_REVIEW';item['revision']+=1
-   panel.get_by_role('button',name='刷新',exact=True).click();expect(select).to_be_visible()
+   panel.get_by_role('button',name='刷新工作台',exact=True).click();expect(select).to_be_visible()
    select.select_option('deepseek:new')
    panel.get_by_role('button',name='确认从检查点恢复',exact=True).click()
    dialog=page.get_by_role('dialog').filter(has_text='确认恢复模型');expect(dialog).to_contain_text('V9')
@@ -73,8 +73,9 @@ with sync_playwright() as playwright:
    assert state['posts'][-1]['requestId']!=state['posts'][-2]['requestId']
    checks.append(f'{kind} {size} stale configuration rejected, read-only refresh and confirmed new version')
    item['status']='NEEDS_REVIEW';item['revision']+=1;page.reload();page.wait_for_load_state('networkidle')
-   page.get_by_role('button',name='展开工作面板' if kind=='Vue' else '查看助手信息',exact=True).click()
-   panel=page.get_by_role('region',name='Agent 持久工作台');panel.get_by_role('button',name='恢复',exact=True).click()
+   toggle=page.get_by_role('button',name='任务与资料',exact=True)
+   if toggle.get_attribute('aria-expanded')!='true':toggle.click()
+   panel=page.get_by_role('region',name='Agent 持久工作台' if kind=='Vue' else '任务与资料工作台')
    expect(panel.get_by_label('恢复任务使用模型',exact=True)).to_have_value('KEEP')
    assert len(state['posts'])==3
    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')

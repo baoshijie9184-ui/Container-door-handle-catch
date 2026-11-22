@@ -6,6 +6,15 @@
 .agent-rail-link { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; color: #7c89a1; font-size: 20px; transition: background .18s, color .18s, transform .18s; }
 .agent-rail-link:hover { background: #f0f5ff; color: #2563eb; transform: translateY(-1px); }
 .agent-rail-link.selected { color: #2563eb; background: #eaf1ff; box-shadow: inset 0 0 0 1px #dae6ff; }
+.agent-more-button { border: 0; background: transparent; cursor: pointer; }
+.agent-more-menu .el-dropdown-menu {
+  max-height: min(420px, calc(100dvh - 48px));
+  overflow-y: auto;
+}
+.agent-more-menu .el-dropdown-menu__item { min-height: 39px; padding-inline: 16px 22px; gap: 8px; white-space: nowrap; }
+.agent-more-menu .el-dropdown-menu__item .el-icon { margin: 0; }
+.agent-more-menu .el-dropdown-menu__item.is-current { color: var(--app-primary); background: var(--app-primary-soft); }
+
 #app .is-agent-section .layout-header { min-height:58px; padding:10px 28px; background: #ffffffb8; }
 #app .is-agent-section .collapse-btn, #app .is-agent-section .assistant-entry-link { display: none; }
 #app .is-agent-section .layout-content { padding: 28px 36px; }

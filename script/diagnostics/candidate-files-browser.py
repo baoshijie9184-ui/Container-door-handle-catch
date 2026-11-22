@@ -5,7 +5,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import socket
 import subprocess
 import time
@@ -123,12 +122,12 @@ def main():
                     path = '/#/agent/chat?sessionId='+state['id'] if entry == 'vue' else '/agent-ui/?sessionId='+state['id']
                     page.goto(base+path, wait_until='networkidle')
                     check(entry+' uses standards mode and a mobile viewport', page.evaluate('document.compatMode==="CSS1Compat"&&document.querySelector("meta[name=viewport]")?.content.includes("width=device-width")'))
-                    toggle = page.get_by_role('button', name='展开工作面板' if entry == 'vue' else '查看助手信息', exact=True)
-                    if toggle.count() and toggle.is_visible():
+                    toggle = page.get_by_role('button', name='任务与资料', exact=True)
+                    if toggle.get_attribute('aria-expanded') != 'true':
                         toggle.click()
-                    workbench = page.get_by_role('region', name='Agent 持久工作台', exact=True)
+                    workbench = page.get_by_role('region', name='Agent 持久工作台' if entry == 'vue' else '任务与资料工作台', exact=True)
                     expect(workbench).to_be_visible()
-                    files_button = workbench.get_by_role('navigation', name='工作台视图').get_by_role('button', name=re.compile('文件'))
+                    files_button = workbench.get_by_role('navigation', name='工作台视图').get_by_role('button', name='资料', exact=True)
                     files_button.click()
                     for file in state['files']:
                         card = workbench.locator('article').filter(has_text=file['name'])

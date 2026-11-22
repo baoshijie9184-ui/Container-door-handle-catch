@@ -60,6 +60,21 @@ export class AgentWorkbenchClient {
  close(){this.generation++;clearTimeout(this.timer)}
 }
 export function workbenchRows(items,tab){if(tab==='PLAN')return items.filter(row=>['PLAN','TASKS','FORK_SNAPSHOT'].includes(row.kind));if(tab==='RECOVERY')return items.filter(row=>row.status==='NEEDS_REVIEW');if(tab==='EXECUTION')return items.filter(row=>['EXECUTION','CHILD','EXTERNAL_JOB'].includes(row.kind));if(tab==='USAGE')return items.filter(row=>['USAGE','CONTEXT','TOOL_TIMING'].includes(row.kind));return items.filter(row=>row.kind===tab)}
+
+const taskCapability = { PLAN:'plans', TASKS:'plans', FORK_SNAPSHOT:'plans', QUESTION:'questions', CHILD:'children', EXECUTION:'jobs', EXTERNAL_JOB:'jobs' }
+const settledTaskStatus = new Set(['APPROVED','CHANGES_REQUESTED','ANSWERED','COMPLETED','SUCCEEDED','CANCELLED','REJECTED','FAILED','EXPIRED','INVALIDATED','REFERENCE_ONLY','STOPPED','ABANDONED'])
+export function workbenchTaskGroups(items, capabilities = {}) {
+  const attention = [], active = [], history = []
+  for (const row of items) {
+    if (!Object.hasOwn(taskCapability, row.kind)) continue
+    const needsRecovery = row.status === 'NEEDS_REVIEW' && capabilities.recovery !== false
+    if (capabilities[taskCapability[row.kind]] === false && !needsRecovery) continue
+    if (needsRecovery || (row.status === 'PENDING' && ['PLAN','QUESTION'].includes(row.kind))) attention.push(row)
+    else if (settledTaskStatus.has(row.status)) history.push(row)
+    else active.push(row)
+  }
+  return { current:[...attention, ...active], history }
+}
 export function tokenDisplay(value){return Number.isSafeInteger(value)&&value>=0?value.toLocaleString('zh-CN'):'未知'}
 
 export function contextPhaseText(phase){return ({PERSISTED:'已保存摘要',OFFLOADED:'私有工具资料',CONTEXT_STARTED:'正在生成摘要',CONTEXT_COMPLETED:'已应用压缩',CONTEXT_FAILED:'保留原上下文',CONTEXT_CANCELLED:'摘要已取消'})[phase]||phase||'未知'}
