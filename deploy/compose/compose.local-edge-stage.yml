@@ -1,0 +1,5 @@
+# 临时验收期间保留现有 Nginx 入口；正式切换时移除此叠加层。
+services:
+  nginx:
+    ports: !override
+      - "${NGINX_BIND_ADDRESS:-127.0.0.1}:${NGINX_PORT:-8088}:80"

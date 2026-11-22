@@ -9,9 +9,10 @@ spec:
   registries:
     - name: doorhandle-web
       type: dns
-      domain: nginx
+      domain: doorhandle-web.local
       port: 80
     - name: doorhandle-traces
       type: dns
-      domain: otel-collector
+      domain: doorhandle-traces.local
       port: 4317
+      protocol: GRPC

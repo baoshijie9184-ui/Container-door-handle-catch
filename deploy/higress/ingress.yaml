@@ -6,7 +6,7 @@ metadata:
   creationTimestamp: "2000-01-01T00:00:00Z"
   resourceVersion: "1"
   annotations:
-    higress.io/destination: doorhandle-web.dns
+    higress.io/destination: doorhandle-web.dns:80
     higress.io/ignore-path-case: "false"
 spec:
   rules:
