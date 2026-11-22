@@ -1,6 +1,6 @@
 # Agent 开发
 
-当前 Agent 是 `java-cloud` 单体的一部分。角色入口、专业委派和模型调用在 `doorhandle-module-ai`；主站聊天和独立 AG-UI 使用 AgentScope Java 2.0.4。旧 StateGraph、旧 Router/Checkpoint 和独立 DeepSeek 客户端是历史实现，不作为新功能入口。
+当前 Agent 是 `java-cloud` 单体的一部分。角色入口、专业委派和模型调用在 `doorhandle-module-ai`；主站聊天和独立 AG-UI 共用 AgentScope Java Harness 的 ReAct 执行和同一套应用工作台。SDK 固定为 2.0.5，模型标识仍由应用配置。 [Harness 架构](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/architecture.md) · [2.0.5 发行说明](https://github.com/agentscope-ai/agentscope-java/releases/tag/v2.0.5)
 
 ## 从哪里改起
 
@@ -23,16 +23,19 @@
 
 凭据读取为强制拒绝，人工确认不能授予账户密码、密码哈希、访问令牌或密钥的读取权。明确的凭据读取请求在模型、知识检索和记忆提炼前返回拒绝。工具接口仅提供约定的业务能力和字段，未注册的请求直接拦截。Fetch 仅使用用户在当前请求中提供的公开网址，继续由服务端校验实际网络地址。
 
-## AgentScope Java 2.0.4 对照
+## AgentScope Java 2.0.5 对照
 
 | 能力 | 当前方案 |
 | --- | --- |
-| 工具与人工确认 | 用 SDK 工具白名单和运行中间件配合业务授权。分派沿用持久确认卡片。计划评审通过 `/plan` 主动开启，普通查询直接执行。 [权限系统](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/building-blocks/permission-system.md) · [中间件](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/building-blocks/middleware.md) · [计划模式](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/harness/plan-mode.md) |
-| 会话、上下文与委派 | 以账号和会话为状态键，沿用 MySQL 检查点、租约与恢复。按角色委派专业 Agent，子任务重新校验账号和工具。聊天历史和续跑会重新核对来源权限，上下文压缩可选。 [会话状态](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/building-blocks/context.md) · [委派](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/harness/subagent.md) · [上下文压缩](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/harness/compaction.md) |
-| 技能、自进化与 SOP | 用 SDK 技能加载器读取批准版本。从本人授权的运行提炼草稿，版本经过结构评测和主管独立审核后发布，外链脚本仅归档。 [技能与自学习流程](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/harness/skill.md) |
-| 个人记忆 | Mem0 和 Qdrant 按账号提供记忆提炼、召回和生命周期控制。关闭 SDK 文件记忆写入，避免同一信息分散到两套存储。 [记忆](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/harness/memory.md) |
-| MCP 与工作区 | SDK 处理协议与工具发现。应用核对固定 Fetch 安装、启用状态、请求网址和退出回执。8080 使用受控 Stdio，通用 Shell 和工作区文件工具关闭。 [工具与 MCP](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/building-blocks/tool.md) · [沙箱](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/harness/sandbox.md) |
-| 模型与观测 | 使用 SDK 模型扩展与 OpenTelemetry 生命周期。应用记录模型身份和额度，按白名单输出追踪字段。业务事件通过主站和 AG-UI 展示。 [模型](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/docs/building-blocks/model.md) · [AG-UI](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.4/docs/v2/en/integration/protocol/agui.md) |
+| 工具与人工确认 | 用 SDK 工具白名单和运行中间件配合业务授权。分派沿用持久确认卡片。计划评审通过 `/plan` 主动开启，普通查询直接执行。 [权限系统](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/building-blocks/permission-system.md) · [中间件](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/building-blocks/middleware.md) · [计划模式](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/plan-mode.md) |
+| 会话与上下文 | 以账号和会话为状态键。模型历史、检查点和分支复核实际来源，聊天原文保存在会话中。工作台共用 MySQL 检查点、租约与版本控制，上下文压缩可选。 [会话状态](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/building-blocks/context.md) · [上下文压缩](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/compaction.md) |
+| 专业委派与调度 | 主管和员工拥有不同的业务专业角色。专业子任务使用独立执行记录，父任务可以读取同一逻辑任务的子结果。若子任务已结束、父任务已保存续跑点，调度器能从 MySQL 恢复未送达的通知。 [专业委派](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/subagent.md) · [生产运行](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/others/going-to-production.md) |
+| 技能、自进化与 SOP | 用 SDK 技能加载器读取批准版本。当前任务固定读取的版本，续跑和历史引用重新核对发布状态。从本人授权的运行提炼草稿，版本经过结构评测和主管独立审核后发布，外链脚本仅归档。 [技能与自学习流程](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/skill.md) |
+| 检索与个人记忆 | Mem0 和 Qdrant 按账号提炼和召回。召回的记忆及受控知识保留原始编号和内容依据，复用时检查当前读取偏好、访问权限和生命周期。Mem0 是唯一长期记忆入口。 [记忆](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/memory.md) |
+| MCP 与工作区 | SDK 处理协议与工具发现。应用核对固定 Fetch 安装、启用状态、请求网址和退出回执。8080 使用受控 Stdio 及业务会话文件接口。SDK 文件工具、Shell 和远程沙箱没有暴露给业务 Agent。 [工具与 MCP](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/building-blocks/tool.md) · [工作区](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/workspace.md) · [文件系统](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/filesystem.md) · [沙箱](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/sandbox.md) |
+| 模型与用量 | 使用 SDK 模型扩展，应用按实际供应商请求记录模型、额度及用量。模型回退需要显式模型列表和启用配置。 [模型](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/building-blocks/model.md) |
+| 渠道与实时事件 | 主站和 AG-UI 共用账号、会话和工作台。AgentScope 的增量事件负责进度，工具进度实时返回，最终回答通过来源与执行回执检查才显示。外部渠道属于独立接入范围。 [消息与事件](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/building-blocks/message-and-event.md) · [渠道](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/harness/channel.md) · [AG-UI](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/integration/protocol/agui.md) |
+| 观测与评测 | Higress、Java 和 Mem0 的追踪进入 Langfuse。只有实际模型供应商尝试计入用量，SDK 生命周期保留为追踪。Prometheus 负责运行指标，离线规则评测校验工具权限、写入副作用和业务事实。 [中间件](https://raw.githubusercontent.com/agentscope-ai/agentscope-java/v2.0.5/docs/v2/en/docs/building-blocks/middleware.md) · [本项目评测](agentscope-eval.md) |
 
 ## 接线与验收
 

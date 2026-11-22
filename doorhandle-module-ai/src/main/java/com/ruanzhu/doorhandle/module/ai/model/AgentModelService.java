@@ -6,6 +6,7 @@ import io.agentscope.core.model.*;
 import io.agentscope.core.model.transport.ProxyConfig;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.extensions.model.openaiofficial.OpenAIResponsesIoBridge;
+import io.github.resilience4j.bulkhead.Bulkhead;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AgentModelService implements AutoCloseable {
     private final AgentModelProperties connections;
     private final AgentScopeProperties agent;
+    private final Bulkhead providerSlots;
     private final Map<String, Model> models = new ConcurrentHashMap<>();
     private final Map<String, ModelCircuit> health = new ConcurrentHashMap<>();
     private boolean closed;
@@ -82,7 +84,7 @@ public class AgentModelService implements AutoCloseable {
             if(!evicted)throw new IllegalStateException("模型版本执行资源已满，请稍后重试");
         }
         var snapshot=configurations.runtime(revision);var settings=new AgentScopeProperties();settings.setModel(snapshot.document().defaultModel());
-        var client=new AgentModelService(deploymentTransport(snapshot.properties(),connections),settings);
+        var client=new AgentModelService(deploymentTransport(snapshot.properties(),connections),settings,providerSlots);
         client.budget=budget;
         if(circuitRedis==null)throw new RedisModelCircuit.Unavailable();
         client.circuitRedis=circuitRedis;client.circuitRevision=revision;
@@ -116,8 +118,13 @@ public class AgentModelService implements AutoCloseable {
     }
 
     public AgentModelService(AgentModelProperties connections, AgentScopeProperties agent) {
+        this(connections,agent,ManagedAgentModel.providerBulkhead(connections.getMaxConcurrentCalls()));
+    }
+
+    private AgentModelService(AgentModelProperties connections,AgentScopeProperties agent,Bulkhead providerSlots) {
         this.connections = connections;
         this.agent = agent;
+        this.providerSlots = providerSlots;
         positive(connections.getTimeout()); positive(connections.getFirstTokenTimeout());
         positive(connections.getCircuitCooldown()); positive(connections.getQuotaCooldown());
         if (connections.getFirstTokenTimeout().compareTo(connections.getTimeout()) > 0)
@@ -141,7 +148,7 @@ public class AgentModelService implements AutoCloseable {
         }
         return new ManagedAgentModel(candidates, GenerateOptions.builder()
                 .maxTokens(connections.getMaxOutputTokens()).executionConfig(execution()).build(), connections,
-                connections.isFallbackEnabled() || circuitRedis != null).budget(budget);
+                connections.isFallbackEnabled() || circuitRedis != null,providerSlots).budget(budget);
     }
     private ModelCircuit circuit(String id){return circuitRedis==null?new ModelCircuit(connections.getFailureThreshold(),connections.getCircuitCooldown(),connections.getQuotaCooldown()):new RedisModelCircuit(circuitRedis,circuitRevision,id,connections.getFailureThreshold(),connections.getCircuitCooldown(),connections.getQuotaCooldown(),connections.getTimeout());}
 

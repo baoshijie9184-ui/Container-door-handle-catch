@@ -41,6 +41,7 @@ class OtlpHttpContractTest {
             try(var provider=new ObservabilityConfiguration().doorhandleTracerProvider(p,meters)){
                 var span=provider.get("fixture").spanBuilder("private prompt").startSpan();
                 span.setAttribute("gen_ai.operation.name","chat").setAttribute("gen_ai.request.model","fixture-model")
+                        .setAttribute("doorhandle.observation.kind","provider_attempt")
                         .setAttribute("user.id","private-user").setAttribute("gen_ai.input.messages","private-password")
                         .setStatus(StatusCode.ERROR,"private-exception").recordException(new IllegalStateException("private-exception"));
                 span.end();provider.forceFlush().join(5,TimeUnit.SECONDS);
@@ -48,7 +49,8 @@ class OtlpHttpContractTest {
             assertThat(auth.get()).isEqualTo("Basic "+Base64.getEncoder().encodeToString((publicKey+":"+secretKey).getBytes(StandardCharsets.UTF_8)));
             assertThat(version.get()).isEqualTo("4");assertThat(contentType.get()).startsWith("application/x-protobuf");
             assertThat(body.get()).isNotEmpty();
-            assertThat(new String(body.get(),StandardCharsets.ISO_8859_1)).contains("fixture-model").doesNotContain("private-","private prompt");
+            assertThat(new String(body.get(),StandardCharsets.ISO_8859_1)).contains("fixture-model","langfuse.observation.type","generation")
+                    .doesNotContain("private-","private prompt");
         }finally{try{meters.close();}finally{receiver.stop(0);}}
     }
 }

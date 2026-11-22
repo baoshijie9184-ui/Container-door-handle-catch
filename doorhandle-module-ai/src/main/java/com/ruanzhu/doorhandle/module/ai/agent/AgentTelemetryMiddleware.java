@@ -18,7 +18,7 @@ final class AgentTelemetryMiddleware extends OtelTracingMiddleware {
     private final Attributes attributes;
     AgentTelemetryMiddleware(String agent,String role,String run,String model,long version,String sop){
         var data=Attributes.builder().put("gen_ai.agent.name",agent).put("doorhandle.role",role)
-                .put("gen_ai.request.model",model).put("doorhandle.model.config_version",Long.toString(version))
+                .put("doorhandle.model.route",model).put("doorhandle.model.config_version",Long.toString(version))
                 .put("langfuse.trace.name","agent.run");
         if(run!=null&&!run.isBlank()){data.put("doorhandle.run.id",run);data.put("langfuse.trace.metadata.run_id",run);}
         if(sop!=null&&!sop.isBlank())data.put("doorhandle.sop.version",sop);

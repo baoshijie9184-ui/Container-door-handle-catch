@@ -5,6 +5,8 @@ import java.util.List;
 /** App owns canonical chat history and private context files. No SDK state or filesystem paths cross this boundary. */
 public interface AgentContextDataApi {
     record Source(String kind,String resourceId,String version) {}
+    /** Identifies seeds and answers covered by the current reference-source policy. */
+    Source RETRIEVAL_POLICY_V2 = new Source("RETRIEVAL_POLICY", "managed-reference", "2");
     record Message(long id,String role,String text,List<Source> sources) {}
     record History(long throughId,List<Message> messages,boolean hasMore) {}
     History history(AgentActor actor,String session,long afterId,long throughId,int limit);

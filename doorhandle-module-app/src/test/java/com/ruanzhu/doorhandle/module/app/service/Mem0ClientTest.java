@@ -1,6 +1,11 @@
 package com.ruanzhu.doorhandle.module.app.service;
 
+import com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.Source;
+import com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos;
 import com.ruanzhu.doorhandle.module.system.security.SensitiveDataSanitizer;
+import java.util.List;
+import java.util.Map;
+import org.springframework.test.util.ReflectionTestUtils;
 import com.ruanzhu.doorhandle.module.system.security.TenantContext;
 import org.junit.jupiter.api.Test;
 
@@ -8,8 +13,46 @@ import java.util.Arrays;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.*;
 
 class Mem0ClientTest {
+    @Test void referenceRequiresCurrentOwnedTextAndLifecycle() {
+        var tenant = new TenantContext(42L, "alice");
+        var preferences = mock(MemoryPreferenceService.class);
+        when(preferences.get(tenant)).thenReturn(new MemoryDtos.Preference(true, false, 1, null));
+        var client = spy(new Mem0Client(new SensitiveDataSanitizer(), preferences));
+        ReflectionTestUtils.setField(client, "enabled", true);
+        doReturn(List.of(Map.of("id", "first", "memory", "过期的原始偏好"),
+                Map.of("id", "second", "memory", "向量中的旧正文"),
+                Map.of("id", "third", "memory", "本人当前偏好"))).when(client)
+                .searchAccountMemories(tenant, "s1", "我的偏好", 10);
+        String digest = "a".repeat(64);
+        var expired = new MemoryDtos.Lifecycle("first", 1, "ACTIVE", "2020-01-01T00:00:00Z", false, "NONE", null);
+        doReturn(new MemoryDtos.Item("first", "过期的原始偏好", "old", null, null, digest, expired)).when(client).getOwned(tenant, "first");
+        var updated = new MemoryDtos.Lifecycle("second", 2, "ACTIVE", null, false, "NONE", null);
+        doReturn(new MemoryDtos.Item("second", "已被用户编辑", "old", null, null, digest, updated)).when(client).getOwned(tenant, "second");
+        var active = new MemoryDtos.Lifecycle("third", 3, "ACTIVE", null, false, "NONE", null);
+        doReturn(new MemoryDtos.Item("third", "本人当前偏好", "old", null, null, digest, active)).when(client).getOwned(tenant, "third");
+
+        var reference = client.accountReference(tenant, "s1", "我的偏好", 10, 2000);
+
+        assertThat(reference.text()).contains("本人当前偏好").doesNotContain("过期", "向量中的旧正文");
+        assertThat(reference.sources()).containsExactly(new Source("MEMORY", "third", "3:" + digest));
+        client.assertContextSources(tenant, reference.sources());
+
+        var excluded = new MemoryDtos.Lifecycle("third", 4, "EXCLUDED", null, false, "NONE", null);
+        doReturn(new MemoryDtos.Item("third", "本人当前偏好", "old", null, null, digest, excluded)).when(client).getOwned(tenant, "third");
+        assertThatThrownBy(() -> client.assertContextSources(tenant, reference.sources()))
+                .isInstanceOf(SecurityException.class).hasMessageContaining("记忆已变化");
+
+        when(preferences.get(tenant)).thenReturn(new MemoryDtos.Preference(false, false, 2, null));
+        clearInvocations(client);
+        assertThatThrownBy(() -> client.assertContextSources(tenant, reference.sources()))
+                .isInstanceOf(SecurityException.class).hasMessageContaining("已停用记忆读取");
+        verify(client, never()).getOwned(any(), anyString());
+    }
+
     @Test void reviewHttpBridgePreservesPendingStatesOwnershipVersionsAndUnknownUsage()throws Exception{
         var json=new com.fasterxml.jackson.databind.ObjectMapper();var paths=new java.util.ArrayList<String>();var bodies=new java.util.ArrayList<com.fasterxml.jackson.databind.JsonNode>();
         var payload=json.readTree("""

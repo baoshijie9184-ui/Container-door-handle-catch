@@ -16,7 +16,8 @@ public final class RedactingSpanExporter implements SpanExporter {
     private static final Set<String> TEXT=Set.of("gen_ai.operation.name","gen_ai.agent.name","gen_ai.request.model",
             "gen_ai.tool.name","doorhandle.run.id","doorhandle.model.config_version","doorhandle.tool.policy_version",
             "doorhandle.sop.version","doorhandle.role","langfuse.trace.name","langfuse.trace.metadata.run_id",
-            "db.system.name","doorhandle.index.kind","gen_ai.provider.name","doorhandle.model.id","doorhandle.observation.kind");
+            "db.system.name","doorhandle.index.kind","doorhandle.embedding.model","gen_ai.provider.name",
+            "doorhandle.model.id","doorhandle.model.route","doorhandle.observation.kind");
     private final SpanExporter delegate;
     private final String serviceName;
     public RedactingSpanExporter(SpanExporter delegate,String serviceName){this.delegate=delegate;this.serviceName=serviceName;}

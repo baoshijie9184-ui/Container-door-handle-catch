@@ -168,13 +168,24 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                 || Character.isWhitespace(value.codePointAt(command.length())));
     }
     private DurableContextStore contextStore(){return contexts==null?null:contexts.getIfAvailable();}
+    public boolean durableContextEnabled(){return contextStore()!=null;}
     private void assertCheckpointReadable(AgentActor actor,String session,WorkbenchStore.Row execution){
         var context=contextStore();
         if(context!=null)context.assertCheckpointReadable(actor,session,execution.kind().equals("CHILD")?"child:"+execution.id():"main",(String)execution.data().get("logicalTaskId"));
     }
     private boolean mayDispatchCheckpoint(AgentActor actor,String session,WorkbenchStore.Row execution){
-        try{assertCheckpointReadable(actor,session,execution);return true;}
-        catch(ResponseStatusException failure){if(failure.getStatusCode().value()==409)return false;throw failure;}
+        try{
+            assertCheckpointReadable(actor,session,execution);
+            return true;
+        }catch(DurableContextStore.CheckpointSourceChanged failure){
+            var data=new LinkedHashMap<>(execution.data());
+            data.put("text",failure.getReason());
+            store.update(execution,"NEEDS_REVIEW",data,"CHECKPOINT_SOURCE_CHANGED");
+            return false;
+        }catch(ResponseStatusException failure){
+            if(failure.getStatusCode().value()==409)return false;
+            throw failure;
+        }
     }
     @Override public Item command(AgentActor actor,String session,String id,long revision,String request,String action,Map<String,Object> input){
         owned(actor,session);if(input==null)input=Map.of();final var body=input;
@@ -288,9 +299,14 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             dispatchCursor=candidate.cursor();
             if(candidate.legacyClockEvidence()!=null)continue;
             long user=candidate.user();String session=candidate.session(),id=candidate.id();var payload=candidate.data();
-            AgentActor actor=new AgentActor(user,(String)payload.get("username"),AgentActor.Role.valueOf((String)payload.get("role")));
-            try{owned(actor,session);var row=store.require(user,session,id);if(row.legacyClockEvidence()!=null)continue;
+            try{
+                var actor=new AgentActor(user,(String)payload.get("username"),AgentActor.Role.valueOf((String)payload.get("role")));
+                owned(actor,session);var row=store.require(user,session,id);if(row.legacyClockEvidence()!=null)continue;
                 if(row.kind().equals("EXECUTION")){
+                    if(row.status().equals("WAITING_CHILD")){
+                        settleWaitingParent(actor,session,id,row.data().get("logicalTaskId"));
+                        continue;
+                    }
                     store.locked(user,()->{
                         var current=store.require(user,session,id);
                         if(current.legacyClockEvidence()!=null||!current.kind().equals("EXECUTION")||!current.status().equals("READY"))return null;
@@ -342,11 +358,24 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         }catch(RuntimeException error){interrupted=Thread.interrupted();org.slf4j.LoggerFactory.getLogger(getClass()).warn("专业任务未完成：item={}, errorType={}",job.id(),error.getClass().getSimpleName());if(scope!=null){if(scope.waiting())scope.checkpointStatus();else scope.finish("NEEDS_REVIEW","");}else{var current=store.require(actor.userId(),session,job.id());if(current.status().equals("RUNNING")&&Objects.equals(current.claimToken(),job.claimToken())&&current.fence()==job.fence())store.update(current,"NEEDS_REVIEW",current.data(),"CHILD_START_FAILED");}if(audit!=null)audit.finish(store.require(actor.userId(),session,job.id()).status().equals("CANCELLED")?"CANCELLED":"INTERRUPTED");}
         finally{interrupted=Thread.interrupted()||interrupted;try{if(agent!=null)agent.close();}finally{try{if(scope!=null)scope.release();}finally{releaseAttempt(job.id(),scope==null?"claim:"+job.revision():scope.runId());childSlots.release();try{wakeParent(actor,session,job.id());}catch(RuntimeException ignored){}if(interrupted)Thread.currentThread().interrupt();}}}
     }
-    private void wakeParent(AgentActor actor,String session,String childId){var child=store.require(actor.userId(),session,childId);String parent=(String)child.data().get("parentId");var row=store.require(actor.userId(),session,parent);
-        if(!row.status().equals("WAITING_CHILD")||!Boolean.TRUE.equals(row.data().get("yieldReady")))return;
-        if(!Objects.equals(child.data().get("parentTaskId"),row.data().get("logicalTaskId")))return;
-        if(store.childRows(actor.userId(),session,parent,row.data().get("logicalTaskId")).stream().anyMatch(entry->Set.of("QUEUED","RUNNING","WAITING_INPUT","WAITING_PLAN","NEEDS_REVIEW").contains(entry.status())))return;
-        var data=new LinkedHashMap<>(row.data());data.put("continuation","专业子任务已结束，请使用 get_background_task 读取结果并汇总；失败或取消不代表任务完成。");store.update(row,"READY",data,"CHILDREN_SETTLED");
+    private void wakeParent(AgentActor actor,String session,String childId){
+        var child=store.require(actor.userId(),session,childId);
+        settleWaitingParent(actor,session,(String)child.data().get("parentId"),child.data().get("parentTaskId"));
+    }
+    private void settleWaitingParent(AgentActor actor,String session,String parent,Object task){
+        store.locked(actor.userId(),()->{
+            var row=store.require(actor.userId(),session,parent);
+            if(row.legacyClockEvidence()!=null||!row.status().equals("WAITING_CHILD")||!Boolean.TRUE.equals(row.data().get("yieldReady"))
+                    ||task==null||!task.equals(row.data().get("logicalTaskId")))return null;
+            var children=store.childRows(actor.userId(),session,parent,task);
+            if(children.isEmpty()||children.stream().anyMatch(child->child.legacyClockEvidence()!=null
+                    ||!Set.of("COMPLETED","CANCELLED").contains(child.status())))return null;
+            if(!store.committedWait(row)||!mayDispatchCheckpoint(actor,session,row))return null;
+            var data=new LinkedHashMap<>(row.data());
+            data.put("continuation","专业子任务已结束，请使用 get_background_task 读取结果并汇总；失败或取消不代表任务完成。");
+            store.update(row,"READY",data,"CHILDREN_SETTLED");
+            return null;
+        });
     }
     @Scheduled(fixedDelay=10000) public void recoverStale(){
         // Renewal is bound to one durable token/fence and cannot resurrect an expired attempt.
@@ -370,10 +399,17 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         private final JdbcWorkbenchStateStore sdkStateStore;
         private final WorkbenchStore.Attempt attempt;
         private List<Msg> initialContext=List.of();
+        private List<AgentContextDataApi.Source> initialSources=List.of();
         public AgentActor contextActor(){return actor;}public String contextSession(){return session;}public String contextTask(){return logicalTaskId;}
         public String contextKey(){return specialist==null?"main":"child:"+jobId;}
         public boolean restoringContext(){return stateStore().exists(Long.toString(actor.userId()),sdkSession());}
         public void bindContextInput(List<Msg> messages,int historySize){initialContext=List.copyOf(messages.subList(Math.min(historySize,messages.size()),messages.size()));}
+        public void bindContextSources(List<AgentContextDataApi.Source> sources){initialSources=List.copyOf(sources);}
+        public List<AgentContextDataApi.Source> initialContextSources(){return initialSources;}
+        public void assertContextReadable(){
+            var context=contextStore();
+            if(context!=null)context.assertTaskReadable(actor,session,logicalTaskId);
+        }
         public List<Msg> initialContextMessages(){return specialist==null?initialContext:List.of(new UserMessage(Objects.toString(store.require(actor.userId(),session,jobId).data().get("question"),"")));}
         public void persistContext(Agent agent,RuntimeContext context){if(!settings.isRecovery())throw new IllegalStateException("持久上下文要求启用检查点恢复");checkpoint(agent,context==null?RuntimeContext.empty():context,"CONTEXT_INITIALIZED");}
         Scope(AgentActor actor,String session,String jobId,String runId,String specialist){this.actor=actor;this.session=session;this.jobId=jobId;this.runId=runId;this.specialist=specialist;var current=store.require(actor.userId(),session,jobId);this.logicalTaskId=Objects.toString(current.data().get("logicalTaskId"));this.attempt=store.attempt(current);if(!Objects.equals(runId,attempt.runId()))throw fail(409,"执行尝试已变化");this.sdkStateStore=new JdbcWorkbenchStateStore(store,true,()->store.assertAttempt(attempt),Long.toString(actor.userId()),sdkSession());}
@@ -505,7 +541,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             for(String name:Set.copyOf(toolkit.getToolNames())){var original=toolkit.getTool(name);toolkit.removeTool(name);toolkit.registerAgentTool(wrap(original));}
         }
         private AgentTool tool(String name){return new AgentTool(){
-            public String getName(){return name;}public String getDescription(){return switch(name){case "submit_plan"->"提交执行计划并等待用户批准。title/text 必填，可带 tasks。";case "update_task_list"->"整表更新任务清单，tasks 包含 title、status（pending/in_progress/completed/failed）和可选 evidenceCallId。";case "ask_user_question"->"向用户提问并等待回答。questionType 为 SINGLE/MULTIPLE/TEXT，选项用 options 字符串数组。";case "list_workspace_files"->"列出本人会话文件及服务端文件编号。";case "read_workspace_file"->"按 fileId 读取已授权 UTF-8 文本或 PDF 文字层，不接受路径。PDF 不含图片识别，扫描件和图片尚无 OCR/视觉能力；截断内容不可视为完整文件。";case "read_context_file"->"按当前 Agent 绑定的 fileId、sha256、offset 和 limit 分段读取已完成工具的私有结果，offset 按 Unicode 字符计数，最多 16000 字符；返回 end=false 时不能当作全文，使用 nextOffset 继续。不得提供路径或读取其他 Agent 资料。";case "create_artifact"->"生成本人会话的 md/csv/json 文件，提供 filename/content。";case "start_background_task"->"按 specialist 和 question 启动当前角色允许的专业后台任务。";default->"按 itemId 读取本人后台任务状态和结果。";};}
+            public String getName(){return name;}public String getDescription(){return switch(name){case "submit_plan"->"提交执行计划并等待用户批准。title/text 必填，可带 tasks。";case "update_task_list"->"整表更新任务清单，tasks 包含 title、status（pending/in_progress/completed/failed）和可选 evidenceCallId。";case "ask_user_question"->"向用户提问并等待回答。questionType 为 SINGLE/MULTIPLE/TEXT，选项用 options 字符串数组。";case "list_workspace_files"->"列出本人会话文件及服务端文件编号。";case "read_workspace_file"->"按 fileId 读取已授权 UTF-8 文本或 PDF 文字层，不接受路径。PDF 不含图片识别，扫描件和图片尚无 OCR/视觉能力；截断内容不可视为完整文件。";case "read_context_file"->"按当前 Agent 绑定的 fileId、sha256、offset 和 limit 分段读取已完成工具的私有结果，offset 按 Unicode 字符计数，最多 16000 字符；返回 end=false 时不能当作全文，使用 nextOffset 继续。不得提供路径或读取其他 Agent 资料。";case "create_artifact"->"生成本人会话的 md/csv/json 文件，提供 filename/content。";case "start_background_task"->"按 specialist 和 question 启动当前角色允许的专业后台任务。";default->"按 itemId 读取本轮后台任务状态和结果。";};}
             public boolean isReadOnly(){return Set.of("list_workspace_files","read_workspace_file","read_context_file","get_background_task").contains(name);}
             public Map<String,Object> getParameters(){var properties=new LinkedHashMap<String,Object>();for(String key:List.of("title","text","questionType","fileId","filename","content","specialist","question","itemId"))properties.put(key,Map.of("type","string"));properties.put("options",Map.of("type","array","items",Map.of("type","string"),"maxItems",8));properties.put("tasks",Map.of("type","array","items",Map.of("type","object"),"maxItems",30));
                 if(name.equals("read_context_file"))return Map.of("type","object","additionalProperties",false,"required",List.of("fileId","sha256"),"properties",Map.of("fileId",Map.of("type","string","pattern","^[a-f0-9-]{36}$"),"sha256",Map.of("type","string","pattern","^[a-f0-9]{64}$"),"offset",Map.of("type","integer","minimum",0),"limit",Map.of("type","integer","minimum",1,"maximum",16000)));
@@ -531,7 +567,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                 case "read_workspace_file"->{return ToolResultBlock.text(sessions.getObject().readText(actor,session,required(input,"fileId",64)));}
                 case "create_artifact"->{var file=sessions.getObject().createArtifact(actor,session,id,required(input,"filename",200),required(input,"content",500000));data.put("fileId",file.id());data.put("filename",file.name());record(id,"ARTIFACT","COMPLETED",data);return ToolResultBlock.text(store.encode(file));}
                 case "start_background_task"->{var child=child(actor,session,jobId,logicalTaskId,runId,required(input,"specialist",100),required(input,"question",4000),callId);waitFor("WAITING_CHILD");return ToolResultBlock.text(store.encode(store.view(child)));}
-                case "get_background_task"->{var child=store.require(actor.userId(),session,required(input,"itemId",64));if(!child.kind().equals("CHILD")||!jobId.equals(child.data().get("parentId")))throw fail(403,"此子任务不属于当前 Agent");if(child.data().containsKey("result"))assertCheckpointReadable(actor,session,child);return ToolResultBlock.text(store.encode(store.view(child)));}
+                case "get_background_task"->{var child=store.require(actor.userId(),session,required(input,"itemId",64));if(!child.kind().equals("CHILD")||!jobId.equals(child.data().get("parentId"))||!logicalTaskId.equals(child.data().get("parentTaskId")))throw fail(403,"此子任务不属于当前执行");if(child.data().containsKey("result"))assertCheckpointReadable(actor,session,child);return ToolResultBlock.text(store.encode(store.view(child)));}
                 default->throw fail(400,"工具无效");
             }
             return ToolResultBlock.text("已保存 "+name+"，编号 "+id+"。等待用户的状态不代表批准或完成。");
@@ -544,7 +580,11 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             return tool.equals("read_context_file")?result:context.offload(actor,session,contextKey(),key,result);
         }
         public AgentTool wrap(AgentTool delegate){return new AgentTool(){
-            public String getName(){return delegate.getName();}public String getDescription(){return delegate.getDescription();}public Map<String,Object> getParameters(){return delegate.getParameters();}public boolean isReadOnly(){return delegate.isReadOnly();}public Boolean getStrict(){return delegate.getStrict();}
+            public String getName(){return delegate.getName();}public String getDescription(){return delegate.getDescription();}public Map<String,Object> getParameters(){return delegate.getParameters();}public Boolean getStrict(){return delegate.getStrict();}
+            public boolean isReadOnly(){
+                // Published project skills expose markdown only, without script or bundled tool execution.
+                return delegate.isReadOnly()||com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD.equals(getName());
+            }
             private ToolResultBlock contextResult(ToolCallParam param,ToolResultBlock result){return contextToolResult(param.getToolUseBlock().getId(),getName(),param.getInput(),result);}
             public Mono<ToolResultBlock> callAsync(ToolCallParam param){return Mono.defer(()->{
                 owned(actor,session);store.assertAttempt(Scope.this.attempt);var attempt=store.require(actor.userId(),session,jobId);if(!Objects.equals(runId,attempt.data().get("runId"))||Set.of("CANCELLED","COMPLETED","NEEDS_REVIEW").contains(attempt.status()))return Mono.error(fail(409,"此执行尝试已结束，不能继续调用工具"));String call=param.getToolUseBlock().getId(),id=toolId(call);var old=store.find(actor.userId(),session,id);

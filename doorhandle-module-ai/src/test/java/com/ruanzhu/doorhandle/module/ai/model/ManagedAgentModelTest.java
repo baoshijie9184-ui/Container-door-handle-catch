@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import com.ruanzhu.doorhandle.module.ai.config.AgentModelProperties;
+import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
 import io.agentscope.core.model.transport.HttpTransportException;
 import io.agentscope.core.message.ThinkingBlock;
 import io.agentscope.core.message.ToolUseBlock;
@@ -32,6 +33,35 @@ class ManagedAgentModelTest {
         when(primary.stream(anyList(),anyList(),any())).thenReturn(Flux.just(answer("restored")));
         assertThat(managed.stream(List.of(),List.of(),null).blockLast()).isNotNull();
         verify(primary,times(2)).stream(anyList(),anyList(),any());verifyNoInteractions(fallback);
+    }
+    @Test void modelServiceSharesTheProviderLimitAcrossDistinctRouteWrappers(){
+        var settings=new AgentModelProperties();
+        settings.setMaxConcurrentCalls(1);
+        settings.getOpenai().setAdditionalModels(List.of("backup-model"));
+        var primary=model();
+        var backup=model();
+        when(primary.stream(anyList(),anyList(),any())).thenReturn(Flux.never());
+        when(backup.stream(anyList(),anyList(),any())).thenReturn(Flux.just(answer("available")));
+        String primaryId="openai-official:"+settings.getOpenai().getModel();
+        String backupId="openai-official:backup-model";
+        try(var service=new AgentModelService(settings,new AgentScopeProperties())){
+            @SuppressWarnings("unchecked")
+            var providers=(Map<String,Model>)org.springframework.test.util.ReflectionTestUtils.getField(service,"models");
+            providers.put(primaryId,primary);
+            providers.put(backupId,backup);
+            var primaryRoute=service.resolve(primaryId);
+            var backupRoute=service.resolve(backupId);
+            assertThat(primaryRoute).isNotSameAs(backupRoute);
+            var inFlight=primaryRoute.stream(List.of(),List.of(),null).subscribe();
+            try{
+                assertThatThrownBy(()->backupRoute.stream(List.of(),List.of(),null).blockLast(Duration.ofSeconds(1)))
+                        .isInstanceOf(IllegalStateException.class).hasMessageContaining("模型调用失败");
+                verify(primary).stream(anyList(),anyList(),any());
+                verify(backup,never()).stream(anyList(),anyList(),any());
+            }finally{inFlight.dispose();}
+            assertThat(backupRoute.stream(List.of(),List.of(),null).blockLast(Duration.ofSeconds(1))).isNotNull();
+            verify(backup).stream(anyList(),anyList(),any());
+        }
     }
     @Test void boundedIoCapacityCanFallbackWithoutLeakingExecutorDetails() {
         var primary=model();var fallback=model();

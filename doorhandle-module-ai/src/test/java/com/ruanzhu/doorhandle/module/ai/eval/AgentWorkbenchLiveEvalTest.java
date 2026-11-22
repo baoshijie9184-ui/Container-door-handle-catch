@@ -45,7 +45,7 @@ class AgentWorkbenchLiveEvalTest {
         Files.createDirectories(output);
         var report=new LinkedHashMap<String,Object>();var checks=new ArrayList<String>();var results=new ArrayList<Map<String,Object>>();
         report.put("at",OffsetDateTime.now(ZoneOffset.ofHours(8)).toString());report.put("modelId",modelId);
-        report.put("mode","REAL_PROVIDER_SYNTHETIC_BUSINESS");report.put("sdkVersion","2.0.4");
+        report.put("mode","REAL_PROVIDER_SYNTHETIC_BUSINESS");report.put("sdkVersion",io.agentscope.core.Version.VERSION);
         report.put("httpMaxAttempts",1);report.put("fallbackEnabled",false);report.put("maxModelRequests",28);
         report.put("gitCommit",System.getProperty("agent.routing.commit","UNKNOWN"));report.put("workingTreeDirty",System.getProperty("agent.routing.dirty","UNKNOWN"));
         var hashes=new TreeMap<String,String>();

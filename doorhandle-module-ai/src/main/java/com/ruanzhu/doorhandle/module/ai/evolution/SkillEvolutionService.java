@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.Source;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.agent.RoleAgentCatalog;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
@@ -27,6 +28,9 @@ import java.util.*;
 @ConditionalOnProperty(prefix="agentscope.evolution",name="enabled",havingValue="true")
 public class SkillEvolutionService {
     public static final String PROPOSE="propose_learned_skill", LOAD="load_skill_through_path", POLICY="skill-evolution-v1", SUITE="skill-structural-policy-v1";
+    public static final String CONTEXT_SOURCE="SKILL";
+    private static final java.util.regex.Pattern NATIVE_SKILL_ID=java.util.regex.Pattern.compile(
+            "learned-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})-v[1-9][0-9]{0,9}(?:_approved-project)?");
     private final JdbcTemplate jdbc; private final TransactionTemplate tx; private final ObjectMapper json;
     private final BusinessUserDirectory users; private final AgentJournal journal;
     private final SkillContentStore store;
@@ -324,7 +328,7 @@ public class SkillEvolutionService {
                 store.recordUse(id,num(skill,"active_version"));
                 audit(id,num(skill,"active_version"),current.userId(),"COMMAND_LOAD",num(skill,"revision"),(String)candidate.get("content_sha256"),"斜杠命令明确读取经审核的经验步骤",runId,callId);
             }
-            return new SkillDtos.LoadedSkill(metadata(skill,candidate),(String)skill.get("target_role"),(String)candidate.get("instructions_text"),(String)candidate.get("content_sha256"));
+            return loaded(new ContextPublication(skill,candidate));
         });}
     private AgentSkill nativeSkill(Map<String,Object> skill,Map<String,Object> candidate){
         String name="learned-"+((String)skill.get("skill_id")).substring(6)+"-v"+num(candidate,"version_no");
@@ -342,7 +346,53 @@ public class SkillEvolutionService {
     }
     public void assertReadable(AgentActor actor,Map<String,Object> args){
         if(args==null||!args.keySet().equals(Set.of("skillId","path"))||!(args.get("skillId") instanceof String id)||!"SKILL.md".equals(args.get("path")))throw fail(403,"仅允许读取已发布技能正文");
-        if(repository(actor).getAllSkills().stream().noneMatch(skill->id.equals(skill.getSkillId())||id.equals(skill.getName())))throw fail(403,"技能已停用或当前角色无权读取");
+        nativePublication(actor,id);
+    }
+    public static Source contextSource(SkillDtos.LoadedSkill skill){
+        return new Source(CONTEXT_SOURCE,skill.metadata().skillId(),skill.metadata().version()+":"+skill.sha256());
+    }
+    public SkillDtos.LoadedSkill contextSkill(AgentActor actor,Source expected){
+        if(!CONTEXT_SOURCE.equals(expected.kind())||expected.version()==null||!expected.version().matches("[1-9][0-9]{0,9}:[a-f0-9]{64}"))
+            throw fail(403,"技能来源快照无效");
+        var publication=publishedContextSkill(actor,expected.resourceId());
+        var selected=loaded(publication);
+        if(!expected.equals(contextSource(selected)))throw fail(403,"技能发布版本已变化，请重新选择后发起任务");
+        return selected;
+    }
+    public Source nativeContextSource(AgentActor actor,String nativeId,String result){
+        var publication=nativePublication(actor,nativeId);
+        var skill=nativeSkill(publication.identity(),publication.version());
+        // AgentScope 2.0.4 returns the registered markdown with this envelope for SKILL.md.
+        String expected="Successfully loaded skill: "+nativeId+"\n\nName: "+skill.getName()+"\nDescription: "+skill.getDescription()
+                +"\nSource: "+skill.getSource()+"\n\nContent:\n---\n"+skill.getSkillContent()+"\n---\n";
+        if(!expected.equals(result))throw new IllegalStateException("技能工具正文与已核对的发布版本不一致");
+        return contextSource(loaded(publication));
+    }
+    private ContextPublication nativePublication(AgentActor actor,String nativeId){
+        var match=NATIVE_SKILL_ID.matcher(nativeId);
+        if(!match.matches())throw fail(403,"技能来源编号无效");
+        var publication=publishedContextSkill(actor,"skill-"+match.group(1));
+        var skill=nativeSkill(publication.identity(),publication.version());
+        if(!nativeId.equals(skill.getSkillId())&&!nativeId.equals(skill.getName()))throw fail(403,"技能发布版本已变化");
+        return publication;
+    }
+    private record ContextPublication(Map<String,Object> identity,Map<String,Object> version){}
+    private ContextPublication publishedContextSkill(AgentActor actor,String id){
+        var current=fresh(actor);
+        if(!current.equals(actor)||id==null||!id.matches("skill-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))
+            throw fail(403,"当前账号无权复用此技能");
+        var matching=store.published(current.role().name(),current.userId(),id).stream()
+                .filter(row->id.equals(row.get("skill_id"))).toList();
+        if(matching.size()!=1)throw fail(403,"技能已停用或当前账号无权读取");
+        var skill=matching.get(0);
+        var candidate=version(id,num(skill,"active_version"));
+        if(!usablePublication(skill,candidate))throw fail(403,"技能审核或规则评测已失效");
+        return new ContextPublication(skill,candidate);
+    }
+    private SkillDtos.LoadedSkill loaded(ContextPublication published){
+        return new SkillDtos.LoadedSkill(metadata(published.identity(),published.version()),
+                (String)published.identity().get("target_role"),(String)published.version().get("instructions_text"),
+                (String)published.version().get("content_sha256"));
     }
     /** 只依据实际读取时间老化，不调用模型、不改正文；所有版本和审计保留。 */
     @org.springframework.scheduling.annotation.Scheduled(cron="0 20 3 * * *")

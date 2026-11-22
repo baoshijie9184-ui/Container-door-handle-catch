@@ -1,4 +1,4 @@
-"""Pure metadata checks for canonical Compose selection with stopped CI objects."""
+"""Pure metadata checks for Compose service selection and persisted protocol guards."""
 import copy
 import importlib.util
 import json
@@ -133,3 +133,31 @@ def test_every_inspected_object_retains_exact_project_service_and_image_checks(m
     install(monkeypatch, [node('a', canonical=True, running=True), historical])
     with pytest.raises(guard.GuardError, match='does not belong'):
         guard.container(PROJECT, 'mem0')
+
+
+@pytest.mark.parametrize('level', [0, 2, 3])
+def test_context_image_label_and_active_writer_floor(monkeypatch, level):
+    image_id = 'sha256:' + 'c' * 64
+    labels = {guard.CONTEXT_LABEL: str(level)}
+    monkeypatch.setattr(guard, 'docker', lambda *args: json.dumps([{
+        'Id': image_id, 'Config': {'Labels': labels},
+    }]).encode())
+    selected, capabilities = guard.image(image_id)
+    assert selected == image_id
+    assert capabilities['context'] == level
+    assert guard.potential({'AGENT_DURABLE_CONTEXT_ENABLED': 'true'}, capabilities)['context'] == level
+    assert guard.potential({'AGENT_DURABLE_CONTEXT_ENABLED': 'false'}, capabilities)['context'] == 0
+
+
+@pytest.mark.parametrize('origin', [None, 'OLD', 'KNOWLEDGE', 'MEMORY', 'RETRIEVAL_POLICY', 'SKILL'])
+def test_typed_origin_raises_the_database_reader_floor(monkeypatch, origin):
+    def exists(mysql, sql):
+        assert mysql == 'database'
+        if "link_kind='TOOL_SOURCE'" in sql:
+            assert "'$[*].kind'" in sql and "'$.sourcesJson'" in sql
+            return origin is not None and f"'{origin.replace('_', '!_')}'" in sql
+        return origin is not None and 'CONTEXT_BOOTSTRAP' in sql
+
+    monkeypatch.setattr(guard, 'exists', exists)
+    expected = 0 if origin is None else 2 if origin == 'OLD' else 3
+    assert guard.context_floor('database') == expected

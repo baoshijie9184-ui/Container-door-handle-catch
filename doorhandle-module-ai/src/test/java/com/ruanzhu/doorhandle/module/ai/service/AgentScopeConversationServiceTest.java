@@ -189,7 +189,8 @@ class AgentScopeConversationServiceTest {
         var run=service(agent).start(actor,"close-error",List.of(new AgentConversationApi.Message("user","查询任务")),"",events::add);
         assertThatThrownBy(() -> run.result().get(5,TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
         assertThat(run.result().handle((value,error) -> error.toString()).join()).contains("清理失败").doesNotContain("PRIVATE_CLOSE_ERROR");
-        assertThat(events).extracting(AgentConversationApi.Event::type).contains("RUN_ERROR").doesNotContain("RUN_FINISHED");
+        assertThat(events).extracting(AgentConversationApi.Event::type).contains("RUN_ERROR")
+                .doesNotContain("RUN_FINISHED","TEXT_CHUNK");
         assertThat(registry.acquire("1:employee-main:close-error")).isTrue();registry.release("1:employee-main:close-error");
     }
 
@@ -276,7 +277,8 @@ class AgentScopeConversationServiceTest {
         var model = mock(Model.class); when(model.getModelName()).thenReturn("fixture-model");
         var calls = new java.util.concurrent.atomic.AtomicInteger();
         when(model.stream(anyList(), anyList(), any())).thenAnswer(invocation -> {
-            if (calls.getAndIncrement() == 0) return Flux.just(ChatResponse.builder().content(List.of(new ToolUseBlock("call-1", "lookup", Map.of()))).finishReason("tool_calls").build());
+            if (calls.getAndIncrement() == 0) return Flux.just(ChatResponse.builder().content(List.of(
+                    TextBlock.builder().text("尚未核实的工具操作说明").build(), new ToolUseBlock("call-1", "lookup", Map.of()))).finishReason("tool_calls").build());
             return Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("查询完成").build())).finishReason("stop").build());
         });
         var toolkit = new Toolkit();
@@ -291,7 +293,9 @@ class AgentScopeConversationServiceTest {
         var run = service(react(model, toolkit)).start(actor, "s1", List.of(new AgentConversationApi.Message("user", "查询任务")), "检索资料", events::add);
         assertThat(run.result().get(10, TimeUnit.SECONDS)).isEqualTo("查询完成");
         assertThat(events).extracting(AgentConversationApi.Event::type).contains("RUN_STARTED", "RUN_FINISHED", "TOOL_CALL", "TEXT_CHUNK");
-        assertThat(events.toString()).doesNotContain("PRIVATE_TOOL_BODY");
+        assertThat(events.toString()).doesNotContain("PRIVATE_TOOL_BODY","尚未核实的工具操作说明");
+        assertThat(events.stream().filter(event->event.type().equals("TEXT_CHUNK")))
+                .extracting(AgentConversationApi.Event::text).containsExactly("查询完成");
         org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(() -> registry.acquire("1:employee-main:s1"));
         registry.release("1:employee-main:s1");
     }
@@ -381,7 +385,8 @@ class AgentScopeConversationServiceTest {
         var events=new CopyOnWriteArrayList<AgentConversationApi.Event>();
         var run=service(react(model,new Toolkit())).start(actor,"missing-receipt",List.of(new AgentConversationApi.Message("user","查询质检情况")),"",events::add);
         assertThatThrownBy(()->run.result().get(10,TimeUnit.SECONDS)).hasCauseInstanceOf(AgentConversationApi.UnverifiedAnswerException.class);
-        assertThat(events).extracting(AgentConversationApi.Event::type).contains("RUN_ERROR").doesNotContain("RUN_FINISHED");
+        assertThat(events).extracting(AgentConversationApi.Event::type).contains("RUN_ERROR")
+                .doesNotContain("RUN_FINISHED","TEXT_CHUNK");
         verify(model,times(1)).stream(anyList(),anyList(),any());
         org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->registry.acquire("1:employee-main:missing-receipt"));registry.release("1:employee-main:missing-receipt");
     }

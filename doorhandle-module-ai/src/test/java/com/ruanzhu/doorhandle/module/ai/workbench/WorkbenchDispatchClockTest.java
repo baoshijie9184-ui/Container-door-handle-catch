@@ -125,4 +125,45 @@ class WorkbenchDispatchClockTest {
         verify(store).locked(eq(1L),any());assertThat(locked).isFalse();
         verify(store,never()).update(any(),anyString(),anyMap(),anyString());
     }
+    @Test void recoversACommittedParentAfterTheLastChildSettledBeforeTheCallback(){
+        var waiting = waitingParent();
+        var finished = row("CHILD","COMPLETED",2,null);
+        when(store.dispatch(0)).thenReturn(List.of(waiting));
+        when(store.require(1,"fixture-session","fixture-item")).thenReturn(waiting);
+        when(store.childRows(1,"fixture-session","fixture-item","current-task")).thenReturn(List.of(finished));
+        when(store.committedWait(waiting)).thenReturn(true);
+        doAnswer(call->{
+            assertThat(locked).isTrue();
+            assertThat(call.<Map<String,Object>>getArgument(2)).containsEntry("logicalTaskId","current-task")
+                    .hasEntrySatisfying("continuation",text->assertThat((String)text).contains("get_background_task"));
+            return null;
+        }).when(store).update(eq(waiting),eq("READY"),anyMap(),eq("CHILDREN_SETTLED"));
+
+        service.dispatch();
+
+        verify(store).update(eq(waiting),eq("READY"),anyMap(),eq("CHILDREN_SETTLED"));
+        verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());
+    }
+
+    @Test void recoveredParentStillRequiresCurrentChildrenAndACommittedCheckpoint(){
+        var waiting=waitingParent();
+        when(store.dispatch(anyLong())).thenReturn(List.of(waiting));
+        when(store.require(1,"fixture-session","fixture-item")).thenReturn(waiting);
+        when(store.childRows(1,"fixture-session","fixture-item","current-task")).thenReturn(
+                List.of(row("CHILD","NEEDS_REVIEW",2,null)), List.of(row("CHILD","COMPLETED",2,null)));
+        when(store.committedWait(waiting)).thenReturn(false);
+
+        service.dispatch();
+        service.dispatch();
+
+        verify(store).committedWait(waiting);
+        verify(store,never()).update(any(),anyString(),anyMap(),anyString());
+        verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());
+    }
+
+    private WorkbenchStore.Row waitingParent(){
+        return new WorkbenchStore.Row("fixture-item",1,"fixture-session","EXECUTION","WAITING_CHILD",2,
+                Map.of("username",actor.username(),"role",actor.role().name(),"logicalTaskId","current-task","yieldReady",true),
+                null,17,"fixture-workflow",null,0,null,null,null);
+    }
 }

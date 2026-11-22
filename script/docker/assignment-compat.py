@@ -79,7 +79,7 @@ def image(reference):
     raw_review = labels.get(REVIEW_LABEL, '0')
     raw_evidence = labels.get(EVIDENCE_LABEL, '0')
     raw_context = labels.get(CONTEXT_LABEL, '0')
-    require(raw_json in ('0', '2') and raw_identity in ('0', '1') and raw_review in ('0', '1') and raw_evidence in ('0', '1', '2') and raw_context in ('0','2'), 'Unsupported assignment or context image format declaration')
+    require(raw_json in ('0', '2') and raw_identity in ('0', '1') and raw_review in ('0', '1') and raw_evidence in ('0', '1', '2') and raw_context in ('0', '2', '3'), 'Unsupported assignment or context image format declaration')
     return rows[0]['Id'], {'json': int(raw_json), 'identity': int(raw_identity), 'scope': int(raw_identity), 'review': int(raw_review), 'evidence': int(raw_evidence), 'context': int(raw_context)}
 
 
@@ -210,12 +210,28 @@ def data_floor(mysql):
     if exists(mysql,"SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind='DETECTION_IDENTITY_MISSING_NAME' OR (kind='DETECTION_IDENTITY_BINDING_EVENT' AND action='SUPERVISOR_MISSING_NAME') LIMIT 1);"):floor['evidence']=2
     if floor['evidence']:floor['review']=1
     if floor['identity'] or floor['review']:floor['scope']=1
-    context_queries=("SELECT EXISTS(SELECT 1 FROM runtime_state WHERE namespace IN ('CONTEXT_HEAD','CONTEXT_BOOTSTRAP') LIMIT 1);",
-                     "SELECT EXISTS(SELECT 1 FROM content_asset WHERE asset_kind='CONTEXT_SUMMARY' LIMIT 1);",
-                     "SELECT EXISTS(SELECT 1 FROM content_link WHERE link_kind IN ('CONTEXT_SOURCE','TOOL_SOURCE') LIMIT 1);",
-                     "SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind IN ('CONTEXT','CONTEXT_TURN') LIMIT 1);")
-    if any(exists(mysql,sql) for sql in context_queries):floor['context']=2
+    floor['context'] = context_floor(mysql)
     return floor
+
+
+def context_floor(mysql):
+    # Runtime v2 cannot read any typed origin written by v3, including a selected skill
+    # whose execution stopped before the corresponding context bootstrap was initialized.
+    sources = "JSON_UNQUOTE(JSON_EXTRACT(evidence_json,'$.sourcesJson'))"
+    source_kinds = ('KNOWLEDGE', 'MEMORY', 'RETRIEVAL_POLICY', 'SKILL')
+    matches = ' OR '.join(
+        f"JSON_SEARCH({sources},'one','{kind.replace('_', '!_')}','!','$[*].kind') IS NOT NULL"
+        for kind in source_kinds
+    )
+    if exists(mysql, "SELECT EXISTS(SELECT 1 FROM content_link WHERE link_kind='TOOL_SOURCE' AND (" + matches + ") LIMIT 1);"):
+        return 3
+    context_queries = (
+        "SELECT EXISTS(SELECT 1 FROM runtime_state WHERE namespace IN ('CONTEXT_HEAD','CONTEXT_BOOTSTRAP') LIMIT 1);",
+        "SELECT EXISTS(SELECT 1 FROM content_asset WHERE asset_kind='CONTEXT_SUMMARY' LIMIT 1);",
+        "SELECT EXISTS(SELECT 1 FROM content_link WHERE link_kind IN ('CONTEXT_SOURCE','TOOL_SOURCE') LIMIT 1);",
+        "SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind IN ('CONTEXT','CONTEXT_TURN') LIMIT 1);",
+    )
+    return 2 if any(exists(mysql, sql) for sql in context_queries) else 0
 
 
 def database_binding(mysql, project):
@@ -255,7 +271,7 @@ def potential(environment_value, capabilities):
             'scope': 1 if capabilities['scope'] == 1 and boolean(environment_value, 'DETECTION_STABLE_IDENTITY_ENABLED') else 0,
             'review': 1 if capabilities['review'] == 1 and boolean(environment_value, 'DETECTION_IDENTITY_REVIEW_ENABLED') else 0,
             'evidence': 2 if capabilities['evidence'] >= 2 and boolean(environment_value,'DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED') else 1 if capabilities['evidence'] >= 1 and boolean(environment_value, 'DETECTION_IDENTITY_EVIDENCE_ENABLED') else 0,
-            'context': 2 if capabilities['context']>=2 and boolean(environment_value,'AGENT_DURABLE_CONTEXT_ENABLED') else 0}
+            'context': capabilities['context'] if capabilities['context']>=2 and boolean(environment_value,'AGENT_DURABLE_CONTEXT_ENABLED') else 0}
 
 
 def private_state(state):

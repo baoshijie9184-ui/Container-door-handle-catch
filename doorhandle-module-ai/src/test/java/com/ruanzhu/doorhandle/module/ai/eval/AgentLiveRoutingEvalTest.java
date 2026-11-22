@@ -48,7 +48,7 @@ class AgentLiveRoutingEvalTest {
         report.put("scorerVersion","live-routing-rules-v3");
         report.put("scorerSha256",hash(project.resolve("doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/eval/LiveRoutingRules.java")));
         report.put("fixtureSha256",hash(project.resolve("doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/eval/AgentLiveRoutingEvalTest.java")));
-        report.put("providerMode","REAL_PROVIDER_SYNTHETIC_BUSINESS");report.put("sdkVersion","2.0.4");report.put("fallbackEnabled",false);report.put("httpMaxAttempts",1);
+        report.put("providerMode","REAL_PROVIDER_SYNTHETIC_BUSINESS");report.put("sdkVersion",io.agentscope.core.Version.VERSION);report.put("fallbackEnabled",false);report.put("httpMaxAttempts",1);
         report.put("maxModelRequests",48);report.put("declaredCases",dataset.cases().size());report.put("results",results);report.put("gatePassed",false);report.put("productionReleaseApproved",false);
         write(output,report);
         for(var spec:dataset.cases()) {

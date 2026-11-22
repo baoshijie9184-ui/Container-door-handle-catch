@@ -3,6 +3,8 @@ package com.ruanzhu.doorhandle.module.ai.model;
 import com.ruanzhu.doorhandle.module.ai.config.AgentModelProperties;
 import io.agentscope.core.message.*;
 import io.agentscope.core.model.*;
+import io.github.resilience4j.bulkhead.Bulkhead;
+import io.github.resilience4j.bulkhead.BulkheadConfig;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import java.time.Duration;
@@ -28,7 +30,7 @@ final class ManagedAgentModel implements Model {
     private final Duration timeout;
     private final boolean circuitEnabled;
     private final int maxOutputTokens;
-    private final io.github.resilience4j.bulkhead.Bulkhead bulkhead;
+    private final Bulkhead bulkhead;
     private ModelBudgetService budget;
     ManagedAgentModel budget(ModelBudgetService value){this.budget=value;return this;}
     ManagedAgentModel(String id, Model primary, Model fallback) {
@@ -38,12 +40,18 @@ final class ManagedAgentModel implements Model {
         this(legacyCandidates(id, primary, fallback), policy, new AgentModelProperties(), fallback != null);
     }
     ManagedAgentModel(List<Candidate> candidates, GenerateOptions policy, AgentModelProperties settings, boolean circuitEnabled) {
+        this(candidates,policy,settings,circuitEnabled,providerBulkhead(settings.getMaxConcurrentCalls()));
+    }
+    ManagedAgentModel(List<Candidate> candidates,GenerateOptions policy,AgentModelProperties settings,boolean circuitEnabled,Bulkhead bulkhead) {
         this.candidates = List.copyOf(candidates); this.policy = policy;
         this.firstTokenTimeout = settings.getFirstTokenTimeout(); this.timeout = settings.getTimeout();
         this.circuitEnabled = circuitEnabled;
         this.maxOutputTokens = settings.getMaxOutputTokens();
-        this.bulkhead=io.github.resilience4j.bulkhead.Bulkhead.of("model-route",io.github.resilience4j.bulkhead.BulkheadConfig.custom()
-                .maxConcurrentCalls(settings.getMaxConcurrentCalls()).maxWaitDuration(Duration.ZERO).build());
+        this.bulkhead=bulkhead;
+    }
+    static Bulkhead providerBulkhead(int maxConcurrentCalls){
+        return Bulkhead.of("agent-provider",BulkheadConfig.custom()
+                .maxConcurrentCalls(maxConcurrentCalls).maxWaitDuration(Duration.ZERO).build());
     }
     private static List<Candidate> legacyCandidates(String id, Model primary, Model fallback) {
         var result = new ArrayList<Candidate>();

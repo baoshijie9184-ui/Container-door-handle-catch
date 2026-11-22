@@ -2,6 +2,10 @@ package com.ruanzhu.doorhandle.module.app.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity;
+import com.ruanzhu.doorhandle.module.app.service.Mem0Client;
+import com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeService;
+import com.ruanzhu.doorhandle.module.system.security.TenantContext;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -21,6 +25,8 @@ public class AgentContextDataBridge implements AgentContextDataApi {
     @org.springframework.beans.factory.annotation.Value("${chat-assistant.max-history-messages:30}")
     private int maxRecentMessages=30;
     @org.springframework.beans.factory.annotation.Autowired private ObjectProvider<AgentBusinessFilesApi> businessFiles;
+    @org.springframework.beans.factory.annotation.Autowired private ObjectProvider<QualityKnowledgeService> knowledge;
+    @org.springframework.beans.factory.annotation.Autowired private Mem0Client memory;
     public AgentContextDataBridge(AgentWorkspaceService workspace,JdbcTemplate jdbc,ObjectMapper json,ObjectProvider<DetectionAgentReadApi> tasks,
             ObjectProvider<QualityReportAgentApi> reports,ObjectProvider<ResourceAgentReadApi> resources,ObjectProvider<ModelAgentReadApi> models){
         this.workspace=workspace;this.jdbc=jdbc;this.json=json;this.tasks=tasks;this.reports=reports;this.resources=resources;this.models=models;
@@ -77,7 +83,18 @@ public class AgentContextDataBridge implements AgentContextDataApi {
     }
     @Override public void authorize(AgentActor actor,String session,List<Source> sources){
         workspace.assertOwned(actor,session);if(sources==null||sources.size()>2000)throw new IllegalArgumentException("上下文来源数量无效");
+        var memories = new ArrayList<Source>();
         for(var source:sources)switch(source.kind()){
+            case "RETRIEVAL_POLICY" -> {
+                if (!RETRIEVAL_POLICY_V2.equals(source)) throw new SecurityException("上下文检索来源策略不匹配");
+            }
+            case "KNOWLEDGE" -> {
+                var provider = knowledge == null ? null : knowledge.getIfAvailable();
+                if (provider == null) throw new SecurityException("知识资料当前不可使用");
+                provider.assertContextSource(new Identity(actor.userId(), actor.username(), actor.supervisor()),
+                        source.resourceId(), source.version());
+            }
+            case "MEMORY" -> memories.add(source);
             case "ROLE"->{if(!actor.role().name().equals(source.resourceId()))throw new SecurityException("上下文角色已变化");}
             case "FILE"->{var file=workspace.requireFile(actor,session,source.resourceId());if(source.version()!=null&&!source.version().isEmpty()&&!source.version().equals(file.sha256()))throw new SecurityException("上下文文件已变化");workspace.bytesForContextValidation(actor,session,file.id());}
             case "BUSINESS_FILE","BUSINESS_IMAGE"->authorizeBusinessFile(actor,session,source);
@@ -87,6 +104,10 @@ public class AgentContextDataBridge implements AgentContextDataApi {
             case "ALERT"->resources.getObject().alert(actor,Long.parseLong(source.resourceId()));
             case "MODEL"->models.getObject().operations(actor,Integer.parseInt(source.resourceId()));
             default->throw new SecurityException("上下文来源类型未登记");
+        }
+        if (!memories.isEmpty()) {
+            if (memory == null) throw new SecurityException("记忆资料当前不可使用");
+            memory.assertContextSources(new TenantContext(actor.userId(), actor.username()), memories);
         }
     }
     private void authorizeBusinessFile(AgentActor actor,String session,Source source){

@@ -84,7 +84,23 @@ public class WorkbenchStore {
     List<Row> pendingInteractions(long user,String session,String parent,Object task){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ('WORKBENCH_PLAN','WORKBENCH_QUESTION') AND owner_user_id=? AND session_id=? AND workbench_parent_item_id=? AND workbench_logical_task_id<=>? AND status='PENDING' ORDER BY id",mapper(),user,session,parent,task);}
     long pendingChildCount(long user){return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='WORKBENCH_CHILD' AND owner_user_id=? AND status IN ('QUEUED','RUNNING','WAITING_INPUT','WAITING_PLAN','WAITING_CHILD','NEEDS_REVIEW')",Long.class,user);}
     boolean permitsSpecialist(long user,String run,String specialist,String role){return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='WORKBENCH_CHILD' AND owner_user_id=? AND run_id=? AND workbench_specialist=? AND workbench_role=? AND status='RUNNING' AND claim_token IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6)",Long.class,user,run,specialist,role)>0;}
-    List<Row> dispatch(long after){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE legacy_clock_json IS NULL AND ((kind='WORKBENCH_CHILD' AND status='QUEUED' AND (workbench_yield_ready IS NULL OR workbench_yield_ready=TRUE)) OR (kind='WORKBENCH_EXECUTION' AND status='READY')) AND id>? ORDER BY id LIMIT 12",mapper(),after);}
+    List<Row> dispatch(long after){return jdbc.query("SELECT "+COLUMNS+"""
+         FROM workflow_instance parent
+        WHERE legacy_clock_json IS NULL AND id>? AND (
+            (kind='WORKBENCH_CHILD' AND status='QUEUED' AND (workbench_yield_ready IS NULL OR workbench_yield_ready=TRUE))
+            OR (kind='WORKBENCH_EXECUTION' AND status='READY')
+            OR (kind='WORKBENCH_EXECUTION' AND status='WAITING_CHILD' AND workbench_yield_ready=TRUE
+                AND EXISTS (SELECT 1 FROM workflow_instance child
+                    WHERE child.kind='WORKBENCH_CHILD' AND child.owner_user_id=parent.owner_user_id
+                      AND child.session_id=parent.session_id AND child.workbench_parent_item_id=parent.workbench_item_id
+                      AND child.workbench_parent_task_id=parent.workbench_logical_task_id)
+                AND NOT EXISTS (SELECT 1 FROM workflow_instance child
+                    WHERE child.kind='WORKBENCH_CHILD' AND child.owner_user_id=parent.owner_user_id
+                      AND child.session_id=parent.session_id AND child.workbench_parent_item_id=parent.workbench_item_id
+                      AND child.workbench_parent_task_id=parent.workbench_logical_task_id
+                      AND (child.legacy_clock_json IS NOT NULL OR child.status NOT IN ('COMPLETED','CANCELLED'))))
+            ) ORDER BY id LIMIT 12
+        """,mapper(),after);}
     Optional<ChildProvenanceReader.ChildProvenance> childProvenance(long user,String session,String item){return jdbc.query("SELECT resource_id,owner_user_id,session_id,status,revision FROM workflow_instance WHERE kind='WORKBENCH_CHILD' AND owner_user_id=? AND session_id=? AND workbench_item_id=?",(rs,n)->new ChildProvenanceReader.ChildProvenance(rs.getString(1),rs.getLong(2),rs.getString(3),rs.getString(4),rs.getLong(5)),user,session,item).stream().findFirst();}
     Row create(long user,String session,String id,String kind,String status,Map<String,Object> data){return locked(user,()->{
         var existing=find(user,session,id);if(existing!=null){if(!existing.kind().equals(kind))throw fail(409,"工作项编号已用于其他类型");return existing;}

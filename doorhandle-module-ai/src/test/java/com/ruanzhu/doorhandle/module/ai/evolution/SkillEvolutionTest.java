@@ -5,8 +5,10 @@ import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
+import com.ruanzhu.doorhandle.module.ai.context.DurableContextStore;
 import com.ruanzhu.doorhandle.module.ai.journal.*;
 import com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactory;
+import com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService;
 import com.ruanzhu.doorhandle.framework.semantic.*;
 import io.agentscope.core.message.*;
 import io.agentscope.core.model.*;
@@ -126,8 +128,22 @@ class SkillEvolutionTest {
     }
     @Test void nativeHarnessLoadsPublishedSkillUsingSdkAndRuntimeCannotGainShellOrApproval() throws Exception {
         var v=publish();var nativeSkill=service.repository(alice).getAllSkills().get(0);var steps=new AtomicInteger();
+        var captured=new java.util.concurrent.atomic.AtomicReference<String>();
         var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-skill-eval");
-        when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{ContentBlock block=steps.getAndIncrement()==0?ToolUseBlock.builder().id("load-call").name(SkillEvolutionService.LOAD).input(Map.of("skillId",nativeSkill.getSkillId(),"path","SKILL.md")).content(json.writeValueAsString(Map.of("skillId",nativeSkill.getSkillId(),"path","SKILL.md"))).build():TextBlock.builder().text("已读取经审核的经验步骤").build();return reactor.core.publisher.Flux.just(ChatResponse.builder().content(List.of(block)).build());});
+        when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{
+            ContentBlock block;
+            if(steps.getAndIncrement()==0){
+                var args=Map.of("skillId",nativeSkill.getSkillId(),"path","SKILL.md");
+                block=ToolUseBlock.builder().id("load-call").name(SkillEvolutionService.LOAD).input(Map.copyOf(args))
+                        .content(json.writeValueAsString(args)).build();
+            }else{
+                inv.<List<Msg>>getArgument(0).stream().flatMap(msg->msg.getContentBlocks(ToolResultBlock.class).stream())
+                        .filter(result->"load-call".equals(result.getId()))
+                        .findFirst().ifPresent(result->captured.set(((TextBlock)result.getOutput().get(0)).getText()));
+                block=TextBlock.builder().text("已读取经审核的经验步骤").build();
+            }
+            return reactor.core.publisher.Flux.just(ChatResponse.builder().content(List.of(block)).build());
+        });
         var settings=new AgentScopeProperties();settings.setWorkspace(workspace.toString());var factory=new RoleAgentFactory(settings,new BusinessToolkitFactory(mock(DetectionAgentReadApi.class),mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),json),id->model,service);
         var run=mock(AgentJournal.Run.class);when(run.id()).thenReturn("runtime-run");
         try(var agent=(io.agentscope.harness.agent.HarnessAgent)factory.create(alice,null,new AgentJournalMiddleware(run,alice))){
@@ -136,6 +152,59 @@ class SkillEvolutionTest {
         }
         assertThat(service.get(alice,v.skillId()).useCount()).isEqualTo(1);
         verify(run).event(eq("AUTHORIZATION_ALLOWED"),argThat(p->SkillEvolutionService.LOAD.equals(p.get("tool"))));
+        var source=service.nativeContextSource(alice,nativeSkill.getSkillId(),captured.get());
+        assertThat(source.resourceId()).isEqualTo(v.skillId());
+        assertThat(source.version()).isEqualTo("1:"+v.versions().get(0).sha256());
+        assertThat(service.contextSkill(alice,source).instructions()).isEqualTo(draft("expected").instructions());
+        assertThatThrownBy(()->service.nativeContextSource(alice,nativeSkill.getSkillId(),captured.get()+"额外正文"))
+                .hasMessageContaining("正文");
+        service.archive(boss,v.skillId(),new SkillDtos.Command(v.revision(),"暂停此发布版本"));
+        assertThatThrownBy(()->service.contextSkill(alice,source)).hasMessageContaining("已停用");
+    }
+    @Test void contextSkillRequiresCurrentRoleAndTheExactPublishedVersion(){
+        var first=publish();
+        var loaded=service.commandSkill(alice,first.skillId(),false,null,null);
+        var source=SkillEvolutionService.contextSource(loaded);
+        assertThat(service.contextSkill(alice,source)).isEqualTo(loaded);
+        assertThatThrownBy(()->service.contextSkill(boss,source)).hasMessageContaining("无权");
+        var revision=service.revise(alice,first.skillId(),first.revision(),draft("new-version"));
+        assertThat(service.contextSkill(alice,source)).isEqualTo(loaded);
+        revision=service.evaluate(alice,revision.skillId(),revision.revision());
+        revision=service.submit(alice,revision.skillId(),revision.revision());
+        service.decide(boss,revision.skillId(),new SkillDtos.Decision(revision.revision(),"APPROVE","已复核新版",true,true));
+        assertThatThrownBy(()->service.contextSkill(alice,source)).hasMessageContaining("版本已变化");
+    }
+    @Test void restoredAgentUsesSelectedSkillAndKeepsTheNativeLoaderInTheWorkbenchBoundary(){
+        var skill=publish();
+        var loaded=service.commandSkill(alice,skill.skillId(),false,null,null);
+        var scope=mock(AgentWorkbenchService.Scope.class);
+        when(scope.contextActor()).thenReturn(alice);
+        when(scope.contextSession()).thenReturn("session");
+        when(scope.contextTask()).thenReturn("logical-task");
+        when(scope.contextKey()).thenReturn("main");
+        when(scope.runId()).thenReturn("resumed-run");
+        when(scope.restoringContext()).thenReturn(true);
+        when(scope.sdkSession()).thenReturn("sdk-session");
+        when(scope.stateStore()).thenReturn(mock(com.ruanzhu.doorhandle.module.ai.workbench.JdbcWorkbenchStateStore.class));
+        when(scope.wrap(any())).thenAnswer(call->call.getArgument(0));
+        var contexts=mock(DurableContextStore.class);
+        when(contexts.selectedSkill(alice,"session","logical-task","resumed-run",true,null)).thenReturn(loaded);
+        when(contexts.bootstrap(eq(alice),eq("session"),eq("main"),eq("logical-task"),anyList()))
+                .thenReturn(new DurableContextStore.Bootstrap(0,List.of(),true));
+        var settings=new AgentScopeProperties();
+        settings.setWorkspace(workspace.toString());
+        var model=mock(Model.class);
+        when(model.getModelName()).thenReturn("skill-continuation");
+        var factory=new RoleAgentFactory(settings,new BusinessToolkitFactory(mock(DetectionAgentReadApi.class),
+                mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),json),id->model,service);
+        factory.setDurableContexts(contexts);
+        try(var agent=(io.agentscope.harness.agent.HarnessAgent)factory.create(alice,null,null,null,null,null,scope,null,
+                "继续原任务")){
+            assertThat(agent.getSysPrompt()).contains(loaded.instructions());
+            assertThat(agent.getToolkit().getToolNames()).contains(SkillEvolutionService.LOAD);
+        }
+        verify(contexts).assertCheckpointReadable(alice,"session","main","logical-task");
+        verify(scope).wrap(argThat(loader->SkillEvolutionService.LOAD.equals(loader.getName())));
     }
     @Test void modelProposalRequiresLiveOwnedRunAndPreviouslyGrantedSource(){
         service.capture(alice,"source-1");jdbc.update("INSERT INTO agent_run(run_id,user_id,main_agent,status,lease_expires_at) VALUES('live-run',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));

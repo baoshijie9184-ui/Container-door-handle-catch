@@ -34,6 +34,35 @@ class RedactingSpanExporterTest {
         assertThat(safe.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);assertThat(safe.getStatus().getDescription()).isEmpty();
         assertThat(safe.getResource().getAttributes().asMap()).hasSize(1).containsEntry(AttributeKey.stringKey("service.name"),"doorhandle-test");
     }
+    @Test void supplierAttemptsOwnUsageWhileOtherSpansKeepTheirLifecycleType(){
+        var exporter=new RedactingSpanExporter(mock(SpanExporter.class),"doorhandle-test");
+        var model=AttributeKey.stringKey("gen_ai.request.model");
+        var outputTokens=AttributeKey.longKey("gen_ai.usage.output_tokens");
+        var observationType=AttributeKey.stringKey("langfuse.observation.type");
+        var route=AttributeKey.stringKey("doorhandle.model.route");
+        var chat=Attributes.builder().put("gen_ai.operation.name","chat")
+                .put(model,"physical-model").put(outputTokens,42L).put(route,"selected-route");
+        var wrapper=exporter.redact(raw(chat.put(observationType,"generation").build()));
+        assertThat(wrapper.getAttributes().asMap()).containsEntry(observationType,"span")
+                .containsEntry(route,"selected-route").doesNotContainKeys(model,outputTokens);
+        var attempt=exporter.redact(raw(chat.put("doorhandle.observation.kind","provider_attempt").build()));
+        assertThat(attempt.getAttributes().asMap()).containsEntry(observationType,"generation")
+                .containsEntry(model,"physical-model").containsEntry(outputTokens,42L);
+        assertThat(exporter.redact(attempt).getAttributes()).isEqualTo(attempt.getAttributes());
+        var tool=exporter.redact(raw(chat.put("gen_ai.operation.name","execute_tool").build()));
+        assertThat(tool.getAttributes().asMap()).containsEntry(observationType,"tool").doesNotContainKeys(model,outputTokens);
+        var embeddingModel=AttributeKey.stringKey("doorhandle.embedding.model");
+        var embedding=exporter.redact(raw(Attributes.builder().put("db.system.name","embedding-bridge")
+                .put(embeddingModel,"BGE-M3").build()));
+        assertThat(embedding.getAttributes().asMap()).containsEntry(observationType,"embedding")
+                .containsEntry(embeddingModel,"BGE-M3").doesNotContainKeys(model,outputTokens);
+    }
+    private static SpanData raw(Attributes attributes){
+        SpanData span=mock(SpanData.class);
+        when(span.getAttributes()).thenReturn(attributes);
+        when(span.getStatus()).thenReturn(StatusData.unset());
+        return span;
+    }
     @Test void acceptsOnlyLangfuseHttpTraceEndpointAndBoundedSettings(){
         var p=new ObservabilityProperties();p.setEndpoint("http://langfuse:3000/api/public/otel/v1/traces");
         assertThatCode(()->ObservabilityConfiguration.validate(p)).doesNotThrowAnyException();

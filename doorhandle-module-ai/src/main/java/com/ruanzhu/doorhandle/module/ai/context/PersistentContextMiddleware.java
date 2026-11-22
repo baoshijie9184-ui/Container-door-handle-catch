@@ -2,6 +2,9 @@ package com.ruanzhu.doorhandle.module.ai.context;
 
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.Source;
+import static com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.RETRIEVAL_POLICY_V2;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.*;
@@ -25,6 +28,14 @@ public final class PersistentContextMiddleware implements MiddlewareBase {
         this.store=store;this.scope=scope;actor=scope.contextActor();session=scope.contextSession();key=scope.contextKey();runtimeKey=key.equals("main")?"task:"+scope.contextTask():key;
         boolean restoring=scope.restoringContext();
         if(restoring)store.assertCheckpointReadable(actor,session,key,scope.contextTask());
+        else {
+            var sources=scope.initialContextSources();
+            if(!sources.isEmpty()&&!store.authorized(actor,session,sources)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,"本轮参考资料的权限或版本已变化，请重新发起");
+            }
+            seedSources.addAll(sources);
+        }
+        seedSources.add(RETRIEVAL_POLICY_V2);
         boot=store.bootstrap(actor,session,key,scope.contextTask(),scope.initialContextMessages());
         initialized=new AtomicBoolean(boot.ready());
         compactor=settings.isEnabled()?new AgentContextCompaction(settings,model,recorder):null;
@@ -68,7 +79,8 @@ public final class PersistentContextMiddleware implements MiddlewareBase {
                     .stream().map(PersistentContextMiddleware::message).toList());
         }
         var summary=store.load(actor,session,"main");
-        if(summary!=null&&!store.data().historyDigest(actor,session,summary.covered()).equals(summary.historyHash())){store.invalidate(actor,session,"main",summary.id());summary=null;}
+        if(summary!=null&&(!summary.sources().contains(RETRIEVAL_POLICY_V2)
+                ||!store.data().historyDigest(actor,session,summary.covered()).equals(summary.historyHash()))){store.invalidate(actor,session,"main",summary.id());summary=null;}
         if(summary!=null)seedSources.addAll(summary.sources());
         return page(context,agent,summary,new ArrayList<>(),summary==null?0:summary.covered(),0);
     }
@@ -76,7 +88,11 @@ public final class PersistentContextMiddleware implements MiddlewareBase {
         var entries=new ArrayList<AgentContextDataApi.Message>(history.size());
         for(var message:history){
             var refs=new ArrayList<>(message.sources());var linked=store.turnSources(actor,session,message.id());if(linked!=null)refs.addAll(linked);
-            String text=message.text();if(message.role().equals("assistant")&&linked==null)text="[此段旧回答没有可验证的工具来源记录；原文保留在聊天记录，关键业务事实请重新查询]";
+            String text=message.text();
+            if(message.role().equals("assistant")&&(linked==null||!linked.contains(RETRIEVAL_POLICY_V2))){
+                text="[此段旧回答没有可验证的工具和检索来源记录；原文保留在聊天记录，关键业务事实请重新查询]";
+                refs.clear();
+            }
             if(!store.authorized(actor,session,refs)){text="[历史资料授权已变化，此段不作为本轮上下文依据]";refs.clear();}
             seedSources.addAll(refs);
             entries.add(new AgentContextDataApi.Message(message.id(),message.role(),text,List.copyOf(refs)));
@@ -95,7 +111,7 @@ public final class PersistentContextMiddleware implements MiddlewareBase {
         var saved=new java.util.concurrent.atomic.AtomicReference<>(previous);var consumed=new java.util.concurrent.atomic.AtomicInteger();
         return compactor.compact(context,messages,agent,candidate->{
             int count=candidate.cutoff()-(previous==null?0:1);if(count<=0||count>entries.size())throw new IllegalStateException("摘要历史切点无法映射");
-            long covered=entries.get(count-1).id();var refs=new ArrayList<Source>();if(previous!=null)refs.addAll(previous.sources());for(var entry:entries.subList(0,count))refs.addAll(entry.sources());
+            long covered=entries.get(count-1).id();var refs=new ArrayList<Source>();refs.add(RETRIEVAL_POLICY_V2);if(previous!=null)refs.addAll(previous.sources());for(var entry:entries.subList(0,count))refs.addAll(entry.sources());
             if(!anchorHash.equals(store.data().historyDigest(actor,session,boot.through())))throw new IllegalStateException("原始历史已变化，停止应用当前摘要");
             var next=store.save(actor,session,"main",scope.runId(),expected,covered,store.data().historyDigest(actor,session,covered),candidate.summary(),candidate.messages().get(0),refs,messages.subList(0,candidate.cutoff()));
             candidate.messages().set(0,next.message());saved.set(next);consumed.set(count);

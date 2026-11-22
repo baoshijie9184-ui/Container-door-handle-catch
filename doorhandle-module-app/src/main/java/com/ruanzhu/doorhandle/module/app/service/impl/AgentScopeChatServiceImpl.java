@@ -3,6 +3,8 @@ package com.ruanzhu.doorhandle.module.app.service.impl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.agent.AgentConversationApi.ReferenceContext;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity;
 import com.ruanzhu.doorhandle.module.app.config.properties.ChatAssistantProperties;
 import com.ruanzhu.doorhandle.module.app.dto.chat.*;
 import com.ruanzhu.doorhandle.module.app.service.*;
@@ -171,17 +173,8 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             boolean command=request.getContent().stripLeading().startsWith("/");
             boolean usePrivateContext = !command && !credentialRead;
             if (!credentialRead) output.accept(ChatStreamEvent.status(sessionId, "AgentScope 正在检索并处理问题"));
-            String context = usePrivateContext ? Objects.toString(knowledge.retrieveContext(request.getContent(),new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(actor.userId(),actor.username(),false)), "") : "";
-            if(usePrivateContext){var memories = memory.searchAccountMemories(tenant, sessionId, request.getContent(), 10);
-                if (memories != null && !memories.isEmpty()) {
-                    String personal=Objects.toString(memory.formatMemoriesAsContext(memories),"");
-                    if(personal.length()>2000)personal=personal.substring(0,2000);
-                    int remaining=6000-personal.length()-1;
-                    if(context.length()>remaining)context=context.substring(0,remaining);
-                    context+="\n"+personal;
-                }
-            }
-            if (context.length() > 6000) context = context.substring(0, 6000);
+            ReferenceContext context = usePrivateContext ? referenceContext(actor, tenant, sessionId, request.getContent())
+                    : new ReferenceContext("", List.of());
             Consumer<AgentConversationApi.Event> consume = event -> {
                 if (disconnected.get()) throw new IllegalStateException("聊天通道已关闭");
                 agentEvents.accept(event);
@@ -190,8 +183,14 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 if(java.util.Set.of("TOOL_STARTED","TOOL_COMPLETED","TOOL_ERROR","TOOL_CANCELLED").contains(event.type())&&event.callId()!=null&&event.tool()!=null)
                     output.accept(ChatStreamEvent.builder().type("tool").sessionId(sessionId).execution(Map.of("type",event.type(),"callId",event.callId(),"tool",event.tool(),"agent",Objects.toString(event.agent(),""))).build());
             };
-            var run = requestId == null ? api.start(actor, sessionId, history, context, consume)
-                    : api.start(actor, sessionId, history, context, consume, "AGUI", requestId);
+            AgentConversationApi.Run run;
+            if (!context.sources().isEmpty()) {
+                run = api.startWithReferences(actor, sessionId, history, context, consume,
+                        requestId == null ? "CHAT" : "AGUI", requestId == null ? runId : requestId);
+            } else {
+                run = requestId == null ? api.start(actor, sessionId, history, context.text(), consume)
+                        : api.start(actor, sessionId, history, context.text(), consume, "AGUI", requestId);
+            }
             holder.set(run); if (run.runId() != null) runId = run.runId(); if (disconnected.get()) run.cancel().run();
             if (disconnected.get()) throw new CancellationException();
             sessions.appendUserMessage(tenant, sessionId, credentialRead ? "请求读取受保护的凭据" : request.getContent());
@@ -233,6 +232,17 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             active.remove(key);
         }
     }
+    private ReferenceContext referenceContext(AgentActor actor, TenantContext tenant, String sessionId, String query) {
+        var personal = memory.accountReference(tenant, sessionId, query, 10, 2000);
+        int available = 6000 - (personal.text().isBlank() ? 0 : personal.text().length() + 1);
+        var documents = knowledge.retrieveAgentContext(query, new Identity(actor.userId(), actor.username(), actor.supervisor()), available);
+        if (personal.text().isBlank()) return documents;
+        if (documents.text().isBlank()) return personal;
+        var sources = new ArrayList<>(documents.sources());
+        sources.addAll(personal.sources());
+        return new ReferenceContext(documents.text() + "\n" + personal.text(), sources);
+    }
+
     private ChatMessageResponse textHistory(ChatMessageResponse message) {
         if (!"assistant".equals(message.getRole()) || "GREETING".equals(message.getIntent())) return message;
         if (message.getMessageType()!=null && !Set.of("TEXT",AgentCards.MESSAGE_TYPE).contains(message.getMessageType())) return null;

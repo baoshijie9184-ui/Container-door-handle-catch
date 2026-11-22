@@ -2,6 +2,11 @@ package com.ruanzhu.doorhandle.module.app.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.Source;
+import com.ruanzhu.doorhandle.contracts.agent.AgentConversationApi.ReferenceContext;
+import com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import com.ruanzhu.doorhandle.module.system.security.SensitiveDataSanitizer;
 import com.ruanzhu.doorhandle.module.system.security.TenantContext;
 import lombok.extern.slf4j.Slf4j;
@@ -142,6 +147,65 @@ public class Mem0Client {
         var scope = new HashMap<>(buildScope(tenant, sessionId));
         scope.put("scope", "ACCOUNT");
         return searchMemories(scope, query, topK);
+    }
+
+    /** Uses vector ranking for discovery and the owner-scoped record for text and provenance. */
+    public ReferenceContext accountReference(TenantContext owner, String session, String query, int topK, int budget) {
+        var text = new StringBuilder("[用户历史记忆]\n");
+        var sources = new ArrayList<Source>();
+        var seen = new HashSet<String>();
+        for (var hit : searchAccountMemories(owner, session, query, topK)) {
+            int available = budget - text.length() - 3;
+            if (available <= 0) break;
+            if (!(hit.get("id") instanceof String id) || !id.matches("[A-Za-z0-9_-]{1,64}") || !seen.add(id)) continue;
+            if (!(hit.get("memory") instanceof String rankedText) || rankedText.isBlank()) continue;
+            MemoryDtos.Item current;
+            try {
+                current = getOwned(owner, id);
+            } catch (org.springframework.web.server.ResponseStatusException unavailable) {
+                if (unavailable.getStatusCode().value() == 404 || unavailable.getStatusCode().value() == 409) continue;
+                break;
+            }
+            String version = contextSourceVersion(current);
+            if (version == null || !rankedText.equals(current.memory())) continue;
+            int end = Math.min(available, rankedText.length());
+            if (end < rankedText.length() && Character.isHighSurrogate(rankedText.charAt(end - 1))) end--;
+            if (end == 0) break;
+            text.append("- ").append(rankedText, 0, end).append('\n');
+            sources.add(new Source("MEMORY", id, version));
+        }
+        return sources.isEmpty() ? new ReferenceContext("", List.of()) : new ReferenceContext(text.toString(), sources);
+    }
+
+    public void assertContextSources(TenantContext owner, List<Source> references) {
+        if (!allowed(owner, true)) throw new SecurityException("当前账号已停用记忆读取");
+        for (var reference : references) {
+            if (!"MEMORY".equals(reference.kind()) || !reference.resourceId().matches("[A-Za-z0-9_-]{1,64}")
+                    || reference.version() == null || !reference.version().matches("(?:0|[1-9][0-9]{0,9}):[a-f0-9]{64}")) {
+                throw new SecurityException("记忆来源格式无效");
+            }
+            var current = getOwned(owner, reference.resourceId());
+            if (!reference.version().equals(contextSourceVersion(current))) {
+                throw new SecurityException("记忆已变化或当前账号不可使用");
+            }
+        }
+    }
+
+    private static String contextSourceVersion(MemoryDtos.Item item) {
+        var lifecycle = item.lifecycle();
+        if (lifecycle == null || lifecycle.revision() < 0 || !item.id().equals(lifecycle.memoryId())
+                || !"ACTIVE".equals(lifecycle.state()) || lifecycle.cleanupState() == null
+                || !Set.of("NONE", "READY").contains(lifecycle.cleanupState())) {
+            return null;
+        }
+        try {
+            if (lifecycle.expiresAt() != null && !OffsetDateTime.parse(lifecycle.expiresAt()).isAfter(OffsetDateTime.now(ZoneOffset.UTC))) {
+                return null;
+            }
+        } catch (java.time.DateTimeException invalid) {
+            return null;
+        }
+        return lifecycle.revision() + ":" + item.digest();
     }
 
     private List<Map<String, Object>> searchMemories(Map<String, Object> scope, String query, int topK) {

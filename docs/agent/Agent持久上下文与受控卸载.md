@@ -6,7 +6,7 @@
 
 ## 数据归属与开关
 
-复用 AgentScope Java 2.0.4 的 `ConversationCompactor`、现有结构化摘要校验和运行检查点，没有引入新的执行框架。每个主 Agent、专业子 Agent 各持有自己的压缩器及调用预算。摘要调用使用原任务固定的模型配置和模型路由。
+复用 AgentScope Java 2.0.5 的 `ConversationCompactor`、现有结构化摘要校验和运行检查点，没有引入新的执行框架。每个主 Agent、专业子 Agent 各持有自己的压缩器及调用预算。摘要调用使用原任务固定的模型配置和模型路由。
 
 App 模块通过 `AgentContextDataApi` 提供本人会话历史、来源重新鉴权、文件存储和分支消息映射。AI 模块只操作自己所属的上下文、来源与工作台表。私有文件下载时，App 再通过 `ContextFileAccessApi` 向 AI 核对卸载资料的原始来源，不直接访问 AI 表。
 

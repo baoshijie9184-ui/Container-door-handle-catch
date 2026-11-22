@@ -316,7 +316,7 @@ mem0:
   connect-timeout-ms: ${MEM0_CONNECT_TIMEOUT_MS:2000}
   read-timeout-ms: ${MEM0_READ_TIMEOUT_MS:5000}
 
-# AgentScope Java 2.0.4 + AG-UI；模型凭证由 Spring Environment 绑定。
+# AgentScope Java 2.0.5 + AG-UI；模型凭证由 Spring Environment 绑定。
 agentscope:
   model-config:
     enabled: ${AGENT_MODEL_CONFIG_ENABLED:false}

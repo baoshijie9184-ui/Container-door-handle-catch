@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.Source;
+import static com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.RETRIEVAL_POLICY_V2;
+import com.ruanzhu.doorhandle.module.ai.evolution.SkillDtos;
+import com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService;
 import com.ruanzhu.doorhandle.module.ai.research.ResearchSourceRepository;
 import com.ruanzhu.doorhandle.framework.persistence.chat.JdbcMessageEvidenceStore;
 import io.agentscope.core.message.*;
@@ -31,7 +34,9 @@ public class DurableContextStore implements ContextFileAccessApi {
     private final JdbcTemplate jdbc;private final TransactionTemplate tx;private final ObjectMapper json;private final JdbcMessageEvidenceStore messageEvidence;
     private final ObjectProvider<AgentContextDataApi> data;private final ContextProvenance provenance;
     private final DurableContextPersistence persistence;private ObjectProvider<ChildProvenanceReader> childReaders;
+    private ObjectProvider<SkillEvolutionService> skillEvolution;
     @Autowired public void childReaders(ObjectProvider<ChildProvenanceReader> readers){this.childReaders=readers;}
+    @Autowired public void skillEvolution(ObjectProvider<SkillEvolutionService> provider){this.skillEvolution=provider;}
     @Value("${agentscope.context-store.offload-enabled:false}") private boolean offloadEnabled;
     @Value("${agentscope.workbench.enabled:false}") private boolean workbenchEnabled;
     @Value("${agentscope.workbench.recovery:true}") private boolean recoveryEnabled;
@@ -40,6 +45,32 @@ public class DurableContextStore implements ContextFileAccessApi {
     public DurableContextStore(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json,ObjectProvider<AgentContextDataApi> data){this.jdbc=jdbc;tx=new TransactionTemplate(manager);this.json=json;this.data=data;provenance=new ContextProvenance(json);messageEvidence=new JdbcMessageEvidenceStore(jdbc,json);persistence=new DurableContextPersistence(jdbc,json);}
     @PostConstruct public void validate(){if(!workbenchEnabled||!recoveryEnabled||!childrenEnabled)throw new IllegalStateException("持久上下文需要工作台、检查点恢复和持久专业任务");if(offloadEnabled&&!filesEnabled)throw new IllegalStateException("工具结果卸载需要启用会话文件工作区");persistence.validateSchema();jdbc.queryForList("SELECT id,context_owner_user_id,context_sources_json,context_sources_sha256 FROM chat_message WHERE 1=0");}
     public boolean offloadEnabled(){return offloadEnabled;}
+    private SkillEvolutionService skills(){
+        var service=skillEvolution==null?null:skillEvolution.getIfAvailable();
+        if(service==null)throw new SecurityException("技能来源核验服务不可用");
+        return service;
+    }
+    public SkillDtos.LoadedSkill selectedSkill(AgentActor actor,String session,String task,String run,boolean restoring,
+            SkillDtos.LoadedSkill requested){
+        if(!restoring&&requested==null)return null;
+        String key=hash("selected-skill:"+task);
+        var origin=persistence.origin(actor.userId(),session,"main",key);
+        if(origin==null){
+            if(requested==null)return null;
+            if(restoring)throw new SecurityException("续跑不能添加未经原任务确认的技能");
+            var reference=SkillEvolutionService.contextSource(requested);
+            var selected=skills().contextSkill(actor,reference);
+            recordOrigin(actor,session,"main",task,run,key,pin(actor,session,List.of(reference)));
+            return selected;
+        }
+        if(!task.equals(origin.task()))throw new SecurityException("技能来源的逻辑任务不一致");
+        var refs=checkedSources(origin.body());
+        var selected=refs.stream().filter(source->SkillEvolutionService.CONTEXT_SOURCE.equals(source.kind())).toList();
+        if(selected.size()!=1||requested!=null&&!selected.get(0).equals(SkillEvolutionService.contextSource(requested)))
+            throw new SecurityException("续跑技能来源不一致");
+        data().authorize(actor,session,refs.stream().filter(DurableContextStore::appSource).toList());
+        return skills().contextSkill(actor,selected.get(0));
+    }
     @Override public void assertReadable(AgentActor actor,String session,String fileId){
         var rows=persistence.offloads(actor.userId(),session,null,null,fileId,1001,false);
         if(rows.isEmpty())throw new SecurityException("上下文资料回执不存在");
@@ -51,7 +82,22 @@ public class DurableContextStore implements ContextFileAccessApi {
         data().authorize(actor,session,List.of());
         if(!initializedSources(actor,session,scope,task))throw new org.springframework.web.server.ResponseStatusException(
                 org.springframework.http.HttpStatus.CONFLICT,"旧检查点缺少可验证的上下文来源，请结束原任务后重新发起");
-        assertTaskReadable(actor,session,task);
+        var sources=taskSources(actor,session,task);
+        if(!sources.contains(RETRIEVAL_POLICY_V2))throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.CONFLICT,"旧检查点缺少可验证的检索来源，请结束原任务后重新发起");
+        try {
+            authorize(actor,session,sources,new HashSet<>());
+        } catch (SecurityException|com.ruanzhu.doorhandle.common.BusinessException denied) {
+            throw new CheckpointSourceChanged();
+        } catch (org.springframework.web.server.ResponseStatusException error) {
+            if (error.getStatusCode().is4xxClientError()) throw new CheckpointSourceChanged();
+            throw error;
+        }
+    }
+    public static final class CheckpointSourceChanged extends org.springframework.web.server.ResponseStatusException {
+        private CheckpointSourceChanged() {
+            super(org.springframework.http.HttpStatus.CONFLICT,"原任务引用的资料已变化或不可访问，请结束原任务后重新发起");
+        }
     }
     private boolean initializedSources(AgentActor actor,String session,String scope,String task){
         var row=persistence.bootstrap(actor.userId(),session,task,false);
@@ -116,8 +162,15 @@ public class DurableContextStore implements ContextFileAccessApi {
     }
     private List<Source> pin(AgentActor actor,String session,List<Source> sources){
         var all=new LinkedHashSet<>(snapshotChildren(actor,session,sources,new HashSet<>(),new HashSet<>()));all.add(new Source("ROLE",actor.role().name(),""));authorize(actor,session,List.copyOf(all),new HashSet<>());
-        var plain=all.stream().filter(s->!s.kind().equals("RESEARCH")).toList();var result=new ArrayList<>(data().pin(actor,session,plain));for(var source:all)if(source.kind().equals("RESEARCH")){var hashes=new ResearchSourceRepository(jdbc).activeHashes(actor.userId(),source.resourceId());if(hashes.size()!=1)throw new SecurityException("引用来源已失效");result.add(new Source("RESEARCH",source.resourceId(),hashes.get(0)));}return List.copyOf(result);
+        var result=new ArrayList<>(data().pin(actor,session,all.stream().filter(DurableContextStore::appSource).toList()));
+        for(var source:all)if(source.kind().equals("RESEARCH")){
+            var hashes=new ResearchSourceRepository(jdbc).activeHashes(actor.userId(),source.resourceId());
+            if(hashes.size()!=1)throw new SecurityException("引用来源已失效");
+            result.add(new Source("RESEARCH",source.resourceId(),hashes.get(0)));
+        }else if(SkillEvolutionService.CONTEXT_SOURCE.equals(source.kind()))result.add(source);
+        return List.copyOf(result);
     }
+    private static boolean appSource(Source source){return !Set.of("RESEARCH","CHILD",SkillEvolutionService.CONTEXT_SOURCE).contains(source.kind());}
     /** Snapshot the sources consumed by a child now, rather than following its future conversations. */
     private List<Source> snapshotChildren(AgentActor actor,String session,List<Source> sources,Set<String> active,Set<String> expanded){
         var result=new LinkedHashSet<Source>();
@@ -141,7 +194,7 @@ public class DurableContextStore implements ContextFileAccessApi {
         catch(SecurityException|com.ruanzhu.doorhandle.common.BusinessException|org.springframework.web.server.ResponseStatusException revoked){return null;}
     }
     private void authorize(AgentActor actor,String session,List<Source> sources,Set<String> visited){
-        data().authorize(actor,session,sources.stream().filter(s->!Set.of("RESEARCH","CHILD").contains(s.kind())).toList());
+        data().authorize(actor,session,sources.stream().filter(DurableContextStore::appSource).toList());
         for(var source:sources)if(source.kind().equals("FILE")&&visited.add("file:"+source.resourceId())){
             if(visited.size()>64)throw new SecurityException("上下文文件来源关联超出上限");
             var receipts=persistence.offloads(actor.userId(),session,null,null,source.resourceId(),1001,false);
@@ -151,6 +204,8 @@ public class DurableContextStore implements ContextFileAccessApi {
         for(var source:sources)if(source.kind().equals("RESEARCH")){
             var found=new ResearchSourceRepository(jdbc).activeHashes(actor.userId(),source.resourceId());
             if(found.size()!=1||!source.version().isEmpty()&&!source.version().equals(found.get(0)))throw new SecurityException("引用来源已失效");
+        }else if(SkillEvolutionService.CONTEXT_SOURCE.equals(source.kind())){
+            skills().contextSkill(actor,source);
         }else if(source.kind().equals("CHILD")&&visited.add(source.resourceId())){
             if(visited.size()>32)throw new SecurityException("专业来源关联超出上限");
             var child=child(actor,session,source.resourceId());
@@ -213,7 +268,11 @@ public class DurableContextStore implements ContextFileAccessApi {
             if(!task.equals(existing.task()))throw new IllegalStateException("工具来源执行归属冲突");
             authorize(actor,session,checkedSources(existing.body()),new HashSet<>());return;
         }
-        var refs=provenance.tool(tool,input==null?Map.of():input,result);
+        final List<Source> refs;
+        if(SkillEvolutionService.LOAD.equals(tool)){
+            var read=provenance.skillRead(input,result);
+            refs=read==null?List.of():List.of(skills().nativeContextSource(actor,read.nativeId(),read.result()));
+        }else refs=provenance.tool(tool,input==null?Map.of():input,result);
         recordOrigin(actor,session,scope,task,run,callKey,pin(actor,session,refs));
     }
     public void recordSeed(AgentActor actor,String session,String scope,String task,String run,List<Source> sources){recordOrigin(actor,session,scope,task,run,hash("seed:"+task),pin(actor,session,sources));}
@@ -273,7 +332,7 @@ public class DurableContextStore implements ContextFileAccessApi {
     private List<Source> sources(String body){try{
         if(body==null||body.length()>1048576)throw new IllegalArgumentException();
         List<Source> refs=json.readValue(body,new TypeReference<List<Source>>(){});
-        if(refs==null||refs.size()>2000||refs.stream().anyMatch(source->source==null||source.kind()==null||!Set.of("ROLE","FILE","TASK","REPORT","DEVICE","ALERT","MODEL","RESEARCH","CHILD","BUSINESS_FILE","BUSINESS_IMAGE").contains(source.kind())||source.resourceId()==null||source.resourceId().isBlank()||source.resourceId().length()>256||source.version()==null||source.version().length()>256))throw new IllegalArgumentException();
+        if(refs==null||refs.size()>2000||refs.stream().anyMatch(source->source==null||source.kind()==null||!Set.of("ROLE","FILE","TASK","REPORT","DEVICE","ALERT","MODEL","RESEARCH","CHILD","BUSINESS_FILE","BUSINESS_IMAGE","KNOWLEDGE","MEMORY","RETRIEVAL_POLICY",SkillEvolutionService.CONTEXT_SOURCE).contains(source.kind())||source.resourceId()==null||source.resourceId().isBlank()||source.resourceId().length()>256||source.version()==null||source.version().length()>256))throw new IllegalArgumentException();
         return List.copyOf(refs);
     }catch(Exception invalid){throw new IllegalStateException("上下文来源格式或资源边界无效");}}
     private String sourceBody(List<Source> refs){String body=write(refs);sources(body);return body;}

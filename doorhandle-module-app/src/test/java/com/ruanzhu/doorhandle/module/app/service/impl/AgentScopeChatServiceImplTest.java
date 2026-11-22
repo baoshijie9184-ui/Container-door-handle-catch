@@ -2,6 +2,8 @@ package com.ruanzhu.doorhandle.module.app.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.agent.AgentContextDataApi.Source;
+import com.ruanzhu.doorhandle.contracts.agent.AgentConversationApi.ReferenceContext;
 import com.ruanzhu.doorhandle.module.app.config.properties.ChatAssistantProperties;
 import com.ruanzhu.doorhandle.module.app.dto.chat.*;
 import com.ruanzhu.doorhandle.module.app.service.*;
@@ -60,7 +62,10 @@ class AgentScopeChatServiceImplTest {
     private AgentScopeChatServiceImpl service;
     @BeforeEach void setup() {
         login("ROLE_INSPECTOR"); when(provider.getIfAvailable()).thenReturn(api);
-        when(knowledge.retrieveContext(anyString(),any())).thenReturn(""); when(sessions.listMessages("alice", "s1")).thenReturn(List.of());
+        var empty = new ReferenceContext("", List.of());
+        when(knowledge.retrieveAgentContext(anyString(),any(),anyInt())).thenReturn(empty);
+        when(memory.accountReference(any(),anyString(),anyString(),anyInt(),anyInt())).thenReturn(empty);
+        when(sessions.listMessages("alice", "s1")).thenReturn(List.of());
         service = new AgentScopeChatServiceImpl(sessions, provider, knowledge, memory, new SyncTaskExecutor(), settings, new ObjectMapper());
     }
     @AfterEach void clear() { SecurityContextHolder.clearContext(); }
@@ -153,11 +158,17 @@ class AgentScopeChatServiceImplTest {
         when(linkProvider.getIfAvailable()).thenReturn(links);service.setExecutionLinks(linkProvider);
         var previous=new ChatMessageResponse();previous.setRole("assistant");previous.setMessageType("TEXT");previous.setContent("来自主站的历史");
         when(sessions.listMessages("alice","s1")).thenReturn(List.of(previous));
-        when(knowledge.retrieveContext(eq("当前问题"),any())).thenReturn("业务参考");
-        when(memory.searchAccountMemories(any(),eq("s1"),eq("当前问题"),eq(10))).thenReturn(List.of(java.util.Map.of("memory","本人偏好")));
-        when(memory.formatMemoriesAsContext(anyList())).thenReturn("本人偏好");
-        when(api.start(any(),eq("s1"),anyList(),anyString(),any(),eq("AGUI"),eq("request-1"))).thenAnswer(inv->{
-            assertThat(inv.getArgument(2,List.class).toString()).contains("业务事实请重新查询","当前问题").doesNotContain("来自主站的历史");assertThat(inv.getArgument(3,String.class)).contains("业务参考","本人偏好");
+        var knowledgeSource = new Source("KNOWLEDGE", "inspection-standard", "2:1:" + "a".repeat(64));
+        var memorySource = new Source("MEMORY", "own-preference", "1:" + "b".repeat(64));
+        when(knowledge.retrieveAgentContext(eq("当前问题"),any(),anyInt()))
+                .thenReturn(new ReferenceContext("业务参考",List.of(knowledgeSource)));
+        when(memory.accountReference(any(),eq("s1"),eq("当前问题"),eq(10),eq(2000)))
+                .thenReturn(new ReferenceContext("本人偏好",List.of(memorySource)));
+        when(api.startWithReferences(any(),eq("s1"),anyList(),any(),any(),eq("AGUI"),eq("request-1"))).thenAnswer(inv->{
+            assertThat(inv.getArgument(2,List.class).toString()).contains("业务事实请重新查询","当前问题").doesNotContain("来自主站的历史");
+            var reference = inv.getArgument(3,ReferenceContext.class);
+            assertThat(reference.text()).contains("业务参考","本人偏好");
+            assertThat(reference.sources()).containsExactly(knowledgeSource,memorySource);
             return new AgentConversationApi.Run(CompletableFuture.completedFuture("统一回答"),()->{},"durable-1");
         });
         var saved=new ChatMessageResponse();saved.setId(41L);saved.setContent("统一回答");saved.setMessageType("TEXT");
@@ -171,7 +182,8 @@ class AgentScopeChatServiceImplTest {
     }
     @Test void personalMemoryKeepsUserPreferenceWithoutAssistantClaimsOrRetrievedFacts(){
         var input=request();input.setContent("请记住我的验收资料默认导出为 PDF");
-        when(knowledge.retrieveContext(eq(input.getContent()),any())).thenReturn("服务器参考：该用户默认使用 XLSX");
+        when(knowledge.retrieveAgentContext(eq(input.getContent()),any(),anyInt()))
+                .thenReturn(new ReferenceContext("服务器参考：该用户默认使用 XLSX",List.of()));
         when(api.start(any(),anyString(),anyList(),anyString(),any())).thenReturn(
                 new AgentConversationApi.Run(CompletableFuture.completedFuture("我无法保存偏好；你可以改用 CSV"),()->{}));
         when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenAnswer(inv->{
@@ -183,31 +195,27 @@ class AgentScopeChatServiceImplTest {
         verify(sessions).appendAssistantMessage(any(),eq("s1"),contains("CSV"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
     }
     @Test void longKnowledgeReferenceCannotTruncateTheAccountPreference(){
-        when(knowledge.retrieveContext(anyString(),any())).thenReturn("业务资料".repeat(2000));
-        when(memory.searchAccountMemories(any(),eq("s1"),anyString(),eq(10))).thenReturn(List.of(java.util.Map.of("memory","本人时区为 UTC+8")));
-        when(memory.formatMemoriesAsContext(anyList())).thenReturn("[用户历史记忆]\n- 本人时区为 UTC+8");
-        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{
-            String reference=inv.getArgument(3);
-            assertThat(reference).hasSize(6000).contains("业务资料").endsWith("[用户历史记忆]\n- 本人时区为 UTC+8");
+        var memorySource = new Source("MEMORY","own-preference","0:"+"b".repeat(64));
+        String memoryText = "[用户历史记忆]\n- 本人时区为 UTC+8";
+        when(memory.accountReference(any(),eq("s1"),anyString(),eq(10),eq(2000)))
+                .thenReturn(new ReferenceContext(memoryText,List.of(memorySource)));
+        when(knowledge.retrieveAgentContext(anyString(),any(),eq(6000-memoryText.length()-1)))
+                .thenAnswer(inv->new ReferenceContext("资料".repeat(6000).substring(0,inv.getArgument(2)),List.of()));
+        when(api.startWithReferences(any(),anyString(),anyList(),any(),any(),eq("CHAT"),anyString())).thenAnswer(inv->{
+            var reference = inv.getArgument(3,ReferenceContext.class);
+            assertThat(reference.text()).hasSize(6000).contains("资料").endsWith(memoryText);
+            assertThat(reference.sources()).containsExactly(memorySource);
             return new AgentConversationApi.Run(CompletableFuture.completedFuture("历史记录为 UTC+8"),()->{});
         });
         when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(new ChatMessageResponse());
         service.handleUserMessage("alice",request());
     }
-    @Test void recallIncludesACorrectedPreferenceBeyondTheFirstFiveMatches(){
-        when(memory.searchAccountMemories(any(),eq("s1"),anyString(),anyInt())).thenAnswer(inv->{
-            int limit=inv.getArgument(3);
-            var rows=new java.util.ArrayList<java.util.Map<String,Object>>();
-            for(int i=0;i<6;i++)rows.add(java.util.Map.of("memory","其他偏好 "+i));
-            rows.add(java.util.Map.of("memory","人工纠正后的默认格式为 CSV"));
-            return List.copyOf(rows.subList(0,Math.min(limit,rows.size())));
-        });
-        when(memory.formatMemoriesAsContext(anyList())).thenAnswer(inv->{
-            List<java.util.Map<String,Object>> rows=inv.getArgument(0);
-            return rows.stream().map(row->row.get("memory").toString()).collect(java.util.stream.Collectors.joining("\n"));
-        });
-        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{
-            assertThat(inv.getArgument(3,String.class)).contains("人工纠正后的默认格式为 CSV");
+    @Test void recallRequestsEnoughMatchesForACorrectedPreference(){
+        var memorySource = new Source("MEMORY","own-preference","2:"+"b".repeat(64));
+        when(memory.accountReference(any(),eq("s1"),anyString(),eq(10),eq(2000)))
+                .thenReturn(new ReferenceContext("人工纠正后的默认格式为 CSV",List.of(memorySource)));
+        when(api.startWithReferences(any(),anyString(),anyList(),any(),any(),eq("CHAT"),anyString())).thenAnswer(inv->{
+            assertThat(inv.getArgument(3,ReferenceContext.class).text()).contains("人工纠正后的默认格式为 CSV");
             return new AgentConversationApi.Run(CompletableFuture.completedFuture("CSV"),()->{});
         });
         when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(new ChatMessageResponse());

@@ -69,7 +69,7 @@ class ContextStoreMySqlTest {
         assertThatThrownBy(()->store.assertCheckpointReadable(alice,"live","main","task-1"))
                 .isInstanceOf(ResponseStatusException.class);
         store.initialized(alice,"live","main","task-1",()->{
-            store.recordSeed(alice,"live","main","task-1","run",List.of());
+            store.recordSeed(alice,"live","main","task-1","run",List.of(AgentContextDataApi.RETRIEVAL_POLICY_V2));
             jdbc.update("UPDATE chat_session SET title='checkpoint saved' WHERE session_id='live'");
         });
         assertThat(store.bootstrap(alice,"live","main","task-1",List.of()).ready()).isTrue();
@@ -115,5 +115,39 @@ class ContextStoreMySqlTest {
         store.recordSeed(alice,"live","child:child-1","later-task","later-run",List.of(new AgentContextDataApi.Source("FILE","later-file","a".repeat(64))));
         assertThat(store.taskSources(alice,"live","parent")).isEqualTo(pinned).doesNotContain(new AgentContextDataApi.Source("FILE","later-file","a".repeat(64)));
         verify(children,atLeastOnce()).find(1,"live","child-1");
+    }
+
+    @Test void selectedAndNativeSkillsKeepImmutableScopeAndRecheckPublicationOnReuse(){
+        var skills=mock(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.class);
+        var beans=new DefaultListableBeanFactory();
+        beans.registerSingleton("skills",skills);
+        store.skillEvolution(beans.getBeanProvider(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.class));
+        var metadata=new com.ruanzhu.doorhandle.module.ai.evolution.SkillDtos.AvailableSkill(
+                "skill-12345678-1234-1234-1234-123456789abc","inspection-sop",1,"检测 SOP",List.of());
+        var loaded=new com.ruanzhu.doorhandle.module.ai.evolution.SkillDtos.LoadedSkill(metadata,"INSPECTOR",
+                "经发布的检测流程","a".repeat(64));
+        var source=com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.contextSource(loaded);
+        when(skills.contextSkill(alice,source)).thenReturn(loaded);
+        assertThat(store.selectedSkill(alice,"live","explicit-task","first-run",false,loaded)).isEqualTo(loaded);
+        assertThat(store.selectedSkill(alice,"live","explicit-task","second-run",true,null)).isEqualTo(loaded);
+        assertThat(store.selectedSkill(alice,"fork","explicit-task","second-run",true,null)).isNull();
+        assertThat(store.taskSources(alice,"live","explicit-task")).contains(source);
+
+        String nativeId="learned-12345678-1234-1234-1234-123456789abc-v1_approved-project";
+        String tool=com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD;
+        var args=java.util.Map.<String,Object>of("skillId",nativeId,"path","SKILL.md");
+        var output=ToolResultBlock.text("SDK 成功正文");
+        when(skills.nativeContextSource(alice,nativeId,"SDK 成功正文")).thenReturn(source);
+        store.recordResult(alice,"live","main","automatic-task","first-run","a".repeat(64),tool,args,output);
+        assertThat(store.taskSources(alice,"live","automatic-task")).contains(source);
+        assertThatThrownBy(()->store.recordResult(alice,"live","main","automatic-task","first-run","b".repeat(64),tool,
+                java.util.Map.of("skillId",nativeId,"path","notes.md"),output)).isInstanceOf(IllegalStateException.class);
+        verify(data,never()).authorize(eq(alice),eq("live"),argThat(sources->sources.contains(source)));
+
+        when(skills.contextSkill(alice,source)).thenThrow(new ResponseStatusException(
+                org.springframework.http.HttpStatus.FORBIDDEN,"技能已停用"));
+        assertThatThrownBy(()->store.selectedSkill(alice,"live","explicit-task","second-run",true,null))
+                .hasMessageContaining("技能已停用");
+        assertThatThrownBy(()->store.assertTaskReadable(alice,"live","automatic-task")).hasMessageContaining("技能已停用");
     }
 }

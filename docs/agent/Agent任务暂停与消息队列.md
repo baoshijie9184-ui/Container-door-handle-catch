@@ -6,7 +6,7 @@
 
 参考项目内 DeepSeek Harness 快照 `86a40220` 的 [Agent API](https://github.com/deepseek-ai/deepseek-harness/blob/86a40220/packages/core/agent/README.zh.md) 与 [运行类型](https://github.com/deepseek-ai/deepseek-harness/blob/86a40220/packages/core/agent/src/runtime-types.ts)。其 `followup` 表示下一轮输入，`steer` 表示下一执行步骤引导，`inject` 不主动唤醒，取消可选择保留 inbox。该快照公开的实时 Agent API 没有通用的 `pause()/resume()` 对；恢复持久会话与继续内存中的暂停执行是不同能力。
 
-参考仓库为 MIT（Copyright 2026 DeepSeek），本轮查询上游未归档且仍有更新。只参考交互和语义，不复制其源码，也不接入第二套执行框架。当前 AgentScope Java 为 2.0.4；已核对本地依赖，没有直接采用较新文档中的 `AgentSession` 接口。本项目使用现有 SDK middleware，在主 Agent 的模型与工具安全切点等待、补充输入并重新鉴权。
+参考仓库为 MIT（Copyright 2026 DeepSeek），本轮查询上游未归档且仍有更新。只参考交互和语义，不复制其源码，也不接入第二套执行框架。2026-11-22 更新：当前 SDK 固定为 AgentScope Java 2.0.5。本项目使用现有 SDK middleware，在主 Agent 的模型与工具安全切点等待、补充输入并重新鉴权。
 
 ## 使用方式
 
@@ -31,7 +31,7 @@ V36 增加 `agent_conversation_input_owner`、`agent_conversation_input` 和 `ag
 
 领取、交付、撤回、过期后清空队列表正文；实际用户对话保存在既有历史。审计仅保存动作、消息编号、版本与正文摘要，运行事件不记录引导正文。审计写失败回滚相应队列变更及同事务历史追加。失败不会自动重试，页面断网不会重复 POST；未知提交结果的手动重试沿用请求编号。
 
-启动后仅恢复仍在原有效期内的 QUEUED 消息，不重放 STARTED 或已交付消息；异常遗留 STARTED 到期终结。后台执行依据重新查询的角色建立临时内部身份，不保存浏览器 JWT 或密码。关闭页面后已提交的后台消息仍会处理。
+启动后仅恢复仍在原有效期内的 QUEUED 消息。异常遗留 STARTED 到期终结，已交付消息保持原回执。专业子任务全部结束、父任务已保存检查点且来源仍获授权时，调度器可自动重新交付尚未送达的续跑通知。后台执行依据重新查询的角色建立临时内部身份，不保存浏览器 JWT 或密码。关闭页面后已提交的后台消息仍会处理。
 
 ## 启用与回退
 

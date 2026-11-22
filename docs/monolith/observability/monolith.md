@@ -15,7 +15,9 @@
 
 ## 追踪只保留有用且有界的技术事实
 
-`RoleAgentFactory` 为主 Agent、直接专业 Agent、工具委派创建的专业 Agent 安装 AgentScope 原生 `OtelTracingMiddleware`。Reactor 上下文传播运行编号、实际模型、模型配置版本、角色、真实工具策略版本和显式选用的 SOP 版本；同一次模型/工具调用共享 TraceID。异步 Kafka 工作开始独立 trace，通过业务分派编号和安全的来源 TraceID 关联，不把等待人工审批的全过程维持成一个长 span。
+`RoleAgentFactory` 为主 Agent、直接专业 Agent、工具委派创建的专业 Agent 安装 AgentScope 原生 `OtelTracingMiddleware`。Reactor 上下文传播运行编号、选定模型路由、模型配置版本、角色、工具策略版本和显式选用的 SOP 版本。实际请求模型与供应商用量由每次物理模型请求记录。同一次模型与工具调用共享 TraceID。异步 Kafka 工作使用独立 trace，通过业务分派编号和来源 TraceID 关联。
+
+Langfuse 的 `GENERATION` 和 token 统计只来自实际供应商调用，每次尝试独立记录。AgentScope 的模型包装和原生 Agent、工具跨度继续展示在同一条调用链，向量检索和嵌入保持独立分类。Langfuse 中已经写入的观察记录按其原始类型保留，新规则适用于更新后的跨度。[Langfuse OTLP 属性映射](https://langfuse.com/integrations/native/opentelemetry)
 
 导出白名单不包含账号、会话原值、问题、回复、图像、工具参数/结果、OSS key/预签名 URL、异常正文/堆栈、外部 baggage/tracestate。Java 在进入队列前生成独立安全快照，不间接持有原 span；再在出口做一次白名单。Python 的 owner/session/user 仅在提供 HMAC 私钥时导出伪名，缺少私钥则省略。
 
@@ -49,7 +51,7 @@ Prometheus 保存7天并设512MB TSDB保留目标；WAL、head和压缩过程仍
 
 - 本地 `ModelCircuit` 使用 Resilience4j 2.4.0 CircuitBreaker 作为实际计数/许可引擎；门面保留连续失败、AUTH/QUOTA立即开路及长冷却、一个真实请求半开探测、代次栅栏和取消票据。没有额外付费探测调用。
 - 版本化配置仍使用原 `RedisModelCircuit` Lua 原子协调；Redis不可用时保留失败，不回退进程内“假健康”，不削弱跨实例单探测或额度账本。
-- 所有 `ManagedAgentModel` 路由实际接入非等待 Resilience4j Bulkhead。`agentscope.models.max-concurrent-calls` 默认32，满额在发出供应商请求前拒绝；取消后释放。部署限制同步用于旧配置版本客户端。
+- Agent 模型服务在同一进程内让各路由和历史配置版本共用一个非等待 Resilience4j Bulkhead。`agentscope.models.max-concurrent-calls` 默认 32，满额在发出供应商请求前拒绝，取消后释放。
 - 保留原首字/总超时、仅在尚未输出且原策略允许时选择备用、未知付费结果结算、工具确认/幂等和业务审计。没有包装整段 Agent 的 Retry，也不将配额或审计改为“遥测尽力写入”。
 
 ## Langfuse 完整自建需要先过资源门

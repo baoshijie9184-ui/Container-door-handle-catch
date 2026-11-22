@@ -14,6 +14,15 @@ final class ContextProvenance {
     private static final Set<String> BUSINESS=Set.of("get_task_detail","get_my_detection_tasks","search_detection_tasks","get_my_quality_records","get_quality_records","get_quality_report","create_report_draft","edit_report_draft","list_quality_reports","list_devices","get_device_alert","list_device_alerts","list_models","get_model_operations");
     private final ObjectMapper json;
     ContextProvenance(ObjectMapper json){this.json=json;}
+    record SkillRead(String nativeId,String result){}
+    SkillRead skillRead(Map<String,Object> input,ToolResultBlock output){
+        if(!Set.of("RUNNING","SUCCESS").contains(output.getState().name())||output.isSuspended())return null;
+        if(input==null||!input.keySet().equals(Set.of("skillId","path"))
+                ||!(input.get("skillId") instanceof String id)||!"SKILL.md".equals(input.get("path"))
+                ||output.getOutput().size()!=1||!(output.getOutput().get(0) instanceof TextBlock text))
+            throw new IllegalStateException("技能工具成功回执缺少完整的正文来源");
+        return new SkillRead(id,text.getText());
+    }
     List<Source> collect(List<Msg> messages){
         var result=new LinkedHashSet<Source>();
         for(var message:messages)for(var block:message.getContent()){

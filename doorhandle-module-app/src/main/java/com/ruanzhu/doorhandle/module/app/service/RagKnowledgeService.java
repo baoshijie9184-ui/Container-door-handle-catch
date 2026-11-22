@@ -1,5 +1,7 @@
 package com.ruanzhu.doorhandle.module.app.service;
 
+import com.ruanzhu.doorhandle.contracts.agent.AgentConversationApi.ReferenceContext;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity;
 import com.ruanzhu.doorhandle.module.app.config.properties.ChatAssistantProperties;
 import com.ruanzhu.doorhandle.module.app.service.ChromaRagStoreService.RagDocument;
 import jakarta.annotation.PostConstruct;
@@ -36,6 +38,22 @@ public class RagKnowledgeService {
         var managed = managedKnowledge == null ? null : managedKnowledge.getIfAvailable();
         String owned = managed == null ? "" : managed.context(actor, query);
         return owned + "\n" + retrieveContext(query);
+    }
+
+    /** Trims only public material, so every retained managed passage keeps its source proof. */
+    public ReferenceContext retrieveAgentContext(String query, Identity actor, int budget) {
+        if (budget <= 0) return new ReferenceContext("", List.of());
+        var managed = managedKnowledge == null ? null : managedKnowledge.getIfAvailable();
+        var owned = managed == null ? new ReferenceContext("", List.of()) : managed.contextReference(actor, query, budget);
+        String text = owned.text();
+        int available = budget - text.length() - (text.isBlank() ? 0 : 1);
+        if (available > 0) {
+            String system = retrieveContext(query);
+            if (StringUtils.hasText(system)) {
+                text += (text.isBlank() ? "" : "\n") + system.substring(0, Math.min(available, system.length()));
+            }
+        }
+        return new ReferenceContext(text, owned.sources());
     }
 
     private final ChatAssistantProperties properties;
