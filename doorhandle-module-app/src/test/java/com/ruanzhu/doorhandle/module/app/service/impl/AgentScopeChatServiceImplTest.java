@@ -72,10 +72,14 @@ class AgentScopeChatServiceImplTest {
     @Test void persistsMessagesAndPassesServerIdentityAndTextHistoryToAgentScope() {
         var previous = new ChatMessageResponse(); previous.setRole("assistant"); previous.setContent("上次回答"); previous.setMessageType("TEXT");
         var card = new ChatMessageResponse(); card.setRole("assistant"); card.setContent("PRIVATE_CARD_JSON"); card.setMessageType("BUSINESS_CARD");
-        when(sessions.listMessages("alice", "s1")).thenReturn(List.of(previous, card));
+        var greeting = new ChatMessageResponse(); greeting.setRole("assistant"); greeting.setContent("欢迎使用检测助手"); greeting.setIntent("GREETING"); greeting.setMessageType("TEXT");
+        var user = new ChatMessageResponse(); user.setRole("user"); user.setContent("本人提交的问题"); user.setMessageType("TEXT");
+        when(sessions.listMessages("alice", "s1")).thenReturn(List.of(greeting,user,previous,card));
         when(api.start(any(), anyString(), anyList(), anyString(), any())).thenAnswer(invocation -> {
             assertThat(invocation.getArgument(0, AgentActor.class)).isEqualTo(new AgentActor(1, "alice", AgentActor.Role.INSPECTOR));
-            assertThat(invocation.getArgument(2, List.class).toString()).contains("上次回答", "查询任务").doesNotContain("PRIVATE_CARD_JSON");
+            assertThat(invocation.getArgument(2, List.class).toString())
+                    .contains("欢迎使用检测助手","本人提交的问题","业务事实请重新查询","查询任务")
+                    .doesNotContain("上次回答","PRIVATE_CARD_JSON");
             Consumer<AgentConversationApi.Event> events = invocation.getArgument(4);
             events.accept(new AgentConversationApi.Event("RUN_STARTED", "employee-main", null, null, 0));
             events.accept(new AgentConversationApi.Event("RUN_FINISHED", "employee-main", null, null, 12));
@@ -84,6 +88,7 @@ class AgentScopeChatServiceImplTest {
         var saved = new ChatMessageResponse(); saved.setContent("查询完成");
         when(sessions.appendAssistantMessage(any(), eq("s1"), eq("查询完成"), eq("TEXT"), eq("AGENTSCOPE"), isNull())).thenReturn(saved);
         assertThat(service.handleUserMessage("alice", request()).getContent()).isEqualTo("查询完成");
+        assertThat(previous.getContent()).isEqualTo("上次回答");
         var order = inOrder(sessions); order.verify(sessions).verifySessionOwner("alice", "s1");
         order.verify(sessions).listMessages("alice", "s1"); order.verify(sessions).appendUserMessage(any(), eq("s1"), eq("查询任务"));
         verify(sessions).saveExecutionTrace(any(), eq("s1"), argThat(trace -> trace.contains("AgentScope") && trace.contains("COMPLETED") && trace.contains("RUN_FINISHED")));
@@ -102,13 +107,14 @@ class AgentScopeChatServiceImplTest {
         assertThat(envelope.text()).isEqualTo("查询完成");assertThat(envelope.cards()).containsExactly(ref);assertThat(envelope.runId()).isEqualTo("run-1");
         verify(memory).addMemoryAsync(any(),eq("s1"),eq("查询任务"),anyMap());
     }
-    @Test void restoredCardMessageOnlyFeedsPlainAnswerBackToModel() throws Exception {
+    @Test void restoredCardAnswerIsWithheldWhenTheFallbackHasNoProvenanceReader() throws Exception {
         var message=new ChatMessageResponse();message.setRole("assistant");message.setMessageType("AGENT_CARDS");
         message.setContent(new ObjectMapper().writeValueAsString(new AgentCards.Envelope(1,"先前回答","run-old",List.of(new AgentCards.Reference("TASKS","get_task_detail",List.of("private-task-ref"),null)))));
         when(sessions.listMessages("alice","s1")).thenReturn(List.of(message));
-        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{assertThat(inv.getArgument(2,List.class).toString()).contains("先前回答").doesNotContain("private-task-ref","run-old");return new AgentConversationApi.Run(CompletableFuture.completedFuture("新的回答"),()->{});});
+        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{assertThat(inv.getArgument(2,List.class).toString()).contains("业务事实请重新查询").doesNotContain("先前回答","private-task-ref","run-old");return new AgentConversationApi.Run(CompletableFuture.completedFuture("新的回答"),()->{});});
         when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(new ChatMessageResponse());
         service.handleUserMessage("alice",request());
+        assertThat(message.getContent()).contains("先前回答","private-task-ref");
     }
     @Test void unavailableFrameworkNeverFallsBackToALegacyClient() {
         when(provider.getIfAvailable()).thenReturn(null);
@@ -151,7 +157,7 @@ class AgentScopeChatServiceImplTest {
         when(memory.searchAccountMemories(any(),eq("s1"),eq("当前问题"),eq(10))).thenReturn(List.of(java.util.Map.of("memory","本人偏好")));
         when(memory.formatMemoriesAsContext(anyList())).thenReturn("本人偏好");
         when(api.start(any(),eq("s1"),anyList(),anyString(),any(),eq("AGUI"),eq("request-1"))).thenAnswer(inv->{
-            assertThat(inv.getArgument(2,List.class).toString()).contains("来自主站的历史","当前问题");assertThat(inv.getArgument(3,String.class)).contains("业务参考","本人偏好");
+            assertThat(inv.getArgument(2,List.class).toString()).contains("业务事实请重新查询","当前问题").doesNotContain("来自主站的历史");assertThat(inv.getArgument(3,String.class)).contains("业务参考","本人偏好");
             return new AgentConversationApi.Run(CompletableFuture.completedFuture("统一回答"),()->{},"durable-1");
         });
         var saved=new ChatMessageResponse();saved.setId(41L);saved.setContent("统一回答");saved.setMessageType("TEXT");

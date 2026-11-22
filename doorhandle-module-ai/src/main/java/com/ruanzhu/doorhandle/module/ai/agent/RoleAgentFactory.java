@@ -26,7 +26,7 @@ public class RoleAgentFactory {
     private com.ruanzhu.doorhandle.module.ai.context.DurableContextStore contexts;
     public void setDurableContexts(com.ruanzhu.doorhandle.module.ai.context.DurableContextStore contexts){this.contexts=contexts;}
     private io.agentscope.core.middleware.MiddlewareBase contextMiddleware(com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Scope scope,Model model,java.util.function.BiConsumer<String,Map<String,Object>> recorder){
-        if(contexts!=null){if(scope==null||!properties.getContextCompaction().isEnabled())throw new IllegalStateException("持久上下文要求启用工作台和上下文压缩");return new com.ruanzhu.doorhandle.module.ai.context.PersistentContextMiddleware(contexts,scope,properties.getContextCompaction(),model,recorder);}
+        if(contexts!=null){if(scope==null)throw new IllegalStateException("持久上下文要求启用工作台");return new com.ruanzhu.doorhandle.module.ai.context.PersistentContextMiddleware(contexts,scope,properties.getContextCompaction(),model,recorder);}
         return properties.getContextCompaction().isEnabled()?new com.ruanzhu.doorhandle.module.ai.context.AgentContextCompaction(properties.getContextCompaction(),model,recorder):null;
     }
     private final AgentScopeProperties properties;

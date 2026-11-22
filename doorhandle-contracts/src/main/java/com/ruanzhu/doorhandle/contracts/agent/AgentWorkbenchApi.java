@@ -10,7 +10,7 @@ public interface AgentWorkbenchApi {
     List<Item> list(AgentActor actor,String sessionId);
     Item command(AgentActor actor,String sessionId,String itemId,long revision,String requestId,String action,Map<String,Object> input);
     default String waitingPhase(AgentActor actor,String sessionId){return null;}
-    default void turnSaved(AgentActor actor,String sessionId,long messageId){}
+    default void turnSaved(AgentActor actor,String sessionId,long messageId,String runId){}
     default void assertForkPoint(AgentActor actor,String sessionId,long messageId){}
     default void forked(AgentActor actor,String sourceSession,String targetSession,long messageId){}
     default boolean canDispatchInput(AgentActor actor,String sessionId,String inputId){return true;}

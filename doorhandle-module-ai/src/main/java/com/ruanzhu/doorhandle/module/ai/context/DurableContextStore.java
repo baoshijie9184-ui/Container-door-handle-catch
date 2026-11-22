@@ -37,9 +37,8 @@ public class DurableContextStore implements ContextFileAccessApi {
     @Value("${agentscope.workbench.recovery:true}") private boolean recoveryEnabled;
     @Value("${agentscope.workbench.files:true}") private boolean filesEnabled;
     @Value("${agentscope.workbench.children:true}") private boolean childrenEnabled=true;
-    @Value("${agentscope.ai.context-compaction.enabled:false}") private boolean compactionEnabled;
     public DurableContextStore(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json,ObjectProvider<AgentContextDataApi> data){this.jdbc=jdbc;tx=new TransactionTemplate(manager);this.json=json;this.data=data;provenance=new ContextProvenance(json);messageEvidence=new JdbcMessageEvidenceStore(jdbc,json);persistence=new DurableContextPersistence(jdbc,json);}
-    @PostConstruct public void validate(){if(!workbenchEnabled||!recoveryEnabled||!compactionEnabled||!childrenEnabled)throw new IllegalStateException("持久上下文需要工作台、检查点恢复、持久专业任务和上下文压缩");if(offloadEnabled&&!filesEnabled)throw new IllegalStateException("工具结果卸载需要启用会话文件工作区");persistence.validateSchema();jdbc.queryForList("SELECT id,context_owner_user_id,context_sources_json,context_sources_sha256 FROM chat_message WHERE 1=0");}
+    @PostConstruct public void validate(){if(!workbenchEnabled||!recoveryEnabled||!childrenEnabled)throw new IllegalStateException("持久上下文需要工作台、检查点恢复和持久专业任务");if(offloadEnabled&&!filesEnabled)throw new IllegalStateException("工具结果卸载需要启用会话文件工作区");persistence.validateSchema();jdbc.queryForList("SELECT id,context_owner_user_id,context_sources_json,context_sources_sha256 FROM chat_message WHERE 1=0");}
     public boolean offloadEnabled(){return offloadEnabled;}
     @Override public void assertReadable(AgentActor actor,String session,String fileId){
         var rows=persistence.offloads(actor.userId(),session,null,null,fileId,1001,false);
@@ -48,6 +47,19 @@ public class DurableContextStore implements ContextFileAccessApi {
         for(var row:rows)authorize(actor,session,checkedSources(row.body()),new HashSet<>());
     }
     public record Bootstrap(long through,List<Msg> initial,boolean ready){}
+    public void assertCheckpointReadable(AgentActor actor,String session,String scope,String task){
+        data().authorize(actor,session,List.of());
+        if(!initializedSources(actor,session,scope,task))throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.CONFLICT,"旧检查点缺少可验证的上下文来源，请结束原任务后重新发起");
+        assertTaskReadable(actor,session,task);
+    }
+    private boolean initializedSources(AgentActor actor,String session,String scope,String task){
+        var row=persistence.bootstrap(actor.userId(),session,task,false);
+        if(row.isEmpty()||!row.get().ready())return false;
+        if(!scope.equals(row.get().body().agentScope()))throw new SecurityException("上下文执行范围不一致");
+        var seed=persistence.origin(actor.userId(),session,scope,hash("seed:"+task));
+        return seed!=null&&task.equals(seed.task());
+    }
     public Bootstrap bootstrap(AgentActor actor,String session,String scope,String task,List<Msg> initial){
         data().authorize(actor,session,List.of());
         var saved=persistence.bootstrap(actor.userId(),session,task,false);
@@ -215,7 +227,10 @@ public class DurableContextStore implements ContextFileAccessApi {
         if(rows.size()>512)throw new IllegalStateException("工具来源历史超过本次读取上限，未省略后继续");
         var refs=new LinkedHashSet<Source>();for(var row:rows){refs.addAll(checkedSources(row.body()));if(refs.size()>2000)throw new IllegalStateException("工具来源集合超过本次上限");}return List.copyOf(refs);
     }
-    public void turnSaved(AgentActor actor,String session,String task,long message){var refs=pin(actor,session,originSources(actor,session,null,task));String body=sourceBody(refs);tx.executeWithoutResult(status->{lock(actor,session,"turn-links");if(storeTurnSources(actor,session,message,body))audit(actor,session,"main",UUID.nameUUIDFromBytes((session+":"+message).getBytes(StandardCharsets.UTF_8)).toString(),"TURN_LINKED",hash(body));});}
+    public void turnSaved(AgentActor actor,String session,String task,long message){
+        if(!initializedSources(actor,session,"main",task))return;
+        var refs=pin(actor,session,originSources(actor,session,null,task));String body=sourceBody(refs);tx.executeWithoutResult(status->{lock(actor,session,"turn-links");if(storeTurnSources(actor,session,message,body))audit(actor,session,"main",UUID.nameUUIDFromBytes((session+":"+message).getBytes(StandardCharsets.UTF_8)).toString(),"TURN_LINKED",hash(body));});
+    }
     private boolean storeTurnSources(AgentActor actor,String session,long message,String body){
         return messageEvidence.saveSources(actor.userId(),session,message,body);
     }

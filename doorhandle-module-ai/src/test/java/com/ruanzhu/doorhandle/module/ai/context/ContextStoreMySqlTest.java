@@ -13,6 +13,7 @@ import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.server.ResponseStatusException;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -47,12 +48,15 @@ class ContextStoreMySqlTest {
         assertThat(childProvider.getObject()).isSameAs(children);
         store=new DurableContextStore(jdbc,new DataSourceTransactionManager(fixture.dataSource()),new ObjectMapper(),dataProvider);
         store.childReaders(childProvider);
-        for(String property:List.of("workbenchEnabled","recoveryEnabled","filesEnabled","childrenEnabled","compactionEnabled","offloadEnabled"))ReflectionTestUtils.setField(store,property,true);
+        for(String property:List.of("workbenchEnabled","recoveryEnabled","filesEnabled","childrenEnabled","offloadEnabled"))ReflectionTestUtils.setField(store,property,true);
         store.validate();
     }
     @AfterEach void close()throws Exception{if(fixture!=null)fixture.close();}
 
     @Test void bootstrapCheckpointAndAuditRollbackTogetherAndRetryRetainsOriginalState(){
+        assertThatThrownBy(()->store.assertCheckpointReadable(alice,"live","main","task-1"))
+                .isInstanceOf(ResponseStatusException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM runtime_state WHERE namespace='CONTEXT_BOOTSTRAP'",Integer.class)).isZero();
         var boot=store.bootstrap(alice,"live","main","task-1",List.of(new UserMessage("first")));
         assertThat(boot.ready()).isFalse();
         var replay=store.bootstrap(alice,"live","main","task-1",List.of(new UserMessage("changed input")));
@@ -62,9 +66,15 @@ class ContextStoreMySqlTest {
         })).isInstanceOf(IllegalStateException.class);
         assertThat(jdbc.queryForObject("SELECT title FROM chat_session WHERE session_id='live'",String.class)).isEqualTo("Original");
         assertThat(store.bootstrap(alice,"live","main","task-1",List.of()).ready()).isFalse();
-        store.initialized(alice,"live","main","task-1",()->jdbc.update("UPDATE chat_session SET title='checkpoint saved' WHERE session_id='live'"));
+        assertThatThrownBy(()->store.assertCheckpointReadable(alice,"live","main","task-1"))
+                .isInstanceOf(ResponseStatusException.class);
+        store.initialized(alice,"live","main","task-1",()->{
+            store.recordSeed(alice,"live","main","task-1","run",List.of());
+            jdbc.update("UPDATE chat_session SET title='checkpoint saved' WHERE session_id='live'");
+        });
         assertThat(store.bootstrap(alice,"live","main","task-1",List.of()).ready()).isTrue();
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='CONTEXT'",Integer.class)).isEqualTo(2);
+        store.assertCheckpointReadable(alice,"live","main","task-1");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='CONTEXT'",Integer.class)).isEqualTo(3);
     }
 
     @Test void summaryCasAndPermissionInvalidationKeepOriginalImmutableBytes(){

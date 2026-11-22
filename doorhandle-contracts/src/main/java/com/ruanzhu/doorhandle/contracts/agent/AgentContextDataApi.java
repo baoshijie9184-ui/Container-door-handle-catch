@@ -8,6 +8,8 @@ public interface AgentContextDataApi {
     record Message(long id,String role,String text,List<Source> sources) {}
     record History(long throughId,List<Message> messages,boolean hasMore) {}
     History history(AgentActor actor,String session,long afterId,long throughId,int limit);
+    /** Bounded, chronological tail at an already fixed history cut, for runs without compaction. */
+    History recentHistory(AgentActor actor,String session,long throughId,int limit);
     String historyDigest(AgentActor actor,String session,long throughId);
     void authorize(AgentActor actor,String session,List<Source> sources);
     default List<Source> pin(AgentActor actor,String session,List<Source> sources){authorize(actor,session,sources);return List.copyOf(sources);}

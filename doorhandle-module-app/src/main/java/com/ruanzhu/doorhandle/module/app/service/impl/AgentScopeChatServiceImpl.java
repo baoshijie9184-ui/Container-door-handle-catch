@@ -207,7 +207,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             saved.setRunId(run.runId());
             var links=executionLinks==null?null:executionLinks.getIfAvailable();
             if(links!=null)links.bind(tenant,sessionId,saved.getId(),run.runId());
-            if(workbench!=null&&workbench.getIfAvailable()!=null&&saved.getId()!=null)workbench.getObject().turnSaved(actor,sessionId,saved.getId());
+            if(workbench!=null&&workbench.getIfAvailable()!=null&&saved.getId()!=null)workbench.getObject().turnSaved(actor,sessionId,saved.getId(),run.runId());
             try {
                 // Personal facts come from the user's message. Generated answers and retrieved
                 // business context must not become assertions attributed to the user.
@@ -234,11 +234,14 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
         }
     }
     private ChatMessageResponse textHistory(ChatMessageResponse message) {
-        if (!AgentCards.MESSAGE_TYPE.equals(message.getMessageType())) return message;
-        try {
-            var envelope=json.readValue(message.getContent(),AgentCards.Envelope.class);
-            var text=new ChatMessageResponse();text.setRole(message.getRole());text.setMessageType("TEXT");text.setContent(envelope.text());return text;
-        } catch(Exception ignored) {return null;}
+        if (!"assistant".equals(message.getRole()) || "GREETING".equals(message.getIntent())) return message;
+        if (message.getMessageType()!=null && !Set.of("TEXT",AgentCards.MESSAGE_TYPE).contains(message.getMessageType())) return null;
+        // This fallback has no provenance reader. The workbench can rebuild its own authorized history.
+        var placeholder = new ChatMessageResponse();
+        placeholder.setRole("assistant");
+        placeholder.setMessageType("TEXT");
+        placeholder.setContent("[先前回答保留在聊天记录，业务事实请重新查询]");
+        return placeholder;
     }
     @Override @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public ChatMessageResponse confirmAction(String username, ChatConfirmActionRequest request) {

@@ -6,6 +6,7 @@ import com.ruanzhu.doorhandle.framework.observability.TraceContextStore;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.instrumentation.reactor.v3_1.ContextPropagationOperator;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
+import com.ruanzhu.doorhandle.module.ai.context.DurableContextStore;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
 import com.ruanzhu.doorhandle.module.ai.model.AgentModelService;
 import com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext;
@@ -22,6 +23,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.*;
 import reactor.core.scheduler.Schedulers;
 import java.time.Duration;
@@ -102,7 +104,22 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         // Native clients submit random UUIDs. An old deterministic continuation must never start a fresh turn.
         return !slot.followsLegacy() || UUID.fromString(input).version() == 4;
     }
-    @Override public void turnSaved(AgentActor actor,String session,long message){owned(actor,session);var job=mainSlot(actor,session).current();if(job==null||job.legacyClockEvidence()!=null)return;var snapshot=store.list(actor.userId(),session).stream().filter(row->row.legacyClockEvidence()==null&&Set.of("PLAN","TASKS").contains(row.kind())).map(store::view).toList();store.create(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"turn:"+message),"TURN",job.status(),Map.of("throughMessageId",message,"snapshot",snapshot));if(contexts!=null&&contexts.getIfAvailable()!=null)contexts.getObject().turnSaved(actor,session,Objects.toString(job.data().get("logicalTaskId")),message);}
+    @Override public void turnSaved(AgentActor actor,String session,long message,String runId){
+        owned(actor,session);
+        if(runId==null)return;
+        store.locked(actor.userId(),()->{
+            var job=mainSlot(actor,session).current();
+            if(job==null||job.legacyClockEvidence()!=null||!runId.equals(job.data().get("runId")))return null;
+            var snapshot=store.list(actor.userId(),session).stream()
+                    .filter(row->row.legacyClockEvidence()==null&&Set.of("PLAN","TASKS").contains(row.kind()))
+                    .map(store::view).toList();
+            store.create(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"turn:"+message),
+                    "TURN",job.status(),Map.of("throughMessageId",message,"snapshot",snapshot));
+            var context=contextStore();
+            if(context!=null)context.turnSaved(actor,session,Objects.toString(job.data().get("logicalTaskId")),message);
+            return null;
+        });
+    }
     @Override public void assertForkPoint(AgentActor actor,String session,long message){owned(actor,session);var turn=store.find(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"turn:"+message));if(turn!=null&&!turn.status().equals("COMPLETED"))throw fail(409,"此轮仍在等待或已中断，不能作为完成切点");}
     @Override public void forked(AgentActor actor,String source,String target,long message){owned(actor,source);owned(actor,target);var turn=store.find(actor.userId(),source,WorkbenchStore.stable(actor.userId(),source,"turn:"+message));if(turn!=null)store.create(actor.userId(),target,WorkbenchStore.stable(actor.userId(),target,"fork-snapshot"),"FORK_SNAPSHOT","REFERENCE_ONLY",Map.of("text",store.encode(turn.data().get("snapshot")),"sourceSessionId",source,"throughMessageId",message));if(contexts!=null&&contexts.getIfAvailable()!=null)contexts.getObject().fork(actor,source,target,message);}
     @Override public String waitingPhase(AgentActor actor,String session){var job=mainSlot(actor,session).current();if(job==null)return null;return switch(job.status()){case "WAITING_PLAN"->"WAITING_PLAN";case "WAITING_INPUT"->"WAITING_INPUT";case "WAITING_CHILD"->"WAITING_CHILD";case "NEEDS_REVIEW","UNKNOWN"->"AWAITING_RECOVERY";default->null;};}
@@ -118,6 +135,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             boolean continuation=job!=null&&"READY".equals(job.status());
             var data=continuation?new LinkedHashMap<>(job.data()):new LinkedHashMap<String,Object>();
             if(continuation&&!actor.role().name().equals(data.get("role")))throw fail(403,"账号角色已变化，不能继续原任务");
+            if(continuation)assertCheckpointReadable(actor,session,job);
             data.put("username",actor.username());data.put("role",actor.role().name());data.put("runId",runId);data.put("instance",instance);data.put("yieldReady",false);data.put("title",bounded(question,200));
             if(!continuation) {
                 String logicalTaskId=UUID.randomUUID().toString();
@@ -149,11 +167,20 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         return value.startsWith(command) && (value.length() == command.length()
                 || Character.isWhitespace(value.codePointAt(command.length())));
     }
+    private DurableContextStore contextStore(){return contexts==null?null:contexts.getIfAvailable();}
+    private void assertCheckpointReadable(AgentActor actor,String session,WorkbenchStore.Row execution){
+        var context=contextStore();
+        if(context!=null)context.assertCheckpointReadable(actor,session,execution.kind().equals("CHILD")?"child:"+execution.id():"main",(String)execution.data().get("logicalTaskId"));
+    }
+    private boolean mayDispatchCheckpoint(AgentActor actor,String session,WorkbenchStore.Row execution){
+        try{assertCheckpointReadable(actor,session,execution);return true;}
+        catch(ResponseStatusException failure){if(failure.getStatusCode().value()==409)return false;throw failure;}
+    }
     @Override public Item command(AgentActor actor,String session,String id,long revision,String request,String action,Map<String,Object> input){
         owned(actor,session);if(input==null)input=Map.of();final var body=input;
         var result=store.request(actor.userId(),request,store.encode(List.of(session,id,revision,action,body)),Item.class,()->{
             var row=store.require(actor.userId(),session,id);if(row.revision()!=revision)throw fail(409,"工作项版本已变化，请刷新");
-            if(Set.of("PLAN","QUESTION").contains(row.kind())){var parent=store.require(actor.userId(),session,(String)row.data().get("parentId"));if(!row.status().equals("PENDING")||!Objects.equals(row.data().get("logicalTaskId"),parent.data().get("logicalTaskId"))||!parent.status().equals(row.kind().equals("PLAN")?"WAITING_PLAN":"WAITING_INPUT"))throw fail(409,"此交互已结束或不属于当前逻辑任务");if(!Boolean.TRUE.equals(parent.data().get("yieldReady")))throw fail(409,"正在保存等待状态，请稍后刷新再处理");}
+            if(Set.of("PLAN","QUESTION").contains(row.kind())){var parent=store.require(actor.userId(),session,(String)row.data().get("parentId"));if(!row.status().equals("PENDING")||!Objects.equals(row.data().get("logicalTaskId"),parent.data().get("logicalTaskId"))||!parent.status().equals(row.kind().equals("PLAN")?"WAITING_PLAN":"WAITING_INPUT"))throw fail(409,"此交互已结束或不属于当前逻辑任务");if(!Boolean.TRUE.equals(parent.data().get("yieldReady")))throw fail(409,"正在保存等待状态，请稍后刷新再处理");if(Set.of("approve-plan","revise-plan","answer").contains(action))assertCheckpointReadable(actor,session,parent);}
             var data=new LinkedHashMap<>(row.data());String status;
             switch(action){
                 case "approve-plan"->{if(!settings.isPlans()||!row.kind().equals("PLAN")||!row.status().equals("PENDING"))throw fail(409,"计划不再等待审阅");status="APPROVED";}
@@ -161,11 +188,12 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                 case "answer"->{if(!settings.isQuestions()||!row.kind().equals("QUESTION")||!row.status().equals("PENDING"))throw fail(409,"问题已处理");data.put("answer",answer(row.data(),body.get("answer")));status="ANSWERED";}
                 case "cancel"->{if(!Set.of("PLAN","QUESTION","CHILD","EXECUTION").contains(row.kind())||Set.of("COMPLETED","CANCELLED").contains(row.status()))throw fail(409,"此工作项不能取消");status="CANCELLED";}
                 case "resume"->{if(!settings.isRecovery()||!Set.of("EXECUTION","CHILD").contains(row.kind())||!row.status().equals("NEEDS_REVIEW"))throw fail(409,"没有可恢复检查点");if(!actor.role().name().equals(data.get("role")))throw fail(403,"账号角色已变化，不能恢复原角色任务");
+                    assertCheckpointReadable(actor,session,row);
                     reconcileBusinessReceipts(actor,session,(String)data.get("logicalTaskId"));
                     if(hasUnknownWrite(actor.userId(),session,(String)data.get("logicalTaskId")))throw fail(409,"存在结果未知的写操作，必须先核对业务回执，不能自动重做");String sdk="wb:"+data.get("logicalTaskId")+":"+(row.kind().equals("CHILD")?row.id():"main");if(!new JdbcWorkbenchStateStore(store).exists(Long.toString(actor.userId()),sdk))throw fail(409,"此任务尚无可恢复的 SDK 检查点");
                     if(body.containsKey("replacementModelId"))reselectRecoveryModel(actor,session,row,data,body.get("replacementModelId"),body.get("replacementConfigVersion"));
                     validateTaskModel(data);status=row.kind().equals("CHILD")?"QUEUED":"READY";}
-                case "child-message"->{if(!settings.isChildren()||!row.kind().equals("CHILD")||!Set.of("COMPLETED","RUNNING","QUEUED").contains(row.status()))throw fail(409,"子 Agent 当前需要先处理等待项");String text=required(body,"content",4000);if(row.status().equals("COMPLETED")){data.put("question",text);data.put("yieldReady",true);status="QUEUED";}else{var pending=new ArrayList<>((List<String>)data.getOrDefault("followups",List.of()));if(pending.size()>=4)throw fail(429,"子任务的追加要求已达排队上限");pending.add(text);data.put("followups",pending);status=row.status();}}
+                case "child-message"->{if(!settings.isChildren()||!row.kind().equals("CHILD")||!Set.of("COMPLETED","RUNNING","QUEUED").contains(row.status()))throw fail(409,"子 Agent 当前需要先处理等待项");String text=required(body,"content",4000);if(row.status().equals("COMPLETED")){assertCheckpointReadable(actor,session,row);data.put("question",text);data.put("yieldReady",true);status="QUEUED";}else{var pending=new ArrayList<>((List<String>)data.getOrDefault("followups",List.of()));if(pending.size()>=4)throw fail(429,"子任务的追加要求已达排队上限");pending.add(text);data.put("followups",pending);status=row.status();}}
                 default->throw fail(400,"不支持的工作台操作");
             }
             if(action.equals("resume"))data.put("yieldReady",true);
@@ -266,6 +294,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                     store.locked(user,()->{
                         var current=store.require(user,session,id);
                         if(current.legacyClockEvidence()!=null||!current.kind().equals("EXECUTION")||!current.status().equals("READY"))return null;
+                        if(!mayDispatchCheckpoint(actor,session,current))return null;
                         String request=WorkbenchStore.stable(user,session,"continue:"+id+":"+current.revision());
                         // This facade only admits the local inbox; no model or external work runs here.
                         try(var trace=taskTrace(current.data().get("logicalTaskId")).makeCurrent()){
@@ -277,7 +306,14 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                 }else {
                     if(!childSlots.tryAcquire())continue;
                     WorkbenchStore.Row claimed;
-                    try{claimed=store.locked(user,()->{var current=store.require(user,session,id);if(current.legacyClockEvidence()!=null||!current.kind().equals("CHILD")||!current.status().equals("QUEUED")||Boolean.FALSE.equals(current.data().get("yieldReady")))return null;var data=new LinkedHashMap<>(current.data());data.put("instance",instance);data.put("yieldReady",false);return store.update(current,"RUNNING",data,"CHILD_STARTED");});}catch(RuntimeException failure){childSlots.release();throw failure;}
+                    try{claimed=store.locked(user,()->{
+                        var current=store.require(user,session,id);
+                        if(current.legacyClockEvidence()!=null||!current.kind().equals("CHILD")||!current.status().equals("QUEUED")||Boolean.FALSE.equals(current.data().get("yieldReady")))return null;
+                        String sdk="wb:"+current.data().get("logicalTaskId")+":"+current.id();
+                        if(contextStore()!=null&&new JdbcWorkbenchStateStore(store).exists(Long.toString(user),sdk)&&!mayDispatchCheckpoint(actor,session,current))return null;
+                        var data=new LinkedHashMap<>(current.data());data.put("instance",instance);data.put("yieldReady",false);
+                        return store.update(current,"RUNNING",data,"CHILD_STARTED");
+                    });}catch(RuntimeException failure){childSlots.release();throw failure;}
                     if(claimed!=null){liveExecutions.put(id,"claim:"+claimed.revision());durableAttempts.put(id,store.attempt(claimed));try{children.submit(()->runChild(actor,session,claimed));}catch(RuntimeException failure){releaseAttempt(id,"claim:"+claimed.revision());childSlots.release();throw failure;}}else childSlots.release();
                 }
             }catch(RuntimeException error){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Agent 工作项暂不可调度：{}",error.getClass().getSimpleName());}
@@ -333,12 +369,11 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         final AgentActor actor;final String session,jobId,runId,specialist,logicalTaskId;
         private final JdbcWorkbenchStateStore sdkStateStore;
         private final WorkbenchStore.Attempt attempt;
-        private List<Msg> initialContext=List.of();private int initialHistorySize;
+        private List<Msg> initialContext=List.of();
         public AgentActor contextActor(){return actor;}public String contextSession(){return session;}public String contextTask(){return logicalTaskId;}
         public String contextKey(){return specialist==null?"main":"child:"+jobId;}
         public boolean restoringContext(){return stateStore().exists(Long.toString(actor.userId()),sdkSession());}
-        public void bindContextInput(List<Msg> messages,int historySize){initialHistorySize=historySize;initialContext=List.copyOf(messages.subList(Math.min(historySize,messages.size()),messages.size()));}
-        public int initialHistorySize(){return initialHistorySize;}
+        public void bindContextInput(List<Msg> messages,int historySize){initialContext=List.copyOf(messages.subList(Math.min(historySize,messages.size()),messages.size()));}
         public List<Msg> initialContextMessages(){return specialist==null?initialContext:List.of(new UserMessage(Objects.toString(store.require(actor.userId(),session,jobId).data().get("question"),"")));}
         public void persistContext(Agent agent,RuntimeContext context){if(!settings.isRecovery())throw new IllegalStateException("持久上下文要求启用检查点恢复");checkpoint(agent,context==null?RuntimeContext.empty():context,"CONTEXT_INITIALIZED");}
         Scope(AgentActor actor,String session,String jobId,String runId,String specialist){this.actor=actor;this.session=session;this.jobId=jobId;this.runId=runId;this.specialist=specialist;var current=store.require(actor.userId(),session,jobId);this.logicalTaskId=Objects.toString(current.data().get("logicalTaskId"));this.attempt=store.attempt(current);if(!Objects.equals(runId,attempt.runId()))throw fail(409,"执行尝试已变化");this.sdkStateStore=new JdbcWorkbenchStateStore(store,true,()->store.assertAttempt(attempt),Long.toString(actor.userId()),sdkSession());}
@@ -347,9 +382,15 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         public String runId(){return runId;}
         public String modelId(String fallback){var data=store.require(actor.userId(),session,jobId).data();String selected=Objects.toString(data.get("modelId"),"");return selected.isBlank()?Objects.toString(data.get("modelDefault"),fallback):selected;}
         public long modelConfigVersion(){var version=store.require(actor.userId(),session,jobId).data().get("modelConfigVersion");return version instanceof Number n?n.longValue():0;}
-        public List<Msg> messages(List<Msg> history){repairState();return stateStore().exists(Long.toString(actor.userId()),sdkSession())?List.of(history.get(history.size()-1)):history;}
+        public List<Msg> messages(List<Msg> history){
+            repairState();
+            if(restoringContext())return List.of(history.get(history.size()-1));
+            return contextStore()==null?history:initialContext;
+        }
         void repairState(){
             var saved=stateStore().getVersioned(Long.toString(actor.userId()),sdkSession(),"agent_state",AgentState.class);if(!saved.isPresent())return;
+            var context=contextStore();
+            if(context!=null)context.assertCheckpointReadable(actor,session,contextKey(),logicalTaskId);
             var state=saved.value();var done=new HashSet<String>();for(var message:state.getContext())for(var result:message.getContentBlocks(ToolResultBlock.class))done.add(result.getId());
             var pending=state.getContext().stream().flatMap(message->message.getContentBlocks(ToolUseBlock.class).stream()).filter(call->!done.contains(call.getId())).toList();
             boolean changed=false;for(var call:pending){var record=store.find(actor.userId(),session,toolId(call.getId()));ToolResultBlock result;
@@ -490,7 +531,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                 case "read_workspace_file"->{return ToolResultBlock.text(sessions.getObject().readText(actor,session,required(input,"fileId",64)));}
                 case "create_artifact"->{var file=sessions.getObject().createArtifact(actor,session,id,required(input,"filename",200),required(input,"content",500000));data.put("fileId",file.id());data.put("filename",file.name());record(id,"ARTIFACT","COMPLETED",data);return ToolResultBlock.text(store.encode(file));}
                 case "start_background_task"->{var child=child(actor,session,jobId,logicalTaskId,runId,required(input,"specialist",100),required(input,"question",4000),callId);waitFor("WAITING_CHILD");return ToolResultBlock.text(store.encode(store.view(child)));}
-                case "get_background_task"->{var child=store.require(actor.userId(),session,required(input,"itemId",64));if(!child.kind().equals("CHILD")||!jobId.equals(child.data().get("parentId")))throw fail(403,"此子任务不属于当前 Agent");return ToolResultBlock.text(store.encode(store.view(child)));}
+                case "get_background_task"->{var child=store.require(actor.userId(),session,required(input,"itemId",64));if(!child.kind().equals("CHILD")||!jobId.equals(child.data().get("parentId")))throw fail(403,"此子任务不属于当前 Agent");if(child.data().containsKey("result"))assertCheckpointReadable(actor,session,child);return ToolResultBlock.text(store.encode(store.view(child)));}
                 default->throw fail(400,"工具无效");
             }
             return ToolResultBlock.text("已保存 "+name+"，编号 "+id+"。等待用户的状态不代表批准或完成。");

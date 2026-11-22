@@ -326,7 +326,7 @@ def guard(state, config, *, project=PROJECT, pin=False, allow_initial=False):
     binding = database_binding(mysql, project)
     observed = data_floor(mysql)
     if boolean(desired_environment,'AGENT_DURABLE_CONTEXT_ENABLED'):
-        require(target_capabilities['context']>=2 and boolean(desired_environment,'AGENT_WORKBENCH_ENABLED') and boolean(desired_environment,'AGENT_WORKBENCH_RECOVERY',True) and boolean(desired_environment,'AGENT_WORKBENCH_CHILDREN',True) and boolean(desired_environment,'AGENT_CONTEXT_COMPACTION_ENABLED'),'Persistent context requires compatible origins, durable children, recovery and compaction')
+        require(target_capabilities['context']>=2 and boolean(desired_environment,'AGENT_WORKBENCH_ENABLED') and boolean(desired_environment,'AGENT_WORKBENCH_RECOVERY',True) and boolean(desired_environment,'AGENT_WORKBENCH_CHILDREN',True),'Persistent context requires compatible origins, durable children and recovery')
         expected_context={
             'runtime_state':{'namespace','owner_id','scope_key','session_id','state_key','current_ref','payload_version','payload_json'},
             'content_asset':{'asset_kind','identity_key','lifecycle','current_version'},

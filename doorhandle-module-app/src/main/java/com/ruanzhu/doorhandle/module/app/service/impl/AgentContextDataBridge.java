@@ -18,6 +18,8 @@ public class AgentContextDataBridge implements AgentContextDataApi {
     private final AgentWorkspaceService workspace;private final JdbcTemplate jdbc;private final ObjectMapper json;
     private final ObjectProvider<DetectionAgentReadApi> tasks;private final ObjectProvider<QualityReportAgentApi> reports;
     private final ObjectProvider<ResourceAgentReadApi> resources;private final ObjectProvider<ModelAgentReadApi> models;
+    @org.springframework.beans.factory.annotation.Value("${chat-assistant.max-history-messages:30}")
+    private int maxRecentMessages=30;
     @org.springframework.beans.factory.annotation.Autowired private ObjectProvider<AgentBusinessFilesApi> businessFiles;
     public AgentContextDataBridge(AgentWorkspaceService workspace,JdbcTemplate jdbc,ObjectMapper json,ObjectProvider<DetectionAgentReadApi> tasks,
             ObjectProvider<QualityReportAgentApi> reports,ObjectProvider<ResourceAgentReadApi> resources,ObjectProvider<ModelAgentReadApi> models){
@@ -27,8 +29,21 @@ public class AgentContextDataBridge implements AgentContextDataApi {
         workspace.assertOwned(actor,session);if(after<0||through<0||limit<1||limit>200)throw new IllegalArgumentException("上下文历史范围无效");
         long end=through==0?jdbc.queryForObject("SELECT COALESCE(MAX(id),0) FROM chat_message WHERE session_id=?",Long.class,session):through;
         var rows=jdbc.queryForList("SELECT id,role,message_type,content FROM chat_message WHERE session_id=? AND id>? AND id<=? ORDER BY id LIMIT ?",session,after,end,limit+1);
-        boolean more=rows.size()>limit;var result=new ArrayList<Message>();
-        for(var row:rows.subList(0,Math.min(rows.size(),limit))){
+        return new History(end,projectHistory(actor,session,rows.subList(0,Math.min(rows.size(),limit))),rows.size()>limit);
+    }
+    @Override public History recentHistory(AgentActor actor,String session,long through,int limit){
+        workspace.assertOwned(actor,session);
+        if(through<0||limit<1||limit>200)throw new IllegalArgumentException("上下文历史范围无效");
+        int bounded=Math.min(limit,Math.max(0,maxRecentMessages));
+        if(through==0||bounded==0)return new History(through,List.of(),false);
+        var rows=jdbc.queryForList("SELECT id,role,message_type,content FROM chat_message WHERE session_id=? AND id<=? ORDER BY id DESC LIMIT ?",session,through,bounded+1);
+        var recent=new ArrayList<>(rows.subList(0,Math.min(rows.size(),bounded)));
+        Collections.reverse(recent);
+        return new History(through,projectHistory(actor,session,recent),rows.size()>bounded);
+    }
+    private List<Message> projectHistory(AgentActor actor,String session,List<Map<String,Object>> rows){
+        var result=new ArrayList<Message>();
+        for(var row:rows){
             String role=(String)row.get("role");if(!Set.of("user","assistant").contains(role))throw new IllegalStateException("历史中存在不支持的消息类型，不能跳过后压缩");
             String text=Objects.toString(row.get("content"),"");var sources=new ArrayList<Source>();
             if(AgentCards.MESSAGE_TYPE.equals(row.get("message_type")))try{
@@ -46,7 +61,7 @@ public class AgentContextDataBridge implements AgentContextDataApi {
             }
             result.add(new Message(((Number)row.get("id")).longValue(),role,text,List.copyOf(sources)));
         }
-        return new History(end,List.copyOf(result),more);
+        return List.copyOf(result);
     }
     @Override public String historyDigest(AgentActor actor,String session,long through){
         workspace.assertOwned(actor,session);if(through<0)throw new IllegalArgumentException("历史切点无效");
