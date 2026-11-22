@@ -70,6 +70,10 @@ class AgentScopeConversationServiceTest {
         var controls=mock(com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistry.class);
         var control=mock(com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistry.Handle.class);
         when(controls.attach(any(),anyString(),any())).thenReturn(control);when(controls.maxRunSeconds()).thenReturn(180);
+        when(control.guidedStream(anyList(), any(), any())).thenAnswer(invocation -> {
+            java.util.function.Function<List<Msg>, Flux<io.agentscope.core.agent.Event>> stream = invocation.getArgument(1);
+            return stream.apply(invocation.getArgument(0));
+        });
         var workbench=mock(com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.class);
         var work=mock(com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Scope.class);
         when(workbench.prepare(any(),anyString(),anyString(),anyString())).thenReturn(work);
