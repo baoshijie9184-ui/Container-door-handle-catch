@@ -1,0 +1,63 @@
+receivers:
+  otlp/higress:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  otlp/application:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        traces_url_path: /api/public/otel/v1/traces
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 160
+    spike_limit_mib: 32
+  transform/higress:
+    error_mode: propagate
+    trace_statements:
+      - set(resource.attributes["service.name"], "doorhandle-higress")
+      - keep_keys(resource.attributes, ["service.name"])
+      - set(span.name, "higress.request")
+      - keep_keys(span.attributes, ["http.method", "http.status_code", "http.request.method", "http.response.status_code"])
+      - set(span.status.message, "")
+      - set(span.trace_state, "")
+  filter/higress_payload:
+    error_mode: propagate
+    traces:
+      spanevent:
+        - "true"
+  batch:
+    timeout: 1s
+    send_batch_size: 256
+    send_batch_max_size: 512
+
+exporters:
+  otlp_http/langfuse:
+    traces_endpoint: http://langfuse-web:3000/api/public/otel/v1/traces
+    headers:
+      Authorization: ${env:OTELCOL_LANGFUSE_AUTHORIZATION}
+      x-langfuse-ingestion-version: "4"
+    timeout: 5s
+    sending_queue:
+      num_consumers: 2
+      queue_size: 128
+    retry_on_failure:
+      max_elapsed_time: 60s
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces/higress:
+      receivers: [otlp/higress]
+      processors: [memory_limiter, transform/higress, filter/higress_payload, batch]
+      exporters: [otlp_http/langfuse]
+    traces/application:
+      receivers: [otlp/application]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/langfuse]

@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.app.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.framework.observability.TraceParent;
 import com.ruanzhu.doorhandle.framework.persistence.JdbcOwnerLock;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.*;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowPayloads.ConversationInputV1;
@@ -136,7 +137,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
             if("NEXT_STEP".equals(mode)&&run.runId()!=null){
                 if(workflows.count(KIND,current.userId(),null,run.runId(),Set.of("QUEUED","APPLIED"))>=6)throw fail(429,"本轮补充要求已达上限，请使用排队发送");target=run.runId();
             }else actualMode="NEXT_TURN";
-            var payload=new ConversationInputV1(current.username(),actualMode,mode,entryPoint,content,hash(content));
+            var payload=new ConversationInputV1(current.username(),actualMode,mode,entryPoint,content,hash(content),null,TraceParent.capture());
             boolean idle = startIfIdle && "IDLE".equals(run.phase())
                     && workflows.count(KIND,current.userId(),session,null,PENDING)==0 && canDispatch(current,session,id);
             var saved=workflows.create(new WorkflowDraft(id,KIND,"GLOBAL",id,digest,current.userId(),current.userId(),null,"SESSION",session,null,session,target,"QUEUED",now().plusMinutes(15),1,payload));
@@ -292,7 +293,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     }
     private void execute(AgentActor supplied,String session,Claimed claimed){
         var previous=SecurityContextHolder.getContext();
-        try{
+        try(var trace=TraceParent.restore(claimed.original().traceparent()).makeCurrent()){
             var actor=owned(supplied,session);var roles=List.of(new SimpleGrantedAuthority("ROLE_"+actor.role().name()));
             var security=SecurityContextHolder.createEmptyContext();security.setAuthentication(new UsernamePasswordAuthenticationToken(new TenantPrincipal(actor.userId(),actor.username(),"",roles),null,roles));SecurityContextHolder.setContext(security);
             var request=new ChatSendMessageRequest();request.setSessionId(session);request.setContent(claimed.original().content());

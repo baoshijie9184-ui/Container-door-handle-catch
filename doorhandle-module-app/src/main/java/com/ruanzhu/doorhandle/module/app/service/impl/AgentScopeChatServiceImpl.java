@@ -92,7 +92,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 emitter.complete();
             }
         };
-        taskExecutor.execute(new DelegatingSecurityContextRunnable(task, SecurityContextHolder.getContext()));
+        taskExecutor.execute(new DelegatingSecurityContextRunnable(io.opentelemetry.context.Context.current().wrap(task), SecurityContextHolder.getContext()));
         return emitter;
     }
     private ChatMessageResponse execute(AgentActor actor, ChatSendMessageRequest request, Consumer<ChatStreamEvent> output,

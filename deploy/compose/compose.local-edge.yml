@@ -1,0 +1,51 @@
+# 单机业务入口。仅叠加到拥有 nginx、backend 和 mem0 的本机主项目。
+services:
+  nginx:
+    ports: !reset []
+
+  backend:
+    environment:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/api/public/otel/v1/traces
+
+  mem0:
+    environment:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/api/public/otel/v1/traces
+
+  higress:
+    image: ${LOCAL_HIGRESS_IMAGE:?Set the fixed Higress image}
+    build:
+      context: ./deploy/higress
+    environment:
+      MODE: gateway
+      O11Y: "off"
+      USE_PLUGIN_SERVER: "off"
+      GATEWAY_AUTO_HTTPS_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${LOCAL_HIGRESS_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "3", "http://127.0.0.1:8080/nginx-health"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 30s
+    mem_limit: 768m
+    cpus: 1.5
+    networks: [doorhandle-network]
+    restart: unless-stopped
+
+  otel-collector:
+    image: ${LOCAL_OTELCOL_IMAGE:?Set the fixed OpenTelemetry Collector image}
+    env_file:
+      - ${LOCAL_OTELCOL_ENV_FILE:?Set the private Collector environment file}
+    environment:
+      GOMEMLIMIT: 160MiB
+    command: ["--config=/etc/otelcol/doorhandle.yaml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol/doorhandle.yaml:ro
+    mem_limit: 256m
+    cpus: 0.5
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [doorhandle-network]
+    restart: unless-stopped

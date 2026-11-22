@@ -7,9 +7,10 @@ public final class WorkflowPayloads {
     private WorkflowPayloads() { }
     public record ConversationInputV1(String username, String mode, String requestedMode,
                                       String entryPoint, String content, String contentSha256,
-                                      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Long queueOrder) {
+                                      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Long queueOrder,
+                                      @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String traceparent) {
         public ConversationInputV1(String username,String mode,String requestedMode,String entryPoint,String content,String contentSha256) {
-            this(username,mode,requestedMode,entryPoint,content,contentSha256,null);
+            this(username,mode,requestedMode,entryPoint,content,contentSha256,null,null);
         }
         public ConversationInputV1 {
             text(username, 128, "username");
@@ -22,13 +23,13 @@ public final class WorkflowPayloads {
             }
         }
         public ConversationInputV1 withContent(String body, String digest) {
-            return new ConversationInputV1(username, mode, requestedMode, entryPoint, body, digest, queueOrder);
+            return new ConversationInputV1(username, mode, requestedMode, entryPoint, body, digest, queueOrder, traceparent);
         }
         public ConversationInputV1 withQueueOrder(long position) {
-            return new ConversationInputV1(username, mode, requestedMode, entryPoint, content, contentSha256, position);
+            return new ConversationInputV1(username, mode, requestedMode, entryPoint, content, contentSha256, position, traceparent);
         }
         public ConversationInputV1 withMode(String value) {
-            return new ConversationInputV1(username, value, requestedMode, entryPoint, content, contentSha256, queueOrder);
+            return new ConversationInputV1(username, value, requestedMode, entryPoint, content, contentSha256, queueOrder, traceparent);
         }
     }
     public record KnowledgeCommandV1(String documentId, long documentVersion, String action) {

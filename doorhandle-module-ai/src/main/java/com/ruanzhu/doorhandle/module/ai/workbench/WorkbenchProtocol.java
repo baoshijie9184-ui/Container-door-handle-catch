@@ -25,11 +25,13 @@ final class WorkbenchProtocol {
     record TaskV1(String title,String status,String evidenceCallId,String evidenceRunId) {}
     record ExecutionV1(String username,String role,String runId,String instance,Boolean yieldReady,String title,
             String logicalTaskId,Boolean planRequired,String modelId,Long modelConfigVersion,String modelDefault,
-            String approvedPlan,String continuation,String result,List<ModelChangeV1> modelConfigurationHistory) implements ItemData {}
+            String approvedPlan,String continuation,String result,List<ModelChangeV1> modelConfigurationHistory,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String traceparent) implements ItemData {}
     record ChildV1(String parentId,String parentTaskId,String specialist,String question,String title,String username,
             String role,String logicalTaskId,String modelId,Long modelConfigVersion,String modelDefault,
             List<ModelChangeV1> modelConfigurationHistory,String runId,String instance,Boolean yieldReady,
-            List<String> followups,String result,String continuation,String approvedPlan,Boolean planRequired) implements ItemData {}
+            List<String> followups,String result,String continuation,String approvedPlan,Boolean planRequired,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String traceparent) implements ItemData {}
     record PlanV1(String parentId,String runId,String logicalTaskId,String title,String text,List<TaskV1> tasks,String feedback) implements ItemData {}
     record QuestionV1(String parentId,String runId,String logicalTaskId,String text,String questionType,List<String> options,Object answer) implements ItemData {}
     record TasksV1(String parentId,String runId,String logicalTaskId,List<TaskV1> tasks) implements ItemData {}

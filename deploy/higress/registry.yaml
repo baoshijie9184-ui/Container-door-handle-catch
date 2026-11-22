@@ -1,0 +1,17 @@
+apiVersion: networking.higress.io/v1
+kind: McpBridge
+metadata:
+  name: default
+  namespace: higress-system
+  creationTimestamp: "2000-01-01T00:00:00Z"
+  resourceVersion: "1"
+spec:
+  registries:
+    - name: doorhandle-web
+      type: dns
+      domain: nginx
+      port: 80
+    - name: doorhandle-traces
+      type: dns
+      domain: otel-collector
+      port: 4317

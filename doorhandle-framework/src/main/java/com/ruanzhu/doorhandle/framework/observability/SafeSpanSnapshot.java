@@ -24,7 +24,8 @@ final class SafeSpanSnapshot implements SpanData,ReadableSpan {
     SafeSpanSnapshot(SpanData raw,String service){
         attributes=RedactingSpanExporter.sanitize(raw.getAttributes());
         String operation=attributes.get(AttributeKey.stringKey("gen_ai.operation.name"));
-        name=operation==null?"doorhandle.operation":operation;
+        name = raw.getKind() == SpanKind.SERVER ? "http.server.request"
+                : operation == null ? "doorhandle.operation" : operation;
         context=withoutState(raw.getSpanContext());parent=withoutState(raw.getParentSpanContext());
         kind=raw.getKind();start=raw.getStartEpochNanos();end=raw.getEndEpochNanos();
         status=StatusData.create(raw.getStatus().getStatusCode(),"");

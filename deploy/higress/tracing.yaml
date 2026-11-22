@@ -1,0 +1,12 @@
+downstream:
+  idleTimeout: 660
+  routeTimeout: 0
+upstream:
+  idleTimeout: 660
+tracing:
+  enable: true
+  sampling: 100
+  timeout: 2000
+  opentelemetry:
+    service: doorhandle-traces.dns
+    port: 4317

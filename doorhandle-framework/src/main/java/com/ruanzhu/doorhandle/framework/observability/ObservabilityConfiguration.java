@@ -27,7 +27,7 @@ public class ObservabilityConfiguration {
         var builder=SdkTracerProvider.builder().setResource(Resource.create(Attributes.of(AttributeKey.stringKey("service.name"),properties.getServiceName())))
                 .setSpanLimits(SpanLimits.builder().setMaxNumberOfAttributes(48).setMaxAttributeValueLength(128)
                         .setMaxNumberOfEvents(0).setMaxNumberOfLinks(0).build())
-                .setSampler(properties.isTracingEnabled()?Sampler.traceIdRatioBased(properties.getSampleRatio()):Sampler.alwaysOff())
+                .setSampler(properties.isTracingEnabled()?Sampler.parentBased(Sampler.traceIdRatioBased(properties.getSampleRatio())):Sampler.alwaysOff())
                 .addSpanProcessor(TelemetryContext.processor());
         if(properties.isTracingEnabled()){
             validate(properties);
