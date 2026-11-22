@@ -10,6 +10,7 @@ import com.ruanzhu.doorhandle.module.ai.agent.RoleAgentCatalog;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
 import com.ruanzhu.doorhandle.framework.semantic.*;
 import io.agentscope.core.skill.AgentSkill;
+import io.agentscope.core.skill.util.MarkdownSkillParser;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -362,9 +363,16 @@ public class SkillEvolutionService {
     public Source nativeContextSource(AgentActor actor,String nativeId,String result){
         var publication=nativePublication(actor,nativeId);
         var skill=nativeSkill(publication.identity(),publication.version());
-        // AgentScope 2.0.4 returns the registered markdown with this envelope for SKILL.md.
-        String expected="Successfully loaded skill: "+nativeId+"\n\nName: "+skill.getName()+"\nDescription: "+skill.getDescription()
-                +"\nSource: "+skill.getSource()+"\n\nContent:\n---\n"+skill.getSkillContent()+"\n---\n";
+        // The Harness's read-only loader returns the generated full SKILL.md inside a Markdown fence.
+        String document=MarkdownSkillParser.generate(skill.getMetadata(),skill.getSkillContent());
+        var runs=java.util.regex.Pattern.compile("`+").matcher(document);
+        int width=4;
+        while(runs.find())width=Math.max(width,runs.end()-runs.start()+1);
+        String fence="`".repeat(width);
+        String expected="Successfully loaded skill: "+skill.getSkillId()+"\n\nName: "+skill.getName()
+                +"\nDescription: "+skill.getDescription()+"\nSource: "+skill.getSource()
+                +"\n\nContent (SKILL.md):\n"+fence+"markdown\n"+document
+                +(document.endsWith("\n")?"":"\n")+fence+"\n";
         if(!expected.equals(result))throw new IllegalStateException("技能工具正文与已核对的发布版本不一致");
         return contextSource(loaded(publication));
     }

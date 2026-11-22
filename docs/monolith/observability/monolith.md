@@ -134,7 +134,7 @@ Prometheus 使用 512 MiB 内存限额；原四个运行阶段各保留576MiB观
 
 Java仅引入OTel小BOM 1.61.0和Reactor instrumentation 2.27.0-alpha，与AgentScope2.0.4对齐，不导入其Boot4/Spring7依赖BOM。Micrometer沿用Boot3.2.4管理版本。固定镜像候选：Langfuse Web/Worker4.79.0、ClickHouse26.3.62.3、PostgreSQL17.12-alpine3.24、Redis7.4.12-alpine3.22、Prometheus3.16.0、Alertmanager0.35.0；ECS实际使用前须核定该版本镜像digest及架构，不改成latest。
 
-- [AgentScope2.0.4原生OTel中间件](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/agentscope-core/src/main/java/io/agentscope/core/tracing/OtelTracingMiddleware.java)、[该版本依赖BOM](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/agentscope-dependencies-bom/pom.xml)：Apache-2.0。
+- [AgentScope 2.0.5 原生 OTel 中间件](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.5/agentscope-core/src/main/java/io/agentscope/core/tracing/OtelTracingMiddleware.java)、[该版本依赖BOM](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.5/agentscope-dependencies-bom/pom.xml)：Apache-2.0。
 - [OpenTelemetry1.61.0](https://github.com/open-telemetry/opentelemetry-java/releases/tag/v1.61.0)、[Resilience4j2.4.0](https://github.com/resilience4j/resilience4j/releases/tag/v2.4.0)：Apache-2.0；使用公开SDK API，不复制内部队列实现。
 - [Langfuse4.79.0](https://github.com/langfuse/langfuse/releases/tag/v4.79.0)、[官方Compose](https://github.com/langfuse/langfuse/blob/v4.79.0/docker-compose.yml)、[核心/EE许可证边界](https://github.com/langfuse/langfuse/blob/v4.79.0/LICENSE)：核心MIT，EE目录另有许可；本轮不依赖EE。
 - [Langfuse资源下限](https://langfuse.com/self-hosting/configuration/scaling)、[OTel接入](https://langfuse.com/docs/opentelemetry/get-started)、[S3兼容Blob配置](https://langfuse.com/self-hosting/deployment/infrastructure/blobstorage)、[自建保留策略许可](https://langfuse.com/docs/administration/data-retention)。

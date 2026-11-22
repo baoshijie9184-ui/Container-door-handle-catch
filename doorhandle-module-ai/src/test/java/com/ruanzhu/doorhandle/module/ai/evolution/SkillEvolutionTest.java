@@ -146,7 +146,27 @@ class SkillEvolutionTest {
         });
         var settings=new AgentScopeProperties();settings.setWorkspace(workspace.toString());var factory=new RoleAgentFactory(settings,new BusinessToolkitFactory(mock(DetectionAgentReadApi.class),mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),json),id->model,service);
         var run=mock(AgentJournal.Run.class);when(run.id()).thenReturn("runtime-run");
-        try(var agent=(io.agentscope.harness.agent.HarnessAgent)factory.create(alice,null,new AgentJournalMiddleware(run,alice))){
+        var context=mock(DurableContextStore.class);
+        var observed=new java.util.concurrent.atomic.AtomicReference<AgentContextDataApi.Source>();
+        doCallRealMethod().when(context).observeSkillReads(eq(alice),eq("session"),eq("main"),eq("task"),
+                eq("runtime-run"),eq("sdk-session"),anyList(),any());
+        doAnswer(inv->{
+            ToolResultBlock result=inv.getArgument(8);
+            observed.set(service.nativeContextSource(alice,nativeSkill.getSkillId(),((TextBlock)result.getOutput().get(0)).getText()));
+            return null;
+        }).when(context).recordResult(eq(alice),eq("session"),eq("main"),eq("task"),eq("runtime-run"),anyString(),
+                eq(SkillEvolutionService.LOAD),anyMap(),any());
+        var evidence=new io.agentscope.core.middleware.MiddlewareBase(){
+            @Override public reactor.core.publisher.Flux<io.agentscope.core.event.AgentEvent> onActing(
+                    io.agentscope.core.agent.Agent agent,io.agentscope.core.agent.RuntimeContext runtime,
+                    io.agentscope.core.middleware.ActingInput input,
+                    java.util.function.Function<io.agentscope.core.middleware.ActingInput,
+                            reactor.core.publisher.Flux<io.agentscope.core.event.AgentEvent>> next){
+                return context.observeSkillReads(alice,"session","main","task","runtime-run","sdk-session",
+                        input.toolCalls(),next.apply(input));
+            }
+        };
+        try(var agent=(io.agentscope.harness.agent.HarnessAgent)factory.create(alice,null,new AgentJournalMiddleware(run,alice),null,null,evidence)){
             assertThat(agent.getToolkit().getToolNames()).contains(SkillEvolutionService.LOAD,SkillEvolutionService.PROPOSE).doesNotContain("execute_shell_command","write_file","skill_manage","approve_report");
             assertThat(agent.call("读取任务查询经验").block(Duration.ofSeconds(10)).getTextContent()).contains("已读取");
         }
@@ -155,6 +175,7 @@ class SkillEvolutionTest {
         var source=service.nativeContextSource(alice,nativeSkill.getSkillId(),captured.get());
         assertThat(source.resourceId()).isEqualTo(v.skillId());
         assertThat(source.version()).isEqualTo("1:"+v.versions().get(0).sha256());
+        assertThat(observed.get()).isEqualTo(source);
         assertThat(service.contextSkill(alice,source).instructions()).isEqualTo(draft("expected").instructions());
         assertThatThrownBy(()->service.nativeContextSource(alice,nativeSkill.getSkillId(),captured.get()+"额外正文"))
                 .hasMessageContaining("正文");
@@ -174,7 +195,21 @@ class SkillEvolutionTest {
         service.decide(boss,revision.skillId(),new SkillDtos.Decision(revision.revision(),"APPROVE","已复核新版",true,true));
         assertThatThrownBy(()->service.contextSkill(alice,source)).hasMessageContaining("版本已变化");
     }
-    @Test void restoredAgentUsesSelectedSkillAndKeepsTheNativeLoaderInTheWorkbenchBoundary(){
+    @Test void nativeSkillResultRequiresBothTheBodyAndTheExecutionEnd(){
+        var store=mock(DurableContextStore.class,CALLS_REAL_METHODS);
+        var args=Map.<String,Object>of("skillId","published-skill","path","SKILL.md");
+        var tool=SkillEvolutionService.LOAD;
+        var load=ToolUseBlock.builder().id("call").name(tool).input(args).build();
+        var end=new io.agentscope.core.event.ToolResultEndEvent("reply","call",tool,ToolResultState.SUCCESS);
+        var delta=new io.agentscope.core.event.ToolResultTextDeltaEvent("reply","call",tool,"body");
+        assertThatThrownBy(()->store.observeSkillReads(alice,"session","main","task","run","sdk",
+                List.of(load),reactor.core.publisher.Flux.just(end)).blockLast()).hasMessageContaining("正文回执");
+        assertThatThrownBy(()->store.observeSkillReads(alice,"session","main","task","run","sdk",
+                List.of(load),reactor.core.publisher.Flux.just(delta)).blockLast()).hasMessageContaining("执行终态");
+        verify(store,never()).recordResult(any(),anyString(),anyString(),anyString(),anyString(),anyString(),
+                anyString(),anyMap(),any());
+    }
+    @Test void restoredAgentUsesThePreviouslySelectedSkill(){
         var skill=publish();
         var loaded=service.commandSkill(alice,skill.skillId(),false,null,null);
         var scope=mock(AgentWorkbenchService.Scope.class);
@@ -186,7 +221,6 @@ class SkillEvolutionTest {
         when(scope.restoringContext()).thenReturn(true);
         when(scope.sdkSession()).thenReturn("sdk-session");
         when(scope.stateStore()).thenReturn(mock(com.ruanzhu.doorhandle.module.ai.workbench.JdbcWorkbenchStateStore.class));
-        when(scope.wrap(any())).thenAnswer(call->call.getArgument(0));
         var contexts=mock(DurableContextStore.class);
         when(contexts.selectedSkill(alice,"session","logical-task","resumed-run",true,null)).thenReturn(loaded);
         when(contexts.bootstrap(eq(alice),eq("session"),eq("main"),eq("logical-task"),anyList()))
@@ -204,7 +238,6 @@ class SkillEvolutionTest {
             assertThat(agent.getToolkit().getToolNames()).contains(SkillEvolutionService.LOAD);
         }
         verify(contexts).assertCheckpointReadable(alice,"session","main","logical-task");
-        verify(scope).wrap(argThat(loader->SkillEvolutionService.LOAD.equals(loader.getName())));
     }
     @Test void modelProposalRequiresLiveOwnedRunAndPreviouslyGrantedSource(){
         service.capture(alice,"source-1");jdbc.update("INSERT INTO agent_run(run_id,user_id,main_agent,status,lease_expires_at) VALUES('live-run',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));

@@ -9,6 +9,10 @@ import com.ruanzhu.doorhandle.module.ai.evolution.SkillDtos;
 import com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService;
 import com.ruanzhu.doorhandle.module.ai.research.ResearchSourceRepository;
 import com.ruanzhu.doorhandle.framework.persistence.chat.JdbcMessageEvidenceStore;
+import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.ToolResultDataDeltaEvent;
+import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.*;
 import io.agentscope.core.state.AgentState;
 import org.springframework.beans.factory.ObjectProvider;
@@ -25,6 +29,7 @@ import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
+import reactor.core.publisher.Flux;
 
 /** Account-private summaries, provenance and offload receipts; no SDK state is returned to a browser. */
 @Service
@@ -260,19 +265,53 @@ public class DurableContextStore implements ContextFileAccessApi {
             audit(actor,target,"main",UUID.nameUUIDFromBytes((source+":"+through).getBytes(StandardCharsets.UTF_8)).toString(),"CONTEXT_FORKED",hash(source+":"+through));
         });
     }
+    public Flux<AgentEvent> observeSkillReads(AgentActor actor,String session,String scope,String task,String run,
+            String sdkSession,List<ToolUseBlock> calls,Flux<AgentEvent> events){
+        var loads=new HashMap<String,ToolUseBlock>();
+        for(var call:calls)if(SkillEvolutionService.LOAD.equals(call.getName())){
+            if(loads.putIfAbsent(call.getId(),call)!=null)throw new IllegalStateException("技能工具调用编号重复");
+        }
+        if(loads.isEmpty())return events;
+        // Harness binds its native loader again for each prompt. Observe the authoritative SDK events
+        // before the completed tool result is returned to the model or persisted by the SDK.
+        var bodies=new HashMap<String,String>();
+        return events.doOnNext(event->{
+            if(event instanceof ToolResultTextDeltaEvent text&&SkillEvolutionService.LOAD.equals(text.getToolCallName())&&loads.containsKey(text.getToolCallId())){
+                String delta=text.getDelta();
+                if(delta==null||delta.length()>16000||bodies.putIfAbsent(text.getToolCallId(),delta)!=null)
+                    throw new IllegalStateException("技能工具返回格式无效");
+            }else if(event instanceof ToolResultDataDeltaEvent data&&SkillEvolutionService.LOAD.equals(data.getToolCallName())&&loads.containsKey(data.getToolCallId())){
+                throw new IllegalStateException("技能工具只允许返回正文");
+            }else if(event instanceof ToolResultEndEvent end&&SkillEvolutionService.LOAD.equals(end.getToolCallName())){
+                var call=loads.remove(end.getToolCallId());
+                String body=bodies.remove(end.getToolCallId());
+                if(call!=null&&ToolResultState.SUCCESS.equals(end.getState())){
+                    if(body==null)throw new IllegalStateException("技能工具缺少正文回执");
+                    recordResult(actor,session,scope,task,run,hash("native-skill:"+sdkSession+":"+call.getId()),
+                            call.getName(),call.getInput(),ToolResultBlock.text(body));
+                }
+            }
+        }).doOnComplete(()->{
+            if(!loads.isEmpty())throw new IllegalStateException("技能工具缺少执行终态");
+        });
+    }
     public void recordResult(AgentActor actor,String session,String scope,String task,String run,String callKey,String tool,Map<String,Object> input,ToolResultBlock result){
+        List<Source> skillRefs=null;
+        if(SkillEvolutionService.LOAD.equals(tool)){
+            var read=provenance.skillRead(input,result);
+            skillRefs=read==null?List.of():List.of(skills().nativeContextSource(actor,read.nativeId(),read.result()));
+        }
         // The workbench binds tool/input/result to this call key. Reusing its completed result
         // must also reuse the original child-source snapshot, not the child's later conversations.
         var existing=persistence.origin(actor.userId(),session,scope,callKey);
         if(existing!=null){
             if(!task.equals(existing.task()))throw new IllegalStateException("工具来源执行归属冲突");
-            authorize(actor,session,checkedSources(existing.body()),new HashSet<>());return;
+            var prior=checkedSources(existing.body());
+            if(skillRefs!=null&&!skillRefs.equals(prior.stream().filter(source->SkillEvolutionService.CONTEXT_SOURCE.equals(source.kind())).toList()))
+                throw new IllegalStateException("技能工具调用编号或来源冲突");
+            authorize(actor,session,prior,new HashSet<>());return;
         }
-        final List<Source> refs;
-        if(SkillEvolutionService.LOAD.equals(tool)){
-            var read=provenance.skillRead(input,result);
-            refs=read==null?List.of():List.of(skills().nativeContextSource(actor,read.nativeId(),read.result()));
-        }else refs=provenance.tool(tool,input==null?Map.of():input,result);
+        var refs=skillRefs!=null?skillRefs:provenance.tool(tool,input==null?Map.of():input,result);
         recordOrigin(actor,session,scope,task,run,callKey,pin(actor,session,refs));
     }
     public void recordSeed(AgentActor actor,String session,String scope,String task,String run,List<Source> sources){recordOrigin(actor,session,scope,task,run,hash("seed:"+task),pin(actor,session,sources));}

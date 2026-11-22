@@ -169,14 +169,6 @@ public class RoleAgentFactory {
         for (String name : java.util.Set.copyOf(agent.getToolkit().getToolNames())) {
             if (!allowedTools.contains(name)) agent.getToolkit().removeTool(name);
         }
-        if(contexts!=null&&workbench!=null){
-            String loader=com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD;
-            var nativeLoader=agent.getToolkit().getTool(loader);
-            if(nativeLoader!=null){
-                agent.getToolkit().removeTool(loader);
-                agent.getToolkit().registerAgentTool(workbench.wrap(nativeLoader));
-            }
-        }
         return agent;
     }
     public ReActAgent createSpecialist(AgentActor actor,String id,com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Scope scope,com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddleware audit){

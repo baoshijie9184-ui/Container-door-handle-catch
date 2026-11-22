@@ -533,7 +533,12 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         private boolean approved(WorkbenchStore.Row job){String approval=Objects.toString(job.data().get("approvedPlan"),"");if(!approval.contains(":"))return false;String[] parts=approval.split(":");var plan=store.find(actor.userId(),session,parts[0]);return plan!=null&&plan.status().equals("APPROVED")&&Long.toString(plan.revision()).equals(parts[1]);}
         @Override public Flux<AgentEvent> onActing(Agent agent,RuntimeContext context,ActingInput input,Function<ActingInput,Flux<AgentEvent>> next){return Flux.defer(()->{
             owned(actor,session);var job=store.require(actor.userId(),session,jobId);if(awaitingPlan(job))for(var call:input.toolCalls())if(!PLAN_PREVIEW_TOOLS.contains(call.getName()))throw fail(403,"计划尚未批准，不能执行此操作");
-            checkpoint(agent,context,"BEFORE_TOOLS");long began=System.nanoTime();return next.apply(input).doOnComplete(()->{checkpoint(agent,context,"AFTER_TOOLS");if(settings.isUsage())record(UUID.randomUUID().toString(),"TOOL_TIMING","COMPLETED",Map.of("parentId",jobId,"runId",runId,"durationMs",(System.nanoTime()-began)/1_000_000,"basis","MEASURED_BATCH"));});
+            checkpoint(agent,context,"BEFORE_TOOLS");long began=System.nanoTime();
+            var durable=contextStore();
+            var events=next.apply(input);
+            if(durable!=null)events=durable.observeSkillReads(actor,session,contextKey(),logicalTaskId,runId,
+                    sdkSession(),input.toolCalls(),events);
+            return events.doOnComplete(()->{checkpoint(agent,context,"AFTER_TOOLS");if(settings.isUsage())record(UUID.randomUUID().toString(),"TOOL_TIMING","COMPLETED",Map.of("parentId",jobId,"runId",runId,"durationMs",(System.nanoTime()-began)/1_000_000,"basis","MEASURED_BATCH"));});
         });}
         public void install(Toolkit toolkit){
             for(String name:toolNames())toolkit.registerAgentTool(tool(name));
@@ -580,11 +585,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             return tool.equals("read_context_file")?result:context.offload(actor,session,contextKey(),key,result);
         }
         public AgentTool wrap(AgentTool delegate){return new AgentTool(){
-            public String getName(){return delegate.getName();}public String getDescription(){return delegate.getDescription();}public Map<String,Object> getParameters(){return delegate.getParameters();}public Boolean getStrict(){return delegate.getStrict();}
-            public boolean isReadOnly(){
-                // Published project skills expose markdown only, without script or bundled tool execution.
-                return delegate.isReadOnly()||com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD.equals(getName());
-            }
+            public String getName(){return delegate.getName();}public String getDescription(){return delegate.getDescription();}public Map<String,Object> getParameters(){return delegate.getParameters();}public boolean isReadOnly(){return delegate.isReadOnly();}public Boolean getStrict(){return delegate.getStrict();}
             private ToolResultBlock contextResult(ToolCallParam param,ToolResultBlock result){return contextToolResult(param.getToolUseBlock().getId(),getName(),param.getInput(),result);}
             public Mono<ToolResultBlock> callAsync(ToolCallParam param){return Mono.defer(()->{
                 owned(actor,session);store.assertAttempt(Scope.this.attempt);var attempt=store.require(actor.userId(),session,jobId);if(!Objects.equals(runId,attempt.data().get("runId"))||Set.of("CANCELLED","COMPLETED","NEEDS_REVIEW").contains(attempt.status()))return Mono.error(fail(409,"此执行尝试已结束，不能继续调用工具"));String call=param.getToolUseBlock().getId(),id=toolId(call);var old=store.find(actor.userId(),session,id);
