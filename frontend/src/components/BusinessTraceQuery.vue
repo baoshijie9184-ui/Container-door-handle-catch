@@ -4,20 +4,26 @@
     <form @submit.prevent="$emit('query')"><label :for="inputId">{{ kindLabel }}编号</label><div class="business-trace-input"><el-input :id="inputId" :model-value="modelValue" clearable :placeholder="'输入完整' + kindLabel + '编号'" :aria-label="'完整' + kindLabel + '编号'" @update:model-value="$emit('update:modelValue', $event)"><template #prefix><AppIcon name="Search" :size="16" /></template></el-input><el-button type="primary" native-type="submit" :loading="loading" :disabled="!modelValue.trim()"><AppIcon name="Search" :size="15" />查询{{ kindLabel }}</el-button></div></form>
     <div v-if="referenceNo" class="business-trace-result-scope"><div><span>{{ loading || error ? '上次已读结果' : '本次已读结果' }}</span><strong>{{ referenceNo }}</strong></div><el-button size="small" :loading="loading" @click="$emit('refresh')"><AppIcon name="Refresh" :size="14" />重新读取此结果</el-button></div>
     <p v-if="dirty" class="business-trace-draft-note" role="status">输入已修改，当前摘要仍属于{{ kindLabel }} {{ referenceNo }}。{{ loading ? '当前查询结束后，可查询新编号。' : '点击查询读取新编号。' }}<button type="button" @click="$emit('update:modelValue', referenceNo)">恢复已读编号</button></p>
-    <p v-if="loading" class="business-trace-reading" role="status">正在读取{{ kindLabel }} {{ requestedNo || '编号未记录' }}。{{ report ? '当前保留上次摘要，不把旧数据当作本次查询已成功。' : '修改输入不会改变已经发出的查询。' }}</p>
-    <el-alert v-if="error && report" :title="error" description="当前仍为上次已读摘要。可重新读取原结果，或按输入编号查询。" type="warning" :closable="false" show-icon />
+    <p v-if="loading" class="business-trace-reading" role="status">
+      正在读取{{ kindLabel }} {{ requestedNo || '编号未记录' }}<template v-if="requestedPage > 1 || report?.page">第 {{ requestedPage }} 页</template>。
+      <template v-if="report?.page">当前仍显示第 {{ report.page }} 页。</template>
+    </p>
+    <el-alert v-if="error && report" :title="error" type="warning" :closable="false" show-icon>
+      <span>{{ report.page ? `当前仍显示第 ${report.page} 页。` : '当前仍为上次已读摘要。' }}</span>
+      <el-button text type="primary" size="small" @click="$emit('retry')">{{ report.page ? `重试第 ${requestedPage} 页` : '重试读取' }}</el-button>
+    </el-alert>
     <p v-if="referenceLoading" class="business-trace-reading" role="status">正在读取最近任务中的{{ kindLabel }}编号</p>
     <p v-if="referenceError" class="business-trace-reading" role="status">{{ referenceError }}<button type="button" :disabled="referenceLoading" @click="$emit('refresh-references')">重新读取编号</button></p>
     <details v-if="references.length" class="business-trace-examples"><summary>最近任务中的{{ kindLabel }}</summary><p>来自当前账号最近 50 条检测任务，选择编号查看关联记录。</p><div><el-button v-for="reference in references" :key="reference" size="small" :disabled="loading" @click="$emit('reference', reference)">{{ reference }}</el-button></div></details>
-    <CollectionEmptyState v-if="!report" :loading="loading" :error="error" :empty-title="'输入' + kindLabel + '编号查看追溯'" empty-description="这里只读取当前账号有权查看的关联业务；查无结果时请核对编号与权限范围。" @retry="$emit('query')" />
+    <CollectionEmptyState v-if="!report" :loading="loading" :error="error" :empty-title="'输入' + kindLabel + '编号查看追溯'" empty-description="这里只读取当前账号有权查看的关联业务；查无结果时请核对编号与权限范围。" @retry="$emit(requestedNo ? 'retry' : 'query')" />
   </section>
 </template>
 <script setup>
 import { computed, getCurrentInstance } from 'vue'
 import AppIcon from './AppIcon.vue'
 import CollectionEmptyState from './CollectionEmptyState.vue'
-const props = defineProps({ modelValue: { type: String, default: '' }, kind: String, requestedNo: String, loading: Boolean, report: Object, error: String, references: { type: Array, default: () => [] }, referenceLoading: Boolean, referenceError: String, scopeLabel: { type: String, default: '当前账号有权查看的业务范围' } })
-defineEmits(['update:modelValue', 'query', 'refresh', 'reference', 'refresh-references'])
+const props = defineProps({ modelValue: { type: String, default: '' }, kind: String, requestedNo: String, requestedPage: { type: Number, default: 1 }, loading: Boolean, report: Object, error: String, references: { type: Array, default: () => [] }, referenceLoading: Boolean, referenceError: String, scopeLabel: { type: String, default: '当前账号有权查看的业务范围' } })
+defineEmits(['update:modelValue', 'query', 'refresh', 'retry', 'reference', 'refresh-references'])
 const inputId = `business-trace-query-${getCurrentInstance().uid}`
 const kindLabel = computed(() => props.kind === 'work-order' ? '工单' : '批次')
 const referenceNo = computed(() => props.report?.[props.kind === 'work-order' ? 'workOrderNo' : 'batchNo'] || '')

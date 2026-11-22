@@ -25,20 +25,48 @@
       <p v-if="items.length">列表变化后可刷新重新核对 编辑或删除完成后回到首批记录</p>
     </section>
     <MemoryDuplicateReview ref="duplicatePanel" :read-enabled="settings?.readEnabled===true" @updated="refresh" />
+    <section class="memory-receipt-reviews" aria-label="待核对回执">
+      <h3><AppIcon name="DocumentChecked" :size="16" />待核对回执</h3>
+      <div>
+        <h4>记忆清理</h4>
+        <p v-if="cleanupReviews.error" class="memory-error" role="alert">{{ cleanupReviews.error }} <el-button v-if="!cleanupReviews.items.length" text @click="loadReceiptPage('cleanup')">重读清理回执</el-button></p>
+        <p v-else-if="!cleanupReviews.items.length">{{ cleanupReviews.loading ? '正在读取清理回执…' : '暂无待核对的清理回执' }}</p>
+        <article v-for="entry in cleanupReviews.items" :key="entry.memoryId" class="memory-history-entry">
+          <div class="memory-item-status"><StatusBadge domain="memoryCleanup" :code="entry.cleanupState" /></div>
+          <small class="memory-record-id">记忆 {{ entry.memoryId }}</small>
+          <p v-if="entry.expiresAt">{{ memoryTime(entry.expiresAt) }} 到期</p>
+          <el-button size="small" :disabled="busy||cleanupReviews.loading" @click="verifyCleanup(entry)"><AppIcon name="Search" :size="15" />核对清理结果</el-button>
+        </article>
+        <el-button v-if="cleanupReviews.nextCursor" :loading="cleanupReviews.loading" :disabled="busy" @click="loadReceiptPage('cleanup',cleanupReviews.nextCursor)">加载更多清理回执</el-button>
+        <p v-if="cleanupMessage" role="status">{{ cleanupMessage }}</p>
+      </div>
+      <div>
+        <h4>记忆提炼</h4>
+        <p v-if="extractionReviews.error" class="memory-error" role="alert">{{ extractionReviews.error }} <el-button v-if="!extractionReviews.items.length" text @click="loadReceiptPage('extraction')">重读提炼回执</el-button></p>
+        <p v-else-if="!extractionReviews.items.length">{{ extractionReviews.loading ? '正在读取提炼回执…' : '暂无待核对的提炼回执' }}</p>
+        <div v-for="record in extractionReviews.items" :key="record.id" class="memory-audit-entry">
+          <div><strong>{{ action(record.action) }}</strong><small>{{ record.clockStatus==='UNRESOLVED'&&!record.createdAt?'历史时区未确认':memoryTime(record.createdAt) }}</small><code class="memory-record-id memory-extraction-receipt-id" :title="record.requestId" :aria-label="'提炼请求 '+record.requestId">请求 {{ record.requestId.slice(0,8) }}…{{ record.requestId.slice(-8) }}</code></div>
+          <StatusBadge domain="memoryAudit" :code="record.outcome" />
+          <el-button size="small" :disabled="busy||extractionReviews.loading||record.clockStatus==='UNRESOLVED'" @click="verifyExtraction(record)"><AppIcon name="Search" :size="15" />核对提炼结果</el-button>
+        </div>
+        <el-button v-if="extractionReviews.nextCursor" :loading="extractionReviews.loading" :disabled="busy" @click="loadReceiptPage('extraction',extractionReviews.nextCursor)">加载更多提炼回执</el-button>
+        <p v-if="receiptMessage" role="status">{{ receiptMessage }}</p>
+      </div>
+    </section>
     <details class="memory-lifecycle-history">
       <summary><AppIcon name="Clock" :size="16" />有效期与清理记录</summary>
       <p v-if="lifecycleError" class="memory-error" role="alert">{{ lifecycleError }}</p>
       <p v-else-if="loading&&!lifecycleHistory.length">正在读取清理记录…</p>
       <p v-else-if="!lifecycleHistory.length">尚无已读取的有效期与清理记录</p>
-      <article v-for="entry in lifecycleHistory" :key="entry.memoryId" class="memory-history-entry"><div class="memory-item-status"><StatusBadge domain="memoryLifecycle" :code="memoryLifecycleCode(entry,clock)" /><StatusBadge domain="memoryCleanup" :code="entry.cleanupState" /></div><small class="memory-record-id">记忆 {{ entry.memoryId }}</small><p v-if="entry.expiresAt">{{ memoryTime(entry.expiresAt) }} 到期</p><el-button v-if="entry.cleanupState==='NEEDS_REVIEW'" size="small" :disabled="busy||loading" @click="verifyCleanup(entry)"><AppIcon name="Search" :size="15" />核对清理结果</el-button></article>
-      <p v-if="cleanupMessage" role="status">{{ cleanupMessage }}</p><p>到期后停止供助手检索 只有勾选自动清理并确认才会删除这条记忆 聊天与历史记录继续保留</p>
+      <article v-for="entry in lifecycleHistory" :key="entry.memoryId" class="memory-history-entry"><div class="memory-item-status"><StatusBadge domain="memoryLifecycle" :code="memoryLifecycleCode(entry,clock)" /><StatusBadge domain="memoryCleanup" :code="entry.cleanupState" /></div><small class="memory-record-id">记忆 {{ entry.memoryId }}</small><p v-if="entry.expiresAt">{{ memoryTime(entry.expiresAt) }} 到期</p></article>
+      <p>到期后停止供助手检索 只有勾选自动清理并确认才会删除这条记忆 聊天与历史记录继续保留</p>
     </details>
     <details class="memory-audit">
       <summary><AppIcon name="DocumentChecked" :size="16" />本人最近操作记录</summary>
       <p v-if="auditError" class="memory-error" role="alert">{{ auditError }}</p>
       <p v-else-if="loading&&!audit.length">正在读取操作记录…</p><p v-else-if="!audit.length">暂无已读取的操作记录</p>
-      <div v-for="record in audit" :key="record.id" class="memory-audit-entry"><div><strong>{{ action(record.action) }}</strong><small>{{ record.clockStatus==='UNRESOLVED'&&!record.createdAt?'历史时区未确认':memoryTime(record.createdAt) }}</small></div><StatusBadge domain="memoryAudit" :code="record.outcome" /><el-button v-if="record.action==='AUTOSAVE'&&record.requestId&&['DISPATCHED','UNKNOWN'].includes(record.outcome)" size="small" :disabled="busy||loading||record.clockStatus==='UNRESOLVED'" @click="verifyExtraction(record)"><AppIcon name="Search" :size="15" />核对提炼结果</el-button></div>
-      <p v-if="receiptMessage" role="status">{{ receiptMessage }}</p><p>核对只读取原提炼回执 不会重新执行保存 操作记录不保存记忆正文</p>
+      <div v-for="record in audit" :key="record.id" class="memory-audit-entry"><div><strong>{{ action(record.action) }}</strong><small>{{ record.clockStatus==='UNRESOLVED'&&!record.createdAt?'历史时区未确认':memoryTime(record.createdAt) }}</small></div><StatusBadge domain="memoryAudit" :code="record.outcome" /></div>
+      <p>操作记录不保存记忆正文</p>
     </details>
     <el-dialog v-model="policy.visible" title="记忆有效期与停用" class="memory-policy-dialog" width="min(640px, calc(100vw - 32px))" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="closeEditor">
       <p class="memory-original" tabindex="0" aria-label="设置有效期的记忆完整原文">{{ policy.item?.memory }}</p>
@@ -89,12 +117,18 @@ const visibleItems=computed(()=>{
 })
 import {useUserStore} from '@/stores/user'
 import {beijingDateTime,businessTimestamp} from '@/utils/beijingTime'
-import {memoryPreferences,memoryList,memoryAudit,personalMemory,changeMemoryPreferences,deletePersonalMemory,updatePersonalMemory,verifyMemoryExtraction,memoryLifecycle,changeMemoryLifecycle,verifyMemoryCleanup} from '@/api/agentMemory'
+import {memoryPreferences,memoryList,memoryAudit,personalMemory,changeMemoryPreferences,deletePersonalMemory,updatePersonalMemory,verifyMemoryExtraction,memoryLifecycle,changeMemoryLifecycle,verifyMemoryCleanup,memoryCleanupReviews,memoryExtractionReviews} from '@/api/agentMemory'
 const user=useUserStore(),loading=ref(false),busy=ref(false),error=ref(''),listError=ref(''),settings=ref(null),items=ref([]),audit=ref([]),hasMore=ref(false),nextOffset=ref(null)
 const auditError=ref('')
 const limit=50,editor=reactive({visible:false,item:null,memory:'',preview:false,error:'',needsReload:false})
 const form=reactive({readEnabled:true,saveEnabled:true});let generation=0,identity=0
 const receiptMessage=ref(''),lifecycleHistory=ref([]),lifecycleError=ref(''),cleanupMessage=ref(''),clock=ref(Date.now());let clockTimer
+const emptyReceiptPage=()=>({items:[],nextCursor:null,loading:false,error:''})
+const cleanupReviews=reactive(emptyReceiptPage()),extractionReviews=reactive(emptyReceiptPage())
+const receiptSources={
+  cleanup:{state:cleanupReviews,read:memoryCleanupReviews,key:row=>row.memoryId,valid:row=>row?.cleanupState==='NEEDS_REVIEW'&&typeof row.memoryId==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(row.memoryId)},
+  extraction:{state:extractionReviews,read:memoryExtractionReviews,key:row=>row.requestId,valid:row=>row?.action==='AUTOSAVE'&&['DISPATCHED','UNKNOWN'].includes(row.outcome)&&typeof row.requestId==='string'&&/^[a-f0-9]{64}$/.test(row.requestId)}
+}
 const policy=reactive({visible:false,item:null,state:'ACTIVE',expiry:'',autoDelete:false,preview:false,error:'',needsReload:false})
 const validPolicy=computed(()=>{const expires=policy.expiry?businessTimestamp(policy.expiry+':00+08:00'):null;return !!policy.item&&!policy.needsReload&&(!policy.autoDelete||!!expires)&&(!policy.expiry||expires>clock.value&&expires<clock.value+3650*86400000)})
 async function openPolicy(item){const actor=identity;busy.value=true;try{const current=await personalMemory(item.id);if(actor!==identity)return;if(!current.lifecycle)throw new Error('记忆治理服务需更新 请稍后重试');Object.assign(policy,{visible:true,item:current,state:current.lifecycle.state,expiry:current.lifecycle.expiresAt?beijingDateTime(current.lifecycle.expiresAt).replace(' ','T').slice(0,16):'',autoDelete:current.lifecycle.autoDelete,preview:false,error:'',needsReload:false})}catch(e){if(actor===identity)error.value=e.message}finally{if(actor===identity)busy.value=false}}
@@ -105,8 +139,23 @@ const changed=computed(()=>settings.value&&(form.readEnabled!==settings.value.re
 const canSave=computed(()=>editor.item&&editor.memory.trim().length>0&&editor.memory.length<=4000&&editor.memory.trim()!==editor.item.memory&&!editor.needsReload)
 const action=value=>({DELETE:'删除记忆',UPDATE:'编辑记忆',AUTOSAVE:'自动提炼记忆',LIFECYCLE:'修改有效期与停用',REVIEW_DECISION:'审阅相似记忆',PREFERENCE_CHANGED:'修改设置'}[value]||'记忆操作')
 async function verifyExtraction(record){const actor=identity;busy.value=true;receiptMessage.value='';try{const receipt=await verifyMemoryExtraction(record.requestId);if(actor!==identity)return;receiptMessage.value=receipt.status==='SUCCEEDED'?'提炼已完成 已核对 '+receipt.affectedMemories+' 条结果':receipt.status==='RUNNING'?'提炼尚未获得完成回执 请稍后核对':'提炼结果需要人工核对 不会自动重新执行';await refresh()}catch(e){if(actor===identity)receiptMessage.value=e.message}finally{if(actor===identity)busy.value=false}}
+async function loadReceiptPage(group,before=null){
+  const source=receiptSources[group],state=source.state,current=generation
+  if(before&&(state.loading||state.nextCursor!==before))return
+  state.loading=true;state.error=''
+  try{
+    const page=await source.read(20,before)
+    if(current!==generation)return
+    if(!Array.isArray(page?.items)||!page.items.every(source.valid)||!(page.nextCursor===null||typeof page.nextCursor==='string'&&page.nextCursor&&page.nextCursor!==before))throw Error('回执列表未完整返回，请重新读取')
+    const rows=new Map((before?state.items:[]).map(row=>[source.key(row),row]))
+    for(const row of page.items)rows.set(source.key(row),row)
+    state.items=[...rows.values()];state.nextCursor=page.nextCursor
+  }catch(e){if(current===generation)state.error=e.message}
+  finally{if(current===generation)state.loading=false}
+}
 async function refresh(){
   const current=++generation;loading.value=true;error.value='';listError.value='';auditError.value=''
+  const receiptReads=Promise.all([loadReceiptPage('cleanup'),loadReceiptPage('extraction')])
   const results=await Promise.allSettled([memoryPreferences(),memoryList(limit),memoryAudit(),memoryLifecycle()])
   if(current!==generation)return
   if(results[0].status==='fulfilled'){settings.value=results[0].value;Object.assign(form,{readEnabled:settings.value.readEnabled,saveEnabled:settings.value.saveEnabled})}else{settings.value=null;error.value=results[0].reason.message}
@@ -114,6 +163,7 @@ async function refresh(){
   if(results[2].status==='fulfilled')audit.value=results[2].value;else{audit.value=[];auditError.value=results[2].reason.message}
   if(results[3].status==='fulfilled'){lifecycleHistory.value=results[3].value;lifecycleError.value=''}else{lifecycleHistory.value=[];lifecycleError.value=results[3].reason.message}
   loading.value=false
+  await receiptReads
 }
 async function loadMore(){
   if(loading.value||busy.value||!hasMore.value||nextOffset.value==null)return
@@ -141,12 +191,13 @@ async function remove(item){
     await deletePersonalMemory(item.id,{expectedDigest:item.digest,requestId:crypto.randomUUID(),confirmed:true});if(current!==generation)return;ElMessage.success('本人记忆已删除');await refresh()
   }catch(e){if(current===generation){await refresh();if(actor===identity)error.value=e.message}}finally{if(actor===identity)busy.value=false}
 }
-function clearPrivateState(){generation++;identity++;memoryQuery.value='';receiptMessage.value='';cleanupMessage.value='';lifecycleHistory.value=[];lifecycleError.value='';Object.assign(policy,{visible:false,item:null,state:'ACTIVE',expiry:'',autoDelete:false,preview:false,error:'',needsReload:false});items.value=[];audit.value=[];settings.value=null;hasMore.value=false;nextOffset.value=null;busy.value=false;Object.assign(editor,{visible:false,item:null,memory:'',preview:false,error:'',needsReload:false})}
+function clearPrivateState(){generation++;identity++;memoryQuery.value='';receiptMessage.value='';cleanupMessage.value='';lifecycleHistory.value=[];lifecycleError.value='';Object.assign(cleanupReviews,emptyReceiptPage());Object.assign(extractionReviews,emptyReceiptPage());Object.assign(policy,{visible:false,item:null,state:'ACTIVE',expiry:'',autoDelete:false,preview:false,error:'',needsReload:false});items.value=[];audit.value=[];settings.value=null;hasMore.value=false;nextOffset.value=null;busy.value=false;Object.assign(editor,{visible:false,item:null,memory:'',preview:false,error:'',needsReload:false})}
 watch(()=>user.username,()=>{auditError.value='';clearPrivateState();refresh()})
 onBeforeUnmount(()=>{clearInterval(clockTimer);clearPrivateState()})
 onMounted(()=>{clockTimer=setInterval(()=>clock.value=Date.now(),30000);refresh()})
 </script>
 <style scoped>
+.memory-receipt-reviews{margin-top:20px;padding:16px 20px;border:1px solid #dce6f4;border-radius:14px;background:white}.memory-receipt-reviews h3{display:flex;align-items:center;gap:8px;margin:0 0 12px}.memory-receipt-reviews h4{font-size:14px;margin:12px 0}.memory-receipt-reviews>div+div{margin-top:12px;border-top:1px solid #e3eaf5}
 .memory-page{padding:24px 24px 100px}.memory-page>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.memory-page h2,.memory-page h3{color:#152942}.memory-page p,.memory-settings small{font-size:13px;color:#5a6b82;line-height:1.8}.memory-settings,.memory-list,.memory-audit{padding:20px;margin-top:20px;border:1px solid #dce6f4;border-radius:14px;background:#fff}.memory-settings label{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:12px 0}.memory-settings small{display:block}.memory-lifecycle-history{padding:20px;margin-top:20px;border:1px solid #dce6f4;border-radius:14px;overflow-wrap:anywhere}.memory-lifecycle-history summary{cursor:pointer}.memory-lifecycle-history,.memory-audit{scroll-margin-block:100px}.memory-error{color:#b42318!important}.memory-audit summary{cursor:pointer}.memory-enter-active,.memory-leave-active,.memory-move{transition:opacity .18s ease,transform .18s ease}.memory-enter-from,.memory-leave-to{opacity:0;transform:translateY(5px)}.memory-page :deep(button){transition:transform .15s ease}.memory-page :deep(button:hover:not(:disabled)){transform:scale(1.02)}.memory-page :deep(button:active:not(:disabled)){transform:scale(.98)}@media(prefers-reduced-motion:reduce){.memory-enter-active,.memory-leave-active,.memory-move,.memory-page :deep(button){transition:none;transform:none!important}}@media(max-width:600px){.memory-page,.memory-settings,.memory-list,.memory-audit{padding:12px}.memory-page{padding-bottom:100px}.memory-page>header{align-items:flex-start}}
 </style>
 

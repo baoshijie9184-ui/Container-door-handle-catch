@@ -31,6 +31,7 @@ class LifecycleStore:
                 cleanup_state TEXT NOT NULL, updated_at TEXT NOT NULL,
                 PRIMARY KEY(user_id,app_id,memory_id))""")
             db.execute("CREATE INDEX IF NOT EXISTS idx_memory_expiry ON memory_lifecycle(cleanup_state,auto_delete,expires_at)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_memory_cleanup_owner ON memory_lifecycle(user_id,app_id,cleanup_state,memory_id)")
             db.execute("UPDATE bridge_protocol_floor SET required_version=MAX(required_version,2) WHERE EXISTS(SELECT 1 FROM memory_lifecycle)")
             db.execute("""CREATE TABLE IF NOT EXISTS memory_cleanup_event (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, app_id TEXT NOT NULL,
@@ -47,7 +48,10 @@ class LifecycleStore:
             return dict(row) if row else None
 
     def public(self, user, app, memory_id):
-        row = self.get(user, app, memory_id)
+        return self._public_row(memory_id, self.get(user, app, memory_id))
+
+    @staticmethod
+    def _public_row(memory_id, row):
         return {"memoryId": memory_id, "revision": row["revision"] if row else 0,
                 "state": row["state"] if row else "ACTIVE", "expiresAt": row["expires_at"] if row else None,
                 "autoDelete": bool(row["auto_delete"]) if row else False,
@@ -80,6 +84,17 @@ class LifecycleStore:
         with closing(self.receipts.connect()) as db:
             ids = db.execute("SELECT memory_id FROM memory_lifecycle WHERE user_id=? AND app_id=? ORDER BY updated_at DESC,memory_id LIMIT 50", (user, app)).fetchall()
         return [self.public(user, app, row[0]) for row in ids]
+
+    def needs_review(self, user, app, limit, before):
+        sql = "SELECT * FROM memory_lifecycle WHERE user_id=? AND app_id=? AND cleanup_state='NEEDS_REVIEW'"
+        params = [user, app]
+        if before is not None:
+            sql += " AND memory_id<?"
+            params.append(before)
+        with closing(self.receipts.connect()) as db:
+            rows = db.execute(sql + " ORDER BY memory_id DESC LIMIT ?", (*params, limit + 1)).fetchall()
+        items = [self._public_row(row["memory_id"], row) for row in rows[:limit]]
+        return {"items": items, "nextCursor": items[-1]["memoryId"] if len(rows) > limit else None}
 
     def due(self):
         with closing(self.receipts.connect()) as db:

@@ -49,13 +49,29 @@ public final class BusinessDetectionTasks {
     }
 
     private static String uploadLineage(String uploadAlias, String folderAlias) {
+        return uploadLineage(uploadAlias, folderAlias, "");
+    }
+
+    /** Trace queries check read access to both source and formal task and reject ambiguous legacy matches. */
+    public static String traceUploadLineage(String uploadAlias, String folderAlias) {
+        requireQualifiedAlias(uploadAlias);
+        requireQualifiedAlias(folderAlias);
+        String unambiguous = """
+             AND NOT EXISTS (SELECT 1 FROM detection_task other_upload
+                 WHERE other_upload.task_type IN ('BATCH','BATCH_DIRECT') AND other_upload.status<>'CANCELLED'
+                   AND other_upload.id<>%1$sid AND BINARY other_upload.source_oss_prefix=BINARY %1$ssource_oss_prefix)
+            """.formatted(uploadAlias);
+        return uploadLineage(uploadAlias, folderAlias, unambiguous);
+    }
+
+    private static String uploadLineage(String uploadAlias, String folderAlias, String legacyConstraint) {
         return """
             EXISTS (SELECT 1 FROM detection_work_unit a WHERE a.batch_id=fw.work_unit_id
                         AND a.source_batch_id=%1$stask_id COLLATE utf8mb4_0900_ai_ci)
                 OR (COALESCE(%1$ssource_oss_prefix,'')<>'' AND BINARY %1$ssource_oss_prefix=BINARY %2$ssource_oss_prefix
                     AND NOT EXISTS (SELECT 1 FROM detection_work_unit a WHERE a.batch_id=fw.work_unit_id
-                                   AND COALESCE(a.source_batch_id,'')<>''))
-            """.formatted(uploadAlias, folderAlias);
+                                   AND COALESCE(a.source_batch_id,'')<>'') %3$s)
+            """.formatted(uploadAlias, folderAlias, legacyConstraint);
     }
 
     private static void requireQualifiedAlias(String alias) {

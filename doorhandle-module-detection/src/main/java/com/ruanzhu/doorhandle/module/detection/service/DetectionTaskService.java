@@ -42,9 +42,17 @@ public interface DetectionTaskService {
 
     Map<String, Object> listQualityQueue(String queue, int page, int size);
 
-    Map<String, Object> getBatchTraceReport(String batchNo);
+    default Map<String, Object> getBatchTraceReport(String batchNo) {
+        return getBatchTraceReport(batchNo, 1, 50);
+    }
 
-    Map<String, Object> getWorkOrderTraceReport(String workOrderNo);
+    Map<String, Object> getBatchTraceReport(String batchNo, int page, int size);
+
+    default Map<String, Object> getWorkOrderTraceReport(String workOrderNo) {
+        return getWorkOrderTraceReport(workOrderNo, 1, 50);
+    }
+
+    Map<String, Object> getWorkOrderTraceReport(String workOrderNo, int page, int size);
 
     DetectionTaskProgressResponse advanceTaskFlow(String taskId, String targetFlowStatus);
 

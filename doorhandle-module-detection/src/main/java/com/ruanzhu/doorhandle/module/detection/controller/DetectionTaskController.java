@@ -177,16 +177,20 @@ public class DetectionTaskController {
 
     @GetMapping("/batch-trace")
     public Result<java.util.Map<String, Object>> getBatchTraceReport(
-            @RequestParam @NotBlank(message = "批次号不能为空") String batchNo
+            @RequestParam @NotBlank(message = "批次号不能为空") String batchNo,
+            @RequestParam(defaultValue = "1") @Min(value = 1, message = "页码不能小于 1") int page,
+            @RequestParam(defaultValue = "50") @Min(value = 1, message = "每页至少 1 条") @Max(value = 100, message = "每页最多 100 条") int size
     ) {
-        return Result.success(detectionTaskService.getBatchTraceReport(batchNo));
+        return Result.success(detectionTaskService.getBatchTraceReport(batchNo, page, size));
     }
 
     @GetMapping("/work-order-trace")
     public Result<java.util.Map<String, Object>> getWorkOrderTraceReport(
-            @RequestParam @NotBlank(message = "工单号不能为空") String workOrderNo
+            @RequestParam @NotBlank(message = "工单号不能为空") String workOrderNo,
+            @RequestParam(defaultValue = "1") @Min(value = 1, message = "页码不能小于 1") int page,
+            @RequestParam(defaultValue = "50") @Min(value = 1, message = "每页至少 1 条") @Max(value = 100, message = "每页最多 100 条") int size
     ) {
-        return Result.success(detectionTaskService.getWorkOrderTraceReport(workOrderNo));
+        return Result.success(detectionTaskService.getWorkOrderTraceReport(workOrderNo, page, size));
     }
 
     @PostMapping("/{taskId}/flow")

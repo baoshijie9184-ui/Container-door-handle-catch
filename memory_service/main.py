@@ -422,6 +422,13 @@ class OwnedMemoryListRequest(BaseModel):
     offset: int = Field(0, ge=0, le=2147483546)
 
 
+class CleanupReviewPageRequest(BaseModel):
+    user_id: str = Field(..., pattern=r"^doorhandlecatch:user:[1-9][0-9]*$")
+    app_id: Literal["doorhandlecatch"]
+    limit: int = Field(20, ge=1, le=50)
+    before: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+
+
 class OwnedMemoryGetRequest(BaseModel):
     user_id: str = Field(..., pattern=r"^doorhandlecatch:user:[1-9][0-9]*$")
     app_id: Literal["doorhandlecatch"]
@@ -574,6 +581,16 @@ def list_memory_lifecycle(request: OwnedMemoryListRequest):
         raise
     except Exception:
         raise HTTPException(503, "Memory lifecycle history is unavailable")
+
+
+@app.post("/memories/lifecycle/needs-review")
+def list_memory_cleanup_reviews(request: CleanupReviewPageRequest):
+    try:
+        return {"code": 200, "data": lifecycle_store().needs_review(request.user_id, request.app_id, request.limit, request.before)}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Memory cleanup reviews are unavailable")
 
 
 @app.post("/memories/lifecycle/verify")

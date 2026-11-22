@@ -41,3 +41,11 @@ test('semantic review starts explicitly and decisions carry confirmation and rev
  assert.equal(calls[0].url,'/api/agent/memories/reviews');assert.equal(calls[1].url,'/api/agent/memories/mine%2Fid/reviews');assert.equal(calls[2].options.body,undefined);assert.equal(JSON.parse(calls[3].options.body).confirmed,true);assert.equal(JSON.parse(calls[3].options.body).expectedRevision,1);
  for(const call of calls){assert.equal(call.options.credentials,'include');assert.equal(call.options.cache,'no-store')}
 });
+
+test('unresolved cleanup and extraction use private read-only pages and independent cursors',async(t)=>{
+ const calls=[],original=global.fetch;t.after(()=>{global.fetch=original})
+ global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>({items:[],nextCursor:null})}}
+ const api=await apiPromise;await api.memoryCleanupReviews(20,'own-cursor');await api.memoryExtractionReviews(10,'123')
+ assert.deepEqual(calls.map(call=>call.url),['/api/agent/memories/lifecycle/needs-review?limit=20&before=own-cursor','/api/agent/memories/operations/needs-review?limit=10&before=123'])
+ for(const {options} of calls){assert.equal(options.cache,'no-store');assert.equal(options.credentials,'include');assert.equal(options.method,undefined);assert.equal(options.body,undefined)}
+});

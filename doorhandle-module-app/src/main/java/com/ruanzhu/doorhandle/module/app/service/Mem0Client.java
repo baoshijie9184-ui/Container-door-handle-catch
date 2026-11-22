@@ -301,6 +301,27 @@ public class Mem0Client {
         if(!data.isArray()||data.size()>50)throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆清理记录暂不可用");
         var rows=new ArrayList<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle>();for(var row:data)rows.add(lifecycleDto(row));return rows;
     }
+    public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ReceiptPage<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle>
+            cleanupReviews(TenantContext owner,String before,int limit){
+        var body=new HashMap<String,Object>();body.put("user_id",owner.mem0UserId());body.put("app_id","doorhandlecatch");body.put("limit",limit);
+        if(before!=null)body.put("before",before);
+        var data=bridgeRequest("/memories/lifecycle/needs-review",body);
+        var items=data.path("items");var next=data.path("nextCursor");
+        if(!items.isArray()||items.size()>limit||!(next.isNull()||next.isTextual()))throw invalidCleanupPage();
+        var rows=new ArrayList<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle>();
+        var upper=before;
+        for(var item:items){
+            var row=lifecycleDto(item);
+            if(!"NEEDS_REVIEW".equals(row.cleanupState())||upper!=null&&row.memoryId().compareTo(upper)>=0)throw invalidCleanupPage();
+            rows.add(row);upper=row.memoryId();
+        }
+        var cursor=next.isNull()?null:next.asText();
+        if(cursor!=null&&(rows.size()!=limit||!cursor.equals(upper)))throw invalidCleanupPage();
+        return new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ReceiptPage<>(List.copyOf(rows),cursor);
+    }
+    private org.springframework.web.server.ResponseStatusException invalidCleanupPage(){
+        return new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆清理核对列表暂不可用");
+    }
     public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle verifyCleanup(TenantContext owner,String id) {
         var result=lifecycleDto(lifecycleRequest(owner,"verify",id));
         if(!id.equals(result.memoryId()))throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"清理回执不匹配");

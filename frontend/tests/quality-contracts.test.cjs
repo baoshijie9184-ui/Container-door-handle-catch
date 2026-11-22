@@ -2,6 +2,81 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const { readFrontendFile, readProjectFile } = require('./helpers/project-source.cjs')
 
+function traceReaderFixture() {
+  const calls = []
+  const reply = (kind, number, options) => new Promise(resolve => {
+    calls.push({ kind, number, ...options.params, signal: options.signal, resolve })
+  })
+  const source = readFrontendFile('src', 'composables', 'useTraceReports.js')
+    .replace(/^import .*\n/gm, '')
+    .replace('export function useTraceReports', 'function useTraceReports')
+  const createReader = new Function('ref', 'watch', 'onBeforeUnmount', 'ElMessage',
+    'fetchBatchTraceReport', 'fetchWorkOrderTraceReport', source + '\nreturn useTraceReports()')
+  const reader = createReader(value => ({ value }), () => {}, () => {}, { success() {}, warning() {} },
+    (number, options) => reply('batchNo', number, options),
+    (number, options) => reply('workOrderNo', number, options))
+  const success = (call, total, records) => call.resolve({ data: { code: 200, data: {
+    [call.kind]: call.number, page: call.page, size: call.size, total,
+    summary: { taskCount: total }, records
+  } } })
+  return { calls, reader, success }
+}
+
+test('the batch and work-order trace paginate independently and retry the requested page of the read identifier', async () => {
+  const { calls, reader, success } = traceReaderFixture()
+  let loading = reader.loadBatchTraceReport('BATCH-1')
+  success(calls[0], 23, [{ taskId: 'formal', traceRole: 'FORMAL_TASK', sourceTaskId: 'source' }])
+  await loading
+  loading = reader.loadWorkOrderTraceReport('ORDER-1')
+  success(calls[1], 25, [{ taskId: 'order-first' }])
+  await loading
+
+  reader.batchTraceNo.value = 'unsubmitted'
+  loading = reader.changeBatchTracePage(2)
+  assert.deepEqual([calls[2].number, calls[2].page, calls[2].size], ['BATCH-1', 2, 20])
+  calls[2].resolve({ data: { code: 503, message: '稍后重试' } })
+  await loading
+  assert.equal(reader.batchTraceReport.value.page, 1)
+  assert.equal(reader.batchTraceReport.value.records[0].traceRole, 'FORMAL_TASK')
+  assert.equal(reader.batchTraceRequestedPage.value, 2)
+
+  loading = reader.retryBatchTraceReport()
+  success(calls[3], 23, [{ taskId: 'source', traceRole: 'SOURCE_UPLOAD' }])
+  await loading
+  assert.deepEqual([reader.batchTraceReport.value.page, reader.batchTraceReport.value.total], [2, 23])
+  assert.equal(reader.workOrderTraceReport.value.page, 1)
+
+  loading = reader.changeBatchTraceSize(10)
+  assert.deepEqual([calls[4].page, calls[4].size], [1, 10])
+  success(calls[4], 23, [{ taskId: 'first' }])
+  await loading
+  assert.equal(reader.batchTraceReport.value.size, 10)
+})
+
+test('a removed last page returns to page one and a changed trace identifier aborts any pending page read', async () => {
+  const { calls, reader, success } = traceReaderFixture()
+  let loading = reader.loadWorkOrderTraceReport('ORDER-1')
+  success(calls[0], 21, [{ taskId: 'first' }])
+  await loading
+  loading = reader.changeWorkOrderTracePage(2)
+  success(calls[1], 20, [])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls[2].page, 1)
+  success(calls[2], 20, [{ taskId: 'first' }])
+  await loading
+  assert.equal(reader.workOrderTraceReport.value.page, 1)
+
+  const stale = reader.changeWorkOrderTracePage(2)
+  loading = reader.loadWorkOrderTraceReport('ORDER-2')
+  assert.equal(calls[3].signal.aborted, true)
+  assert.deepEqual([calls[4].number, calls[4].page], ['ORDER-2', 1])
+  success(calls[4], 1, [{ taskId: 'current' }])
+  await loading
+  success(calls[3], 21, [{ taskId: 'stale' }])
+  await stale
+  assert.equal(reader.workOrderTraceReport.value.records[0].taskId, 'current')
+})
+
 test('candidate read permission suppresses task write hints until a fresh claimed task arrives', async () => {
   const code=readFrontendFile('src','utils','qualityWorkflow.js')
   const workflow=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'))

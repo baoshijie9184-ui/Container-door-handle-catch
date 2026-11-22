@@ -37,6 +37,11 @@ public class PersonalMemoryService {
         preferences.reconcileReviewDecisions(owner,saved);preferences.requireReviewDecision(owner,saved,proof);return saved;
     }
     public java.util.List<MemoryDtos.Lifecycle> lifecycleHistory(TenantContext owner){return memory.lifecycleHistory(owner);}
+    public MemoryDtos.ReceiptPage<MemoryDtos.Lifecycle> cleanupReviews(TenantContext owner,String before,int limit){
+        if(limit<1||limit>50)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"清理核对每页可读取 1 到 50 条");
+        if(before!=null)validateId(before);
+        return memory.cleanupReviews(owner,before,limit);
+    }
     public MemoryDtos.Lifecycle verifyCleanup(TenantContext owner,String id){validateId(id);return memory.verifyCleanup(owner,id);}
     private void validateId(String id){if(id==null||!id.matches("[A-Za-z0-9_-]{1,64}"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"记忆编号不正确");}
     public MemoryDtos.Lifecycle changeLifecycle(TenantContext owner,String id,MemoryDtos.ChangeLifecycle request){

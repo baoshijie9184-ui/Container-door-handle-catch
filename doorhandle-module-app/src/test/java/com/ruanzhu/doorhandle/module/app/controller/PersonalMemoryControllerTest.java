@@ -45,6 +45,21 @@ class PersonalMemoryControllerTest {
         mvc.perform(post(path).param("ownerUserId","43").header("X-Agent-Action","memory-verify").principal(auth("ROLE_SUPERVISOR"))).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.status").value("RUNNING"));
         verify(memory).verifyExtraction(owner,id);verifyNoInteractions(preferences);
     }
+    @Test void receiptPageReadsAreScopedToPrincipalAndLegacyHistoryRemainsAvailable()throws Exception{
+        var memory=mock(PersonalMemoryService.class);var preferences=mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");
+        var mvc=MockMvcBuilders.standaloneSetup(new PersonalMemoryController(memory,preferences)).build();
+        when(memory.cleanupReviews(owner,"cursor",1)).thenReturn(new MemoryDtos.ReceiptPage<>(List.of(),null));
+        when(preferences.extractionReviews(owner,null,20)).thenReturn(new MemoryDtos.ReceiptPage<>(List.of(),null));
+        when(preferences.audit(owner)).thenReturn(List.of());
+        mvc.perform(get("/api/agent/memories/lifecycle/needs-review").param("ownerUserId","43").param("before","cursor").param("limit","1")
+                .principal(auth("ROLE_SUPERVISOR"))).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(content().json("{\"items\":[],\"nextCursor\":null}"));
+        mvc.perform(get("/api/agent/memories/operations/needs-review").param("ownerUserId","43").principal(auth("ROLE_INSPECTOR"))).andExpect(status().isOk());
+        mvc.perform(get("/api/agent/memories/operations/needs-review")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/agent/memories/audit").principal(auth("ROLE_INSPECTOR"))).andExpect(content().json("[]"));
+        verify(memory).cleanupReviews(owner,"cursor",1);verify(preferences).extractionReviews(owner,null,20);verify(preferences).audit(owner);
+        verifyNoMoreInteractions(memory,preferences);
+    }
     private UsernamePasswordAuthenticationToken auth(String role){var roles=List.of(new SimpleGrantedAuthority(role));return new UsernamePasswordAuthenticationToken(new TenantPrincipal(42L,"alice","",roles),null,roles);}
     @Test void accountIsDerivedFromPrincipalEvenWhenSupervisorSuppliesAnotherOwner()throws Exception{
         var memory=mock(PersonalMemoryService.class);var preferences=mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");

@@ -29,7 +29,9 @@ def api(route):
     if path.endswith('/reviews'):return route.fulfill(json=[])
     if path.endswith('/preferences'):return route.fulfill(json={'readEnabled':True,'saveEnabled':True,'revision':0})
     if path.endswith('/audit'):return route.fulfill(json=[])
-    if path.endswith('/lifecycle'):return route.fulfill(json=[{**controls,'memoryId':'removed','cleanupState':'NEEDS_REVIEW' if pending else 'SUCCEEDED'}])
+    if path.endswith('/lifecycle/needs-review'):return route.fulfill(json={'items':[{**controls,'memoryId':'removed','cleanupState':'NEEDS_REVIEW'}] if pending else [],'nextCursor':None})
+    if path.endswith('/operations/needs-review'):return route.fulfill(json={'items':[],'nextCursor':None})
+    if path.endswith('/lifecycle'):return route.fulfill(json=[{**controls,'memoryId':'recent','cleanupState':'SUCCEEDED'}])
     item={'id':'mine','memory':'<script>window.memoryInjected=true</script> 只管理本人长期记忆','updatedAt':'2026-10-18T04:00:00Z','digest':'a'*64,'lifecycle':controls}
     return route.fulfill(json=item if path.endswith('/mine') else {'items':[item],'hasMore':False})
 
@@ -51,7 +53,7 @@ with sync_playwright() as p:
     fault=503;dialog.get_by_role('button',name='预览设置').click();dialog.get_by_role('button',name='确认设置').click();expect(dialog.get_by_role('alert')).to_contain_text('需要刷新核对');assert len(writes)==2;expect(dialog.get_by_role('button',name='预览设置')).not_to_be_visible()
     dialog.get_by_role('button',name='重新读取当前版本').click();expect(dialog.get_by_role('button',name='预览设置')).to_be_visible();expect(dialog.locator('input[type="datetime-local"]')).to_have_value('2026-11-18T12:30');assert len(writes)==2;checks.append('an unknown result preserves the draft and requires a fresh read and confirmation without replay')
     page.screenshot(path=str(OUT/'desktop-policy.png'),full_page=True);page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1');page.screenshot(path=str(OUT/'mobile-policy.png'),full_page=True)
-    dialog.get_by_role('button',name='取消',exact=True).click();page.locator('.memory-lifecycle-history summary').click();verify=page.get_by_role('button',name='核对清理结果',exact=True);verify.click();expect(page.locator('.memory-lifecycle-history')).to_contain_text('已核对记忆不存在');expect(verify).not_to_be_visible();assert len(writes)==3;checks.append('unknown cleanup is reconciled by a read and never submits another delete')
+    dialog.get_by_role('button',name='取消',exact=True).click();verify=page.get_by_role('button',name='核对清理结果',exact=True);verify.click();expect(page.locator('.memory-receipt-reviews')).to_contain_text('已核对记忆不存在');expect(verify).not_to_be_visible();assert len(writes)==3;checks.append('old cleanup absent from history is reconciled without another delete')
     page.locator('.memory-lifecycle-history').scroll_into_view_if_needed();page.screenshot(path=str(OUT/'mobile-history.png'),full_page=True);checks.append('mobile controls and history fit the viewport with reduced motion')
     page.get_by_role('button',name='编辑记忆',exact=True).click();editor=page.get_by_role('dialog',name='编辑长期记忆');expect(editor).to_contain_text('修改正文不会自动恢复')
     editor.get_by_role('textbox',name='修改记忆正文').fill('纠正后的记忆正文');editor.get_by_role('button',name='预览修改').click();expect(editor).to_contain_text('纠正后的记忆正文');editor.get_by_role('button',name='取消',exact=True).click();assert len(writes)==3;checks.append('editing an excluded memory keeps its governance state and canceling the preview does not save')

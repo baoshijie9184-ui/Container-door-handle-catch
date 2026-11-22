@@ -60,6 +60,9 @@ class SystemDetectionHistoryMySqlTest {
             public Identity authenticated(){throw new AssertionError("System execution must not request a logged-in actor");}
         };}
         @Bean DetectionTaskAccessPolicy policy(){return new DetectionTaskAccessPolicy();}
+        @Bean DetectionTraceQuery traceQuery(JdbcTemplate jdbc, DetectionTaskAccessPolicy policy) {
+            return new DetectionTraceQuery(new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc), policy);
+        }
         @Bean AgentUserDirectory assignmentDirectory(){return mock(AgentUserDirectory.class);}
         @Bean DetectionMutationParticipant access(JdbcTemplate jdbc,DetectionTaskAccessPolicy policy){return new DetectionMutationParticipant(jdbc,policy);}
         @Bean com.ruanzhu.doorhandle.module.system.mapper.AccountEmployeeBindingMapper bindings(){return mock(com.ruanzhu.doorhandle.module.system.mapper.AccountEmployeeBindingMapper.class);}

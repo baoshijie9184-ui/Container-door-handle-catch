@@ -95,15 +95,23 @@ class Mem0ClientTest {
             var body=json.readTree(exchange.getRequestBody());String path=exchange.getRequestURI().getPath();paths.add(path);
             assertThat(body.path("user_id").asText()).isEqualTo(owner.mem0UserId());assertThat(exchange.getRequestHeaders().getFirst("X-Doorhandle-Memory-Token")).isEqualTo("fixture");assertThat(exchange.getRequestHeaders().getFirst("X-Doorhandle-Memory-Protocol")).isEqualTo("2");
             var data=new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle("mine",stale.get()?0:1,"EXCLUDED",null,false,"NONE",null);
-            byte[] response=json.writeValueAsBytes(java.util.Map.of("code",200,"data",path.endsWith("/list")?java.util.List.of(data):data));exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(200,response.length);exchange.getResponseBody().write(response);exchange.close();
+            Object payload=path.endsWith("/list")?java.util.List.of(data):data;
+            if(path.endsWith("/needs-review")){
+                assertThat(body.path("before").asText()).isEqualTo("z");assertThat(body.path("limit").asInt()).isEqualTo(1);
+                var pending=new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle("mine",1,"ACTIVE",null,true,stale.get()?"SUCCEEDED":"NEEDS_REVIEW",null);
+                payload=new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ReceiptPage<>(java.util.List.of(pending),"mine");
+            }
+            byte[] response=json.writeValueAsBytes(java.util.Map.of("code",200,"data",payload));exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(200,response.length);exchange.getResponseBody().write(response);exchange.close();
         });server.start();
         try{
             var client=new Mem0Client(new SensitiveDataSanitizer());org.springframework.test.util.ReflectionTestUtils.setField(client,"enabled",true);org.springframework.test.util.ReflectionTestUtils.setField(client,"bridgeToken","fixture");org.springframework.test.util.ReflectionTestUtils.setField(client,"serviceUrl","http://127.0.0.1:"+server.getAddress().getPort());
             var request=new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ChangeLifecycle("key","a".repeat(64),0,"EXCLUDED",null,false,true);
             assertThat(client.changeLifecycle(owner,"mine",request).revision()).isEqualTo(1);
             assertThat(client.lifecycleHistory(owner)).hasSize(1);assertThat(client.verifyCleanup(owner,"mine").memoryId()).isEqualTo("mine");
+            assertThat(client.cleanupReviews(owner,"z",1).nextCursor()).isEqualTo("mine");
             stale.set(true);assertThat(org.assertj.core.api.Assertions.catchThrowable(()->client.changeLifecycle(owner,"mine",request))).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
-            assertThat(paths).containsExactly("/memories/owned/lifecycle","/memories/lifecycle/list","/memories/lifecycle/verify","/memories/owned/lifecycle");
+            assertThat(org.assertj.core.api.Assertions.catchThrowable(()->client.cleanupReviews(owner,"z",1))).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+            assertThat(paths).containsExactly("/memories/owned/lifecycle","/memories/lifecycle/list","/memories/lifecycle/verify","/memories/lifecycle/needs-review","/memories/owned/lifecycle","/memories/lifecycle/needs-review");
         }finally{server.stop(0);}
     }
     @Test void anAcceptedExtractionIsPendingAndItsStableTurnIdIsSentWithoutFalseSuccess()throws Exception{

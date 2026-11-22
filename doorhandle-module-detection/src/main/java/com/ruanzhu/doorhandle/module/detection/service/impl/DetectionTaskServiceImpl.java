@@ -38,6 +38,7 @@ import com.ruanzhu.doorhandle.module.detection.service.BusinessDetectionTasks;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionNotificationPort;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskDispatchService;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
+import com.ruanzhu.doorhandle.module.detection.service.DetectionTraceQuery;
 import com.ruanzhu.doorhandle.module.detection.service.detection.UploadFolders;
 import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionUploadMetadataStore;
 import com.ruanzhu.doorhandle.module.model.service.ModelService;
@@ -51,6 +52,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -138,6 +140,9 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private DetectionUploadMetadataStore uploadMetadata;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private DetectionTraceQuery traceQuery;
 
     @Value("${detection.max-images-per-batch:200}")
     private int maxImagesPerBatch;
@@ -652,67 +657,65 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     }
 
     @Override
-    public java.util.Map<String, Object> getBatchTraceReport(String batchNo) {
-        if (!StringUtils.hasText(batchNo)) {
-            throw new BusinessException("批次号不能为空");
-        }
-        String normalizedBatchNo = batchNo.trim();
-        LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<DetectionTask>()
-                .apply(BusinessDetectionTasks.FILTER)
-                .eq(DetectionTask::getBatchNo, normalizedBatchNo)
-                .orderByAsc(DetectionTask::getCreatedAt);
-        applyOwnerFilter(wrapper);
-        List<DetectionTask> tasks = detectionTaskMapper.selectList(wrapper);
-        if (tasks == null || tasks.isEmpty()) {
-            throw new BusinessException(404, "批次不存在: " + normalizedBatchNo);
-        }
-
-        java.util.Map<String, Object> report = new LinkedHashMap<>();
-        report.put("reportType", "BATCH_TRACE_REPORT");
-        report.put("batchNo", normalizedBatchNo);
-        report.put("generatedAt", formatDateTime(LocalDateTime.now()));
-        report.put("summary", buildBatchSummary(tasks));
-        report.put("inspection", buildBatchInspection(tasks));
-        report.put("quality", buildBatchQuality(tasks));
-        report.put("distribution", buildBatchDistribution(tasks));
-        report.put("timeRange", buildBatchTimeRange(tasks));
-        report.put("records", tasks.stream()
-                .limit(50)
-                .map(task -> buildProgressResponse(task, null))
-                .collect(Collectors.toList()));
-        return report;
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public Map<String, Object> getBatchTraceReport(String batchNo, int page, int size) {
+        return buildTraceReport(true, batchNo, page, size);
     }
 
     @Override
-    public java.util.Map<String, Object> getWorkOrderTraceReport(String workOrderNo) {
-        if (!StringUtils.hasText(workOrderNo)) {
-            throw new BusinessException("工单号不能为空");
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public Map<String, Object> getWorkOrderTraceReport(String workOrderNo, int page, int size) {
+        return buildTraceReport(false, workOrderNo, page, size);
+    }
+
+    private Map<String, Object> buildTraceReport(boolean batch, String reference, int page, int size) {
+        if (!StringUtils.hasText(reference)) {
+            throw new BusinessException(batch ? "批次号不能为空" : "工单号不能为空");
         }
-        String normalizedWorkOrderNo = workOrderNo.trim();
-        LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<DetectionTask>()
-                .apply(BusinessDetectionTasks.FILTER)
-                .eq(DetectionTask::getWorkOrderNo, normalizedWorkOrderNo)
-                .orderByAsc(DetectionTask::getCreatedAt);
-        applyOwnerFilter(wrapper);
-        List<DetectionTask> tasks = detectionTaskMapper.selectList(wrapper);
-        if (tasks == null || tasks.isEmpty()) {
-            throw new BusinessException(404, "工单不存在: " + normalizedWorkOrderNo);
+        if (page < 1 || size < 1 || size > 100) throw new BusinessException(400, "请输入有效的追溯页码和每页条数");
+        String normalized = reference.trim();
+        var snapshot = traceQuery.read(batch, normalized, page, size);
+        var rows = snapshot.summaryRows();
+        if (rows.isEmpty()) {
+            throw new BusinessException(404, (batch ? "批次不存在: " : "工单不存在: ") + normalized);
         }
 
-        java.util.Map<String, Object> report = new LinkedHashMap<>();
-        report.put("reportType", "WORK_ORDER_TRACE_REPORT");
-        report.put("workOrderNo", normalizedWorkOrderNo);
+        var tasks = rows.stream().map(DetectionTraceQuery.Row::task).toList();
+        var effective = batch ? effectiveBatchTraceTasks(rows) : tasks;
+        var summary = batch ? buildBatchSummary(tasks, rows.stream().filter(row -> row.sourceTaskId() == null)
+                .findFirst().orElse(rows.get(0)).task()) : buildWorkOrderSummary(tasks);
+        summary.put("formalTaskCount", rows.stream().filter(row -> "FORMAL_TASK".equals(row.traceRole())).count());
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("reportType", batch ? "BATCH_TRACE_REPORT" : "WORK_ORDER_TRACE_REPORT");
+        report.put(batch ? "batchNo" : "workOrderNo", normalized);
         report.put("generatedAt", formatDateTime(LocalDateTime.now()));
-        report.put("summary", buildWorkOrderSummary(tasks));
-        report.put("inspection", buildBatchInspection(tasks));
-        report.put("quality", buildBatchQuality(tasks));
-        report.put("distribution", buildBatchDistribution(tasks));
+        report.put("page", page);
+        report.put("size", size);
+        report.put("total", tasks.size());
+        report.put("summary", summary);
+        report.put("inspection", buildBatchInspection(effective));
+        report.put("quality", buildBatchQuality(effective));
+        report.put("distribution", buildBatchDistribution(effective));
         report.put("timeRange", buildBatchTimeRange(tasks));
-        report.put("records", tasks.stream()
-                .limit(50)
-                .map(task -> buildProgressResponse(task, null))
-                .collect(Collectors.toList()));
+        report.put("records", snapshot.pageRows().stream().map(row -> {
+            var progress = buildProgressResponse(row.task(), null);
+            progress.setTraceRole(row.traceRole());
+            progress.setSourceTaskId(row.sourceTaskId());
+            return progress;
+        }).toList());
         return report;
+    }
+
+    private List<DetectionTask> effectiveBatchTraceTasks(List<DetectionTraceQuery.Row> rows) {
+        Map<String, DetectionTask> currentFormalTasks = new LinkedHashMap<>();
+        for (var row : rows) {
+            if (row.sourceTaskId() != null) currentFormalTasks.put(row.sourceTaskId(), row.task());
+        }
+        var results = rows.stream().filter(row -> row.sourceTaskId() == null
+                        && !currentFormalTasks.containsKey(row.task().getTaskId()))
+                .map(DetectionTraceQuery.Row::task).collect(Collectors.toCollection(ArrayList::new));
+        results.addAll(currentFormalTasks.values());
+        return results;
     }
 
     @Override
@@ -1278,8 +1281,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         return evidence;
     }
 
-    private java.util.Map<String, Object> buildBatchSummary(List<DetectionTask> tasks) {
-        DetectionTask first = tasks.get(0);
+    private java.util.Map<String, Object> buildBatchSummary(List<DetectionTask> tasks, DetectionTask first) {
         java.util.Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("taskCount", tasks.size());
         summary.put("captureDate", first.getCaptureDate());

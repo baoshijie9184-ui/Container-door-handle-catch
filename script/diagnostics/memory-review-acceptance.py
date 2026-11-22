@@ -20,6 +20,7 @@ def api(route):
     requests.append({'method':request.method,'path':path,'body':request.post_data_json if request.method=='POST' else None})
     if path.endswith('/preferences'):return route.fulfill(json={'readEnabled':True,'saveEnabled':True,'revision':0})
     if path.endswith('/audit') or path.endswith('/lifecycle'):return route.fulfill(json=[])
+    if path.endswith('/needs-review'):return route.fulfill(json={'items':[],'nextCursor':None})
     if path.endswith('/mine'):return route.fulfill(json=source)
     if path.endswith('/mine/reviews') and request.method=='POST':
         body=request.post_data_json;assert body['expectedRevision']==0 and body['expectedDigest']=='a'*64

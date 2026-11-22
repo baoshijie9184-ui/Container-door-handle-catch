@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.detection.dto.detection;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Builder;
 import lombok.Data;
 
@@ -15,6 +16,10 @@ public class DetectionTaskProgressResponse {
     private String stage;
     private String batchNo;
     private String workOrderNo;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String traceRole;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String sourceTaskId;
     private String flowStatus;
     /** Business-state hints only; execution still rechecks current account and task permissions. */
     private java.util.List<DetectionQualityAction> qualityActions;

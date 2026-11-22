@@ -155,7 +155,30 @@ public class MemoryPreferenceService {
         });
     }
     public List<MemoryDtos.Audit> audit(TenantContext owner) {
-        return jdbc.query("""
+        return jdbc.query(AUDIT_ROWS+" ORDER BY a.id DESC LIMIT 50",this::readAudit,owner.userId());
+    }
+    public MemoryDtos.ReceiptPage<MemoryDtos.Audit> extractionReviews(TenantContext owner,String before,int limit){
+        if(limit<1||limit>50)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"提炼核对每页可读取 1 到 50 条");
+        var args=new java.util.ArrayList<Object>();
+        args.add(owner.userId());
+        String sql=AUDIT_ROWS+"""
+                AND a.kind='MEMORY_OPERATION' AND a.action='AUTOSAVE' AND a.outcome IN ('DISPATCHED','UNKNOWN')
+                AND CHAR_LENGTH(a.request_id)=64 AND w.request_id=a.request_id AND w.status=a.outcome
+                AND w.revision=a.revision AND w.request_sha256=a.content_sha256
+                """;
+        if(before!=null){
+            try{
+                if(!before.matches("[1-9][0-9]{0,18}"))throw new NumberFormatException();
+                args.add(Long.parseLong(before));
+            }catch(NumberFormatException invalid){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"提炼核对分页编号无效");}
+            sql+=" AND a.id<?";
+        }
+        args.add(limit+1);
+        var rows=jdbc.query(sql+" ORDER BY a.id DESC LIMIT ?",this::readAudit,args.toArray());
+        var items=List.copyOf(rows.subList(0,Math.min(rows.size(),limit)));
+        return new MemoryDtos.ReceiptPage<>(items,rows.size()>limit?Long.toString(items.get(limit-1).id()):null);
+    }
+    private static final String AUDIT_ROWS="""
                 SELECT a.id,a.kind,a.action,a.outcome,a.revision,a.payload_version,a.payload_json,a.request_id,
                     a.occurred_at AS audit_occurred_at,a.legacy_clock_json AS audit_clock_json,
                     a.legacy_source AS audit_source,a.legacy_key AS audit_source_key,
@@ -168,8 +191,8 @@ public class MemoryPreferenceService {
                     AND NOT EXISTS(SELECT 1 FROM audit_event newer WHERE a.kind='MEMORY_OPERATION'
                         AND newer.kind=a.kind AND newer.owner_user_id=a.owner_user_id AND newer.resource_id=a.resource_id
                         AND (newer.revision>a.revision OR newer.revision=a.revision AND newer.id>a.id))
-                ORDER BY a.id DESC LIMIT 50
-                """,(rs,n)->{
+                """;
+    private MemoryDtos.Audit readAudit(java.sql.ResultSet rs,int index)throws java.sql.SQLException{
             if(rs.getInt("payload_version")!=1)throw new IllegalStateException("Unsupported memory audit version");
             var preference="MEMORY_PREFERENCE".equals(rs.getString("kind"))?decode(rs.getString("payload_json"),PreferenceAuditV1.class):null;
             var auditClock=auditClock(rs.getString("audit_clock_json"),rs.getString("audit_source"),rs.getString("audit_source_key"));
@@ -188,7 +211,6 @@ public class MemoryPreferenceService {
             return new MemoryDtos.Audit(rs.getLong("id"),rs.getString("action"),rs.getString("outcome"),rs.getString("memory_id"),
                     preference==null?null:Math.toIntExact(rs.getLong("revision")),preference==null?null:preference.readEnabled(),preference==null?null:preference.saveEnabled(),
                     created,updated,rs.getString("request_id"),clock==null?"UTC":clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes());
-        },owner.userId());
     }
     private boolean matches(WorkflowRecord row,String action,String memoryId,String fingerprint) {
         return action.equals(workflows.payload(row,MutationV1.class).action())&&java.util.Objects.equals(memoryId,row.resourceId())&&fingerprint.equals(row.requestSha256());

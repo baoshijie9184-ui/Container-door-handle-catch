@@ -27,7 +27,11 @@ public class DetectionTaskAccessPolicy {
     public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private org.springframework.jdbc.core.JdbcTemplate folderAssignments;
-    private static final String FOLDER_READER = "EXISTS (SELECT 1 FROM detection_work_unit w WHERE w.work_unit_id=detection_task.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' AND w.assignee_user_id=CAST({0} AS CHAR))";
+    private static final String FOLDER_READER = folderReadPredicate("detection_task.","{0}");
+    private static String folderReadPredicate(String alias, String parameter) {
+        return "EXISTS (SELECT 1 FROM detection_work_unit w WHERE w.work_unit_id=" + alias
+                + "task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' AND w.assignee_user_id=CAST(" + parameter + " AS CHAR))";
+    }
     private boolean assignedFolder(DetectionTask task,long user) {
         return task!=null && "OSS_FOLDER".equals(task.getTaskType()) && folderAssignments!=null &&
             Boolean.TRUE.equals(folderAssignments.queryForObject("SELECT EXISTS(SELECT 1 FROM detection_work_unit WHERE work_unit_id=? AND strategy='OSS_FOLDER' AND assignee_user_id=?)",
@@ -222,6 +226,19 @@ public class DetectionTaskAccessPolicy {
         return supervisor ? new SqlScope("1 = 1", Map.of())
                 : new SqlScope("(" + alias + "created_by = :scopeUsername OR " + alias
                 + "assignee = :scopeUsername)", Map.of("scopeUsername", authentication.getName()));
+    }
+
+    /** Trace details use the same folder assignment read access as ordinary task details. */
+    public SqlScope currentTaskReadSqlScope(String alias) {
+        var base = currentSqlScope(alias);
+        if (folderAssignments == null || users == null) return base;
+        var actor = current(SecurityContextHolder.getContext().getAuthentication());
+        if (actor.supervisor()) return base;
+        var parameters = new java.util.HashMap<>(base.parameters());
+        parameters.put("traceReaderId", actor.userId());
+        String folderScope = folderReadPredicate(alias,":traceReaderId");
+        return new SqlScope("(" + base.predicate() + " OR (" + alias + "task_type='OSS_FOLDER' AND " + folderScope + "))",
+                Map.copyOf(parameters));
     }
 
     public record SqlScope(String predicate, Map<String, Object> parameters) { }

@@ -167,18 +167,18 @@
                 type="primary"
                 plain
                 :disabled="workOrderTraceLoading || !!workOrderTraceError"
-                title="导出当前已读工单摘要（JSON），不重新查询"
+                title="导出工单汇总与当前页明细（JSON）"
                 @click="downloadWorkOrderTraceReport"
               >
                 <el-icon><Download /></el-icon>
-                导出已读工单摘要
+                导出汇总和当前页
               </el-button>
             </div>
           </template>
 
-          <BusinessTraceQuery v-model="workOrderTraceNo" kind="work-order" :requested-no="workOrderTraceRequestedNo" :loading="workOrderTraceLoading" :report="workOrderTraceReport" :error="workOrderTraceError" :references="businessWorkOrderNos" :reference-loading="traceReferencesLoading" :reference-error="traceReferencesError" :scope-label="businessTraceScope" @query="loadWorkOrderTraceReport" @refresh="refreshWorkOrderTraceReport" @reference="loadBusinessWorkOrderTrace" @refresh-references="loadTraceReferences" />
+          <BusinessTraceQuery v-model="workOrderTraceNo" kind="work-order" :requested-no="workOrderTraceRequestedNo" :requested-page="workOrderTraceRequestedPage" :loading="workOrderTraceLoading" :report="workOrderTraceReport" :error="workOrderTraceError" :references="businessWorkOrderNos" :reference-loading="traceReferencesLoading" :reference-error="traceReferencesError" :scope-label="businessTraceScope" @query="loadWorkOrderTraceReport" @refresh="refreshWorkOrderTraceReport" @retry="retryWorkOrderTraceReport" @reference="loadBusinessWorkOrderTrace" @refresh-references="loadTraceReferences" />
 
-          <TraceReportOverview v-if="workOrderTraceReport" :report="workOrderTraceReport" kind="work-order" :report-downloading="reportDownloading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" />
+          <TraceReportOverview v-if="workOrderTraceReport" :report="workOrderTraceReport" kind="work-order" :page-sizes="tracePageSizes" :report-downloading="reportDownloading" :loading="workOrderTraceLoading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" @page-change="changeWorkOrderTracePage" @size-change="changeWorkOrderTraceSize" />
         </el-card>
       </el-tab-pane>
 
@@ -193,18 +193,18 @@
                 type="primary"
                 plain
                 :disabled="batchTraceLoading || !!batchTraceError"
-                title="导出当前已读批次摘要（JSON），不重新查询"
+                title="导出批次汇总与当前页明细（JSON）"
                 @click="downloadBatchTraceReport"
               >
                 <el-icon><Download /></el-icon>
-                导出已读批次摘要
+                导出汇总和当前页
               </el-button>
             </div>
           </template>
 
-          <BusinessTraceQuery v-model="batchTraceNo" kind="batch" :requested-no="batchTraceRequestedNo" :loading="batchTraceLoading" :report="batchTraceReport" :error="batchTraceError" :references="businessBatchNos" :reference-loading="traceReferencesLoading" :reference-error="traceReferencesError" :scope-label="businessTraceScope" @query="loadBatchTraceReport" @refresh="refreshBatchTraceReport" @reference="loadBusinessBatchTrace" @refresh-references="loadTraceReferences" />
+          <BusinessTraceQuery v-model="batchTraceNo" kind="batch" :requested-no="batchTraceRequestedNo" :requested-page="batchTraceRequestedPage" :loading="batchTraceLoading" :report="batchTraceReport" :error="batchTraceError" :references="businessBatchNos" :reference-loading="traceReferencesLoading" :reference-error="traceReferencesError" :scope-label="businessTraceScope" @query="loadBatchTraceReport" @refresh="refreshBatchTraceReport" @retry="retryBatchTraceReport" @reference="loadBusinessBatchTrace" @refresh-references="loadTraceReferences" />
 
-          <TraceReportOverview v-if="batchTraceReport" :report="batchTraceReport" kind="batch" :report-downloading="reportDownloading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" />
+          <TraceReportOverview v-if="batchTraceReport" :report="batchTraceReport" kind="batch" :page-sizes="tracePageSizes" :report-downloading="reportDownloading" :loading="batchTraceLoading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" @page-change="changeBatchTracePage" @size-change="changeBatchTraceSize" />
         </el-card>
       </el-tab-pane>
     </el-tabs>
@@ -477,8 +477,17 @@ const {
   loadBatchTraceReport,
   refreshWorkOrderTraceReport,
   workOrderTraceRequestedNo,
+  workOrderTraceRequestedPage,
+  retryWorkOrderTraceReport,
+  changeWorkOrderTracePage,
+  changeWorkOrderTraceSize,
   refreshBatchTraceReport,
   batchTraceRequestedNo,
+  batchTraceRequestedPage,
+  retryBatchTraceReport,
+  changeBatchTracePage,
+  changeBatchTraceSize,
+  tracePageSizes,
   loadBusinessWorkOrderTrace,
   loadBusinessBatchTrace,
   forgetTasks:forgetTraceTasks

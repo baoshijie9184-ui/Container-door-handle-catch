@@ -105,6 +105,29 @@ def test_opted_in_cleanup_records_actual_absence_and_never_repeats(monkeypatch, 
     assert http.post('/memories/lifecycle/list', json={'user_id': 'doorhandlecatch:user:43', 'app_id': APP}, headers=headers).json()['data'] == []
 
 
+def test_old_pending_cleanup_receipts_have_their_own_owned_cursor_pages(monkeypatch, isolate_memory_receipts):
+    http, fake, headers = setup(monkeypatch)
+    other = 'doorhandlecatch:user:43'
+    with isolate_memory_receipts.store.connect() as db:
+        rows = [(USER, APP, f'history-{n:02}', 'SUCCEEDED', '2026-11-22T10:00:00+08:00') for n in range(55)]
+        rows += [(USER, APP, name, 'NEEDS_REVIEW', '2026-10-18T10:00:00+08:00') for name in ('receipt-001', 'receipt-002')]
+        rows += [(other, APP, 'receipt-003', 'NEEDS_REVIEW', '2026-10-18T10:00:00+08:00')]
+        db.executemany('''INSERT INTO memory_lifecycle VALUES(?,?,?,1,'ACTIVE',NULL,1,'digest',?,?)''', rows)
+    payload = {'user_id': USER, 'app_id': APP, 'limit': 1}
+    recent = http.post('/memories/lifecycle/list', json=payload, headers=headers).json()['data']
+    assert len(recent) == 50 and all(row['cleanupState'] == 'SUCCEEDED' for row in recent)
+    path = '/memories/lifecycle/needs-review'
+    assert http.post(path, json=payload).status_code == 401
+    assert http.post(path, json={**payload, 'before': '../unsafe'}, headers=headers).status_code == 422
+    first = http.post(path, json=payload, headers=headers).json()['data']
+    assert [row['memoryId'] for row in first['items']] == ['receipt-002'] and first['nextCursor'] == 'receipt-002'
+    second = http.post(path, json={**payload, 'before': first['nextCursor']}, headers=headers).json()['data']
+    assert [row['memoryId'] for row in second['items']] == ['receipt-001'] and second['nextCursor'] is None
+    foreign = http.post(path, json={**payload, 'user_id': other}, headers=headers).json()['data']
+    assert [row['memoryId'] for row in foreign['items']] == ['receipt-003']
+    assert fake.deleted == [] and fake.updated == []
+
+
 @pytest.mark.parametrize('fault', ['changed_content', 'foreign_owner', 'partial_delete'])
 def test_changed_or_unknown_cleanup_stays_quarantined_without_replaying(monkeypatch, isolate_memory_receipts, fault):
     http, fake, headers = setup(monkeypatch)

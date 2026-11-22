@@ -3,6 +3,8 @@ package com.ruanzhu.doorhandle.module.detection.service;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql;
+import com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionDuplicateTicket;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnitImage;
@@ -12,17 +14,26 @@ import com.ruanzhu.doorhandle.module.detection.mapper.DetectionDuplicateTicketMa
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitImageMapper;
 import com.ruanzhu.doorhandle.module.detection.mapper.ImageDetectionDataMapper;
 import com.ruanzhu.doorhandle.module.detection.repository.QualityReportRepository;
+import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.assertCheckViolation;
 
 /** Historical class name retained; verifies the current 13-table core only on an admitted empty ECS schema. */
@@ -107,6 +118,106 @@ class Core12PersistenceMySqlTest {
         assertThat(report.status()).isEqualTo("DRAFT");
         assertThat(report.snapshotSha256()).isNull();
         assertThat(report.taskId()).isEqualTo("task-1");
+    }
+
+    @Test void tracePagesPastFiftyUseTheSameScopeForTotalAndDetail() {
+        for (int index=1; index<=53; index++) {
+            insertTraceTask("paged-trace-task-"+index,"BATCH","paged-trace-batch","paged-trace-order",null,
+                    index<=52 ? "trace-inspector" : "trace-other");
+        }
+        insertTraceTask("paged-trace-single","SINGLE","paged-trace-batch","paged-trace-order",null,"trace-inspector");
+        var trace = traceRepository();
+        try {
+            authenticateTrace("trace-inspector",801L,false);
+            for (boolean batch : new boolean[]{true,false}) {
+                String reference = batch ? "paged-trace-batch" : "paged-trace-order";
+                var first = trace.read(batch,reference,1,50);
+                var second = trace.read(batch,reference,2,50);
+                assertThat(first.summaryRows()).hasSize(52);
+                assertThat(first.pageRows()).hasSize(50);
+                assertThat(second.summaryRows()).hasSize(52);
+                assertThat(second.pageRows()).extracting(row -> row.task().getTaskId())
+                        .containsExactly("paged-trace-task-51","paged-trace-task-52");
+                assertThat(trace.read(batch,reference,3,50).pageRows()).isEmpty();
+            }
+            authenticateTrace("trace-supervisor",800L,true);
+            var department = trace.read(false,"paged-trace-order",2,50);
+            assertThat(department.summaryRows()).hasSize(53);
+            assertThat(department.pageRows()).extracting(row -> row.task().getTaskId()).containsExactly(
+                    "paged-trace-task-51","paged-trace-task-52","paged-trace-task-53");
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test void traceFollowsExplicitLineageWithoutExposingUnreadableSourcesAndRejectsAmbiguousLegacyLinks() {
+        insertTraceTask("lineage-upload","BATCH","lineage-batch","lineage-source-order","detection/trace/original/","trace-other");
+        insertTraceTask("lineage-formal","OSS_FOLDER",null,"lineage-formal-order","detection/trace/renamed/","trace-other");
+        insertTraceFolderAssignment("lineage-formal","801");
+        jdbc.update("""
+                INSERT INTO detection_work_unit(work_unit_id,source_batch_id,batch_id,applicant_user_id,image_count,strategy,status)
+                VALUES('lineage-request','lineage-upload','lineage-formal','trace-inspector',2,'ALL','ASSIGNED')
+                """);
+        insertTraceTask("legacy-trace-upload","BATCH","legacy-trace-batch",null,"detection/trace/legacy/","trace-inspector");
+        insertTraceTask("legacy-trace-formal","OSS_FOLDER",null,null,"detection/trace/legacy/","trace-other");
+        insertTraceFolderAssignment("legacy-trace-formal","801");
+        insertTraceTask("ambiguous-trace-upload","BATCH","ambiguous-trace-batch",null,"detection/trace/ambiguous/","trace-inspector");
+        insertTraceTask("ambiguous-other-upload","BATCH","ambiguous-other-batch",null,"detection/trace/ambiguous/","trace-other");
+        insertTraceTask("ambiguous-trace-formal","OSS_FOLDER",null,null,"detection/trace/ambiguous/","trace-other");
+        insertTraceFolderAssignment("ambiguous-trace-formal","801");
+        var trace = traceRepository();
+        try {
+            authenticateTrace("trace-inspector",801L,false);
+            var formalOnly = trace.read(true,"lineage-batch",1,10);
+            assertThat(formalOnly.summaryRows()).hasSize(1);
+            assertThat(formalOnly.pageRows()).singleElement().satisfies(row -> {
+                assertThat(row.task().getTaskId()).isEqualTo("lineage-formal");
+                assertThat(row.traceRole()).isEqualTo("FORMAL_TASK");
+                assertThat(row.sourceTaskId()).isNull();
+            });
+            assertThat(trace.read(true,"legacy-trace-batch",1,10).pageRows()).extracting(DetectionTraceQuery.Row::traceRole)
+                    .containsExactly("FORMAL_TASK","SOURCE_UPLOAD");
+            assertThat(trace.read(true,"ambiguous-trace-batch",1,10).pageRows()).extracting(row -> row.task().getTaskId())
+                    .containsExactly("ambiguous-trace-upload");
+            authenticateTrace("trace-supervisor",800L,true);
+            assertThat(trace.read(true,"lineage-batch",1,10).pageRows()).extracting(DetectionTraceQuery.Row::sourceTaskId)
+                    .containsExactly("lineage-upload",null);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    private DetectionTraceQuery traceRepository() {
+        var access = new DetectionTaskAccessPolicy();
+        var users = mock(BusinessUserDirectory.class);
+        when(users.current(801L,"trace-inspector")).thenReturn(new BusinessUserDirectory.Identity(801L,"trace-inspector",false));
+        when(users.current(800L,"trace-supervisor")).thenReturn(new BusinessUserDirectory.Identity(800L,"trace-supervisor",true));
+        access.setUsers(users);
+        ReflectionTestUtils.setField(access,"folderAssignments",jdbc);
+        return new DetectionTraceQuery(new NamedParameterJdbcTemplate(jdbc),access);
+    }
+
+    private static void authenticateTrace(String username,long userId,boolean supervisor) {
+        record TracePrincipal(Long userId,String username) implements BusinessPrincipal,java.security.Principal {
+            @Override public String getName() { return username; }
+        }
+        var role = new SimpleGrantedAuthority(supervisor ? "ROLE_SUPERVISOR" : "ROLE_INSPECTOR");
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(new TracePrincipal(userId,username),null,List.of(role)));
+    }
+
+    private void insertTraceTask(String id,String type,String batch,String order,String prefix,String owner) {
+        jdbc.update("""
+                INSERT INTO detection_task(task_id,task_type,batch_no,work_order_no,source_oss_prefix,created_by,status)
+                VALUES(?,?,?,?,?,?,'COMPLETED')
+                """,id,type,batch,order,prefix,owner);
+    }
+
+    private void insertTraceFolderAssignment(String taskId,String assignee) {
+        jdbc.update("""
+                INSERT INTO detection_work_unit(work_unit_id,applicant_user_id,assignee_user_id,image_count,strategy,status)
+                VALUES(?,'trace-supervisor',?,2,'OSS_FOLDER','COMPLETED')
+                """,taskId,assignee);
     }
 
     private DetectionDuplicateTicket duplicate(String ticketId) {

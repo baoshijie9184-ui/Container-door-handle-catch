@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.app.dto.chat;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.constraints.*;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +40,7 @@ public final class MemoryDtos {
     public record Page(List<Item> items, boolean hasMore, Integer nextOffset) {
         public Page(List<Item> items, boolean hasMore) { this(items, hasMore, null); }
     }
+    public record ReceiptPage<T>(List<T> items,@JsonInclude(JsonInclude.Include.ALWAYS) String nextCursor) {}
     public record Delete(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String requestId,
                          @NotBlank @Pattern(regexp="[a-f0-9]{64}") String expectedDigest, @AssertTrue boolean confirmed) {}
     public record Deleted(boolean deleted, boolean replayed) {}

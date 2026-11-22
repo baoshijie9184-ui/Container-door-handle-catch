@@ -121,6 +121,28 @@ class MemoryGovernanceTest {
         settings.reconcileAutomatic(owner,key,"NOT_STARTED");assertThat(settings.automaticOutcome(owner,key)).isEqualTo("REJECTED");
         assertThatThrownBy(()->settings.reconcileAutomatic(other,key,"SUCCEEDED")).hasMessageContaining("404");
     }
+    @Test void extractionReviewsPageOlderOwnedRequestsBeforeLimitingAndNeverReplaysThem(){
+        String older="a".repeat(64),later="b".repeat(64),foreign="d".repeat(64),digest="c".repeat(64);
+        settings.reserveAutomatic(owner,older,digest);settings.deletionOutcome(owner,older,"UNKNOWN");
+        settings.reserveAutomatic(owner,later,digest);
+        settings.reserveAutomatic(other,foreign,digest);
+        for(int n=0;n<55;n++){
+            String key=String.format("%064x",n);
+            settings.reserveAutomatic(owner,key,digest);settings.deletionOutcome(owner,key,"SUCCEEDED");
+        }
+        assertThat(settings.audit(owner)).hasSize(50).extracting(MemoryDtos.Audit::requestId).doesNotContain(older,later);
+        var first=settings.extractionReviews(owner,null,1);
+        assertThat(first.items()).extracting(MemoryDtos.Audit::requestId).containsExactly(later);
+        assertThat(first.nextCursor()).isNotBlank();
+        var second=settings.extractionReviews(owner,first.nextCursor(),1);
+        assertThat(second.items()).extracting(MemoryDtos.Audit::requestId).containsExactly(older);
+        assertThat(second.nextCursor()).isNull();
+        settings.reconcileAutomatic(owner,later,"SUCCEEDED");
+        assertThat(settings.extractionReviews(owner,first.nextCursor(),1).items()).extracting(MemoryDtos.Audit::requestId).containsExactly(older);
+        assertThat(settings.extractionReviews(other,null,20).items()).extracting(MemoryDtos.Audit::requestId).containsExactly(foreign);
+        assertThatThrownBy(()->settings.extractionReviews(owner,"someone-else",20)).hasMessageContaining("400");
+        verifyNoInteractions(bridge);
+    }
     @Test void defaultsPreserveExistingPolicyAndOwnerRevisionGuardsConcurrentChanges(){
         assertThat(settings.get(owner)).isEqualTo(new MemoryDtos.Preference(true,true,0,null));
         var saved=settings.change(owner,new MemoryDtos.ChangePreference(0,false,false));assertThat(saved.revision()).isEqualTo(1);

@@ -22,7 +22,9 @@ def api(route):
     if path.endswith('/reviews'):return route.fulfill(json=[])
     if path.endswith('/preferences'):return route.fulfill(json={'readEnabled':True,'saveEnabled':True,'revision':0})
     if path.endswith('/lifecycle'):return route.fulfill(json=[])
-    if path.endswith('/audit'):return route.fulfill(json=[{'id':1,'action':'AUTOSAVE','requestId':key,'outcome':'SUCCEEDED' if verified else 'UNKNOWN','createdAt':'2026-10-18 12:00:00'}])
+    if path.endswith('/lifecycle/needs-review'):return route.fulfill(json={'items':[],'nextCursor':None})
+    if path.endswith('/operations/needs-review'):return route.fulfill(json={'items':[] if verified else [{'id':1,'action':'AUTOSAVE','requestId':key,'outcome':'UNKNOWN','createdAt':'2026-10-18 12:00:00'}],'nextCursor':None})
+    if path.endswith('/audit'):return route.fulfill(json=[])
     return route.fulfill(json={'items':[{'id':'mine','memory':'<script>window.memoryInjected=true</script> 个人报告偏好','updatedAt':'2026-10-18T04:00:00Z','digest':'b'*64}],'hasMore':False})
 
 with sync_playwright() as p:
@@ -31,10 +33,10 @@ with sync_playwright() as p:
     page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)));page.goto('http://127.0.0.1:3011/#/agent/memory');page.wait_for_load_state('networkidle')
     expect(page.locator('.memory-item')).to_have_count(1);assert not page.evaluate('window.memoryInjected===true');checks.append('memory text remains inert')
     expect(page.locator('.memory-item footer')).to_contain_text('2026-10-18 12:00:00');checks.append('UTC+8 display remains correct in a Los Angeles browser')
-    page.locator('.memory-audit summary').click();button=page.get_by_role('button',name='核对提炼结果',exact=True);expect(button).to_be_visible();assert not writes;checks.append('loading history does not replay an extraction')
+    pending=page.get_by_role('region',name='待核对回执');button=pending.get_by_role('button',name='核对提炼结果',exact=True);expect(button).to_be_visible();expect(pending.locator('.memory-extraction-receipt-id')).to_have_attribute('title',key);assert not writes;checks.append('old extraction absent from history remains discoverable by its receipt without replay')
     button.focus();page.keyboard.press('Enter');expect(page.get_by_role('status')).to_contain_text('尚未获得完成回执');assert writes==['/api/agent/memories/operations/'+key+'/verify'];checks.append('keyboard verification reads the original running receipt without a save request')
     unavailable=True;button.click();expect(page.get_by_role('status')).to_contain_text('暂不可用');expect(button).to_be_visible();checks.append('failed verification does not claim success or remove the pending receipt')
-    page.locator('.memory-audit').scroll_into_view_if_needed();page.screenshot(path=str(OUT/'desktop-pending.png'),full_page=True);page.set_viewport_size({'width':390,'height':844});page.locator('.memory-audit').scroll_into_view_if_needed();assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1');page.screenshot(path=str(OUT/'mobile-pending.png'),full_page=True);checks.append('mobile receipt controls fit within the viewport')
+    pending.scroll_into_view_if_needed();page.screenshot(path=str(OUT/'desktop-pending.png'),full_page=True);page.set_viewport_size({'width':390,'height':844});pending.scroll_into_view_if_needed();assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1');page.screenshot(path=str(OUT/'mobile-pending.png'),full_page=True);checks.append('mobile receipt controls fit within the viewport')
     unavailable=False;state='SUCCEEDED';button.click();expect(page.get_by_role('status')).to_contain_text('已核对 2 条结果');expect(button).not_to_be_visible();assert len(writes)==3;checks.append('a late completion is reflected by a manual query and never reruns extraction')
     page.screenshot(path=str(OUT/'mobile-complete.png'),full_page=True);context.close();browser.close()
 assert not errors,errors

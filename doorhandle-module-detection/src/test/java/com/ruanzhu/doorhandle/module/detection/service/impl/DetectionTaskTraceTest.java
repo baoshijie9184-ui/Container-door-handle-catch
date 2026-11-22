@@ -3,14 +3,17 @@ package com.ruanzhu.doorhandle.module.detection.service.impl;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTaskTraceResponse;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTaskProgressResponse;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
+import com.ruanzhu.doorhandle.module.detection.service.DetectionTraceQuery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -20,11 +23,14 @@ import static org.mockito.Mockito.when;
 class DetectionTaskTraceTest {
 
     private DetectionTaskServiceFixture fixture;
+    private DetectionTraceQuery traceQuery;
 
     @BeforeEach
     void setUp() {
         fixture = new DetectionTaskServiceFixture();
         fixture.setUp();
+        traceQuery = Mockito.mock(DetectionTraceQuery.class);
+        ReflectionTestUtils.setField(fixture.service, "traceQuery", traceQuery);
     }
 
     @AfterEach
@@ -82,7 +88,8 @@ class DetectionTaskTraceTest {
         task2.setCreatedAt(LocalDateTime.of(2026, 6, 11, 10, 0));
         task2.setUpdatedAt(LocalDateTime.of(2026, 6, 11, 10, 5));
 
-        when(fixture.detectionTaskMapper.selectList(any())).thenReturn(List.of(task1, task2));
+        var rows = List.of(traceRow(task1), traceRow(task2));
+        when(traceQuery.read(true, "2026-06-11_SH_CAM01_A", 1, 50)).thenReturn(new DetectionTraceQuery.Snapshot(rows, rows));
 
         java.util.Map<String, Object> report = fixture.service.getBatchTraceReport("2026-06-11_SH_CAM01_A");
 
@@ -153,7 +160,8 @@ class DetectionTaskTraceTest {
         task2.setCreatedAt(LocalDateTime.of(2026, 6, 11, 10, 0));
         task2.setUpdatedAt(LocalDateTime.of(2026, 6, 11, 10, 30));
 
-        when(fixture.detectionTaskMapper.selectList(any())).thenReturn(List.of(task1, task2));
+        var rows = List.of(traceRow(task1), traceRow(task2));
+        when(traceQuery.read(false, "WO-20260611-001", 1, 50)).thenReturn(new DetectionTraceQuery.Snapshot(rows, rows));
 
         java.util.Map<String, Object> report = fixture.service.getWorkOrderTraceReport("WO-20260611-001");
 
@@ -177,6 +185,60 @@ class DetectionTaskTraceTest {
         assertEquals(1L, quality.get("reworkRequired"));
         assertEquals(1L, quality.get("closed"));
         assertEquals(0.5, (Double) quality.get("closureRate"), 0.0001);
+    }
+
+    @Test
+    void batchIncludesActualFormalReviewAndContinuesPastFiftyWithoutCountingItsOriginalsTwice() {
+        var independent = IntStream.rangeClosed(1, 51).mapToObj(index -> traceRow(traceTask("det-" + index, 1)))
+                .toList();
+        var upload = traceTask("upload", 20);
+        upload.setReviewStatus("PENDING");
+        upload.setRegion("上海");
+        var formal = traceTask("formal", 20);
+        formal.setReviewStatus("REVIEWED");
+        formal.setConfirmedDefectCount(16);
+        var sourceRow = new DetectionTraceQuery.Row(upload, "SOURCE_UPLOAD", null);
+        var formalRow = new DetectionTraceQuery.Row(formal, "FORMAL_TASK", "upload");
+        var all = new java.util.ArrayList<>(List.of(sourceRow, formalRow));
+        all.addAll(independent);
+        var first = new java.util.ArrayList<>(List.of(formalRow, sourceRow));
+        first.addAll(independent.subList(0, 48));
+        when(traceQuery.read(true, "original-batch", 1, 50)).thenReturn(new DetectionTraceQuery.Snapshot(all, first));
+        when(traceQuery.read(true, "original-batch", 2, 50)).thenReturn(new DetectionTraceQuery.Snapshot(all, independent.subList(48, 51)));
+        when(traceQuery.read(true, "original-batch", 3, 50)).thenReturn(new DetectionTraceQuery.Snapshot(all, List.of()));
+
+        var firstPage = fixture.service.getBatchTraceReport("original-batch", 1, 50);
+        var secondPage = fixture.service.getBatchTraceReport("original-batch", 2, 50);
+        var emptyPage = fixture.service.getBatchTraceReport("original-batch", 3, 50);
+
+        assertEquals(53, secondPage.get("total"));
+        assertEquals(2, secondPage.get("page"));
+        assertEquals(50, secondPage.get("size"));
+        assertEquals(firstPage.get("summary"), secondPage.get("summary"));
+        assertEquals(firstPage.get("inspection"), emptyPage.get("inspection"));
+        assertEquals(71, ((Map<?, ?>)secondPage.get("inspection")).get("totalImages"));
+        assertEquals(16, ((Map<?, ?>)secondPage.get("inspection")).get("confirmedDefectCount"));
+        assertEquals(0L, ((Map<?, ?>)secondPage.get("quality")).get("pendingReview"));
+        assertEquals(1L, ((Map<?, ?>)secondPage.get("quality")).get("reviewed"));
+        var firstRecord = (DetectionTaskProgressResponse)((List<?>)firstPage.get("records")).get(0);
+        assertEquals("FORMAL_TASK", firstRecord.getTraceRole());
+        assertEquals("upload", firstRecord.getSourceTaskId());
+        assertEquals(3, ((List<?>)secondPage.get("records")).size());
+        var lastRecord = (DetectionTaskProgressResponse)((List<?>)secondPage.get("records")).get(2);
+        assertEquals("det-51", lastRecord.getTaskId());
+        assertEquals(List.of(), emptyPage.get("records"));
+    }
+
+    private static DetectionTraceQuery.Row traceRow(DetectionTask task) {
+        return new DetectionTraceQuery.Row(task, "TASK", null);
+    }
+
+    private static DetectionTask traceTask(String taskId, int images) {
+        var task = new DetectionTask();
+        task.setTaskId(taskId);
+        task.setStatus("COMPLETED");
+        task.setTotalImages(images);
+        return task;
     }
 
     @Test
