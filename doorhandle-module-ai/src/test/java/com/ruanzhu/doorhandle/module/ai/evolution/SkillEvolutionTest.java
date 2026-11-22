@@ -200,7 +200,7 @@ class SkillEvolutionTest {
         factory.setDurableContexts(contexts);
         try(var agent=(io.agentscope.harness.agent.HarnessAgent)factory.create(alice,null,null,null,null,null,scope,null,
                 "继续原任务")){
-            assertThat(agent.getSysPrompt()).contains(loaded.instructions());
+            assertThat(agent.getDelegate().getSysPrompt()).contains(loaded.instructions());
             assertThat(agent.getToolkit().getToolNames()).contains(SkillEvolutionService.LOAD);
         }
         verify(contexts).assertCheckpointReadable(alice,"session","main","logical-task");
