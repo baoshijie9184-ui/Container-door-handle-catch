@@ -10,7 +10,7 @@ import './DetectionCreationReview.css';
 const operationNames = { CHECK: '只读核对', FINALIZE: '完成原创建', ABANDON: '终止创建' };
 const formatTime = value => value ? beijingDateTime(value) || '时间未记录' : '时间未记录';
 
-export function DetectionCreationReview({ sessionId, base = '', refreshKey, onChanged }) {
+export function DetectionCreationReview({ sessionId, base = '', refreshKey, onChanged, quietUnavailable = false }) {
   const scope = JSON.stringify([sessionId, base]);
   const [snapshot, setSnapshot] = useState(null), [failure, setFailure] = useState(null), [loading, setLoading] = useState(false), [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(new Map()), [decision, setDecision] = useState(null), [lastRequest, setLastRequest] = useState(null);
@@ -79,8 +79,8 @@ export function DetectionCreationReview({ sessionId, base = '', refreshKey, onCh
       if (locked.current.get(row.commandId)?.requestId === requestId) { locked.current.delete(row.commandId); if (alive.current) setBusy(new Map(locked.current)); }
     }
   }
-  if (!sessionId || !rows.length && !error && !availability) return null;
   const compact=!!availability&&!rows.length&&lastRequest?.scope!==scope;
+  if (!sessionId || (!rows.length && !error && (!availability || (quietUnavailable && compact)))) return null;
   return <section className={'detection-transfer-reviews'+(compact?' is-unavailable':'')} aria-label="检测创建结果核对">
     {availability&&<details className="transfer-availability"><summary><FileCheck size={15} aria-hidden="true"/>检测创建核对暂不可用</summary><p role="status">{availability.message}</p><Button size="small" loading={loading} disabled={hasCurrentWrite()} onClick={refresh}>重新读取能力与状态</Button></details>}
     {!compact&&<header className="transfer-heading"><strong><FileCheck size={17} aria-hidden="true"/>检测创建结果核对</strong><Button size="small" loading={loading} disabled={hasCurrentWrite()} onClick={refresh}>刷新状态</Button></header>}

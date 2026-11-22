@@ -12,7 +12,7 @@ session={'sessionId':'workspace-session','title':'集装箱门把手检测调研
     {'id':2,'role':'assistant','messageType':'TEXT','content':'可以查看本次运行记录的工具调用与调研来源。'},
 ]}
 events=[{'type':'TOOL_STARTED' if i%2 else 'TOOL_COMPLETED','agent':'research-agent','tool':'fetch-recorded-'+str(i)} for i in range(1,11)]
-trace={'runId':'workspace-run','status':'COMPLETED','events':events}
+trace={'sessionId':session['sessionId'],'runId':'workspace-run','status':'COMPLETED','events':events}
 trace_mode='success'
 
 def reply(route,data,raw=False,status=200):route.fulfill(status=status,content_type='application/json',body=json.dumps(data if raw else {'code':200,'data':data},ensure_ascii=False))
@@ -27,7 +27,7 @@ def api(route):
         return reply(route,trace)
     if path.startswith('/api/chat-assistant/sessions/') or path=='/api/chat-assistant/session':return reply(route,session)
     if path.endswith('/agent-health'):return reply(route,{'framework':'AgentScope','mode':'CONFIRMABLE','runJournalEnabled':True,'defaultModel':'configured-default'})
-    if path=='/api/agent/workbench/capabilities':return reply(route,{'enabled':True},True)
+    if path=='/api/agent/workbench/capabilities':return reply(route,{'enabled':True,'detectionCreationReviews':False},True)
     if path.endswith('/workbench'):return reply(route,{'items':[],'files':[]},True)
     if path=='/api/agent/actions':return reply(route,[],True)
     if path=='/api/agent/commands':return reply(route,{'enabled':True,'skills':[]},True)
@@ -95,6 +95,7 @@ with sync_playwright() as p:
 
     agent=context.new_page();agent.on('pageerror',lambda error:errors.append(str(error)))
     agent.goto('http://127.0.0.1:5175/');agent.wait_for_load_state('networkidle')
+    check('React leaves passive creation-review availability out of the transcript',lambda:expect(agent.get_by_role('region',name='检测创建结果核对')).to_have_count(0))
     agent.locator('[data-sender-input]').fill('保留独立聊天草稿')
     toggle=agent.get_by_role('button',name='任务与资料',exact=True)
     toggle.press('Enter')
@@ -106,7 +107,16 @@ with sync_playwright() as p:
     capture(agent,'react-workspace-desktop')
     agent.get_by_role('button',name='更多对话操作',exact=True).press('Enter')
     check('React resource menu navigates to current session trace',lambda:expect(agent.get_by_role('link',name='执行追溯',exact=True)).to_have_attribute('href','http://127.0.0.1:5175/#/agent/trace?sessionId=workspace-session'))
-    check('React keeps MCP and memory in its resource menu',lambda:(expect(agent.get_by_role('link',name='Fetch MCP',exact=True)).to_be_visible(),expect(agent.get_by_role('link',name='个人记忆',exact=True)).to_be_visible()))
+    check('React keeps MCP and memory in its resource menu',lambda:(expect(agent.get_by_role('link',name='MCP 工具',exact=True)).to_be_visible(),expect(agent.get_by_role('link',name='个人记忆',exact=True)).to_be_visible()))
+    approvals_href=urlparse(agent.get_by_role('link',name='待确认',exact=True).get_attribute('href')).fragment
+    check('React approval navigation preserves the current conversation',lambda:ensure(approvals_href=='/agent/actions?sessionId=workspace-session','session missing from approval link'))
+    approvals=context.new_page()
+    approvals.goto('http://127.0.0.1:3011/#'+approvals_href)
+    creation_review=approvals.get_by_role('region',name='检测创建结果核对')
+    creation_review.locator('summary').click()
+    check('explicit approvals retain the disabled capability status',lambda:expect(creation_review.get_by_role('status')).to_have_text('此环境未启用此功能，可继续对话。'))
+    check('account-wide approval list remains visible',lambda:expect(approvals.get_by_role('region',name='助手操作确认')).to_be_visible())
+    approvals.close()
     models=agent.get_by_role('menuitem',name='模型与能力',exact=True)
     models.press('Enter')
     configuration=agent.get_by_role('complementary',name='模型与能力',exact=True)

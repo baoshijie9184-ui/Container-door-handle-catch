@@ -64,7 +64,7 @@ export function AgentActionList({sessionId,base='',refreshKey}) {
   <AgentActionAudit key={JSON.stringify([base,sessionId,action.actionId,action.version])} actionId={action.actionId} revision={action.version} operation={action.operation} scopeKey={sessionId} base={base} disabled={busy.has(action.actionId)}/>
  </article>;
  }
- return <><DetectionCreationReview sessionId={sessionId} base={base} refreshKey={refreshKey} onChanged={refresh}/>{(actions.length>0||error)&&<section className="agent-action-list" aria-label={title}><header><strong><ClipboardCheck size={16} aria-hidden="true"/>{title}</strong><Button size="small" aria-label="刷新" loading={loading} onClick={refresh}>刷新</Button></header>
+ return <><DetectionCreationReview sessionId={sessionId} base={base} refreshKey={refreshKey} onChanged={refresh} quietUnavailable/>{(actions.length>0||error)&&<section className="agent-action-list" aria-label={title}><header><strong><ClipboardCheck size={16} aria-hidden="true"/>{title}</strong><Button size="small" aria-label="刷新" loading={loading} onClick={refresh}>刷新</Button></header>
  {error&&<p role="alert" className="action-error">{error}</p>}
  {loading&&<p className="action-read-feedback" role="status">{actions.length ? '正在核对操作状态，当前保留上次卡片；读取完成前不能确认。' : '正在读取操作提议…'}</p>}
  {!loading&&actions.length>0&&!verified&&<p className="action-read-feedback" role="status">当前卡片尚未重新核实，请刷新后再确认。刷新不会重发业务操作。</p>}

@@ -315,13 +315,15 @@ function App() {
   ];
   const prepareQuestion = query => { setDraft(query); senderRef.current?.focus?.(); };
   const traceHref=TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'');
+  const actionsHref=ACTIONS+(threadId?'?sessionId='+encodeURIComponent(threadId):'');
   const moreActions=[
+    {key:'actions',label:<a href={actionsHref}>待确认</a>,icon:<ClipboardCheck size={15} aria-hidden="true"/>},
     ...(controlState.enabled?[{key:'task-control',label:'任务控制',icon:<List size={15} aria-hidden="true"/>}]:[]),
     {key:'trace',label:<a href={traceHref}>执行追溯</a>,icon:<ChartNoAxesCombined size={15} aria-hidden="true"/>},
     {key:'models',label:'模型与能力',icon:<Cpu size={15} aria-hidden="true"/>},
     {type:'divider'},
     {key:'skill',label:<a href={SKILLS}>技能</a>,icon:<Blocks size={15} aria-hidden="true"/>},
-    {key:'mcp',label:<a href={MCP}>Fetch MCP</a>,icon:<Plug size={15} aria-hidden="true"/>},
+    {key:'mcp',label:<a href={MCP}>MCP 工具</a>,icon:<Plug size={15} aria-hidden="true"/>},
     {key:'memory',label:<a href={MEMORIES}>个人记忆</a>,icon:<BrainCircuit size={15} aria-hidden="true"/>},
     {key:'management',label:'管理入口',children:[
       {key:'markets',label:<a href={MARKETS}>资源市场</a>,icon:<Compass size={15} aria-hidden="true"/>},
