@@ -7,10 +7,14 @@ import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
 import com.ruanzhu.doorhandle.module.ai.testsupport.CompactAgentJournalFixture;
 import com.ruanzhu.doorhandle.module.ai.testsupport.CompactMcpFixture;
 import com.ruanzhu.doorhandle.module.ai.testsupport.CompactWorkflowFixture;
+import io.agentscope.core.message.ToolResultBlock;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+import java.time.Duration;
 import java.nio.file.*;
 import java.util.*;
 import static org.assertj.core.api.Assertions.*;
@@ -88,6 +92,32 @@ class PersistentMcpConfigurationTest {
         jdbc.update("INSERT INTO agent_connector(owner_user_id,server_key,package_version,status,enabled,revision,operation_id,manifest_json,manifest_sha256,created_at,updated_at) VALUES(?,'fetch',?,'INSTALLED',TRUE,4,?,?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
             owner,FetchMcpRuntime.VERSION,operation,manifest,FetchMcpRuntime.sha(manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         return operation;
+    }
+    @Test void toolResultAndReceiptSurviveClosingOutsideTheTransportThread()throws Exception{
+        runner(false).withUserConfiguration(Scheduling.class).run(ctx->{
+            assertThat(ctx).hasNotFailed();
+            var jdbc=ctx.getBean(JdbcTemplate.class);
+            seedInstalledRegistration(jdbc,ctx.getBean(ObjectMapper.class),1);
+            var inbound=Schedulers.newSingle("mcp-inbound");
+            var runtime=ctx.getBean("fakeRuntime",FetchMcpRuntime.class);
+            var session=mock(FetchMcpRuntime.Session.class);
+            when(runtime.open(any(),any())).thenReturn(session);
+            when(session.call(any())).thenReturn(Mono.just(ToolResultBlock.text("public page")).publishOn(inbound));
+            when(session.exitEvidence()).thenReturn(Map.of("exitVerified",true,"cleanupConfirmed",true));
+            doAnswer(invocation->{
+                assertThat(Schedulers.isInNonBlockingThread()).isFalse();
+                return null;
+            }).when(session).close();
+            try{
+                var actor=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
+                var result=ctx.getBean(LocalMcpService.class).fetch(actor,null,null,Map.of("url","https://1.1.1.1/"))
+                    .block(Duration.ofSeconds(5));
+                assertThat(result.getOutput().toString()).contains("public page");
+                verify(session).close();
+                assertThat(jdbc.queryForList("SELECT outcome FROM audit_event WHERE action='EXECUTION_EXIT'",String.class))
+                    .containsExactly("REMOVED");
+            }finally{inbound.dispose();}
+        });
     }
     @Test void actualServiceAuditKeepsTypedPayloadOwnerRevisionAndPrivateDetails()throws Exception{
         runner(false).withUserConfiguration(Scheduling.class).run(ctx->{

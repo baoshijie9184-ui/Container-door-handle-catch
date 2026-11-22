@@ -196,9 +196,14 @@ public class LocalMcpService {
         var current=fresh(actor);var args=arguments(input);var row=installed(current,true);if(runId!=null)live(current,runId,callId);var semaphore=limits.computeIfAbsent(current.userId(),key->new Semaphore(2));if(!semaphore.tryAcquire())return Mono.just(ToolResultBlock.error("本人 MCP 调用数量已达上限"));
         String operation=(String)row.get("operation_id");var detail=Map.<String,Object>of("urlSha256",sha(args.get("url")),"tool",FetchMcpRuntime.TOOL);try{audit(current,"CALL","STARTED",number(row,"revision"),operation,runId,callId,detail);}catch(RuntimeException e){semaphore.release();throw e;}
         return Mono.using(()->{var session=openSession(current,row,"CALL",runId,callId);try{installed(current,true);if(runId!=null)live(current,runId,callId);return session;}catch(Exception e){closeSession(session);throw e;}},session->session.call(args).timeout(Duration.ofSeconds(30))
+                // Closing the SDK interrupts its transport threads. Receipt writes must run outside them.
+                .publishOn(Schedulers.boundedElastic())
                 .map(result->research!=null&&runId!=null?research.capture(current,runId,callId,args,result):result)
                 .doOnSuccess(result->audit(current,"CALL","ERROR".equals(Objects.toString(result.getState(),""))?"ERROR":"COMPLETED",number(row,"revision"),operation,runId,callId,detail)),this::closeSession)
-                .doOnError(e->audit(current,"CALL","ERROR",number(row,"revision"),operation,runId,callId,detail)).doOnCancel(()->audit(current,"CALL","CANCELLED",number(row,"revision"),operation,runId,callId,detail)).doFinally(signal->semaphore.release());
+                .doOnError(e->audit(current,"CALL","ERROR",number(row,"revision"),operation,runId,callId,detail))
+                .doOnCancel(()->audit(current,"CALL","CANCELLED",number(row,"revision"),operation,runId,callId,detail))
+                .doFinally(signal->semaphore.release())
+                .cancelOn(Schedulers.boundedElastic());
     }).subscribeOn(Schedulers.boundedElastic()).onErrorResume(e->Mono.just(ToolResultBlock.error(e instanceof FetchMcpRuntime.ExitUnverified?"本次 MCP 退出或清理尚未核实 请到 MCP 工具页核对 不会自动重试":e instanceof com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceStorage.QuotaExceeded?"本账号调研来源额度已满 请等待来源过期后重试":"网页 MCP 查询失败或当前用户尚未启用 请核对 MCP 状态和公开网页地址")));}
     private FetchMcpRuntime.Session openSession(AgentActor actor,Map<String,Object> row,String purpose,String run,String call)throws Exception {
         runtime.requireWritesAllowed();
