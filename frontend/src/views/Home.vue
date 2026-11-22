@@ -13,7 +13,7 @@
     <section class="action-deck" aria-label="工作台快捷入口">
       <button v-if="isSupervisor" type="button" class="focus-action" :disabled="pageLoading" @click="focusApplications">
         <span class="focus-stat">申请待办数<span><strong>{{ formatNumber(pendingApplicationCount) }}</strong>项</span></span>
-        <span class="focus-cta">查看领任务申请<AppIcon name="ArrowRight" :size="16" /></span>
+        <span class="focus-cta">员工申请审批<AppIcon name="ArrowRight" :size="16" /></span>
       </button>
       <router-link v-else class="focus-action" :to="{path:'/inspection/tasks',query:{inbox:'1',kind:nextInboxKind}}">
         <span class="focus-stat">我的任务待办<span><strong>{{ formatNumber(folderInbox) }}</strong>项</span></span>
@@ -39,27 +39,38 @@
         :title="`未更新：${failedSections.join('、')}。显示上次数据或“—”。`" />
     </div>
     <div class="dashboard-overview" :class="{ 'with-history': historicalSummary && isSupervisor, 'single-panel': !historicalSummary && !isSupervisor }">
-      <section v-if="isSupervisor" ref="taskPanel" class="quality-overview" tabindex="-1" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
+      <section v-if="isSupervisor" ref="taskPanel" class="quality-overview" tabindex="-1" aria-labelledby="quality-overview-title" :aria-busy="applicationsLoading">
         <header>
           <div class="quality-heading">
             <span class="quality-heading-icon"><AppIcon name="DocumentChecked" :size="21" /></span>
-            <div><h2 id="quality-overview-title">领任务申请</h2></div>
+            <div><h2 id="quality-overview-title">员工申请审批</h2></div>
           </div>
           <el-button text type="primary" :loading="applicationsLoading" @click="loadApplications">刷新申请</el-button>
         </header>
+        <p v-if="applicationsNotice" class="application-notice" role="status">{{ applicationsNotice }}</p>
         <el-alert v-if="applicationsError" :title="applicationsError" type="warning" :closable="false"/>
-        <p v-else-if="!pendingApplications" role="status">正在读取领任务申请…</p>
+        <p v-else-if="!pendingApplications" role="status">正在读取员工检测申请…</p>
         <div v-else-if="!pendingApplications.length" class="queue-empty">
-          <AppIcon name="CircleCheck" :size="22" /><strong>当前没有待处理的领任务申请</strong>
+          <AppIcon name="CircleCheck" :size="22" /><strong>当前没有待处理的员工检测申请</strong>
         </div>
-        <ul v-else class="application-list" aria-label="待处理的领任务申请">
-          <li v-for="row in pendingApplications" :key="row.workUnitId">
-            <div><strong>工号：{{ row.applicantUserId }}</strong><small>{{ row.imageCount }} 张图片 · {{ row.workUnitId }}</small><small v-if="row.remark">{{ row.remark }}</small></div>
-            <router-link :to="{path:'/inspection/uploads/dispatch',query:{application:row.workUnitId}}">
-              {{ row.status==='WAITING' ? '选择批次并审批' : '补选原图批次' }}
-            </router-link>
+        <ul v-else class="application-list" aria-label="待处理的员工检测申请">
+          <li v-for="row in pendingApplications" :key="row.workUnitId" :data-status="row.status">
+            <div>
+              <strong>{{ row.applicantUserId }}</strong>
+              <small>{{ row.status==='WAITING' ? '待审批' : '待补原图批次' }} · 最多 {{ row.imageCount }} 张</small>
+              <small>{{ row.workUnitId }}</small>
+              <small v-if="row.remark">{{ row.remark }}</small>
+            </div>
+            <div class="application-row-actions">
+              <router-link :to="{path:'/inspection/uploads/dispatch',query:{application:row.workUnitId}}">
+                {{ row.status==='WAITING' ? '选择批次并审批' : '补选原图批次' }}
+              </router-link>
+              <el-button v-if="row.status==='WAITING'" link type="danger" @click="rejection=row">驳回申请</el-button>
+            </div>
           </li>
         </ul>
+        <WorkUnitApplicationDecision v-if="rejection" :application="rejection" action="reject"
+          @close="rejection=null" @completed="recordRejection" @refresh="loadApplications()" />
       </section>
       <HistoricalDetectionOverview v-if="historicalSummary" :summary="historicalSummary" />
       <CollaborationTodos />
@@ -448,6 +459,7 @@ import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ChartDataDetails from '@/components/ChartDataDetails.vue'
 import HistoricalDetectionOverview from '@/components/HistoricalDetectionOverview.vue'
 import ModelImageMissRate from '@/components/ModelImageMissRate.vue'
+import WorkUnitApplicationDecision from '@/components/WorkUnitApplicationDecision.vue'
 import * as echarts from 'echarts'
 import {
   User, Monitor, Setting,
@@ -636,12 +648,20 @@ onBeforeUnmount(() => {
 // ── 数据获取 ──
 
 const taskPanel=ref(null)
-const pendingApplications=ref(null), applicationsLoading=ref(false), applicationsError=ref('')
-const pendingApplicationCount=computed(()=>pendingApplications.value?.filter(row=>row.status==='WAITING').length)
+const pendingApplications=ref(null), applicationsLoading=ref(false), applicationsError=ref(''), applicationsNotice=ref('')
+const rejection=ref(null)
+const pendingApplicationCount=computed(()=>pendingApplications.value?.length)
 let applicationRead=0
 function focusApplications() {
   taskPanel.value?.focus({preventScroll:true})
   taskPanel.value?.scrollIntoView({block:'start'})
+}
+function recordRejection(saved) {
+  pendingApplications.value=pendingApplications.value?.filter(row=>row.workUnitId!==saved.workUnitId) ?? null
+  applicationsNotice.value='已驳回申请 · '+saved.workUnitId
+  rejection.value=null
+  nextTick(()=>taskPanel.value?.focus({preventScroll:true}))
+  void loadApplications()
 }
 async function loadApplications() {
   if(!isSupervisor.value)return
@@ -657,7 +677,7 @@ async function loadApplications() {
   } catch {
     if(!disposed && read===applicationRead){
       pendingApplications.value=null
-      applicationsError.value='领任务申请暂不可读取，请刷新申请。'
+      applicationsError.value='员工检测申请暂不可读取，请刷新申请。'
     }
   } finally {
     if(!disposed && read===applicationRead)applicationsLoading.value=false
@@ -1076,9 +1096,12 @@ useResourceChanges({refresh:()=>refreshAll()})
 .action-deck > .focus-action { display:flex; flex-direction:column; min-width:0; min-height:143px; padding:18px 22px; border-radius:var(--app-radius-lg); text-decoration:none; }
 button.focus-action { border:0;cursor:pointer;text-align:left;font:inherit }
 .application-list { list-style:none;padding:0;margin:0;max-height:340px;overflow:auto }
-.application-list li { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--app-border) }
+.application-list li { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 12px;padding:10px 0;border-bottom:1px solid var(--app-border) }
 .application-list li>div { min-width:0;overflow-wrap:anywhere }.application-list small { display:block;margin-top:4px;color:var(--app-text-secondary) }
 .application-list li a { display:inline-flex;align-items:center;min-height:44px;color:var(--app-primary);font-weight:600;flex-shrink:0 }
+.application-row-actions { display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px; }
+.application-row-actions :deep(.el-button) { min-height:44px; }
+.application-notice { margin:0 0 8px;color:var(--app-text-secondary); }
 .work-entry { min-width:0;display:grid;align-content:center;background:var(--app-surface,#fff);border:1px solid var(--app-border);border-radius:var(--app-radius-lg) }
 .work-entry :deep(.inspection-flow) { border:0;padding:12px 16px 6px }.work-entry :deep(.flow-steps a){padding:5px 4px;gap:6px}
 .work-tools { display:flex;flex-wrap:wrap;gap:6px 20px;margin:5px 16px 0;padding:9px 3px;border-top:1px solid var(--app-border) }

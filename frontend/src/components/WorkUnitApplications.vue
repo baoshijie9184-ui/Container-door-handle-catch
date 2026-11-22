@@ -1,24 +1,34 @@
 <template>
   <section class="applications app-panel" aria-labelledby="my-applications" :aria-busy="loading">
     <header>
-      <h2 id="my-applications">我的领任务申请</h2>
+      <h2 id="my-applications">我的检测申请</h2>
       <div class="application-actions">
         <el-button :loading="loading" @click="load()">刷新申请</el-button>
-        <el-button type="primary" @click="open">申请领任务</el-button>
+        <el-button type="primary" @click="open">申请检测任务</el-button>
       </div>
     </header>
     <p v-if="notice" role="status">{{ notice }}</p>
     <el-alert v-if="loadError" :title="loadError" type="warning" :closable="false" role="alert" />
     <template v-else>
       <ul v-if="visibleRows.length">
-        <li v-for="row in visibleRows" :key="row.workUnitId">
-          <span><strong>{{ statusLabel(row) }}</strong><small>{{ row.workUnitId }} · 最多 {{ row.imageCount }} 张</small></span>
+        <li v-for="row in visibleRows" :key="row.workUnitId" :data-status="row.status">
+          <span>
+            <strong>{{ statusLabel(row) }}</strong><small>{{ row.workUnitId }} · 最多 {{ row.imageCount }} 张</small>
+            <small v-if="row.status==='REJECTED' && row.decisionReason">驳回原因 {{ row.decisionReason }}</small>
+          </span>
           <router-link v-if="linkedTask(row)" :to="{path:'/inspection/tasks',query:{inbox:'0',keyword:row.batchId}}">查看已派任务</router-link>
+          <el-button v-else-if="row.status==='WAITING' && needsDetectionBatch(row)" link type="danger"
+            @click="withdrawal=row">撤回申请</el-button>
         </li>
       </ul>
-      <p v-else-if="loaded">{{ keyword ? '没有匹配的领任务申请' : '暂无领任务申请' }}</p>
+      <p v-else-if="loaded">{{ keyword ? '没有匹配的检测申请' : '暂无检测申请' }}</p>
+      <el-button v-if="!keyword && rows.length>5" link type="primary" :aria-expanded="showAll" @click="showAll=!showAll">
+        {{ showAll ? '收起历史申请' : '查看全部申请（'+rows.length+'）' }}
+      </el-button>
     </template>
-    <el-dialog v-model="dialog" title="申请领任务" width="min(460px, 94vw)" destroy-on-close
+    <WorkUnitApplicationDecision v-if="withdrawal" :application="withdrawal" action="withdraw"
+      @close="withdrawal=null" @completed="recordWithdrawal" @refresh="load()" />
+    <el-dialog v-model="dialog" title="申请检测任务" width="min(460px, 94vw)" destroy-on-close
       :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving">
       <el-form label-position="top" @submit.prevent="apply">
         <el-form-item label="最多处理图片数" for="application-image-count">
@@ -43,6 +53,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { captureAccountRequest } from '@/api/request'
 import { useUserStore } from '@/stores/user'
+import { needsDetectionBatch } from '@/utils/workUnitApplications'
+import WorkUnitApplicationDecision from './WorkUnitApplicationDecision.vue'
 
 const props = defineProps({ keyword: {type:String, default:''} })
 const endpoint = '/api/detection/tasks/work-units'
@@ -51,16 +63,17 @@ const user = useUserStore()
 const rows = ref([]), loaded = ref(false), loading = ref(false), loadError = ref('')
 const dialog = ref(false), saving = ref(false), saveError = ref(''), notice = ref('')
 const imageCount = ref(1), remark = ref(''), submitted = ref(null)
-let timer, disposed = false, reading = false
+const withdrawal = ref(null), showAll = ref(false)
+let timer, disposed = false, reading = false, read = 0
 
 const visibleRows = computed(() => {
   const matching = props.keyword ? rows.value.filter(row => row.workUnitId === props.keyword) : rows.value
-  return matching.slice(0, 5)
+  return showAll.value || props.keyword ? matching : matching.slice(0, 5)
 })
 const linkedTask = row => /^det_folder_[a-f0-9]{32}$/.test(row.batchId || '')
 function statusLabel(row) {
   if (linkedTask(row)) return '已派单'
-  return {WAITING:'待主管审批',ASSIGNED:'待主管指定原图',PROCESSING:'处理中',SUBMITTED:'已提交'}[row.status] || row.status
+  return {WAITING:'待主管审批',ASSIGNED:'待主管指定原图',PROCESSING:'处理中',SUBMITTED:'已提交',REJECTED:'已驳回',WITHDRAWN:'已撤回'}[row.status] || row.status
 }
 function open() {
   imageCount.value = 1
@@ -70,22 +83,29 @@ function open() {
   dialog.value = true
 }
 async function load(quiet = false) {
-  if (reading || disposed) return
+  if (disposed || (quiet && reading)) return
+  const generation = ++read
   reading = true
   loading.value = !quiet || !loaded.value
   try {
     const {data} = await api.get(endpoint + '/mine')
     if (data?.code !== 200 || !Array.isArray(data.data)) throw new Error('申请记录读取失败')
-    if (disposed) return
+    if (disposed || generation !== read) return
     rows.value = data.data.filter(row => row.applicantUserId === user.username)
     loaded.value = true
     loadError.value = ''
   } catch {
-    if (!disposed && (!quiet || !loaded.value)) loadError.value = '申请记录暂不可读取，请刷新。'
+    if (!disposed && generation === read && (!quiet || !loaded.value)) loadError.value = '申请记录暂不可读取，请刷新。'
   } finally {
-    reading = false
-    if (!disposed) loading.value = false
+    if (generation === read) reading = false
+    if (!disposed && generation === read) loading.value = false
   }
+}
+function recordWithdrawal(saved) {
+  rows.value = rows.value.map(row => row.workUnitId === saved.workUnitId ? saved : row)
+  notice.value = '申请已撤回 · ' + saved.workUnitId
+  withdrawal.value = null
+  void load()
 }
 async function apply() {
   if (saving.value || !imageCount.value) return
@@ -108,7 +128,7 @@ async function apply() {
 }
 onMounted(() => {
   load()
-  timer = window.setInterval(() => { if (!dialog.value && !document.hidden) load(true) }, 6000)
+  timer = window.setInterval(() => { if (!dialog.value && !withdrawal.value && !document.hidden) load(true) }, 6000)
 })
 onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
 </script>

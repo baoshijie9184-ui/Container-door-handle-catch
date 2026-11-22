@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.detection.controller;
 
 import com.ruanzhu.doorhandle.common.Result;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDecisionRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDispatchRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitImageBindRequest;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnitImage;
@@ -20,6 +21,12 @@ public class DetectionWorkUnitSupervisorController {
 
     @GetMapping("/pending") @PreAuthorize("hasAnyRole('SUPERVISOR','ADMIN')")
     public Result<List<DetectionWorkUnit>> pending() { return Result.success(service.listActive()); }
+
+    @PostMapping("/{workUnitId}/reject") @PreAuthorize("hasAnyRole('SUPERVISOR','ADMIN')")
+    public Result<DetectionWorkUnit> reject(@PathVariable String workUnitId,
+                                            @Valid @RequestBody DetectionWorkUnitDecisionRequest request) {
+        return Result.success(service.reject(workUnitId, request));
+    }
 
     @PostMapping("/{workUnitId}/dispatch") @PreAuthorize("hasAnyRole('SUPERVISOR','ADMIN')")
     public Result<DetectionWorkUnit> dispatch(@PathVariable String workUnitId, @Valid @RequestBody DetectionWorkUnitDispatchRequest request) {

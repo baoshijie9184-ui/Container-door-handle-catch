@@ -12,14 +12,13 @@
       </nav>
     </header>
     <InspectionFlowNav class="board-flow" />
-    <WorkUnitApplications v-if="!supervisor && !uploadsOnly && !inboxKind && !assignedTaskId && (!keyword || keyword.startsWith('WU-'))"
-      :key="user.accountContext" :keyword="keyword" />
+    <WorkUnitApplications v-if="showApplications" :key="user.accountContext" :keyword="applicationKeyword" />
     <div v-if="applicationId" class="application-dispatch" aria-live="polite">
       <div v-if="application">
-        <strong>{{ application.status==='WAITING' ? '为领任务申请选择原图批次' : '为已批准的申请补选原图批次' }}</strong>
+        <strong>{{ application.status==='WAITING' ? '为检测申请选择原图批次' : '为已批准的申请补选原图批次' }}</strong>
         <p>{{ application.applicantUserId }} · {{ application.workUnitId }} · 最多 {{ application.imageCount }} 张</p>
       </div>
-      <p v-else>{{ applicationError || '正在读取领任务申请…' }}</p>
+      <p v-else>{{ applicationError || '正在读取检测申请…' }}</p>
       <router-link to="/home">返回工作台</router-link>
     </div>
     <section class="board-panel" :aria-label="uploadsOnly ? '上传记录' : '任务列表'">
@@ -209,6 +208,9 @@ const listPhases=computed(()=>inboxKind.value==='verification' ? {} : inboxKind.
 const phase=computed(()=>Object.hasOwn(listPhases.value,route.query.phase) ? route.query.phase : '')
 const keyword=computed(()=>typeof route.query.keyword==='string' ? route.query.keyword : '')
 const assignedTaskId=computed(()=>!uploadsOnly.value && typeof route.query.assignedTaskId==='string' ? route.query.assignedTaskId : '')
+const applicationKeyword=computed(()=>keyword.value.startsWith('WU-') ? keyword.value : '')
+const showApplications=computed(()=>user.isAuthenticated && user.role==='INSPECTOR' && !uploadsOnly.value && !assignedTaskId.value
+  && (inboxKind.value==='detection' || (!inboxKind.value && (!keyword.value || applicationKeyword.value))))
 const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number(route.query.page)>0 ? Number(route.query.page) : 1)
 const query=ref(''),uploaderInput=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
 const boardIcon=computed(()=>uploadsOnly.value ? 'FolderOpened' : verificationList.value || inboxKind.value==='verification' ? 'CircleCheck' : 'Tickets')
@@ -295,7 +297,7 @@ function dispatchUnavailable(row){
   if(row.taskType==='SINGLE')return '单图检测'
   if(Number(row.uploadPending))return '等待上传确认'
   if(!isOssFolder(row))return '未关联可派发的原图目录'
-  if(applicationId.value && !application.value)return '请先读取领任务申请'
+  if(applicationId.value && !application.value)return '请先读取检测申请'
   if(application.value && row.totalImages>application.value.imageCount)return '超过申请的图片数量'
   return ''
 }

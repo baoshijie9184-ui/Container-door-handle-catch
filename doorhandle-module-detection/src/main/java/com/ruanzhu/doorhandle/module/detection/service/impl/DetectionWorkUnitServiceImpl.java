@@ -2,7 +2,9 @@ package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDecisionRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDispatchRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitImageBindRequest;
@@ -26,9 +28,13 @@ import java.util.UUID;
 public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
     private final DetectionWorkUnitMapper mapper;
     private final DetectionWorkUnitImageMapper imageMapper;
+    private final BusinessUserDirectory users;
 
     @Override @Transactional
-    public DetectionWorkUnit apply(DetectionWorkUnitApplyRequest request, String userId) {
+    public DetectionWorkUnit apply(DetectionWorkUnitApplyRequest request) {
+        var actor = users.authenticated();
+        requireApplicantRole(actor);
+        String userId = actor.username();
         int count = request.getImageCount() == null ? 5000 : request.getImageCount();
         if (count < 1 || count > 5000) throw new IllegalArgumentException("单个工作单元图片数量必须在 1-5000 之间");
         DetectionWorkUnit unit = new DetectionWorkUnit();
@@ -41,16 +47,92 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
         unit.setStatus("WAITING"); unit.setVersion(0); unit.setCreatedAt(LocalDateTime.now()); unit.setUpdatedAt(LocalDateTime.now());
         if (requestId == null) {
             mapper.insert(unit);
+            lockEligibleApplicant(actor);
             return unit;
         }
         mapper.insertApplication(unit);
         var saved = mapper.lock(unit.getWorkUnitId());
+        lockEligibleApplicant(actor);
         if (!userId.equals(saved.getApplicantUserId()) || !Objects.equals(unit.getImageCount(), saved.getImageCount())
                 || !Objects.equals(unit.getStrategy(), saved.getStrategy()) || !Objects.equals(unit.getModelVersion(), saved.getModelVersion())
                 || !Objects.equals(unit.getRemark(), saved.getRemark())) {
             throw new BusinessException(409, "申请编号已用于其他内容，请重新发起申请");
         }
         return saved;
+    }
+
+    @Override @Transactional
+    public DetectionWorkUnit reject(String workUnitId, DetectionWorkUnitDecisionRequest request) {
+        return decide(workUnitId, request, "REJECTED");
+    }
+
+    @Override @Transactional
+    public DetectionWorkUnit withdraw(String workUnitId, DetectionWorkUnitDecisionRequest request) {
+        return decide(workUnitId, request, "WITHDRAWN");
+    }
+
+    private DetectionWorkUnit decide(String workUnitId, DetectionWorkUnitDecisionRequest request, String status) {
+        var actor = users.authenticated();
+        boolean employeeWithdrawal = "WITHDRAWN".equals(status);
+        if (employeeWithdrawal) requireApplicantRole(actor);
+        else requireSupervisor(actor);
+        if (request.expectedVersion() == null || request.expectedVersion() < 0 || request.requestId() == null) {
+            throw new BusinessException(400, "请核对申请版本和操作编号");
+        }
+        String reason = request.reason() == null || request.reason().isBlank() ? null : request.reason().strip();
+        if (!employeeWithdrawal && reason == null) throw new BusinessException(400, "请输入驳回原因");
+        if (reason != null && reason.length() > 1000) throw new BusinessException(400, "原因不能超过1000字");
+
+        var unit = mapper.lock(workUnitId);
+        if (unit == null || "OSS_FOLDER".equals(unit.getStrategy())) throw new BusinessException(404, "检测申请不存在");
+        // Folder approval and legacy dispatch also lock this row before changing its status.
+        if (employeeWithdrawal) {
+            if (!actor.username().equals(unit.getApplicantUserId())) {
+                throw new BusinessException(403, "只能撤回本人提交的检测申请");
+            }
+            lockEligibleApplicant(actor);
+        } else {
+            requireSupervisor(users.lockCurrent(actor.userId(), actor.username()));
+        }
+        String requestId = request.requestId().toString();
+        if (requestId.equals(unit.getDecisionRequestId())) {
+            if (status.equals(unit.getStatus()) && Objects.equals(actor.userId(), unit.getDecisionActorUserId())
+                    && unit.getVersion() - 1 == request.expectedVersion() && Objects.equals(reason, unit.getDecisionReason())) {
+                return unit;
+            }
+            throw new BusinessException(409, "操作编号已用于其他决定，请刷新申请后核对");
+        }
+        checkVersion(unit, request.expectedVersion());
+        if (!"WAITING".equals(unit.getStatus()) || unit.getAssigneeUserId() != null
+                || unit.getSourceBatchId() != null || unit.getBatchId() != null) {
+            throw new BusinessException(409, "仅待审批且尚未派单的申请可驳回或撤回");
+        }
+        unit.setStatus(status);
+        unit.setDecisionRequestId(requestId);
+        unit.setDecisionActorUserId(actor.userId());
+        unit.setDecisionReason(reason);
+        unit.setUpdatedAt(LocalDateTime.now());
+        if (mapper.recordApplicationDecision(unit, request.expectedVersion()) != 1) {
+            throw new BusinessException(409, "检测申请已变化，请刷新后重试");
+        }
+        unit.setVersion(request.expectedVersion() + 1);
+        return unit;
+    }
+
+    private void requireApplicantRole(BusinessUserDirectory.Identity actor) {
+        if (actor.supervisor()) throw new BusinessException(403, "仅检测员工可提交或撤回检测申请");
+    }
+
+    private void requireSupervisor(BusinessUserDirectory.Identity actor) {
+        if (!actor.supervisor()) throw new BusinessException(403, "仅主管可驳回检测申请");
+    }
+
+    private void lockEligibleApplicant(BusinessUserDirectory.Identity actor) {
+        try {
+            users.lockDetectionEmployee(actor.userId(), actor.username());
+        } catch (SecurityException denied) {
+            throw new BusinessException(403, "当前账号不具备在岗检测员工资格");
+        }
     }
 
     @Override public List<DetectionWorkUnit> listMine(String userId) { return mapper.findMine(userId); }

@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.detection.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 import java.time.LocalDateTime;
 
@@ -22,6 +23,9 @@ public class DetectionWorkUnit {
     private String modelVersion;
     private Integer version;
     private String remark;
+    @JsonIgnore private String decisionRequestId;
+    @JsonIgnore private Long decisionActorUserId;
+    private String decisionReason;
     private LocalDateTime submittedAt;
     private LocalDateTime assignedAt;
     private LocalDateTime completedAt;

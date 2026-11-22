@@ -1,6 +1,23 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
-const { readFrontendFile, readProjectFile } = require('./helpers/project-source.cjs')
+const { importFrontendModule, readFrontendFile, readProjectFile } = require('./helpers/project-source.cjs')
+
+test('application approvals include pending and approved requests without a bound batch', async () => {
+  const { needsDetectionBatch } = await importFrontendModule('src', 'utils', 'workUnitApplications.js')
+  const pending = {
+    workUnitId: 'WU-' + 'a'.repeat(32), strategy: 'UNDETECTED_ONLY', status: 'WAITING',
+    applicantUserId: 'DET-0001', assigneeUserId: null, sourceBatchId: null, batchId: null
+  }
+  const approved = { ...pending, status: 'ASSIGNED', assigneeUserId: pending.applicantUserId }
+  const projections = [pending, approved,
+    { ...approved, sourceBatchId: 'upload-1' },
+    { ...approved, batchId: 'det_folder_1' },
+    { ...approved, assigneeUserId: 'another-inspector' },
+    { ...pending, strategy: 'OSS_FOLDER' },
+    { ...pending, status: 'REJECTED' },
+    { ...pending, status: 'WITHDRAWN' }]
+  assert.deepEqual(projections.filter(needsDetectionBatch), [pending, approved])
+})
 
 test('tests\\detection-category-contract.test.cjs', () => {
   const imageDetectionSource = readFrontendFile('src', 'views', 'ImageDetection.vue')

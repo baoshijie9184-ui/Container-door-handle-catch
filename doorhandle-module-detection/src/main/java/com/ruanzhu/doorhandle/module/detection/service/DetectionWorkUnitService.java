@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.detection.service;
 
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDecisionRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDispatchRequest;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnit;
@@ -9,7 +10,9 @@ import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitIm
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnitImage;
 
 public interface DetectionWorkUnitService {
-    DetectionWorkUnit apply(DetectionWorkUnitApplyRequest request, String userId);
+    DetectionWorkUnit apply(DetectionWorkUnitApplyRequest request);
+    DetectionWorkUnit reject(String workUnitId, DetectionWorkUnitDecisionRequest request);
+    DetectionWorkUnit withdraw(String workUnitId, DetectionWorkUnitDecisionRequest request);
     List<DetectionWorkUnit> listMine(String userId);
     List<DetectionWorkUnit> listActive();
     DetectionWorkUnit submit(String workUnitId, DetectionWorkUnitSubmitRequest request, String userId);

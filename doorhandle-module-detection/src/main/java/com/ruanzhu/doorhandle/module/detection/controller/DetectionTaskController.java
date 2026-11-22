@@ -20,6 +20,7 @@ import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionBatchPrecheckService;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionWorkUnitService;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDecisionRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnit;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -38,6 +39,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.util.List;
 import java.util.Map;
@@ -55,8 +57,16 @@ public class DetectionTaskController {
     private final DetectionWorkUnitService detectionWorkUnitService;
 
     @PostMapping("/work-units/apply")
-    public Result<DetectionWorkUnit> applyWorkUnit(@Valid @RequestBody DetectionWorkUnitApplyRequest request, Authentication authentication) {
-        return Result.success(detectionWorkUnitService.apply(request, currentUser(authentication)));
+    @PreAuthorize("hasRole('INSPECTOR')")
+    public Result<DetectionWorkUnit> applyWorkUnit(@Valid @RequestBody DetectionWorkUnitApplyRequest request) {
+        return Result.success(detectionWorkUnitService.apply(request));
+    }
+
+    @PostMapping("/work-units/{workUnitId}/withdraw")
+    @PreAuthorize("hasRole('INSPECTOR')")
+    public Result<DetectionWorkUnit> withdrawWorkUnit(@PathVariable String workUnitId,
+                                                     @Valid @RequestBody DetectionWorkUnitDecisionRequest request) {
+        return Result.success(detectionWorkUnitService.withdraw(workUnitId, request));
     }
 
     @GetMapping("/work-units/mine")

@@ -60,4 +60,24 @@ class BusinessUserDirectoryImplTest {
         assertThatThrownBy(()->directory.lockCurrent(3,"boss")).isInstanceOf(SecurityException.class);
         verify(eligibility,times(2)).lockCurrent(3,"boss");verifyNoInteractions(mapper);
     }
+
+    @Test void detectionApplicationsRequireLockedPersonnelEligibilityInLegacyMode() {
+        var users = mock(UserMapper.class);
+        var directory = new BusinessUserDirectoryImpl(users);
+        var eligibility = mock(com.ruanzhu.doorhandle.module.system.service.LoginEligibilityService.class);
+        directory.eligibility(eligibility, new com.ruanzhu.doorhandle.module.system.security.LoginSessionProperties());
+        var user = new User();
+        user.setId(7L);
+        user.setUsername("DET-0001");
+        when(eligibility.lockCurrent(7, "DET-0001"))
+                .thenReturn(new com.ruanzhu.doorhandle.module.system.service.LoginEligibilityService.Eligible(user, "INSPECTOR"));
+        assertThatCode(() -> directory.lockDetectionEmployee(7, "DET-0001")).doesNotThrowAnyException();
+        when(eligibility.lockCurrent(7, "DET-0001"))
+                .thenThrow(new org.springframework.security.authentication.DisabledException("inactive personnel"));
+        assertThatThrownBy(() -> directory.lockDetectionEmployee(7, "DET-0001")).isInstanceOf(SecurityException.class);
+        doReturn(new com.ruanzhu.doorhandle.module.system.service.LoginEligibilityService.Eligible(user, "SUPERVISOR"))
+                .when(eligibility).lockCurrent(7, "DET-0001");
+        assertThatThrownBy(() -> directory.lockDetectionEmployee(7, "DET-0001")).isInstanceOf(SecurityException.class);
+        verifyNoInteractions(users);
+    }
 }

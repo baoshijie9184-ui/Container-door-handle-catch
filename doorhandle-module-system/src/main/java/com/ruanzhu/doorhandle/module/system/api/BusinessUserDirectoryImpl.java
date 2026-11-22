@@ -68,6 +68,17 @@ public class BusinessUserDirectoryImpl implements BusinessUserDirectory,com.ruan
         if(sessions!=null&&sessions.isEnabled())return eligible(userId,username,true);
         return identity(users.selectOne(publicFields().eq("id",userId).last("FOR SHARE")),userId,username);
     }
+    @Override
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void lockDetectionEmployee(long userId, String username) {
+        try {
+            if (!"INSPECTOR".equals(eligibility.lockCurrent(userId, username).role())) {
+                throw new SecurityException("仅在岗检测员工可操作检测申请");
+            }
+        } catch (org.springframework.security.core.AuthenticationException denied) {
+            throw new SecurityException("当前账号不具备在岗检测员工资格", denied);
+        }
+    }
     public Identity current(long userId, String username) {
         if(sessions!=null&&sessions.isEnabled())return eligible(userId,username,false);
         var user = users.selectOne(publicFields().eq("id",userId));
