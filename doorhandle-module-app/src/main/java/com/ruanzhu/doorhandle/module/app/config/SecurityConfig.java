@@ -5,6 +5,7 @@ import com.ruanzhu.doorhandle.module.system.security.JwtAuthenticationFilter;
 import jakarta.servlet.DispatcherType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -32,6 +33,14 @@ public class SecurityConfig implements WebMvcConfigurer {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final AppCorsProperties corsProperties;
+
+    @Bean
+    FilterRegistrationBean<JwtAuthenticationFilter> jwtServletRegistration() {
+        // Only the business security chain should interpret a Bearer token as a JWT.
+        var registration = new FilterRegistrationBean<>(jwtAuthenticationFilter);
+        registration.setEnabled(false);
+        return registration;
+    }
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
