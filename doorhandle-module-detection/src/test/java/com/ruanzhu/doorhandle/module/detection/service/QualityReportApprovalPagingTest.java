@@ -23,7 +23,7 @@ class QualityReportApprovalPagingTest {
                 (id, username) -> new BusinessUserDirectory.Identity(id, username, id == 9),
                 mock(DetectionTaskAccessPolicy.class), new ObjectMapper());
         var where = "r.owner_user_id<>:owner AND r.status=:status";
-        var filters = Map.of("owner", 9L, "username", "supervisor", "status", "SUBMITTED");
+        Map<String, Object> filters = Map.of("owner", 9L, "username", "supervisor", "status", "SUBMITTED");
         when(repository.list(where, filters, 1, 5)).thenReturn(List.of());
         when(repository.count(where, filters)).thenReturn(7L);
 

@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.detection.service.detection;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionQualityAction;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
@@ -16,14 +17,13 @@ public final class DetectionQualityWorkflow {
 
     private DetectionQualityWorkflow() {}
 
-    public static List<DetectionQualityAction> actions(DetectionTask task) {
+    public static List<DetectionQualityAction> actions(DetectionTask task, ObjectMapper json) {
         return List.of(
                 hint("ASSIGN", true, assignmentReason(task)),
                 hint("REVIEW", false, reviewReason(task)),
                 hint("DISPOSE", false, dispositionReason(task)),
                 hint("SUBMIT_REWORK", false, reworkReason(task)),
-                hint("RECHECK", false, recheckRequired(task) && (ready(task) || "FAILED".equals(task.getStatus()))
-                        ? "" : "仅待复检任务可启动复检"),
+                hint("RECHECK", false, recheckReason(task,json)),
                 hint("ARCHIVE", true, archiveReason(task)));
     }
 
@@ -37,6 +37,13 @@ public final class DetectionQualityWorkflow {
 
     public static boolean recheckRequired(DetectionTask task) {
         return "RECHECK_REQUIRED".equals(task.getFlowStatus());
+    }
+
+    private static String recheckReason(DetectionTask task, ObjectMapper json) {
+        if (!recheckRequired(task) || !(ready(task) || "FAILED".equals(task.getStatus()))) {
+            return "仅待复检任务可启动复检";
+        }
+        return value(DetectionRetryPolicy.originalImageEvidenceReason(task.getOriginalImageKeysJson(),json));
     }
 
     private static String value(String value) {

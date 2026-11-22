@@ -35,7 +35,10 @@
       <template v-if="row.listPhase === 'FOLLOW_UP'">
         <template v-if="canOperateQuality">
           <router-link v-if="row.flow === 'REWORK_REQUIRED'" class="next-action" :to="actionLink(row.taskId, 'rework')">登记返工结果</router-link>
-          <el-button v-else-if="row.flow === 'RECHECK_REQUIRED'" type="primary" size="small" :disabled="busy" @click="emit('recheck', row)">启动复检</el-button>
+          <template v-else-if="row.flow === 'RECHECK_REQUIRED'">
+            <el-button type="primary" size="small" :disabled="busy || !!row.recheckBlockedReason" @click="emit('recheck', row)">启动复检</el-button>
+            <small v-if="row.recheckBlockedReason" class="action-note">{{ row.recheckBlockedReason }}</small>
+          </template>
           <router-link v-else-if="row.flow === 'HOLD' || row.flow === 'CONFIRMED'" class="next-action"
             :to="actionLink(row.taskId, 'disposition')">{{ row.flow === 'HOLD' ? '处理暂挂' : '安排复检' }}</router-link>
         </template>

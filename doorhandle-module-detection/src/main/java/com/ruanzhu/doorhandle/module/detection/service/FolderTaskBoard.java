@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.detection.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.agent.AgentUserDirectory;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
@@ -13,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionRetryPolicy;
 import com.ruanzhu.doorhandle.module.detection.service.detection.UploadFolders;
 import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionUploadMetadataStore;
 import org.springframework.stereotype.Service;
@@ -40,24 +42,13 @@ public class FolderTaskBoard {
     private final com.ruanzhu.doorhandle.module.infra.service.OssStorageService uploadStorage;
     private final DetectionUploadMetadataStore uploadMetadata;
     private final DetectionWorkUnitAudit workUnitAudit;
+    private final ObjectMapper json;
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
 
     private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
     private static final String UPLOAD_TYPES = "t.task_type IN ('BATCH','BATCH_DIRECT')";
-    // A dispatched folder is the formal task. Keep the upload itself in its history.
-    // An explicit link wins; older assignments are matched by the exact non-empty OSS prefix.
-    private static final String FORMAL_VERIFICATION_TASK = """
-        SELECT f.task_id FROM detection_task f
-        JOIN detection_work_unit fw ON fw.work_unit_id=f.task_id COLLATE utf8mb4_0900_ai_ci
-          AND fw.strategy='OSS_FOLDER' AND COALESCE(fw.assignee_user_id,'')<>''
-        WHERE t.task_type IN ('BATCH','BATCH_DIRECT') AND f.task_type='OSS_FOLDER' AND f.status<>'CANCELLED'
-          AND (EXISTS (SELECT 1 FROM detection_work_unit a WHERE a.batch_id=fw.work_unit_id
-                    AND a.source_batch_id=t.task_id COLLATE utf8mb4_0900_ai_ci)
-            OR (COALESCE(t.source_oss_prefix,'')<>'' AND BINARY t.source_oss_prefix=BINARY f.source_oss_prefix
-                AND NOT EXISTS (SELECT 1 FROM detection_work_unit a WHERE a.batch_id=fw.work_unit_id
-                               AND COALESCE(a.source_batch_id,'')<>'')))
-        """;
-    private static final String FORMAL_VERIFICATION_ONLY = "NOT EXISTS (" + FORMAL_VERIFICATION_TASK + ")";
+    private static final String FORMAL_VERIFICATION_TASK = BusinessDetectionTasks.dispatchedFolderForUpload("t.");
+    private static final String FORMAL_VERIFICATION_ONLY = BusinessDetectionTasks.verificationTaskFilter("t.");
     private static final Set<String> BOARD_PHASES = Set.of("READY","DETECTING","VERIFYING","DONE","FAILED","MODEL_DONE");
     private static final Map<String,Set<String>> SUPERVISOR_LISTS = Map.of(
             "detection", Set.of("UPLOADING","READY","DETECTING","FAILED","CANCELLED","MODEL_DONE"),
@@ -89,6 +80,7 @@ public class FolderTaskBoard {
         t.task_id AS taskId,t.task_type AS taskType,t.image_folder_name AS folder,t.source_oss_prefix AS prefix,
         CAST(t.version AS CHAR) AS mutationVersion,
         t.model_version AS model,t.status AS modelStatus,t.flow_status AS flow,t.review_status AS reviewStatus,
+        CASE WHEN t.flow_status='RECHECK_REQUIRED' THEN t.original_image_keys_json END AS recheckOriginalKeys,
         t.total_images AS totalImages,t.processed_images AS processedImages,t.failed_images AS failedImages,
         t.assignee AS qualityAssignee,t.reviewer AS qualityOperator,t.reviewed_at AS reviewedAt,
         w.assigned_user_name AS detector,w.version AS assignmentVersion,
@@ -157,6 +149,12 @@ public class FolderTaskBoard {
         }
         var result = readPage(columns,SOURCE,where,args,page,size);
         populateStageNames(result.items());
+        for (var row : result.items()) {
+            var originalKeys = (String)row.remove("recheckOriginalKeys");
+            if ("RECHECK_REQUIRED".equals(row.get("flow"))) {
+                row.put("recheckBlockedReason", DetectionRetryPolicy.originalImageEvidenceReason(originalKeys,json));
+            }
+        }
         return result;
     }
 
@@ -211,8 +209,10 @@ public class FolderTaskBoard {
             +permitted+"t.source_oss_prefix END AS prefix, "+permitted+PHASE+" END AS phase, "
             +permitted+LIST_PHASE+" END AS listPhase, "+permitted+"t.status END AS modelStatus, "
             +permitted+"t.review_status END AS reviewStatus, "
-            +permitted+"t.processed_images END AS processedImages, "+permitted+"t.failed_images END AS failedImages, "
-            +permitted+"("+FORMAL_VERIFICATION_TASK+" ORDER BY f.id DESC LIMIT 1) END AS formalVerificationTaskId";
+            +permitted+"t.processed_images END AS processedImages, "+permitted+"t.failed_images END AS failedImages";
+        if (actor.supervisor()) {
+            columns += ", "+permitted+"("+FORMAL_VERIFICATION_TASK+" ORDER BY f.id DESC LIMIT 1) END AS formalVerificationTaskId";
+        }
         var result=readPage(columns," FROM detection_task t",where,args,page,size);
         populateUploaderLabels(result.items());
         for (var row : result.items()) {

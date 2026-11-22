@@ -636,6 +636,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .orderByDesc(DetectionTask::getCreatedAt);
         applyOwnerFilter(wrapper);
         wrapper.apply(BusinessDetectionTasks.FILTER);
+        wrapper.apply(BusinessDetectionTasks.verificationTaskFilter("detection_task."));
         applyQualityQueueFilter(wrapper, normalizedQueue);
 
         detectionTaskMapper.selectPage(taskPage, wrapper);
@@ -1515,7 +1516,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         var authentication=SecurityContextHolder.getContext().getAuthentication();
         boolean supervisor=accessPolicy.isAdmin(authentication);
         boolean quality=supervisor||accessPolicy.canOperateQuality(task,authentication);
-        return DetectionQualityWorkflow.actions(task).stream().map(action -> {
+        return DetectionQualityWorkflow.actions(task,objectMapper).stream().map(action -> {
             if(action.supervisorRequired()?supervisor:quality)return action;
             return new com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionQualityAction(
                     action.action(),false,action.supervisorRequired(),action.supervisorRequired()

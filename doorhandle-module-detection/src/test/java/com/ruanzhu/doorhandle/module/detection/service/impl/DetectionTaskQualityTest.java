@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -409,6 +411,23 @@ class DetectionTaskQualityTest {
         assertEquals(1, records.size());
         assertEquals("det_queue", records.get(0).getTaskId());
         assertEquals("PENDING_REVIEW", records.get(0).getFlowStatus());
+    }
+
+    @Test
+    void recheckWithoutOriginalImagesShowsTheSameBlockerBeforeAndDuringMutation() {
+        var task = new DetectionTask();
+        task.setTaskId("det_legacy_recheck");
+        task.setStatus("COMPLETED");
+        task.setFlowStatus("RECHECK_REQUIRED");
+        when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
+
+        var action = fixture.service.getTaskProgress(task.getTaskId()).getQualityActions().stream()
+                .filter(hint -> "RECHECK".equals(hint.action())).findFirst().orElseThrow();
+        assertFalse(action.stateAllowed());
+        assertTrue(action.blockedReason().contains("原图清单"));
+        var rejected = assertThrows(BusinessException.class, () -> fixture.service.retryTask(task.getTaskId()));
+        assertEquals(action.blockedReason(), rejected.getMessage());
+        verify(fixture.detectionTaskMapper, Mockito.never()).resetForRetry(any());
     }
 
     @Test
