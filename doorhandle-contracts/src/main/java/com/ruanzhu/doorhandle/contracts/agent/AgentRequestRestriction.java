@@ -35,6 +35,8 @@ public enum AgentRequestRestriction {
     private static final Pattern TERMINAL_EXPLANATION = Pattern.compile(
             "^(?:请\\s*)?(?:解释|说明|介绍|如何|怎么|怎样|编写|撰写|生成|给出|示范|"
             + "\\b(?:explain|describe|how|write|draft|give an example)\\b)", MATCH_FLAGS);
+    private static final Pattern PROHIBITION = Pattern.compile(
+            "^(?:(?:请|please)\\s*)?(?:不要|不得|禁止|无需|不需要|不用|不必|勿|避免|\\b(?:do not|don't|never)\\b)", MATCH_FLAGS);
 
     private final String summary;
     private final String refusal;
@@ -51,6 +53,7 @@ public enum AgentRequestRestriction {
         if (text == null || text.isBlank()) return Optional.empty();
         String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
         for (String clause : normalized.split("[。；，、;\\r\\n]+")) {
+            if (PROHIBITION.matcher(clause.stripLeading()).find()) continue;
             var reset = RESET_INSTRUCTIONS.matcher(clause);
             if (CREDENTIAL_REQUEST.matcher(reset.find() ? clause.substring(reset.end()) : clause).find()) {
                 return Optional.of(PROTECTED_CREDENTIALS);
@@ -58,7 +61,8 @@ public enum AgentRequestRestriction {
         }
         for (String clause : normalized.split("[。；，、;\\r\\n]+|并且|然后|并(?=执行|运行|启动|打开|进入|调用)|(?i:\\band then\\b)")) {
             String command = clause.stripLeading();
-            if (!TERMINAL_EXPLANATION.matcher(command).find() && TERMINAL_REQUEST.matcher(command).find()) {
+            if (!PROHIBITION.matcher(command).find() && !TERMINAL_EXPLANATION.matcher(command).find()
+                    && TERMINAL_REQUEST.matcher(command).find()) {
                 return Optional.of(TERMINAL_EXECUTION);
             }
         }

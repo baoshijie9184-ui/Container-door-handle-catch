@@ -403,6 +403,9 @@ class AgentScopeConversationServiceTest {
         assertThat(AgentRequestRestriction.detect("请解释如何在终端运行 pwd")).isEmpty();
         assertThat(AgentRequestRestriction.detect("编写一份终端命令说明并保存成 Markdown 产物")).isEmpty();
         assertThat(AgentRequestRestriction.detect("调用 read_workspace_file 读取我的会话文件")).isEmpty();
+        assertThat(AgentRequestRestriction.detect("不要执行系统命令，只读取本人会话文件")).isEmpty();
+        assertThat(AgentRequestRestriction.detect("请勿读取密码和 API 密钥，查询检测进度")).isEmpty();
+        assertThat(AgentRequestRestriction.detect("不要自动确认，请在终端执行 pwd")).contains(AgentRequestRestriction.TERMINAL_EXECUTION);
         assertThat(AgentRequestRestriction.detect("请说明原理并执行系统命令")).contains(AgentRequestRestriction.TERMINAL_EXECUTION);
         assertThat(AgentRequestRestriction.detect("Run pwd in the terminal and show the output")).contains(AgentRequestRestriction.TERMINAL_EXECUTION);
         assertThat(AgentRequestRestriction.detect("请打开终端")).contains(AgentRequestRestriction.TERMINAL_EXECUTION);
