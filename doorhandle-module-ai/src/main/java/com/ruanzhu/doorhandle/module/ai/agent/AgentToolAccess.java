@@ -47,7 +47,8 @@ final class AgentToolAccess implements MiddlewareBase {
 
     @Override
     public int order() {
-        return -170;
+        // AgentScope invokes larger priorities first. Authorize before the journal records TOOL_STARTED.
+        return 20;
     }
 
     @Override
