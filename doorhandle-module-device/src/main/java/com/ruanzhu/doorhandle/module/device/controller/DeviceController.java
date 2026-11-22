@@ -22,6 +22,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import io.swagger.v3.oas.annotations.Operation;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
@@ -48,6 +49,11 @@ public class DeviceController {
 
         Map<String, Object> result = deviceService.getDevicesByPage(
                 deviceCode, deviceType, modelName, serialNumber, status, page, size);
+        if (!DirectoryResponses.includesContacts() && result.get("records") instanceof List<?> records) {
+            var response = new LinkedHashMap<>(result);
+            response.put("records", records.stream().map(Device.class::cast).map(DirectoryResponses::withoutContact).toList());
+            return Result.success(response);
+        }
         return Result.success(result);
     }
 
@@ -64,7 +70,7 @@ public class DeviceController {
         if (device == null) {
             return Result.error("设备不存在");
         }
-        return Result.success(device);
+        return Result.success(DirectoryResponses.includesContacts() ? device : DirectoryResponses.withoutContact(device));
     }
 
     @GetMapping("/devices/check-code")
@@ -120,7 +126,8 @@ public class DeviceController {
             if (device == null) {
                 return Result.error("设备不存在");
             }
-            return Result.success(device.getEmployee());
+            return Result.success(DirectoryResponses.includesContacts() ? device.getEmployee()
+                    : DirectoryResponses.withoutContact(device.getEmployee()));
         } catch (Exception e) {
             if(mutationProtectionEnabled)throw originalFailure(e);
             return Result.error("获取设备使用员工失败: " + e.getMessage());
@@ -155,6 +162,8 @@ public class DeviceController {
     public Result<Device> heartbeat(@PathVariable String deviceCode, @RequestBody(required = false) DeviceHeartbeatRequest request) {
         try {
             return Result.success(deviceService.heartbeat(deviceCode, request));
+        } catch (org.springframework.security.access.AccessDeniedException denied) {
+            throw denied;
         } catch (Exception e) {
             if(mutationProtectionEnabled)throw originalFailure(e);
             return Result.error("设备心跳失败: " + e.getMessage());

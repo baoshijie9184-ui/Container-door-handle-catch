@@ -32,6 +32,9 @@ public interface DeviceMapper extends BaseMapper<Device> {
      */
     @Select("SELECT * FROM device_management WHERE device_code = #{deviceCode}")
     Device findByDeviceCode(String deviceCode);
+
+    @Select("SELECT * FROM device_management WHERE device_code = #{deviceCode} FOR UPDATE")
+    Device findByDeviceCodeForUpdate(String deviceCode);
     
     /**
      * 更新设备的员工ID

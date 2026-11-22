@@ -71,7 +71,7 @@ class DeviceUsageHistoryMySqlTest {
         ReflectionTestUtils.setField(service, "deviceUsageRecordMapper", sql.getMapper(DeviceUsageRecordMapper.class));
         ReflectionTestUtils.setField(service, "employeeMapper", sql.getMapper(EmployeeMapper.class));
         ReflectionTestUtils.setField(service, "deviceMapper", sql.getMapper(DeviceMapper.class));
-        devices = new DeviceServiceImpl(sql.getMapper(DeviceMapper.class), mock(DeviceCaptureAlertMapper.class), service);
+        devices = new DeviceServiceImpl(sql.getMapper(DeviceMapper.class), mock(DeviceCaptureAlertMapper.class), service, mock(BusinessUserDirectory.class));
         employees = new EmployeeServiceImpl();
         ReflectionTestUtils.setField(employees, "employeeMapper", sql.getMapper(EmployeeMapper.class));
         ReflectionTestUtils.setField(employees, "deviceMapper", sql.getMapper(DeviceMapper.class));

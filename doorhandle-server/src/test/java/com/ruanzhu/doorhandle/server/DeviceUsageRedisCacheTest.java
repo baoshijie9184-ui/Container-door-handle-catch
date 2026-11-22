@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.server;
 
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.ruanzhu.doorhandle.framework.config.RedisCacheConfig;
@@ -127,7 +128,7 @@ class DeviceUsageRedisCacheTest {
         ReflectionTestUtils.setField(target, "deviceMapper", deviceRows);
         ReflectionTestUtils.setField(target, "employeeMapper", employeeRows);
         usage = cached(target);
-        devices = cached(new DeviceServiceImpl(deviceRows, mock(DeviceCaptureAlertMapper.class), usage));
+        devices = cached(new DeviceServiceImpl(deviceRows, mock(DeviceCaptureAlertMapper.class), usage, mock(BusinessUserDirectory.class)));
         var employeeTarget = new EmployeeServiceImpl();
         ReflectionTestUtils.setField(employeeTarget, "employeeMapper", employeeRows);
         ReflectionTestUtils.setField(employeeTarget, "deviceMapper", deviceRows);

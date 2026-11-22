@@ -39,19 +39,37 @@ public class FolderTaskBoard {
     private final AgentUserDirectory employees;
     private final com.ruanzhu.doorhandle.module.infra.service.OssStorageService uploadStorage;
     private final DetectionUploadMetadataStore uploadMetadata;
+    private final DetectionWorkUnitAudit workUnitAudit;
     @Value("${detection.max-images-per-batch:200}") private int maxImages;
 
     private static final String SOURCE = " FROM detection_task t LEFT JOIN detection_work_unit w ON w.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci AND w.strategy='OSS_FOLDER' ";
     private static final String UPLOAD_TYPES = "t.task_type IN ('BATCH','BATCH_DIRECT')";
+    // A dispatched folder is the formal task. Keep the upload itself in its history.
+    // An explicit link wins; older assignments are matched by the exact non-empty OSS prefix.
+    private static final String FORMAL_VERIFICATION_TASK = """
+        SELECT f.task_id FROM detection_task f
+        JOIN detection_work_unit fw ON fw.work_unit_id=f.task_id COLLATE utf8mb4_0900_ai_ci
+          AND fw.strategy='OSS_FOLDER' AND COALESCE(fw.assignee_user_id,'')<>''
+        WHERE t.task_type IN ('BATCH','BATCH_DIRECT') AND f.task_type='OSS_FOLDER' AND f.status<>'CANCELLED'
+          AND (EXISTS (SELECT 1 FROM detection_work_unit a WHERE a.batch_id=fw.work_unit_id
+                    AND a.source_batch_id=t.task_id COLLATE utf8mb4_0900_ai_ci)
+            OR (COALESCE(t.source_oss_prefix,'')<>'' AND BINARY t.source_oss_prefix=BINARY f.source_oss_prefix
+                AND NOT EXISTS (SELECT 1 FROM detection_work_unit a WHERE a.batch_id=fw.work_unit_id
+                               AND COALESCE(a.source_batch_id,'')<>'')))
+        """;
+    private static final String FORMAL_VERIFICATION_ONLY = "NOT EXISTS (" + FORMAL_VERIFICATION_TASK + ")";
     private static final Set<String> BOARD_PHASES = Set.of("READY","DETECTING","VERIFYING","DONE","FAILED","MODEL_DONE");
     private static final Map<String,Set<String>> SUPERVISOR_LISTS = Map.of(
             "detection", Set.of("UPLOADING","READY","DETECTING","FAILED","CANCELLED","MODEL_DONE"),
             "verification", Set.of("WAITING_CHECK","VERIFYING","CHECKED","FOLLOW_UP"));
     // Older completed runs can have no verification record. They remain in the detection list.
     private static final String LIST_PHASE = """
-        CASE WHEN t.status IN ('COMPLETED','PARTIAL_FAILED') THEN CASE
+        CASE WHEN t.status='FAILED' AND t.flow_status='RECHECK_REQUIRED' THEN 'FOLLOW_UP'
+             WHEN t.status IN ('COMPLETED','PARTIAL_FAILED') THEN CASE
                   WHEN t.flow_status IN ('RECHECK_REQUIRED','REWORK_REQUIRED','HOLD')
                        OR (t.flow_status='CONFIRMED' AND t.review_conclusion='NEEDS_RECHECK') THEN 'FOLLOW_UP'
+                  WHEN t.review_status='PENDING' AND t.flow_status='REVIEWING' THEN 'VERIFYING'
+                  WHEN t.review_status='PENDING' AND t.flow_status='PENDING_REVIEW' THEN 'WAITING_CHECK'
                   WHEN t.review_status='REVIEWED' OR t.reviewed_at IS NOT NULL THEN 'CHECKED'
                   WHEN t.flow_status='REVIEWING' THEN 'VERIFYING'
                   WHEN t.review_status='PENDING' OR t.flow_status='PENDING_REVIEW' THEN 'WAITING_CHECK'
@@ -69,6 +87,7 @@ public class FolderTaskBoard {
         """;
     private static final String COLUMNS = """
         t.task_id AS taskId,t.task_type AS taskType,t.image_folder_name AS folder,t.source_oss_prefix AS prefix,
+        CAST(t.version AS CHAR) AS mutationVersion,
         t.model_version AS model,t.status AS modelStatus,t.flow_status AS flow,t.review_status AS reviewStatus,
         t.total_images AS totalImages,t.processed_images AS processedImages,t.failed_images AS failedImages,
         t.assignee AS qualityAssignee,t.reviewer AS qualityOperator,t.reviewed_at AS reviewedAt,
@@ -85,9 +104,11 @@ public class FolderTaskBoard {
     public PageRows list(String phase, String keyword, String directory, boolean inbox, boolean uploadsOnly, String assignedTaskId, String taskList, String inboxKind, int page, int size) {
         var actor = users.authenticated();
         var scope = access.currentSqlScope("t.");
-        var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId());
+        var args = new MapSqlParameterSource(scope.parameters()).addValue("actor",actor.userId()).addValue("username",actor.username());
+        String qualityAssignee = access.qualityAssigneeSql("t.",":actor",":username");
         String where = " WHERE ("+scope.predicate()+" OR w.assignee_user_id=CAST(:actor AS CHAR))";
-        String columns = COLUMNS+", "+PHASE+" AS phase, "+LIST_PHASE+" AS listPhase";
+        String columns = COLUMNS+", CASE WHEN "+qualityAssignee+" THEN 1 ELSE 0 END AS qualityMine, "
+                +PHASE+" AS phase, "+LIST_PHASE+" AS listPhase";
         String filterPhase = PHASE;
         Set<String> allowedPhases = BOARD_PHASES;
         if (taskList != null || inbox) where += " AND " + BusinessDetectionTasks.filter("t.");
@@ -97,6 +118,7 @@ public class FolderTaskBoard {
             if (allowedPhases == null) throw bad("未知任务列表");
             filterPhase = LIST_PHASE;
             where += " AND ("+LIST_PHASE+") IN (:listPhases)";
+            if ("verification".equals(taskList)) where += " AND "+FORMAL_VERIFICATION_ONLY;
             args.addValue("listPhases", allowedPhases);
         }
         if (assignedTaskId != null) {
@@ -112,15 +134,12 @@ public class FolderTaskBoard {
         if (inboxKind != null && (!inbox || !Set.of("detection","verification").contains(inboxKind)))
             throw bad("未知待办类型");
         if (inbox) {
-            String detect = "(w.assignee_user_id=CAST(:actor AS CHAR) AND t.status IN ('READY','FAILED'))";
-            String verify = """
-                (t.assignee=:username AND (t.assignee_user_id IS NULL OR t.assignee_user_id=:actor)
-                 AND t.status IN ('COMPLETED','PARTIAL_FAILED')
-                 AND t.flow_status IN ('PENDING_REVIEW','REVIEWING') AND t.review_status='PENDING')
-                """;
+            String detect = "(w.assignee_user_id=CAST(:actor AS CHAR) AND t.status IN ('READY','FAILED') AND COALESCE(t.flow_status,'')<>'RECHECK_REQUIRED')";
+            String verify = "("+qualityAssignee+" AND ("
+                    +"(t.status IN ('COMPLETED','PARTIAL_FAILED') AND t.flow_status IN ('PENDING_REVIEW','REVIEWING') AND t.review_status='PENDING')"
+                    +" OR ("+LIST_PHASE+")='FOLLOW_UP') AND "+FORMAL_VERIFICATION_ONLY+")";
             String pending = inboxKind == null ? detect+" OR "+verify : "detection".equals(inboxKind) ? detect : verify;
             where += " AND ("+pending+")";
-            args.addValue("username",actor.username());
         }
         if (phase != null && !phase.isBlank()) {
             if (!allowedPhases.contains(phase)) throw bad("未知任务阶段");
@@ -192,7 +211,8 @@ public class FolderTaskBoard {
             +permitted+"t.source_oss_prefix END AS prefix, "+permitted+PHASE+" END AS phase, "
             +permitted+LIST_PHASE+" END AS listPhase, "+permitted+"t.status END AS modelStatus, "
             +permitted+"t.review_status END AS reviewStatus, "
-            +permitted+"t.processed_images END AS processedImages, "+permitted+"t.failed_images END AS failedImages";
+            +permitted+"t.processed_images END AS processedImages, "+permitted+"t.failed_images END AS failedImages, "
+            +permitted+"("+FORMAL_VERIFICATION_TASK+" ORDER BY f.id DESC LIMIT 1) END AS formalVerificationTaskId";
         var result=readPage(columns," FROM detection_task t",where,args,page,size);
         populateUploaderLabels(result.items());
         for (var row : result.items()) {
@@ -434,7 +454,8 @@ public class FolderTaskBoard {
 
     @Transactional
     public String dispatchApplication(String workUnitId, ApplicationDispatch request) {
-        supervisor();
+        var actor = users.authenticated();
+        if (!actor.supervisor()) throw new BusinessException(403,"仅主管可管理文件夹派单");
         if (request == null || request.expectedVersion() == null || request.expectedVersion() < 0
                 || request.uploadTaskId() == null || request.uploadTaskId().isBlank() || request.uploadTaskId().length() > 64
                 || !workUnitId.matches("WU-[a-f0-9]{32}")) {
@@ -479,11 +500,13 @@ public class FolderTaskBoard {
             throw new BusinessException(409, "此批次已派单，请选择其他上传批次");
         }
         int requestedCount = ((Number) application.get("image_count")).intValue();
-        createFolder(id, prefix, users.authenticated(), employee, requestedCount);
+        createFolder(id, prefix, actor, employee, requestedCount);
         jdbc.update("""
             UPDATE detection_work_unit SET source_batch_id=?,batch_id=?,assignee_user_id=?,assigned_user_name=?,
               status='ASSIGNED',assigned_at=COALESCE(assigned_at,NOW()),version=version+1 WHERE work_unit_id=?
             """, upload.get("task_id"), id, employee.username(), employee.username(), workUnitId);
+        workUnitAudit.record(actor, "DETECTION_APPLICATION_APPROVED", workUnitId, applicationId.toString(),
+                request.expectedVersion().longValue() + 1);
         return id;
     }
 
@@ -508,16 +531,20 @@ public class FolderTaskBoard {
         if (keys.size() > requestedCount) throw bad("原图批次的图片数量超过申请上限，请选择较小的批次");
         detection.registerFolder(id,prefix,keys,actor.username());
         jdbc.update("UPDATE detection_work_unit SET image_count=? WHERE work_unit_id=?",keys.size(),id);
+        workUnitAudit.record(actor, "DETECTION_FOLDER_ASSIGNED", id, id, 0);
         return id;
     }
     @Transactional
     public void assign(String id,Assign request) {
-        supervisor(); var to=recipient(request.recipient());
+        var actor = users.authenticated();
+        if (!actor.supervisor()) throw new BusinessException(403,"仅主管可管理文件夹派单");
+        var to=recipient(request.recipient());
         int changed=db.getJdbcTemplate().update("""
             UPDATE detection_work_unit SET assignee_user_id=?,assigned_user_name=?,assigned_at=NOW(),version=version+1
             WHERE work_unit_id=? AND strategy='OSS_FOLDER' AND status='ASSIGNED' AND version=?
             """,Long.toString(to.userId()),to.username(),id,request.version());
         if(changed!=1) throw new BusinessException(409,"任务已经启动或分派已变化，请刷新");
+        workUnitAudit.record(actor, "DETECTION_FOLDER_REASSIGNED", id, id + ":" + request.version(), request.version() + 1L);
     }
     @Transactional
     public void start(String id,int version) {

@@ -11,7 +11,8 @@ public final class DetectionRetryPolicy {
     public static void assertEligible(DetectionTask task, ObjectMapper json) {
         if (Set.of("RELEASED","SCRAPPED","ARCHIVED").contains(value(task.getFlowStatus()))
                 || !Set.of("FAILED","COMPLETED","PARTIAL_FAILED").contains(value(task.getStatus()))
-                || !("FAILED".equals(task.getStatus()) || Set.of("FAILED","RECHECK_REQUIRED","REWORK_REQUIRED").contains(value(task.getFlowStatus()))))
+                || "REWORK_REQUIRED".equals(task.getFlowStatus())
+                || !("FAILED".equals(task.getStatus()) || Set.of("FAILED","RECHECK_REQUIRED").contains(value(task.getFlowStatus()))))
             throw new BusinessException("当前任务状态不支持重新检测");
         try {
             var keys=json.readTree(task.getOriginalImageKeysJson());

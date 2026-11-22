@@ -10,7 +10,7 @@
       <TableReadHint v-if="rows.length" />
       <el-table :scrollbar-tabindex="0" role="region" aria-label="业务操作审计" :data="rows" v-loading="loading" row-key="id">
         <template #empty><CollectionEmptyState :loading="loading" :error="error" :filtered="!!appliedDomain" empty-title="暂无可查看的业务操作" empty-description="这里只展示当前账号有权限读取的已登记审计记录。" @retry="retryBusiness" @reset="resetDomain" /></template>
-        <el-table-column label="业务与动作" min-width="200"><template #default="{row}"><div class="audit-cell"><strong>{{ auditDomainLabel(row.domain) }}</strong><small>{{ row.action||'动作未记录' }}</small></div></template></el-table-column>
+        <el-table-column label="业务与动作" min-width="200"><template #default="{row}"><div class="audit-cell"><strong>{{ auditDomainLabel(row.domain) }}</strong><small>{{ auditActionLabel(row.action) }}</small></div></template></el-table-column>
         <el-table-column label="资源" min-width="195"><template #default="{row}"><div class="audit-cell"><strong>{{ row.resource_id||'资源未记录' }}</strong><small>版本 {{ row.resource_version??'未知' }} · {{ auditScopeLabel(row.scope) }}</small></div></template></el-table-column>
         <el-table-column label="账号 ID" width="100"><template #default="{row}">{{ row.actor_user_id??'未记录' }}</template></el-table-column>
         <el-table-column label="记录结果" min-width="140"><template #default="{row}"><StatusBadge domain="audit" :code="row.result" /></template></el-table-column><el-table-column label="时间" min-width="180"><template #default="{row}">{{ formatTime(row.created_at) }}</template></el-table-column>
@@ -46,7 +46,7 @@ import { captureAccountRequest } from '@/api/request'
 const request=captureAccountRequest()
 import { useUserStore } from '@/stores/user'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
-import { auditDomainOptions,auditDomainLabel,auditScopeLabel,auditTime,deliveryBytes } from '@/utils/auditPresentation'
+import { auditDomainOptions,auditDomainLabel,auditScopeLabel,auditActionLabel,auditTime,deliveryBytes } from '@/utils/auditPresentation'
 import AuditRecordDetails from '@/components/AuditRecordDetails.vue'
 import { DocumentChecked } from '@element-plus/icons-vue'
 const userStore=useUserStore()

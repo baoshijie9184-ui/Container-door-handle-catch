@@ -90,7 +90,7 @@ public class SkillEvolutionService {
     /** Link provenance is created only by the completed installer; a model cannot fabricate it. */
     public SkillDtos.View createLinked(AgentActor actor,String downloadId,String targetRole){
         var current=fresh(actor);if(linkStorage==null)throw fail(503,"链接安装尚未启用");
-        if(!Set.of("INSPECTOR","SUPERVISOR").contains(targetRole)||!current.supervisor()&&!current.role().name().equals(targetRole))throw fail(403,"技能角色不合法");
+        if(!current.role().name().equals(targetRole))throw fail(403,"私人链接技能必须使用当前账号的角色");
         return tx.execute(status->{
             var source=linkStorage.downloads().download(current.userId(),downloadId,true);
             if(!targetRole.equals(source.get("target_role")))throw fail(409,"下载角色已变化");
@@ -123,12 +123,12 @@ public class SkillEvolutionService {
     public String linkedUpgradeRole(AgentActor actor,String id){var current=fresh(actor);var skill=accessible(current,id,false);
         if(number(skill,"owner_user_id")!=current.userId())throw fail(404,"仅本人可以升级安装的技能");
         var candidate=version(id,num(skill,"latest_version"));if(!"LINK".equals(candidate.get("source_type")))throw fail(400,"仅链接技能可以升级");
-        if(!current.supervisor()&&!current.role().name().equals(skill.get("target_role")))throw fail(403,"当前角色不能升级此技能");return (String)skill.get("target_role");}
+        if(!current.role().name().equals(skill.get("target_role")))throw fail(403,"当前角色不能升级此技能");return current.role().name();}
     public void assertLinkedUpgrade(AgentActor actor,String id,int expected,String sourceUrl){var current=fresh(actor);tx.executeWithoutResult(status->{var skill=lock(current,id,expected,true);var latest=version(id,num(skill,"latest_version"));upgradeEligible(current,skill,latest);verifyDigest(skill,latest);
         var previous=linkStorage.verified(current.userId(),(String)latest.get("source_import_id"));SkillSourcePolicy.assertUpgradeCandidate(previous,sourceUrl);});}
     private void upgradeEligible(AgentActor actor,Map<String,Object> skill,Map<String,Object> candidate){
         if(!"LINK".equals(candidate.get("source_type")))throw fail(400,"仅链接安装的技能可以从原来源升级");
-        if(!actor.supervisor()&&!actor.role().name().equals(skill.get("target_role")))throw fail(403,"当前角色不能升级此技能");
+        if(!actor.role().name().equals(skill.get("target_role")))throw fail(403,"当前角色不能升级此技能");
         if("SUBMITTED".equals(candidate.get("status")))throw fail(409,"待审版本冻结 请等待审核后升级");
     }
     private String repositoryIdentity(Map<String,Object> manifest){
@@ -214,26 +214,38 @@ public class SkillEvolutionService {
         store.review(id,v,approve,current.userId(),decision.reason());
         if(approve){store.publish(id,v);invalidateSemantic(id);}else bump(id);
         audit(id,v,current.userId(),approve?"PUBLISH":"REJECT",decision.expectedRevision()+1,(String)candidate.get("content_sha256"),decision.reason(),null,null);return get(current,id);});}
-    public SkillDtos.View rollback(AgentActor actor,String id,SkillDtos.Rollback command){var current=fresh(actor);boss(current);return tx.execute(status->{var skill=lock(current,id,command.expectedRevision(),false);var candidate=version(id,command.targetVersion());verifyDigest(skill,candidate);reason(command.reason());
+    public SkillDtos.View rollback(AgentActor actor,String id,SkillDtos.Rollback command){var current=fresh(actor);boss(current);return tx.execute(status->{var skill=lock(current,id,command.expectedRevision(),false);var candidate=version(id,command.targetVersion());
+        if("LINK".equals(candidate.get("source_type"))&&number(skill,"owner_user_id")!=current.userId()
+                &&store.versions(id,current.userId(),false,true,current.role().name()).stream().noneMatch(row->num(row,"version_no")==command.targetVersion()))
+            throw fail(404,"技能版本不存在或无权限");
+        verifyDigest(skill,candidate);reason(command.reason());
         if(!"APPROVED".equals(candidate.get("status"))||!evaluated(id,command.targetVersion(),(String)candidate.get("content_sha256"))||!(boolean)evaluation(skill,candidate).get("passed"))throw fail(409,"只能回退到已审核且规则有效的版本");
         store.publish(id,command.targetVersion());invalidateSemantic(id);
         audit(id,command.targetVersion(),current.userId(),"ROLLBACK",command.expectedRevision()+1,(String)candidate.get("content_sha256"),command.reason(),null,null);return get(current,id);});}
     public SkillDtos.View archive(AgentActor actor,String id,SkillDtos.Command command){var current=fresh(actor);boss(current);return tx.execute(status->{var skill=lock(current,id,command.expectedRevision(),false);reason(command.reason());
         store.archive(id);invalidateSemantic(id);
         var candidate=version(id,num(skill,"latest_version"));audit(id,num(skill,"latest_version"),current.userId(),"ARCHIVE",command.expectedRevision()+1,(String)candidate.get("content_sha256"),command.reason(),null,null);return get(current,id);});}
-    public List<SkillDtos.View> list(AgentActor actor){var current=fresh(actor);return store.visible(current.userId(),current.supervisor(),current.role().name()).stream().map(row->get(current,(String)row.get("skill_id"))).toList();}
+    public List<SkillDtos.View> list(AgentActor actor){
+        var current=fresh(actor);
+        var visible=new ArrayList<SkillDtos.View>();
+        for(var row:store.visible(current.userId(),current.supervisor(),current.role().name())){
+            try{visible.add(get(current,(String)row.get("skill_id")));}
+            catch(ResponseStatusException changed){if(changed.getStatusCode().value()!=404)throw changed;}
+        }
+        return List.copyOf(visible);
+    }
     public SkillDtos.View get(AgentActor actor,String id){var current=fresh(actor);var skill=accessible(current,id,false);boolean owner=number(skill,"owner_user_id")==current.userId();
         var versions=new ArrayList<SkillDtos.Version>();var visible=new HashSet<Integer>();
-        for(var v:store.versions(id)){
-            if(!owner&&!(current.supervisor()?Set.of("SUBMITTED","APPROVED","REJECTED").contains(v.get("status")):"APPROVED".equals(v.get("status"))))continue;
+        for(var v:store.versions(id,current.userId(),owner,current.supervisor(),current.role().name())){
             int n=num(v,"version_no");visible.add(n);versions.add(new SkillDtos.Version(n,(String)v.get("status"),(String)v.get("description_text"),(String)v.get("instructions_text"),readList(v.get("tool_names_json")),(String)v.get("content_sha256"),readMap(v.get("evidence_json")),owner?(String)v.get("source_run_id"):null,(String)v.get("review_reason"),Objects.toString(v.get("created_at"),null)));
         }
+        if(!owner&&versions.isEmpty())throw fail(404,"技能不存在或无权限");
         var evaluations=store.evaluations(id).stream().filter(row->visible.contains(num(row,"version_no"))).toList();
         var audits=store.auditHistory(id).stream().filter(row->visible.contains(num(row,"version_no"))).map(row->{if(number(row,"actor_user_id")!=current.userId()){row.remove("run_id");row.remove("call_id");}row.remove("actor_user_id");return row;}).toList();
         return new SkillDtos.View(id,number(skill,"owner_user_id"),(String)skill.get("name"),(String)skill.get("target_role"),num(skill,"revision"),num(skill,"latest_version"),skill.get("active_version")==null?null:num(skill,"active_version"),(String)skill.get("lifecycle"),number(skill,"use_count"),Objects.toString(skill.get("last_used_at"),null),versions,evaluations,audits);
     }
     public SkillSnapshotRepository repository(AgentActor actor){var current=fresh(actor);var skills=new ArrayList<AgentSkill>();
-        for(var skill:store.active(current.role().name())){
+        for(var skill:publishedSkills(current)){
             var candidate=version((String)skill.get("skill_id"),num(skill,"active_version"));if(!supportedSource(candidate)||"LINK".equals(candidate.get("source_type"))&&number(skill,"owner_user_id")!=current.userId())continue;verifyDigest(skill,candidate);
             if("APPROVED".equals(candidate.get("status"))&&evaluated((String)skill.get("skill_id"),num(skill,"active_version"),(String)candidate.get("content_sha256"))&&(boolean)evaluation(skill,candidate).get("passed"))skills.add(nativeSkill(skill,candidate));
         }
@@ -323,7 +335,9 @@ public class SkillEvolutionService {
             var found=matching.get(0);String id=(String)found.get("skill_id");
             var skill=store.identities(id,true).get(0);
             if(!current.role().name().equals(skill.get("target_role"))||skill.get("active_version")==null||!Set.of("ACTIVE","STALE").contains(skill.get("lifecycle")))throw fail(409,"技能发布状态已变化 请刷新 /skills");
-            var candidate=version(id,num(skill,"active_version"));verifyDigest(skill,candidate);
+            var candidate=version(id,num(skill,"active_version"));
+            if("LINK".equals(candidate.get("source_type"))&&number(skill,"owner_user_id")!=current.userId())throw fail(404,"技能不存在或无权限");
+            verifyDigest(skill,candidate);
             if(!"APPROVED".equals(candidate.get("status"))||!evaluated(id,num(skill,"active_version"),(String)candidate.get("content_sha256"))||!(boolean)evaluation(skill,candidate).get("passed"))throw fail(409,"技能审核或规则评测已失效");
             if(record){assertLive(current,runId,callId);
                 store.recordUse(id,num(skill,"active_version"));
@@ -420,8 +434,7 @@ public class SkillEvolutionService {
     private Map<String,Object> accessible(AgentActor actor,String id,boolean forUpdate){if(id==null||!id.matches("skill-[a-f0-9-]{36}"))throw fail(404,"技能不存在或无权限");
         var rows=store.identities(id,forUpdate);if(rows.isEmpty())throw fail(404,"技能不存在或无权限");var skill=rows.get(0);
         if(number(skill,"owner_user_id")==actor.userId())return skill;
-        Long visible=store.visibleVersions(id,actor.supervisor());
-        if(visible==0||!actor.supervisor()&&!skill.get("target_role").equals(actor.role().name()))throw fail(404,"技能不存在或无权限");return skill;}
+        if(!store.hasVisibleVersion(id,actor.userId(),actor.supervisor(),actor.role().name()))throw fail(404,"技能不存在或无权限");return skill;}
     private Map<String,Object> lock(AgentActor actor,String id,int expected,boolean owner){var skill=accessible(actor,id,true);if(owner&&number(skill,"owner_user_id")!=actor.userId())throw fail(403,"仅本人可修改或提交技能");if(num(skill,"revision")!=expected)throw fail(409,"技能版本已变化 请刷新");return skill;}
     private Map<String,Object> version(String id,int v){var rows=store.version(id,v);if(rows.isEmpty())throw fail(404,"技能版本不存在");return rows.get(0);}
     private boolean runSource(Map<String,Object> v){return "RUN".equals(v.get("source_type"))&&v.get("source_import_id")==null;}

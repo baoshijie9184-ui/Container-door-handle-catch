@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell device-page">
-    <PageHero title="设备管理" icon="Monitor"><template #actions><el-button v-if="isSupervisor" type="primary" :disabled="writeBusy" @click="createDevice"><AppIcon name="Plus" :size="16" />新增设备</el-button></template></PageHero>
+    <PageHero :title="isSupervisor ? '设备管理' : '设备目录'" icon="Monitor"><template #actions><el-button v-if="isSupervisor" type="primary" :disabled="writeBusy" @click="createDevice"><AppIcon name="Plus" :size="16" />新增设备</el-button></template></PageHero>
 
     <!-- 独立登记统计，不随下方列表筛选变化 -->
     <section class="stats-bar" :aria-busy="statsLoading">

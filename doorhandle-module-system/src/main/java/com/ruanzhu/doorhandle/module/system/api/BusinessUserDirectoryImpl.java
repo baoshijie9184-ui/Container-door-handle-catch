@@ -79,6 +79,19 @@ public class BusinessUserDirectoryImpl implements BusinessUserDirectory,com.ruan
             throw new SecurityException("当前账号不具备在岗检测员工资格", denied);
         }
     }
+    @Override
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public long lockDetectionEmployeeId(long userId, String username) {
+        try {
+            var current = eligibility.lockCurrent(userId, username);
+            if (!"INSPECTOR".equals(current.role()) || current.employeeId() == null) {
+                throw new SecurityException("当前账号无有效的检测员工关联");
+            }
+            return current.employeeId();
+        } catch (org.springframework.security.core.AuthenticationException denied) {
+            throw new SecurityException("当前账号不具备在岗检测员工资格", denied);
+        }
+    }
     public Identity current(long userId, String username) {
         if(sessions!=null&&sessions.isEnabled())return eligible(userId,username,false);
         var user = users.selectOne(publicFields().eq("id",userId));

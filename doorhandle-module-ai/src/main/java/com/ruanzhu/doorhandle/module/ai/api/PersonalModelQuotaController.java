@@ -20,7 +20,9 @@ public class PersonalModelQuotaController {
     @GetMapping("/applications")
     public Result<PersonalModelQuotaService.Page> applications(@RequestParam(defaultValue="mine")String scope,
             @RequestParam(required=false)String status,@RequestParam(defaultValue="9223372036854775807")long before,
-            @RequestParam(defaultValue="20")int limit){return Result.success(service.applications(scope,status,before,limit));}
+            @RequestParam(defaultValue="20")int limit,@RequestParam(defaultValue="false") boolean includeTotal){
+        return Result.success(service.applications(scope,status,before,limit,includeTotal));
+    }
     @PostMapping("/applications")
     public Result<PersonalModelQuotaService.Application> apply(@RequestBody PersonalModelQuotaService.Apply request,
             @RequestHeader(value="X-Budget-Action",required=false)String marker){guard(marker);return Result.success(service.apply(request));}

@@ -2,7 +2,7 @@
 import copy
 import json
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +34,13 @@ with sync_playwright() as p:
                 reply = fixture['reply']
                 if path == '/api/agent/actions':
                     return reply(route, {'code': 404, 'message': 'missing route'} if state['malformed'] else state['actions'])
+                if path == '/api/agent/actions/page':
+                    if state['malformed']:
+                        return reply(route, {'code': 404, 'message': 'missing route'})
+                    history = parse_qs(urlparse(req.url).query).get('group') == ['history']
+                    active_states = {'PENDING', 'APPROVED', 'EXECUTING', 'NEEDS_REVIEW'}
+                    return reply(route, {'items': [row for row in state['actions'] if (row['status'] in active_states) != history],
+                                         'nextCursor': None})
                 if path.startswith('/api/agent/actions/'):
                     if path.endswith('/audit'):
                         return reply(route, [dict(id=1, occurredAt='2026-10-21T16:01:00', eventType='CONFIRMATION_CREATED', result='PENDING')])

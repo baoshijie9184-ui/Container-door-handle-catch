@@ -45,12 +45,23 @@ public class QualityReportService {
         this.canonicalJson=json.copy().configure(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS,true)
                 .configure(com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY,true);
     }
+    @Transactional(readOnly=true)
     public Map<String,Object> list(Identity actor,int page,int size,String status,String keyword) {
-        actor=current(actor);
+        return list(actor,page,size,status,keyword,false);
+    }
+    @Transactional(readOnly=true)
+    public Map<String,Object> list(Identity actor,int page,int size,String status,String keyword,boolean awaitingMyApproval) {
+        if(actor==null)throw new SecurityException("请先登录");
+        actor=users.current(actor.userId(),actor.username());
         if(page<1||page>10000||size<1||size>100||(keyword!=null&&keyword.length()>128))fail(400,"查询参数不正确");
         if(status!=null&&!status.isBlank()&&!Set.of("DRAFT","SUBMITTED","APPROVED","REJECTED","WITHDRAWN").contains(status))fail(400,"报告状态不正确");
         var params=new HashMap<String,Object>();params.put("owner",actor.userId());params.put("username",actor.username());
-        String where="(r.owner_user_id=:owner"+(actor.supervisor()?" OR r.status<>'DRAFT'":"")+")";
+        String where;
+        if(awaitingMyApproval) {
+            supervisor(actor);
+            where="r.owner_user_id<>:owner";
+            status="SUBMITTED";
+        } else where="(r.owner_user_id=:owner"+(actor.supervisor()?" OR r.status<>'DRAFT'":"")+")";
         if(!actor.supervisor())where+=" AND ("+policy.actorPredicate("t.",policy.stableIdentityActive()?":owner":":username",":owner")
                 +" OR EXISTS (SELECT 1 FROM runtime_state g WHERE g.namespace='STAFF_REPORT_TRANSFER' AND g.owner_id=r.owner_user_id AND g.scope_key=BINARY r.report_id AND g.state_code='ASSIGNED'))";
         if(status!=null&&!status.isBlank()){where+=" AND r.status=:status";params.put("status",status);}

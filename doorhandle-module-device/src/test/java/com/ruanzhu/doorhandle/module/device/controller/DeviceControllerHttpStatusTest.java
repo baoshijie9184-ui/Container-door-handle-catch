@@ -42,5 +42,7 @@ class DeviceControllerHttpStatusTest {
     void permissionExceptionsReachTheExistingAuthorizationHandler(boolean enabled)throws Exception{
         var http=http(enabled,new org.springframework.security.access.AccessDeniedException("permission revoked"));
         http.perform(post("/api/devices").contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().is(enabled?403:200));
+        http.perform(post("/api/devices/device-one/heartbeat").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
     }
 }

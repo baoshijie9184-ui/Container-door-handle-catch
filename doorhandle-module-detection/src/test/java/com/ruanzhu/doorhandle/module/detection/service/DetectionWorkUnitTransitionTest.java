@@ -31,7 +31,7 @@ class DetectionWorkUnitTransitionTest {
         when(mapper.transition(any(), eq(2), eq("PROCESSING"))).thenReturn(1);
         var request = new DetectionWorkUnitSubmitRequest();
         request.setExpectedVersion(2); request.setCompletedCount(5000);
-        var result = new DetectionWorkUnitServiceImpl(mapper, images, mock(BusinessUserDirectory.class)).submit("WU", request, "A");
+        var result = new DetectionWorkUnitServiceImpl(mapper, images, mock(BusinessUserDirectory.class), mock(DetectionWorkUnitAudit.class)).submit("WU", request, "A");
         assertEquals(1, result.getCompletedCount());
         assertEquals("SUBMITTED", result.getStatus());
         assertEquals(3, result.getVersion());
@@ -49,7 +49,7 @@ class DetectionWorkUnitTransitionTest {
         when(mapper.selectOne(any())).thenReturn(unit);
         when(images.findByWorkUnitId("WU")).thenReturn(java.util.List.of(pending));
         var request = new DetectionWorkUnitSubmitRequest(); request.setExpectedVersion(2);
-        var service = new DetectionWorkUnitServiceImpl(mapper, images, mock(BusinessUserDirectory.class));
+        var service = new DetectionWorkUnitServiceImpl(mapper, images, mock(BusinessUserDirectory.class), mock(DetectionWorkUnitAudit.class));
         assertEquals(409, assertThrows(BusinessException.class,
                 () -> service.submit("WU", request, "A")).getCode());
         verify(mapper, never()).transition(any(), any(), any());
@@ -61,7 +61,7 @@ class DetectionWorkUnitTransitionTest {
         var unit = new DetectionWorkUnit();
         unit.setApplicantUserId("A"); unit.setAssigneeUserId("B"); unit.setStatus("ASSIGNED");
         when(mapper.selectOne(any())).thenReturn(unit);
-        var service = new DetectionWorkUnitServiceImpl(mapper, images, mock(BusinessUserDirectory.class));
+        var service = new DetectionWorkUnitServiceImpl(mapper, images, mock(BusinessUserDirectory.class), mock(DetectionWorkUnitAudit.class));
         var error = assertThrows(BusinessException.class, () -> service.submit("WU", new DetectionWorkUnitSubmitRequest(), "A"));
         assertEquals(403, error.getCode());
         verifyNoInteractions(images);
@@ -73,7 +73,7 @@ class DetectionWorkUnitTransitionTest {
         unit.setWorkUnitId("WU"); unit.setAssigneeUserId("B"); unit.setVersion(2); unit.setStatus("ASSIGNED");
         when(mapper.selectOne(any())).thenReturn(unit);
         when(mapper.transition(any(), eq(2), eq("ASSIGNED"))).thenReturn(1);
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), mock(BusinessUserDirectory.class));
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), mock(BusinessUserDirectory.class), mock(DetectionWorkUnitAudit.class));
         var result = service.recall("WU", 2, "主管");
         assertNull(result.getAssigneeUserId()); assertEquals(3, result.getVersion());
         verify(mapper, never()).updateById(any());
@@ -83,7 +83,7 @@ class DetectionWorkUnitTransitionTest {
         var mapper = mock(DetectionWorkUnitMapper.class);
         var unit = new DetectionWorkUnit(); unit.setStatus("ASSIGNED"); unit.setVersion(2);
         when(mapper.selectOne(any())).thenReturn(unit);
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), mock(BusinessUserDirectory.class));
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), mock(BusinessUserDirectory.class), mock(DetectionWorkUnitAudit.class));
         assertEquals(409, assertThrows(BusinessException.class, () -> service.recall("WU", 2, "主管")).getCode());
     }
 
@@ -91,7 +91,7 @@ class DetectionWorkUnitTransitionTest {
         var mapper = mock(DetectionWorkUnitMapper.class);
         var users = mock(BusinessUserDirectory.class);
         when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(7, "DET-0001", false));
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users, mock(DetectionWorkUnitAudit.class));
         var request = new DetectionWorkUnitApplyRequest();
         request.setRequestId(UUID.randomUUID());
         request.setImageCount(2);
@@ -120,7 +120,7 @@ class DetectionWorkUnitTransitionTest {
         unit.setVersion(2);
         unit.setBatchId("det_folder_0123456789abcdef0123456789abcdef");
         when(mapper.selectOne(any())).thenReturn(unit);
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), mock(BusinessUserDirectory.class));
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), mock(BusinessUserDirectory.class), mock(DetectionWorkUnitAudit.class));
 
         assertEquals(409, assertThrows(BusinessException.class, () -> service.recall("WU", 2, "主管")).getCode());
         verify(mapper, never()).transition(any(), any(), any());
@@ -129,7 +129,7 @@ class DetectionWorkUnitTransitionTest {
     @Test void supervisorCannotApplyOrWithdrawAndEmployeeCannotReject() {
         var mapper = mock(DetectionWorkUnitMapper.class);
         var users = mock(BusinessUserDirectory.class);
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users, mock(DetectionWorkUnitAudit.class));
         var command = new DetectionWorkUnitDecisionRequest(0, UUID.randomUUID(), "资料需要补充");
         when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(3, "SUP-0001", true));
         assertEquals(403, assertThrows(BusinessException.class,
@@ -143,7 +143,8 @@ class DetectionWorkUnitTransitionTest {
     @Test void applicantCanWithdrawOnceAndCannotWithdrawSomeoneElsesApplication() {
         var mapper = mock(DetectionWorkUnitMapper.class);
         var users = mock(BusinessUserDirectory.class);
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users);
+        var audit = mock(DetectionWorkUnitAudit.class);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users, audit);
         var unit = waitingApplication();
         var command = new DetectionWorkUnitDecisionRequest(0, UUID.randomUUID(), null);
         when(mapper.lock("WU")).thenReturn(unit);
@@ -159,12 +160,14 @@ class DetectionWorkUnitTransitionTest {
         assertEquals("原申请备注", unit.getRemark());
         verify(users, times(2)).lockDetectionEmployee(7, "DET-0001");
         verify(mapper).recordApplicationDecision(unit, 0);
+        verify(audit).record(new BusinessUserDirectory.Identity(7, "DET-0001", false),
+                "DETECTION_APPLICATION_WITHDRAWN", "WU", command.requestId().toString(), 1L);
     }
 
     @Test void rejectionIsVersionedAndKeepsOriginalApplicationAndDecisionReason() {
         var mapper = mock(DetectionWorkUnitMapper.class);
         var users = mock(BusinessUserDirectory.class);
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users, mock(DetectionWorkUnitAudit.class));
         var unit = waitingApplication();
         var supervisor = new BusinessUserDirectory.Identity(3, "SUP-0001", true);
         when(users.authenticated()).thenReturn(supervisor);
@@ -191,7 +194,7 @@ class DetectionWorkUnitTransitionTest {
     @Test void assignedOrAlreadyDecidedApplicationsCannotBeClosedByANewCommand() {
         var mapper = mock(DetectionWorkUnitMapper.class);
         var users = mock(BusinessUserDirectory.class);
-        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users, mock(DetectionWorkUnitAudit.class));
         var unit = waitingApplication();
         when(mapper.lock("WU")).thenReturn(unit);
         when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(7, "DET-0001", false));

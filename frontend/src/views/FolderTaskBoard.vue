@@ -99,7 +99,7 @@
           <TaskBoardStage :row="row" verification />
         </template></el-table-column>
         <el-table-column label="操作" min-width="245"><template #default="{row}">
-          <TaskBoardActions v-bind="rowActions(row)" @start="start" @assign="openAssign" @dispatch="openNew" />
+          <TaskBoardActions v-bind="rowActions(row)" @start="start" @assign="openAssign" @dispatch="openNew" @recheck="startRecheck" />
         </template></el-table-column>
       </el-table>
       <ul v-if="rows.length" class="board-cards" aria-label="任务与批次">
@@ -128,7 +128,7 @@
               <div v-if="taskList!=='detection'"><dt>人工校验</dt><dd><TaskBoardStage :row="row" verification /></dd></div>
             </template>
           </dl>
-          <TaskBoardActions v-bind="rowActions(row)" class="board-card-actions" @start="start" @assign="openAssign" @dispatch="openNew" />
+          <TaskBoardActions v-bind="rowActions(row)" class="board-card-actions" @start="start" @assign="openAssign" @dispatch="openNew" @recheck="startRecheck" />
         </li>
       </ul>
       </div>
@@ -170,7 +170,7 @@
 <script setup>
 import {computed,defineAsyncComponent,onBeforeUnmount,onMounted,ref,watch} from 'vue'
 import {useRoute,useRouter} from 'vue-router'
-import {ElMessage} from 'element-plus'
+import {ElMessage,ElMessageBox} from 'element-plus'
 import {captureAccountRequest} from '@/api/request'
 import {imageFolderLabel,recordFolderLabel} from '@/utils/imageFolderLabel'
 import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
@@ -182,6 +182,7 @@ import WorkUnitApplications from '@/components/WorkUnitApplications.vue'
 import {humanStep,modelStep} from '@/utils/taskBoardStages'
 import {boardDialog,employeeInbox,listLocation} from '@/utils/taskBoardNavigation'
 import {needsDetectionBatch} from '@/utils/workUnitApplications'
+import {mutationHeaders} from '@/utils/mutationVersion'
 import {useUserStore} from '@/stores/user'
 const TaskDialogs=defineAsyncComponent(()=>import('./ImageDetection.vue'))
 const employeeScopes=[{value:true,label:'待我处理'},{value:false,label:'全部任务'}]
@@ -373,6 +374,24 @@ async function start(row){
     else await load()
   }
   catch(e){ElMessage.error(message(e));await load()}finally{busy.value=false}
+}
+async function startRecheck(row){
+  if(busy.value)return
+  busy.value=true
+  const origin=route.fullPath
+  try {
+    await ElMessageBox.confirm('将沿用此任务的原图和检测参数重新检测，当前检测结果、校验结论和处置状态将重置。', '启动复检', {
+      confirmButtonText:'确认启动复检', cancelButtonText:'取消', type:'warning'
+    })
+    if(route.fullPath!==origin)return
+    data(await api.post('/api/detection/tasks/'+encodeURIComponent(row.taskId)+'/retry',null,{headers:mutationHeaders(row.mutationVersion)}))
+    ElMessage.success('复检已提交')
+    if(route.fullPath===origin)await load()
+  }catch(e){
+    if(e==='cancel'||e==='close')return
+    ElMessage.error(message(e))
+    if(route.fullPath===origin)await load()
+  }finally{busy.value=false}
 }
 watch(applicationId,async (id,_,onCleanup)=>{
   application.value=null;applicationError.value=''

@@ -14,7 +14,9 @@ import java.util.Objects;
 /** Reads current account and personnel facts; unknown roles never acquire inspector access. */
 @Service
 public class LoginEligibilityService {
-    public record Eligible(User user,String role) {}
+    public record Eligible(User user,String role,Long employeeId) {
+        public Eligible(User user,String role) { this(user,role,null); }
+    }
     private final UserMapper users;
     private final AccountEmployeeBindingMapper bindings;
     private final EmployeeDirectoryApi employees;
@@ -31,13 +33,13 @@ public class LoginEligibilityService {
         var user=lock?users.selectOne(new LambdaQueryWrapper<User>().eq(User::getId,id).last("FOR UPDATE")):users.selectById(id);
         if(user==null||!Objects.equals(username,user.getUsername())||!Boolean.TRUE.equals(user.getEnabled()))denied();
         String role=role(user);
-        requirePersonnel(id,role,lock);
-        return new Eligible(user,role);
+        var employee=requirePersonnel(id,role,lock);
+        return new Eligible(user,role,employee==null?null:employee.id());
     }
     public void requirePersonnel(long id,String role){
         requirePersonnel(id,role,false);
     }
-    private void requirePersonnel(long id,String role,boolean lock){
+    private EmployeeDirectoryApi.EmployeeIdentity requirePersonnel(long id,String role,boolean lock){
         var employee=boundEmployee(id,lock);
         if(employee==null){
             if(!"SUPERVISOR".equals(role))denied();
@@ -46,6 +48,7 @@ public class LoginEligibilityService {
                     (!"DETECTION".equals(employee.employeeType())&& !"SUPERVISOR".equals(employee.employeeType())))denied();
             if("INSPECTOR".equals(role)&&!"DETECTION".equals(employee.employeeType()))denied();
         }
+        return employee;
     }
     public String employeeNumber(long userId){
         var employee=boundEmployee(userId,false);

@@ -22,6 +22,8 @@ public final class DetectionQualityWorkflow {
                 hint("REVIEW", false, reviewReason(task)),
                 hint("DISPOSE", false, dispositionReason(task)),
                 hint("SUBMIT_REWORK", false, reworkReason(task)),
+                hint("RECHECK", false, recheckRequired(task) && (ready(task) || "FAILED".equals(task.getStatus()))
+                        ? "" : "仅待复检任务可启动复检"),
                 hint("ARCHIVE", true, archiveReason(task)));
     }
 
@@ -31,6 +33,10 @@ public final class DetectionQualityWorkflow {
 
     private static boolean ready(DetectionTask task) {
         return READY_STATUSES.contains(value(task.getStatus()));
+    }
+
+    public static boolean recheckRequired(DetectionTask task) {
+        return "RECHECK_REQUIRED".equals(task.getFlowStatus());
     }
 
     private static String value(String value) {

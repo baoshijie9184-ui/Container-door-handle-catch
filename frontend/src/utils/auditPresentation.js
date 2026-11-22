@@ -4,6 +4,15 @@ import { knownCount } from './countPresentation'
 const domains = { DETECTION:'检测任务', QUALITY_REPORT:'质检报告', DEVICE:'设备', DEVICE_USAGE:'设备使用', EMPLOYEE:'人员', ORGANIZATION:'账号与组织', DETECTION_MODEL:'检测模型', DETECTION_MODEL_FILE:'模型文件', MODEL_CONFIG:'Agent 模型配置', MODEL_BUDGET:'模型额度', LLM_QUOTA_APPLICATION:'个人额度申请', DETECTION_IDENTITY_SOURCE:'任务身份来源' }
 export const auditDomainOptions=Object.entries(domains).map(([value,label])=>({value,label}))
 export const auditDomainLabel = value => domains[value] || value || '业务域未记录'
+const actions = {
+  DETECTION_APPLICATION_SUBMITTED: '提交检测申请',
+  DETECTION_APPLICATION_REJECTED: '驳回检测申请',
+  DETECTION_APPLICATION_WITHDRAWN: '撤回检测申请',
+  DETECTION_APPLICATION_APPROVED: '审批并绑定原图批次',
+  DETECTION_FOLDER_ASSIGNED: '派发检测任务',
+  DETECTION_FOLDER_REASSIGNED: '改派检测任务'
+}
+export const auditActionLabel = value => actions[value] || value || '动作未记录'
 export const auditScopeLabel = value => ({ENTERPRISE:'企业业务',PRIVATE:'本人私有'})[value] || '范围未记录'
 export const auditTime = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'
 export const auditValue = value => value == null || value === '' ? '未记录' : value

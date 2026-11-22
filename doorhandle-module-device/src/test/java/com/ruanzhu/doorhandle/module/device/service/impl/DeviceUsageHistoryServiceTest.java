@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.device.service.impl;
 
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceUsageRecord;
@@ -246,7 +247,7 @@ class DeviceUsageHistoryServiceTest {
 
     @Test void deletingDeviceMasterDataDoesNotExplicitlyDeleteItsUsageHistory() {
         when(devices.selectById(9L)).thenReturn(new Device()); when(devices.deleteById(9L)).thenReturn(1);
-        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service, mock(BusinessUserDirectory.class));
         assertThat(master.deleteDevice(9L)).isTrue();
         verifyNoInteractions(records, employees);
     }
@@ -269,7 +270,7 @@ class DeviceUsageHistoryServiceTest {
         Device current = new Device(); current.setId(9L); current.setEmployeeId(11L);
         when(devices.selectForUsageUpdate(9L)).thenReturn(current);
         when(devices.updateEmployeeId(9L, null)).thenReturn(1);
-        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service, mock(BusinessUserDirectory.class));
         assertThat(master.removeEmployeeFromDevice(9L)).isTrue();
         verify(devices).updateEmployeeId(9L, null);
         verify(devices, never()).updateById(any(Device.class));
@@ -282,7 +283,7 @@ class DeviceUsageHistoryServiceTest {
         DeviceUsageRecord receipt = history(); receipt.setStatus("IN_USE");
         when(records.selectNewestForDeviceUpdate(9L)).thenReturn(receipt);
         when(devices.updateEmployeeId(9L, null)).thenReturn(1);
-        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service, mock(BusinessUserDirectory.class));
         assertThat(master.removeEmployeeFromDevice(9L)).isTrue();
         assertThat(receipt.getStatus()).isEqualTo("RETURNED");
         verify(service).updateById(receipt);
@@ -292,7 +293,7 @@ class DeviceUsageHistoryServiceTest {
     @Test void alreadyUnassignedDeviceDoesNotTouchHistoryOrWriteAgain() {
         Device current = new Device(); current.setId(9L);
         when(devices.selectForUsageUpdate(9L)).thenReturn(current);
-        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service, mock(BusinessUserDirectory.class));
         assertThat(master.removeEmployeeFromDevice(9L)).isTrue();
         verifyNoInteractions(records);
         verify(devices, never()).updateEmployeeId(anyLong(), any());
@@ -304,7 +305,7 @@ class DeviceUsageHistoryServiceTest {
         DeviceUsageRecord receipt = history(); receipt.setStatus("IN_USE");
         when(records.selectNewestForDeviceUpdate(9L)).thenReturn(receipt);
         doReturn(false).when(service).updateById(receipt);
-        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service, mock(BusinessUserDirectory.class));
         assertThatThrownBy(() -> master.removeEmployeeFromDevice(9L)).isInstanceOf(BusinessException.class);
         verify(devices, never()).updateEmployeeId(anyLong(), any());
     }
@@ -312,7 +313,7 @@ class DeviceUsageHistoryServiceTest {
     @Test void failedExplicitUnassignRaisesConflictInsteadOfReportingSuccess() {
         Device current = new Device(); current.setId(9L); current.setEmployeeId(11L);
         when(devices.selectForUsageUpdate(9L)).thenReturn(current);
-        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service);
+        var master = new DeviceServiceImpl(devices, mock(com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper.class), service, mock(BusinessUserDirectory.class));
         assertThatThrownBy(() -> master.removeEmployeeFromDevice(9L)).isInstanceOf(BusinessException.class);
         verify(devices).updateEmployeeId(9L, null);
     }

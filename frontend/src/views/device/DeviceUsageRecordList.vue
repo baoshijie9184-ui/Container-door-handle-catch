@@ -225,7 +225,13 @@ const backToDeviceList=()=>router.push({name:'devices'})
 function openDetails(row){if(!records.value.some(item=>resourceId(item.id)===resourceId(row?.id)))return;selectedRecord.value=Object.freeze({...row});detailVisible.value=true}
 const detailFacts=computed(()=>{
   const row=selectedRecord.value || {}
-  return [['设备 ID',row.deviceId],['设备类型',getDeviceTypeName(row.deviceType)],['设备型号',row.modelName],['设备序列号',row.serialNumber],['员工姓名',row.employeeName],['员工编号',row.employeeNumber],['员工 ID',row.employeeId],['联系方式',row.contact],['开始时间',formatDateTime(row.startTime)],['结束时间',row.endTime?formatDateTime(row.endTime):['IN_USE','使用中'].includes(row.status)?'使用中，尚无结束时间':'未记录'],['备注',row.remarks],['登记时间',formatDateTime(row.createdTime)],['更新时间',formatDateTime(row.updatedTime)]].map(([label,value])=>({label,value:value==null || value===''?'未记录':value}))
+  const facts=[['设备 ID',row.deviceId],['设备类型',getDeviceTypeName(row.deviceType)],['设备型号',row.modelName],['设备序列号',row.serialNumber],
+    ['员工姓名',row.employeeName],['员工编号',row.employeeNumber],['员工 ID',row.employeeId]]
+  if(isSupervisor.value)facts.push(['联系方式',row.contact])
+  facts.push(['开始时间',formatDateTime(row.startTime)],
+    ['结束时间',row.endTime?formatDateTime(row.endTime):['IN_USE','使用中'].includes(row.status)?'使用中，尚无结束时间':'未记录'],
+    ['备注',row.remarks],['登记时间',formatDateTime(row.createdTime)],['更新时间',formatDateTime(row.updatedTime)])
+  return facts.map(([label,value])=>({label,value:value==null || value===''?'未记录':value}))
 })
 
 const dialogVisible=ref(false),createPhase=ref('IDLE'),createFormRef=ref(null),proposalRef=ref(null)

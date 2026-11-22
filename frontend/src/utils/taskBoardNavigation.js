@@ -1,4 +1,4 @@
-const actions = ['images', 'trace', 'assign', 'review']
+const actions = ['images', 'trace', 'assign', 'review', 'disposition', 'rework']
 
 export function boardDialog(query, supervisor, uploads) {
   const { boardAction: action, taskId } = query

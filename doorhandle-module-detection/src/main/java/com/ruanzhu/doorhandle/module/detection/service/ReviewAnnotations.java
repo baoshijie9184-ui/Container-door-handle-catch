@@ -92,9 +92,7 @@ public class ReviewAnnotations {
     private boolean editable(DetectionTask task, BusinessUserDirectory.Identity actor) {
         try { DetectionQualityWorkflow.assertReviewable(task); }
         catch (BusinessException closed) { return false; }
-        if (actor.supervisor()) return true;
-        Long assigned = jdbc.queryForObject("SELECT assignee_user_id FROM detection_task WHERE id=?", Long.class,task.getId());
-        return assigned != null ? assigned == actor.userId() : actor.username().equals(task.getAssignee());
+        return access.canOperateQuality(task,actor);
     }
     private void requireEditor(DetectionTask task, BusinessUserDirectory.Identity actor) {
         DetectionQualityWorkflow.assertReviewable(task);

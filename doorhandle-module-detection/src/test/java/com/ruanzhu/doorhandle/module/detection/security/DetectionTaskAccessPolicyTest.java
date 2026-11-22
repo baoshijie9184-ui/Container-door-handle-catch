@@ -59,6 +59,24 @@ class DetectionTaskAccessPolicyTest {
     }
 
     @Test
+    void uploaderCanStillReadButOnlyCurrentQualityAssigneeOrSupervisorCanReviewAndRecheck() {
+        var task=taskOwnedBy("uploader");
+        var uploader=authentication("uploader","ROLE_INSPECTOR");
+        var reviewer=authentication("reviewer","ROLE_INSPECTOR");
+        var supervisor=authentication("boss","ROLE_SUPERVISOR");
+        assertThat(policy.canAccess(task,uploader)).isTrue();
+        assertThat(policy.canOperateQuality(task,uploader)).isFalse();
+        task.setAssignee("reviewer");
+        task.setFlowStatus("RECHECK_REQUIRED");
+        assertThat(policy.canOperateQuality(task,reviewer)).isTrue();
+        assertThat(policy.canOperateQuality(task,supervisor)).isTrue();
+        assertThatThrownBy(()->policy.assertCanRetry(task,uploader)).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThatCode(()->policy.assertCanRetry(task,reviewer)).doesNotThrowAnyException();
+        task.setAssignee("successor");
+        assertThat(policy.canOperateQuality(task,reviewer)).isFalse();
+    }
+
+    @Test
     void anonymousAuthenticationTokenIsNotAnAuthenticatedUser() {
         var anonymous = new org.springframework.security.authentication.AnonymousAuthenticationToken(
                 "key", "anonymousUser", List.of(new SimpleGrantedAuthority("ROLE_ANONYMOUS")));

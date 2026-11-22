@@ -1,5 +1,9 @@
 package com.ruanzhu.doorhandle.module.device.controller;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.ruanzhu.doorhandle.module.device.entity.Device;
+import com.ruanzhu.doorhandle.module.device.entity.DeviceUsageRecord;
+import com.ruanzhu.doorhandle.module.device.entity.Employee;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
 import com.ruanzhu.doorhandle.module.device.service.*;
 import org.junit.jupiter.api.*;
@@ -70,5 +74,44 @@ class ManagementAuthorizationTest {
         context.getBean(EmployeeController.class).getById(2L);
         verify(context.getBean(DeviceService.class)).getDeviceById(1L);
         verify(context.getBean(EmployeeService.class)).getById(2L);
+    }
+
+    @Test void contactDetailsAreRestrictedWithoutMutatingDirectoryOrHistoryRecords() {
+        var employee = new Employee();
+        employee.setId(2L);
+        employee.setEmployeeNumber("DET-0002");
+        employee.setContact("private-contact");
+        var device = new Device();
+        device.setEmployee(employee);
+        var usage = new DeviceUsageRecord();
+        usage.setEmployeeNumber(employee.getEmployeeNumber());
+        usage.setContact(employee.getContact());
+        var people = context.getBean(EmployeeController.class);
+        var devices = context.getBean(DeviceController.class);
+        var records = context.getBean(DeviceUsageRecordController.class);
+        var employeeService = context.getBean(EmployeeService.class);
+        when(employeeService.getById(2L)).thenReturn(employee);
+        when(employeeService.findByPage(1,10,null,null,null,null,null,null))
+                .thenReturn(new Page<Employee>(1,10,1).setRecords(List.of(employee)));
+        when(context.getBean(DeviceService.class).getDeviceById(1L)).thenReturn(device);
+        when(context.getBean(DeviceUsageRecordService.class).getDeviceUsageRecordsByDeviceId(1L)).thenReturn(List.of(usage));
+
+        login("ROLE_INSPECTOR");
+        assertThrows(AccessDeniedException.class, () -> people.findByPage(1,10,null,null,"private-contact",null,null,null));
+        assertNull(people.findByPage(1,10,null,null,null,null,null,null).getData().getRecords().get(0).getContact());
+        assertEquals("DET-0002", people.getById(2L).getData().getEmployeeNumber());
+        assertNull(people.getById(2L).getData().getContact());
+        assertNull(devices.getDeviceById(1L).getData().getEmployee().getContact());
+        assertNull(devices.getDeviceEmployee(1L).getData().getContact());
+        assertNull(usageRecord(records).getContact());
+
+        login("ROLE_SUPERVISOR");
+        assertEquals("private-contact", people.getById(2L).getData().getContact());
+        assertEquals("private-contact", devices.getDeviceById(1L).getData().getEmployee().getContact());
+        assertEquals("private-contact", usageRecord(records).getContact());
+    }
+
+    private DeviceUsageRecord usageRecord(DeviceUsageRecordController controller) {
+        return (DeviceUsageRecord) ((List<?>) controller.getDeviceUsageRecordsByDeviceId(1L).getData()).get(0);
     }
 }

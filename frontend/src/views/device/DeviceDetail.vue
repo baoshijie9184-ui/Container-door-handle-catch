@@ -101,7 +101,7 @@
             <span class="emp-label">人员类型</span>
             <span class="emp-value">{{ getEmployeeTypeName(device.employee.employeeType) }}</span>
           </div>
-          <div class="emp-info-item">
+          <div v-if="isSupervisor" class="emp-info-item">
             <span class="emp-label">联系方式</span>
             <span class="emp-value">{{ device.employee.contact }}</span>
           </div>

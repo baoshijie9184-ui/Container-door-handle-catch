@@ -18,13 +18,14 @@ import static org.mockito.Mockito.*;
 class SkillLinkLifecycleTest {
     @TempDir Path workspace;
     AgentActor alice=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR),bob=new AgentActor(2,"bob",AgentActor.Role.INSPECTOR),boss=new AgentActor(3,"boss",AgentActor.Role.SUPERVISOR);
+    AgentActor otherSupervisor=new AgentActor(4,"other-supervisor",AgentActor.Role.SUPERVISOR);
     JdbcTemplate jdbc;org.springframework.transaction.PlatformTransactionManager manager;BusinessUserDirectory users;SkillEvolutionService service;SkillLinkStorage storage;ObjectMapper json=new ObjectMapper().findAndRegisterModules();
     String downloadId="download-"+UUID.randomUUID();
     @BeforeEach void setup()throws Exception{
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
         com.ruanzhu.doorhandle.module.ai.testsupport.CompactContentFixture.install(jdbc);
         com.ruanzhu.doorhandle.module.ai.testsupport.CompactWorkflowFixture.install(jdbc);
-        users=mock(BusinessUserDirectory.class);for(var actor:List.of(alice,bob,boss))when(users.current(actor.userId(),actor.username())).thenReturn(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),actor.supervisor()));
+        users=mock(BusinessUserDirectory.class);for(var actor:List.of(alice,bob,boss,otherSupervisor))when(users.current(actor.userId(),actor.username())).thenReturn(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),actor.supervisor()));
         manager=new DataSourceTransactionManager(source);service=new SkillEvolutionService(jdbc,manager,json,users,mock(AgentJournal.class));storage=new SkillLinkStorage(jdbc,json,workspace.toString());service.linkStorage(storage);
         Path path=storage.directory(1,downloadId);Files.createDirectories(path);
         String body="Read publicly available references using already registered tools and verify every claim. Any included scripts are archived and must never run.";
@@ -59,6 +60,30 @@ class SkillLinkLifecycleTest {
         var archived=service.uninstallLinked(alice,view.skillId(),new SkillDtos.Command(view.revision(),"本人明确卸载"));
         assertThat(archived.activeVersion()).isNull();assertThat(service.repository(alice).getAllSkills()).isEmpty();assertThat(archived.versions()).hasSize(1);
         assertThat(Files.exists(storage.directory(1,downloadId).resolve("SKILL.md"))).isTrue();assertThat(archived.audit().toString()).contains("UNINSTALL_LINK");
+    }
+    @Test void privateLinkManagementRespectsOwnershipAndIndependentReviewHistory(){
+        var draft=create();
+        var evaluated=service.evaluate(alice,draft.skillId(),draft.revision());
+        var submitted=service.submit(alice,draft.skillId(),evaluated.revision());
+        assertThat(service.list(otherSupervisor)).extracting(SkillDtos.View::skillId).containsExactly(draft.skillId());
+        assertThat(service.get(boss,draft.skillId()).versions()).extracting(SkillDtos.Version::status).containsExactly("SUBMITTED");
+        var accepted=service.decide(boss,draft.skillId(),new SkillDtos.Decision(submitted.revision(),"APPROVE","已核对来源及适用性",true,true));
+        assertThat(service.list(alice)).extracting(SkillDtos.View::skillId).containsExactly(draft.skillId());
+        assertThat(service.get(boss,draft.skillId()).activeVersion()).isEqualTo(accepted.activeVersion());
+        for(var unrelated:List.of(bob,otherSupervisor)){
+            assertThat(service.list(unrelated)).isEmpty();
+            assertThatThrownBy(()->service.get(unrelated,draft.skillId())).hasMessageContaining("无权限");
+        }
+    }
+    @Test void supervisorCannotBindNewPrivateDownloadsOrDraftsToEmployeeRole(){
+        var links=links();
+        try{
+            assertThatThrownBy(()->links.start(boss,new SkillLinkService.Request(
+                    "https://github.com/fixtures/skills/tree/main/skills/fixture-reader","INSPECTOR","supervisor-role-mismatch",true)))
+                    .hasMessageContaining("当前账号的角色");
+            assertThatThrownBy(()->service.createLinked(boss,downloadId,"INSPECTOR")).hasMessageContaining("当前账号的角色");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='SKILL_DOWNLOAD'",Long.class)).isEqualTo(1);
+        }finally{links.close();}
     }
     @Test void tamperedFileCannotPassEvalOrLoadThroughExistingPublishedPointer()throws Exception{
         var view=publish();Files.writeString(storage.directory(1,downloadId).resolve("SKILL.md"),"replaced content");
@@ -105,7 +130,7 @@ class SkillLinkLifecycleTest {
     @Test void identicalCommitDoesNotCreateDuplicateVersionAndForeignUpgradeIsDenied()throws Exception{
         var first=publish();String next=upgradedPackage(first,"a".repeat(40),"");var same=service.createLinked(alice,next,"INSPECTOR");assertThat(same.latestVersion()).isEqualTo(1);assertThat(same.revision()).isEqualTo(first.revision());
         assertThat(jdbc.queryForObject("SELECT status FROM workflow_instance WHERE kind='SKILL_DOWNLOAD' AND workflow_id=?",String.class,next)).isEqualTo("NO_CHANGE");
-        assertThatThrownBy(()->service.linkedUpgradeRole(bob,first.skillId())).hasMessageContaining("本人");
+        assertThatThrownBy(()->service.linkedUpgradeRole(bob,first.skillId())).hasMessageContaining("无权限");
     }
     @Test void concurrentRevisionChangeRejectsDownloadedUpgradeWithoutChangingActiveVersion()throws Exception{
         var first=publish();String next=upgradedPackage(first,"b".repeat(40),"\nRecheck sources.");

@@ -1,6 +1,21 @@
 // Both entry points accept only known confirmation DTOs before enabling a write.
 const token=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value)
 const states=new Set(['PENDING','APPROVED','EXECUTING','NEEDS_REVIEW','SUCCEEDED','REJECTED','CANCELLED','EXPIRED','INVALIDATED'])
+const activeStates=new Set(['PENDING','APPROVED','EXECUTING','NEEDS_REVIEW'])
+export const isActiveAgentAction=action=>activeStates.has(action.status)
+export function readAgentActionPage(value,group,before=null){
+  if(!Array.isArray(value?.items)||value.items.length>100
+    ||(value.nextCursor!==null&&(!token(value.nextCursor)||value.nextCursor===before))
+    ||!value.items.every(action=>validAgentAction(action)&&isActiveAgentAction(action)===(group==='active'))
+    ||new Set(value.items.map(action=>action.actionId)).size!==value.items.length){
+    throw new Error('操作记录格式异常 请刷新核对')
+  }
+  return value
+}
+export function agentCreationReviewSession(action){
+  return action.operation==='CREATE_DETECTION'&&action.status==='NEEDS_REVIEW'
+    &&typeof action.sessionId==='string'&&/^[A-Za-z0-9_.-]{1,128}$/.test(action.sessionId)?action.sessionId:''
+}
 export function agentImagePreview(image){
  const path=image?.previewPath
  if(image?.origin!=null){const origin=image.origin;if(!token(origin.taskId)||typeof origin.fileId!=='string'||!/^[a-f0-9-]{36}$/.test(origin.fileId)||typeof origin.resourceVersion!=='string'||!/^[a-f0-9]{64}$/.test(origin.resourceVersion))return '';const expected='/api/agent/business-files/DETECTION/'+origin.taskId+'/'+origin.fileId;return path===expected?expected:''}

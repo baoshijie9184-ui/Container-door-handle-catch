@@ -113,6 +113,7 @@ export const exportAgentRunSources = (runId) => request.post(`/api/agent/runs/${
 export const cancelAgentRun = (runId) => request.post(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, null, { headers: { 'X-Agent-Action': 'cancel' } })
 
 export const fetchAgentActions = (params = {}) => request.get('/api/agent/actions', { params })
+export const fetchAgentActionPage = (params = {}) => request.get('/api/agent/actions/page', { params })
 export const fetchAgentActionAudit = (id, config = {}) => request.get(`/api/agent/actions/${encodeURIComponent(id)}/audit`, config)
 export const confirmAgentAction = (id, decision, version) => request.post(`/api/agent/actions/${encodeURIComponent(id)}/confirm`, { decision, version }, { headers: { 'X-Agent-Action': 'confirm' } })
 export const cancelAgentAction = (id, version) => request.post(`/api/agent/actions/${encodeURIComponent(id)}/cancel`, { version }, { headers: { 'X-Agent-Action': 'cancel' } })

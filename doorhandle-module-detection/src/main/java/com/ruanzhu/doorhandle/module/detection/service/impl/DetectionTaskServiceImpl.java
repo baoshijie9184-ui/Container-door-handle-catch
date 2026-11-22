@@ -182,6 +182,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         var task = getTaskForSystemLocked(taskId);
         if (!"OSS_FOLDER".equals(task.getTaskType()) || !Set.of("READY","FAILED").contains(task.getStatus()))
             throw new BusinessException(409, "任务已启动，请刷新进度");
+        if (DetectionQualityWorkflow.recheckRequired(task))throw new BusinessException(409, "请由校验责任人或主管从待跟进入口启动复检");
         if ("FAILED".equals(task.getStatus())) {
             retryPreparedTask(task,null,null);
             return;
@@ -430,7 +431,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .batchNo(task.getBatchNo())
                 .workOrderNo(task.getWorkOrderNo())
                 .flowStatus(task.getFlowStatus())
-                .qualityActions(DetectionQualityWorkflow.actions(task))
+                .qualityActions(qualityActionsForCurrentActor(task))
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
                 .claimCandidateUserIds(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read(task.getClaimCandidateIds()))
@@ -869,7 +870,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="retryTask")
     public DetectionTaskProgressResponse retryTask(String taskId) {
         DetectionTask task = getTaskForSystemLocked(taskId);
-        accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
+        accessPolicy.assertCanRetry(task,SecurityContextHolder.getContext().getAuthentication());
         validateRetryable(task);
         return retryPreparedTask(task,null,null);
     }
@@ -883,13 +884,14 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         accessPolicy.applyScope(query,actor);query.last("FOR UPDATE");
         var task=detectionTaskMapper.selectOne(query);
         if(task==null)throw new SecurityException("任务不存在或无访问权限");
-        accessPolicy.assertCanMutate(task,actor);
+        accessPolicy.assertCanRetry(task,actor);
         validateRetryable(task);
         return retryPreparedTask(task,actor,requestId);
     }
 
     private DetectionTaskProgressResponse retryPreparedTask(DetectionTask task,com.ruanzhu.doorhandle.contracts.agent.AgentActor actor,String requestId) {
         LocalDateTime now = LocalDateTime.now();
+        boolean recheck=DetectionQualityWorkflow.recheckRequired(task);
         task.setStatus("UPLOADED");
         task.setStage("UPLOADED");
         task.setFlowStatus("PENDING_DETECTION");
@@ -918,13 +920,14 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setDispositionRemark(null);
         task.setDispositionOperator(null);
         task.setDisposedAt(null);
-        task.setRecheckRequired(false);
+        task.setRecheckRequired(recheck);
         task.setStartedAt(null);
         task.setFinishedAt(null);
         task.setDispatchId(UUID.randomUUID().toString());
         task.setLastFinishedEventId(null);
         task.setUpdatedAt(now);
         if(detectionTaskMapper.resetForRetry(task)!=1)throw new BusinessException("重新检测状态保存失败");
+        if(recheck && "OSS_FOLDER".equals(task.getTaskType()))detectionTaskMapper.beginFolderRecheck(task.getTaskId(),now);
         if(identities!=null)identities.clearPerformed(task,"reviewer","disposition");
         saveIdentity(task);
 
@@ -1037,7 +1040,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         } else {
             task.setStatus("FAILED");
             task.setStage("FAILED");
-            task.setFlowStatus("FAILED");
+            task.setFlowStatus(Boolean.TRUE.equals(task.getRecheckRequired()) ? "RECHECK_REQUIRED" : "FAILED");
             if (!StringUtils.hasText(task.getErrorMessage())) {
                 task.setErrorMessage("远程检测服务返回失败状态");
             }
@@ -1106,6 +1109,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         var before=systemChanges==null?null:systemChanges.before(task.getTaskId());
         task.setStatus("FAILED");
         task.setStage("FAILED");
+        if(Boolean.TRUE.equals(task.getRecheckRequired()))task.setFlowStatus("RECHECK_REQUIRED");
         task.setErrorMessage(fitErrorMessage(errorMessage));
         task.setFinishedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
@@ -1396,7 +1400,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .batchNo(task.getBatchNo())
                 .workOrderNo(task.getWorkOrderNo())
                 .flowStatus(task.getFlowStatus())
-                .qualityActions(DetectionQualityWorkflow.actions(task))
+                .qualityActions(qualityActionsForCurrentActor(task))
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
                 .claimCandidateUserIds(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read(task.getClaimCandidateIds()))
@@ -1503,8 +1507,20 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         query.last("FOR UPDATE");
         DetectionTask task = detectionTaskMapper.selectOne(query);
         if (task == null) throw new BusinessException(404, "任务不存在或无访问权限");
-        accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
+        accessPolicy.assertCanOperateQuality(task,SecurityContextHolder.getContext().getAuthentication());
         return task;
+    }
+
+    private List<com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionQualityAction> qualityActionsForCurrentActor(DetectionTask task) {
+        var authentication=SecurityContextHolder.getContext().getAuthentication();
+        boolean supervisor=accessPolicy.isAdmin(authentication);
+        boolean quality=supervisor||accessPolicy.canOperateQuality(task,authentication);
+        return DetectionQualityWorkflow.actions(task).stream().map(action -> {
+            if(action.supervisorRequired()?supervisor:quality)return action;
+            return new com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionQualityAction(
+                    action.action(),false,action.supervisorRequired(),action.supervisorRequired()
+                    ?"仅主管可办理":"仅当前校验责任人或主管可办理");
+        }).toList();
     }
 
     private DetectionTask getTaskForSystem(String taskId) {
@@ -1643,7 +1659,8 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     }
 
     private void validateRetryable(DetectionTask task) {
-        if ("OSS_FOLDER".equals(task.getTaskType())) throw new BusinessException(409, "请由受派员工从任务列表重试");
+        if ("OSS_FOLDER".equals(task.getTaskType()) && !DetectionQualityWorkflow.recheckRequired(task))
+            throw new BusinessException(409, "请由受派员工从任务列表重试");
         com.ruanzhu.doorhandle.module.detection.service.detection.DetectionRetryPolicy.assertEligible(task,objectMapper);
     }
 
@@ -1685,6 +1702,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setFlowStatus("PENDING_REVIEW");
         task.setReviewStatus("PENDING");
         task.setDispositionStatus(null);
+        task.setRecheckRequired(false);
     }
 
     private void applyDefectEvidence(DetectionTask task, DetectionTaskFinishedEvent event) {

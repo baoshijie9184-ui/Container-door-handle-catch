@@ -30,6 +30,7 @@ def api(route):
     if path=='/api/agent/workbench/capabilities':return reply(route,{'enabled':True,'detectionCreationReviews':False},True)
     if path.endswith('/workbench'):return reply(route,{'items':[],'files':[]},True)
     if path=='/api/agent/actions':return reply(route,[],True)
+    if path == '/api/agent/actions/page': return reply(route, {'items': [], 'nextCursor': None},True)
     if path=='/api/agent/commands':return reply(route,{'enabled':True,'skills':[]},True)
     if path=='/agui/catalog':return reply(route,{'role':'SUPERVISOR','mode':'CONFIRMABLE','mainAgent':'supervisor','agents':[]},True)
     if path=='/agui/models':return reply(route,{'models':[{'id':'deepseek:demo','model':'configured-demo','selected':True,'configured':True}], 'fallbackEnabled':False},True)

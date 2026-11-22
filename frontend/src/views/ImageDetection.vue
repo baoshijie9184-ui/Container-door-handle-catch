@@ -856,6 +856,8 @@ const requestedDialogVisible=computed(()=>{
   if(!props.boardRequest)return false
   if(props.boardRequest.action==='assign')return assignmentDialogVisible.value
   if(props.boardRequest.action==='review')return reviewDialogVisible.value
+  if(props.boardRequest.action==='disposition')return dispositionDialogVisible.value
+  if(props.boardRequest.action==='rework')return reworkDialogVisible.value
   return traceDialogVisible.value
 })
 watch(requestedDialogVisible,(open,wasOpen)=>{
@@ -874,6 +876,8 @@ async function openBoardRequest() {
     const row=response.data?.data
     if(response.data?.code!==200 || row?.taskId!==taskId)throw Error()
     if(action==='assign')openAssignmentDialog(row)
+    else if(action==='disposition')openDispositionDialog(row,row.flowStatus==='CONFIRMED'&&row.reviewConclusion==='NEEDS_RECHECK'?'RECHECK':undefined)
+    else if(action==='rework')openReworkDialog(row)
     else openReviewDialog(row)
     if(requestedDialogVisible.value)openingBoardDialog.value=false
     else boardReadError.value='任务状态或权限已变化，请返回列表查看最新进度。'

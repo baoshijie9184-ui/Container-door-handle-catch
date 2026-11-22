@@ -40,6 +40,7 @@
           <el-button v-if="keyword.trim()" @click="resetSearch">清空筛选</el-button>
         </form>
         <div class="collection-heading"><span>{{ total==null?'匹配总数尚未核对':'匹配 '+total+' 个账号' }} · 当前已加载 {{ accountsLoaded?accounts.length:'—' }} 个</span><span>当前查询 {{ accountsLoaded ? appliedKeyword||'全部账号' : '尚未完成读取' }}</span></div>
+        <p v-if="!canEditLoginAccess" class="organization-query-note" role="status">当前运行配置暂不支持调整账号登录权限。</p>
         <p v-if="accountsLoaded&&keyword.trim()!==appliedKeyword" class="organization-query-note" role="status">账号条件已修改，列表仍为上次查询结果，点击查询后更新。</p>
         <el-alert v-if="accountError&&accounts.length" :title="accountError+'；下方保留先前读取的账号，请重新核对。'" type="error" :closable="false" />
         <TableReadHint v-if="accounts.length" />
@@ -52,7 +53,7 @@
           <el-table-column label="员工状态" min-width="110"><template #default="{ row }"><StatusBadge v-if="row.employeeStatus" domain="employee" :code="row.employeeStatus" :label="statusLabel(row.employeeStatus)" /><span v-else class="muted">{{ row.employeeId==null?'未关联':'状态未记录' }}</span></template></el-table-column>
           <el-table-column label="操作" min-width="220"><template #default="{ row }">
             <el-button size="small" type="primary" :disabled="loading||saving||!!error||!!accountError" @click="openBinding(row)"><AppIcon name="Connection" :size="15" />{{ row.employeeId==null?'关联员工':'调整关联' }}</el-button>
-            <AccountAccessEditor :account="row" @updated="refresh" />
+            <AccountAccessEditor v-if="canEditLoginAccess" :account="row" @updated="refresh" />
             <el-button size="small" :disabled="saving" @click="openAudit(row)"><AppIcon name="Document" :size="15" />变更记录</el-button>
           </template></el-table-column>
         </el-table>
@@ -125,6 +126,7 @@ const accountError=ref(''),departmentReadError=ref(''),accountsLoaded=ref(false)
 const departmentQuery=ref(''),departmentSearchRef=ref(null),departmentHeadingRef=ref(null)
 const actor=computed(()=>JSON.stringify([userStore.identity?.userId ?? null,userStore.username,userStore.role,userStore.isAuthenticated]))
 const isSupervisor = computed(() => userStore.isAuthenticated && mine.value?.role === 'SUPERVISOR')
+const canEditLoginAccess = computed(() => userStore.capabilities?.sessionTracking === true && userStore.capabilities?.mutations === true)
 const lastLoad=ref(null),mutationReceipt=ref(null),uncertainBindings=ref(new Set()),uncertainDepartments=ref(new Set())
 let accountGeneration=0
 const currentAccount=scope=>active && accountGeneration===scope

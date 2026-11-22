@@ -22,7 +22,10 @@ public class QualityReportController {
     public QualityReportController(QualityReportService service){this.service=service;}
     @GetMapping public Result<Map<String,Object>> list(@AuthenticationPrincipal TenantPrincipal principal,
             @RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size,
-            @RequestParam(required=false) String status,@RequestParam(required=false) String keyword){return Result.success(service.list(actor(principal),page,size,status,keyword));}
+            @RequestParam(required=false) String status,@RequestParam(required=false) String keyword,
+            @RequestParam(defaultValue="false") boolean awaitingMyApproval){
+        return Result.success(service.list(actor(principal),page,size,status,keyword,awaitingMyApproval));
+    }
     @GetMapping("/{id}") public Result<View> get(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id){return Result.success(service.get(actor(principal),id));}
     @GetMapping("/{id}/audit") public Result<List<Audit>> audit(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id){return Result.success(service.audit(actor(principal),id));}
     @GetMapping("/{id}/events") public ResponseEntity<Result<List<EventDelivery>>> events(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id){return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(Result.success(service.events(actor(principal),id)));}

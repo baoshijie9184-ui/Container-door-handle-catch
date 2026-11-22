@@ -132,6 +132,51 @@ class DetectionTaskQualityTest {
     }
 
     @Test
+    void uploadOwnerGetsReadOnlyQualityHintsAndCannotWriteAReviewBeforeAssignment() {
+        var auth=new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("detector",null,
+                List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_INSPECTOR")));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(auth);
+        DetectionTask task = new DetectionTask();
+        task.setTaskId("det_owner");
+        task.setCreatedBy("detector");
+        task.setStatus("COMPLETED");
+        task.setFlowStatus("PENDING_REVIEW");
+        task.setReviewStatus("PENDING");
+        when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
+
+        var actions=fixture.service.getTaskProgress("det_owner").getQualityActions();
+        assertEquals(false,actions.stream().filter(action->"REVIEW".equals(action.action())).findFirst().orElseThrow().stateAllowed());
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> fixture.service.reviewTask("det_owner",new DetectionReviewRequest()));
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> fixture.service.disposeTask("det_owner",new DetectionDispositionRequest()));
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> fixture.service.submitReworkResult("det_owner",new DetectionReworkResultRequest()));
+        verify(fixture.detectionTaskMapper,Mockito.never()).updateById(any(DetectionTask.class));
+    }
+
+    @Test
+    void assignedReviewerCanRestartAFolderRecheckWithoutLeavingTheOrdinaryRetryPathOpen() {
+        var auth=new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("reviewer",null,
+                List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_INSPECTOR")));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(auth);
+        DetectionTask task = new DetectionTask();
+        task.setTaskId("det_folder_recheck");
+        task.setCreatedBy("uploader");
+        task.setAssignee("reviewer");
+        task.setTaskType("OSS_FOLDER");
+        task.setStatus("FAILED");
+        task.setFlowStatus("RECHECK_REQUIRED");
+        task.setOriginalImageKeysJson("[\"detection/Original/images/one.jpg\"]");
+        when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
+        when(fixture.detectionTaskMapper.resetForRetry(task)).thenReturn(1);
+
+        assertThrows(BusinessException.class,()->fixture.service.dispatchAssignedFolder("det_folder_recheck"));
+        var response=fixture.service.retryTask("det_folder_recheck");
+        assertEquals("UPLOADED",response.getStatus());
+        assertEquals(true,task.getRecheckRequired());
+        verify(fixture.detectionTaskMapper).beginFolderRecheck(org.mockito.ArgumentMatchers.eq(task.getTaskId()),any());
+        verify(fixture.detectionTaskDispatchService).dispatchTaskAsync(task.getTaskId());
+    }
+
+    @Test
     void reviewTaskAcceptsLegacyReviewAliases() {
         DetectionTask task = new DetectionTask();
         task.setTaskId("det_review_alias");

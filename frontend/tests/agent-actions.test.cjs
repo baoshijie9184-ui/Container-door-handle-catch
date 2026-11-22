@@ -16,3 +16,20 @@ test('old assignment cards remain supported without permitting a retry to be int
  const value={actionId:'old-1',version:2,status:'SUCCEEDED',operation:'ASSIGN_QUALITY_TASK',command:{taskId:'task-1',qualityStation:'A',assignee:'alice'},before:{}};
  assert.equal(valid(value),true);assert.equal(valid({...value,before:null}),false);assert.equal(valid({...value,operation:'RETRY_DETECTION'}),false);
 });
+test('paged actions preserve distinct server status groups and a usable cursor after an empty read',async()=>{
+ const {readAgentActionPage}=await mod;
+ assert.deepEqual(readAgentActionPage({items:[],nextCursor:'raw-2'},'active'),{items:[],nextCursor:'raw-2'});
+ assert.throws(()=>readAgentActionPage({items:[],nextCursor:'raw-2'},'active','raw-2'));
+ assert.throws(()=>readAgentActionPage({items:[retry()],nextCursor:null},'history'));
+ const closed={...retry(),status:'EXPIRED'};
+ assert.deepEqual(readAgentActionPage({items:[closed],nextCursor:null},'history').items,[closed]);
+ assert.throws(()=>readAgentActionPage({items:[retry(),retry()],nextCursor:null},'active'));
+});
+test('current creation review can open only the authorized confirmation session path',async()=>{
+ const {agentCreationReviewSession}=await mod;
+ const action={operation:'CREATE_DETECTION',status:'NEEDS_REVIEW',sessionId:'message-session.1'};
+ assert.equal(agentCreationReviewSession(action),'message-session.1');
+ assert.equal(agentCreationReviewSession({...action,sessionId:'../broken'}),'');
+ assert.equal(agentCreationReviewSession({...action,status:'EXECUTING'}),'');
+ assert.equal(agentCreationReviewSession({...action,operation:'RETRY_DETECTION'}),'');
+});

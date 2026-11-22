@@ -47,7 +47,9 @@ public class PersonalModelQuotaService {
             String status,long version,OffsetDateTime createdAt,OffsetDateTime updatedAt,OffsetDateTime finishedAt,
             Long deciderUserId,String decisionReason) { }
     @JsonInclude(JsonInclude.Include.ALWAYS)
-    public record Page(List<Application> items,Long nextCursor) { }
+    public record Page(List<Application> items,Long nextCursor,@JsonInclude(JsonInclude.Include.NON_NULL) Long total) {
+        public Page(List<Application> items,Long nextCursor) { this(items,nextCursor,null); }
+    }
     private record Stored(long cursor,String id,long owner,String model,long requestedTokens,String requestHash,
             String status,long version,String payload,String result,Integer resultVersion,String resultHash,Long decider,
             LocalDateTime created,LocalDateTime updated,LocalDateTime finished) { }
@@ -87,19 +89,25 @@ public class PersonalModelQuotaService {
     }
 
     public Page applications(String scope,String status,long before,int limit) {
+        return applications(scope,status,before,limit,false);
+    }
+    @org.springframework.transaction.annotation.Transactional(readOnly=true)
+    public Page applications(String scope,String status,long before,int limit,boolean includeTotal) {
         var actor=current();
         if(!Set.of("mine","team").contains(scope)||before<1||limit<1||limit>100||status!=null&&!STATES.contains(status))
             throw bad("申请分页参数不正确");
         if("team".equals(scope)&&!actor.supervisor())throw forbidden();
-        String sql="SELECT * FROM workflow_instance WHERE kind='LLM_QUOTA_APPLICATION' AND id<?";
-        var args=new ArrayList<Object>();args.add(before);
-        if("mine".equals(scope)){sql+=" AND owner_user_id=?";args.add(actor.userId());}
-        if(status!=null){sql+=" AND status=?";args.add(status);}
+        String where=" WHERE kind='LLM_QUOTA_APPLICATION'";
+        var args=new ArrayList<Object>();
+        if("mine".equals(scope)){where+=" AND owner_user_id=?";args.add(actor.userId());}
+        if(status!=null){where+=" AND status=?";args.add(status);}
+        Long total=includeTotal?jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance"+where,Long.class,args.toArray()):null;
+        args.add(before);
         args.add(limit+1);
-        var records=jdbc.query(sql+" ORDER BY id DESC LIMIT ?",this::stored,args.toArray());
+        var records=jdbc.query("SELECT * FROM workflow_instance"+where+" AND id<? ORDER BY id DESC LIMIT ?",this::stored,args.toArray());
         boolean more=records.size()>limit;
         var items=records.stream().limit(limit).map(this::view).toList();
-        return new Page(items,more?items.get(items.size()-1).cursor():null);
+        return new Page(items,more?items.get(items.size()-1).cursor():null,total);
     }
 
     public Application apply(Apply request) {

@@ -43,6 +43,7 @@ def api(route):
     if path == '/api/chat-assistant/session': return reply(route, sessions['demo-empty'])
     if path == '/api/chat-projects': return reply(route, [])
     if path == '/api/agent/actions': return reply(route, [], raw=True)
+    if path == '/api/agent/actions/page': return reply(route, {'items': [], 'nextCursor': None},raw=True)
     if path == '/api/agent/workbench/capabilities': return reply(route, {'enabled': True, 'files': True, 'detectionCreationReviews': True}, raw=True)
     if path.endswith('/workbench'): return reply(route, {'items': [], 'files': []}, raw=True)
     if path.endswith('/detection-creations'): return reply(route, [], raw=True)

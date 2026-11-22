@@ -10,6 +10,8 @@ public interface BusinessUserDirectory {
     default Identity lockCurrent(long userId, String username) { throw new SecurityException("业务身份确认锁未接入"); }
     /** Require a current inspector account bound to an active detection employee. */
     default void lockDetectionEmployee(long userId, String username) { throw new SecurityException("检测员工资格确认未接入"); }
+    /** Return the current detection employee ID under the account and personnel locks. */
+    default long lockDetectionEmployeeId(long userId, String username) { throw new SecurityException("检测员工关联未接入"); }
     /** Resolve only a trusted server principal with its stable user ID, never a name supplied by a client. */
     default Identity authenticated() { throw new SecurityException("当前业务身份未接入"); }
 }

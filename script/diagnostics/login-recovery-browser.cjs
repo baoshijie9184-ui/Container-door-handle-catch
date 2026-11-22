@@ -44,7 +44,7 @@ function countRequests(page) {
 }
 
 async function verifySharedDirectories(page) {
-  for (const [label, heading] of [['人员目录', '人员管理'], ['设备目录', '设备管理'], ['检测模型', '检测模型管理']]) {
+  for (const [label, heading] of [['人员目录', '人员目录'], ['设备目录', '设备目录'], ['检测模型', '检测模型目录']]) {
     const directories = page.getByRole('navigation', { name: '公共资料' })
     await directories.getByRole('link', { name: label }).click()
     await page.getByRole('heading', { name: heading, exact: true }).first().waitFor()

@@ -15,6 +15,12 @@ public interface DetectionTaskMapper extends BaseMapper<DetectionTask> {
     int finishFolderAssignment(@Param("taskId") String taskId,@Param("status") String status,
                                @Param("count") int count,@Param("finished") java.time.LocalDateTime finished);
 
+    @Update("""
+            UPDATE detection_work_unit SET status='PROCESSING',submitted_at=#{started},completed_at=NULL,completed_count=0,version=version+1
+            WHERE work_unit_id=#{taskId} AND strategy='OSS_FOLDER' AND status IN ('PROCESSING','COMPLETED','FAILED')
+            """)
+    int beginFolderRecheck(@Param("taskId") String taskId,@Param("started") java.time.LocalDateTime started);
+
     @Update("UPDATE detection_task SET claim_candidate_ids=NULL WHERE task_id=#{taskId}")
     int clearClaimCandidates(@Param("taskId") String taskId);
 
@@ -31,7 +37,7 @@ public interface DetectionTaskMapper extends BaseMapper<DetectionTask> {
             review_status='PENDING',review_conclusion=NULL,severity_level=NULL,confirmed_defect_count=0,false_positive_count=0,
             review_remark=NULL,reviewer=NULL,reviewed_at=NULL,
             disposition_status='PENDING',disposition_action=NULL,disposition_remark=NULL,disposition_operator=NULL,disposed_at=NULL,
-            recheck_required=FALSE,started_at=NULL,finished_at=NULL,last_finished_event_id=NULL,
+            recheck_required=#{task.recheckRequired},started_at=NULL,finished_at=NULL,last_finished_event_id=NULL,
             dispatch_id=#{task.dispatchId},updated_at=#{task.updatedAt}
             WHERE task_id=#{task.taskId}
             """)

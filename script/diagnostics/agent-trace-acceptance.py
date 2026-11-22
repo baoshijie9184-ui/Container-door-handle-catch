@@ -77,6 +77,7 @@ def api(route):
         return reply(route,{'events':[],'status':'COMPLETED'} if path.endswith('/trace') else session,True)
     if path=='/api/chat-projects': return reply(route,[],True)
     if path=='/api/agent/actions': return reply(route,[])
+    if path == '/api/agent/actions/page': return reply(route, {'items': [], 'nextCursor': None})
     if path=='/api/agent/cards/resolve': return reply(route,{'cards':[]})
     if path=='/api/agent/runs': return reply(route,[runs['run-long'],runs['run-live']])
     if path.startswith('/api/agent/runs/'):

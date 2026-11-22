@@ -13,6 +13,7 @@ import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitImageMapp
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnit;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitMapper;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionWorkUnitService;
+import com.ruanzhu.doorhandle.module.detection.service.DetectionWorkUnitAudit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,6 +30,7 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
     private final DetectionWorkUnitMapper mapper;
     private final DetectionWorkUnitImageMapper imageMapper;
     private final BusinessUserDirectory users;
+    private final DetectionWorkUnitAudit audit;
 
     @Override @Transactional
     public DetectionWorkUnit apply(DetectionWorkUnitApplyRequest request) {
@@ -48,6 +50,7 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
         if (requestId == null) {
             mapper.insert(unit);
             lockEligibleApplicant(actor);
+            audit.record(actor, "DETECTION_APPLICATION_SUBMITTED", unit.getWorkUnitId(), id.toString(), 0);
             return unit;
         }
         mapper.insertApplication(unit);
@@ -58,6 +61,7 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
                 || !Objects.equals(unit.getRemark(), saved.getRemark())) {
             throw new BusinessException(409, "申请编号已用于其他内容，请重新发起申请");
         }
+        audit.record(actor, "DETECTION_APPLICATION_SUBMITTED", saved.getWorkUnitId(), requestId.toString(), 0);
         return saved;
     }
 
@@ -116,6 +120,8 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
             throw new BusinessException(409, "检测申请已变化，请刷新后重试");
         }
         unit.setVersion(request.expectedVersion() + 1);
+        audit.record(actor, employeeWithdrawal ? "DETECTION_APPLICATION_WITHDRAWN" : "DETECTION_APPLICATION_REJECTED",
+                workUnitId, requestId, unit.getVersion());
         return unit;
     }
 

@@ -26,6 +26,7 @@ test('only suitable dialogs open from upload lists and employee lists', async ()
   for (const [action, supervisor, uploads, valid] of [
     ['images',false,true,true], ['images',false,false,false], ['assign',false,false,false],
     ['assign',true,false,true], ['assign',true,true,false], ['review',false,false,true],
+    ['disposition',false,false,true], ['rework',true,false,true], ['rework',false,true,false],
     ['trace',true,false,true], ['unknown',true,false,false]
   ]) {
     assert.deepEqual(boardDialog({boardAction:action,taskId:'det-12'},supervisor,uploads), valid ? {action,taskId:'det-12'} : null)

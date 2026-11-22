@@ -163,13 +163,35 @@ public class AgentActionService {
         });
     }
     public List<View> list(AgentActor actor,String sessionId,String runId,int limit) {
-        requireEnabled();if (limit<1||limit>100) throw bad("分页数量必须在 1 到 100 之间");
-        if (sessionId!=null&&!sessionId.matches("[A-Za-z0-9_.-]{1,128}"))throw bad("会话编号不正确");
-        if (runId!=null)validateId(runId);
+        requireEnabled();validateListScope(sessionId,runId,limit);
         var ids=persistence.ids(actor.userId(),sessionId,runId,limit);
         var visible=new ArrayList<View>();
         for(var id:ids)try{visible.add(get(actor,id));}catch(SecurityException|DetectionExecutionApi.ResourceChanged denied){/* Do not return a revoked or changed source snapshot. Minimal command reconciliation is a separate owner-scoped view. */}
         return List.copyOf(visible);
+    }
+    public record Page(List<View> items,
+                       @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS) String nextCursor) {}
+    public Page page(AgentActor actor,String sessionId,String runId,String group,String before,int limit) {
+        requireEnabled();validateListScope(sessionId,runId,limit);
+        if(!"active".equals(group)&&!"history".equals(group))throw bad("未知操作分组");
+        if(before!=null)validateId(before);
+        boolean history="history".equals(group);
+        var ids=persistence.pageIds(actor.userId(),sessionId,runId,history,before,limit);
+        var visible=new ArrayList<View>();
+        int end=Math.min(ids.size(),limit);
+        for(var id:ids.subList(0,end))try{
+            var view=get(actor,id);
+            // A pending item may expire or resolve while its current state is being read.
+            if(AgentActionPersistence.ACTIVE.contains(view.status())!=history)visible.add(view);
+        }catch(SecurityException|org.springframework.security.access.AccessDeniedException|DetectionExecutionApi.ResourceChanged denied){
+            // Preserve the cursor across entries whose underlying resources are no longer readable.
+        }
+        return new Page(List.copyOf(visible),ids.size()>limit?ids.get(end-1):null);
+    }
+    private static void validateListScope(String sessionId,String runId,int limit) {
+        if(limit<1||limit>100)throw bad("分页数量必须在 1 到 100 之间");
+        if(sessionId!=null&&!sessionId.matches("[A-Za-z0-9_.-]{1,128}"))throw bad("会话编号不正确");
+        if(runId!=null)validateId(runId);
     }
     public View get(AgentActor actor,String id) {
         requireEnabled();validateId(id);

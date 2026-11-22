@@ -16,7 +16,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.util.StringUtils;
 
 import java.util.List;
 
@@ -41,8 +43,15 @@ public class EmployeeController {
             @RequestParam(required = false) String employeeType,
             @RequestParam(required = false) String status) {
 
+        boolean includeContacts = DirectoryResponses.includesContacts();
+        if (!includeContacts && StringUtils.hasText(contact)) {
+            throw new AccessDeniedException("仅主管可按员工联系方式查询");
+        }
         Page<Employee> pageResult = employeeService.findByPage(
                 page, size, name, employeeNumber, contact, department, employeeType, status);
+        if (!includeContacts) {
+            pageResult.setRecords(pageResult.getRecords().stream().map(DirectoryResponses::withoutContact).toList());
+        }
         return Result.success(pageResult);
     }
 
@@ -52,7 +61,7 @@ public class EmployeeController {
         if (employee == null) {
             return Result.error("员工不存在");
         }
-        return Result.success(employee);
+        return Result.success(DirectoryResponses.includesContacts() ? employee : DirectoryResponses.withoutContact(employee));
     }
 
     @GetMapping("/employees/check-number")
@@ -96,7 +105,9 @@ public class EmployeeController {
 
     @GetMapping("/employees/type/{employeeType}")
     public Result<List<Employee>> findByEmployeeType(@PathVariable String employeeType) {
-        return Result.success(employeeService.findByEmployeeType(employeeType));
+        var employees = employeeService.findByEmployeeType(employeeType);
+        return Result.success(DirectoryResponses.includesContacts() ? employees
+                : employees.stream().map(DirectoryResponses::withoutContact).toList());
     }
 
     @GetMapping("/employees/{id}/devices")

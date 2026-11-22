@@ -236,12 +236,12 @@ export function useQualityTaskActions({
     }
   }
 
-  const openDispositionDialog = (task) => {
+  const openDispositionDialog = (task, initialAction) => {
     if (!allowed(task, 'DISPOSE', canDisposeTask)) return
     resetFeedback('disposition')
     dispositionTask.value = captureTaskMutation(task)
-    dispositionForm.dispositionAction = canReleaseDisposition(task) ? 'RELEASE' : 'REWORK'
-    dispositionForm.recheckRequired = shouldDefaultRecheck(task)
+    dispositionForm.dispositionAction = initialAction === 'RECHECK' ? 'RECHECK' : canReleaseDisposition(task) ? 'RELEASE' : 'REWORK'
+    dispositionForm.recheckRequired = initialAction === 'RECHECK' || shouldDefaultRecheck(task)
     dispositionForm.dispositionRemark = task.dispositionRemark || ''
     dispositionDialogVisible.value = true
   }

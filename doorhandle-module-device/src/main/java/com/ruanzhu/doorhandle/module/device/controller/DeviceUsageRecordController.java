@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -42,7 +43,12 @@ public class DeviceUsageRecordController {
 
         Map<String, Object> result = deviceUsageRecordService.getDeviceUsageRecords(page, size, deviceId, deviceCode, employeeName, employeeNumber, status, startTimeBegin, startTimeEnd);
         
-        log.info("查询到设备使用记录: {}", result);
+        if (!DirectoryResponses.includesContacts() && result.get("records") instanceof List<?> records) {
+            var response = new LinkedHashMap<>(result);
+            response.put("records", records.stream().map(DeviceUsageRecord.class::cast)
+                    .map(DirectoryResponses::withoutContact).toList());
+            return Result.success(response);
+        }
         return Result.success(result);
     }
     
@@ -54,7 +60,8 @@ public class DeviceUsageRecordController {
         log.info("查询设备ID={}的使用记录", deviceId);
         List<DeviceUsageRecord> records = deviceUsageRecordService.getDeviceUsageRecordsByDeviceId(deviceId);
         log.info("查询到设备ID={}的使用记录数量: {}", deviceId, records.size());
-        return Result.success(records);
+        return Result.success(DirectoryResponses.includesContacts() ? records
+                : records.stream().map(DirectoryResponses::withoutContact).toList());
     }
     
     /**

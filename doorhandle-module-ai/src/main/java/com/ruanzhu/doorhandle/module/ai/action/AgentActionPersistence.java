@@ -28,6 +28,7 @@ final class AgentActionPersistence {
                LocalDateTime decidedAt,ProposalV1 proposal,String resultJson,LegacyClockEvidence legacyClockEvidence) { }
     record AuditRow(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt,LegacyClockEvidence legacyClockEvidence) { }
     private static final Set<String> TERMINAL=Set.of("SUCCEEDED","REJECTED","CANCELLED","EXPIRED","INVALIDATED");
+    static final List<String> ACTIVE=List.of("PENDING","APPROVED","EXECUTING","NEEDS_REVIEW");
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final WorkflowProtocol<ProposalV1> protocol;
@@ -80,6 +81,21 @@ final class AgentActionPersistence {
         if(run!=null){where+=" AND run_id=?";args.add(run);}
         args.add(limit);
         return jdbc.queryForList("SELECT request_id FROM workflow_instance WHERE "+where+" ORDER BY created_at DESC,request_id DESC LIMIT ?",String.class,args.toArray());
+    }
+
+    List<String> pageIds(long owner,String session,String run,boolean history,String before,int limit) {
+        var args=new ArrayList<Object>();
+        args.add(owner);
+        String where="kind='AGENT_ACTION' AND owner_user_id=? AND status "+(history?"NOT IN":"IN")+" (?,?,?,?)";
+        args.addAll(ACTIVE);
+        if(session!=null){where+=" AND session_id=?";args.add(session);}
+        if(run!=null){where+=" AND run_id=?";args.add(run);}
+        if(before!=null){
+            where+=" AND id<(SELECT anchor.id FROM workflow_instance anchor WHERE anchor.kind='AGENT_ACTION' AND anchor.owner_user_id=? AND anchor.request_id=?)";
+            args.add(owner);args.add(before);
+        }
+        args.add(limit+1);
+        return jdbc.queryForList("SELECT request_id FROM workflow_instance WHERE "+where+" ORDER BY id DESC LIMIT ?",String.class,args.toArray());
     }
 
     void create(String actionId,long owner,String run,String session,String call,String operation,String resource,

@@ -1,13 +1,14 @@
 <template>
   <div class="page-shell reports-page">
-    <PageHero title="报告与审批" description="主管审批，编写人须回避。"><template #actions><el-button :loading="loading" :disabled="busy" @click="load()"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button><el-button type="primary" :disabled="busy" @click="openCreate"><AppIcon name="Plus" :size="16" />新建报告草稿</el-button></template></PageHero>
+    <PageHero :title="isSupervisor ? '报告与审批' : '我的质检报告'" description="主管审批，编写人须回避。"><template #actions><el-button :loading="loading" :disabled="busy" @click="load()"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button><el-button type="primary" :disabled="busy" @click="openCreate"><AppIcon name="Plus" :size="16" />新建报告草稿</el-button></template></PageHero>
     <el-alert v-if="reportChanged" title="相关资料可能已更新 正在编辑的草稿已保留 请核对修改记录或明确加载最新版本" type="warning" :closable="false"><router-link :to="reportHistory">查看修改记录</router-link><el-button text @click="readLatestReport">核对最新资料</el-button></el-alert>
     <p class="report-scope-note"><AppIcon name="Lock" :size="15" />{{ reportScope }}</p>
     <form class="toolbar-panel report-toolbar" @submit.prevent="search">
       <div class="report-filter-field"><label for="report-keyword">报告标题或任务编号</label><el-input id="report-keyword" v-model="keyword" aria-label="查询任务编号或报告标题" placeholder="输入标题或任务编号" maxlength="128" clearable /></div>
-      <div class="report-filter-field"><label for="report-status">审批状态</label><el-select id="report-status" v-model="status" aria-label="审批状态" placeholder="全部状态" clearable><el-option v-for="(label, value) in states" :key="value" :label="label" :value="value" /></el-select></div>
+      <router-link v-if="approvalOnly" to="/quality/reports">查看全部报告</router-link>
+      <div v-else class="report-filter-field"><label for="report-status">审批状态</label><el-select id="report-status" v-model="status" aria-label="审批状态" placeholder="全部状态" clearable><el-option v-for="(label, value) in states" :key="value" :label="label" :value="value" /></el-select></div>
       <el-button type="primary" native-type="submit" :loading="loading"><AppIcon name="Search" :size="16" />查询</el-button>
-      <el-button v-if="keyword.trim() || status" @click="resetSearch"><AppIcon name="Refresh" :size="16" />重置</el-button>
+      <el-button v-if="keyword.trim() || (!approvalOnly && status)" @click="resetSearch"><AppIcon name="Refresh" :size="16" />重置</el-button>
     </form>
     <section class="table-panel">
       <p v-if="filtersDirty&&records.length" class="report-query-note" role="status">筛选已改，点击查询更新结果。</p>
@@ -161,13 +162,14 @@ const editorVisible = ref(false), editingId = ref(''), editingVersion = ref(null
 const form = reactive({ taskId: '', title: '', narrative: '' })
 const transitionVisible = ref(false), transition = ref('submit')
 const decisionVisible = ref(false), decision = ref('APPROVE'), reason = ref(''), preview = ref(null), decisionError = ref('')
-const own = computed(() => detail.value?.ownerUserId === userStore.identity?.userId)
 const isSupervisor = computed(() => userStore.role === 'SUPERVISOR')
-const reportScope = computed(() => isSupervisor.value ? '可见本人草稿及有权查看的已提交报告。' : userStore.role === 'INSPECTOR' ? '仅显示本人报告，审批与任务放行分开。' : '仅显示当前账号有权访问的报告，私人草稿按编写账号隔离。')
+const own = computed(() => detail.value?.ownerUserId != null && String(detail.value.ownerUserId) === String(userStore.identity?.userId))
+const approvalOnly = computed(() => isSupervisor.value && route.query.awaitingMyApproval === '1')
+const reportScope = computed(() => approvalOnly.value ? '当前显示需要你审批的报告。' : isSupervisor.value ? '可见本人草稿及有权查看的已提交报告。' : userStore.role === 'INSPECTOR' ? '仅显示本人报告，审批与任务放行分开。' : '仅显示当前账号有权访问的报告，私人草稿按编写账号隔离。')
 const reportNextStep = computed(() => {
   const state = detail.value?.status
-  if (state === 'DRAFT') return own.value ? '当前为个人草稿。核对编写意见与依据后，提交固定版本给其他主管审批。' : '报告尚为草稿，需编写人提交后才能进入审批。'
-  if (state === 'SUBMITTED') return own.value ? '本版本已提交，等待其他主管独立审批。需要修改时先撤回，再创建修订草稿。' : isSupervisor.value ? '请核对提交快照，填写审批意见并预览，再确认本次决定。' : '本版本已提交，等待主管审批；当前不能作为已审批报告导出。'
+  if (state === 'DRAFT') return own.value ? '当前为个人草稿。核对编写意见与依据后，提交固定版本供主管独立审批。' : '报告尚为草稿，需编写人提交后才能进入审批。'
+  if (state === 'SUBMITTED') return own.value ? '本版本已提交，等待主管独立审批。需要修改时先撤回，再创建修订草稿。' : isSupervisor.value ? '请核对提交快照，填写审批意见并预览，再确认本次决定。' : '本版本已提交，等待主管审批；当前不能作为已审批报告导出。'
   if (state === 'APPROVED') return own.value ? '本版本已审批，可导出。修改内容需要另建修订草稿，原版本保持完整。' : '本版本已审批，可通过导出按钮获取报告；任务处置状态仍需分别核对。'
   if (state === 'REJECTED') return '本版本已驳回，请核对审批意见。编写人可创建修订草稿，原记录继续保留。'
   if (state === 'WITHDRAWN') return '本版本已撤回，原快照和操作记录继续保留。编写人可创建修订草稿。'
@@ -190,16 +192,16 @@ function withId(operation, payload) {
 async function load(queryOverride) {
   const generation = ++loadGeneration; loading.value = true; error.value = ''
   const source = queryOverride && typeof queryOverride === 'object' ? queryOverride : listLoaded.value ? { ...appliedQuery, page:appliedPage.value } : requestedQuery
-  const query={keyword:source.keyword || '',status:source.status || ''}, requestedPage=source.page ?? page.value
+  const query={keyword:source.keyword || '',status:approvalOnly.value ? 'SUBMITTED' : source.status || ''}, requestedPage=source.page ?? page.value
   Object.assign(requestedQuery,query,{page:requestedPage})
-  try { const data = unwrap(await request.get('/api/detection/reports', { params: { page: requestedPage, size: 20, status: query.status || undefined, keyword: query.keyword || undefined } })); if (generation === loadGeneration) { if(!Array.isArray(data?.records)||data.records.some(row=>!row||typeof row.reportId!=='string')||knownCount(data.total)===null)throw Error('报告列表或数量尚未完整读取');records.value = data.records; total.value = knownCount(data.total);Object.assign(appliedQuery,query);appliedPage.value=requestedPage;page.value=requestedPage;listLoaded.value=true } }
+  try { const data = unwrap(await request.get('/api/detection/reports', { params: { page: requestedPage, size: 20, status: query.status || undefined, keyword: query.keyword || undefined, awaitingMyApproval: approvalOnly.value || undefined } })); if (generation === loadGeneration) { if(!Array.isArray(data?.records)||data.records.some(row=>!row||typeof row.reportId!=='string')||knownCount(data.total)===null)throw Error('报告列表或数量尚未完整读取');records.value = data.records; total.value = knownCount(data.total);Object.assign(appliedQuery,query);appliedPage.value=requestedPage;page.value=requestedPage;listLoaded.value=true } }
   catch (e) { if (generation === loadGeneration) { if([401,403].includes(e.response?.status)){records.value=[];total.value=null;listLoaded.value=false}error.value = message(e) } }
   finally { if (generation === loadGeneration) loading.value = false }
 }
 function search() { load({ keyword:keyword.value.trim(), status:status.value || '', page:1 }) }
 function loadAppliedPage(nextPage) { load({ ...appliedQuery, page:nextPage }) }
 function retryList() { load({ ...requestedQuery }) }
-function resetSearch() { keyword.value = ''; status.value = ''; search() }
+function resetSearch() { keyword.value = ''; status.value = approvalOnly.value ? 'SUBMITTED' : ''; search() }
 function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || ''); form.title = ''; form.narrative = ''; editorError.value = ''; editorVisible.value = true }
 function openEdit() { reportConflict.value=false; keys.clear(); editingId.value = detail.value.reportId; editingVersion.value = detail.value.version; Object.assign(form, { taskId: detail.value.taskId, title: detail.value.title, narrative: detail.value.narrative }); editorError.value = ''; editorVisible.value = true }
 async function saveDraft() {
@@ -294,11 +296,11 @@ async function reloadDraft(){
  const id=editingId.value;await openDetail(id);if(detail.value?.reportId===id&&detail.value.status==='DRAFT'){openEdit();reportChanged.value=false}
 }
 function loadRouteFilter() {
-  status.value = Object.hasOwn(states,route.query.status) ? route.query.status : ''
+  status.value = approvalOnly.value ? 'SUBMITTED' : Object.hasOwn(states,route.query.status) ? route.query.status : ''
   keyword.value = ''
   return load({ status:status.value, keyword:'', page:1 })
 }
-watch(()=>route.query.status,loadRouteFilter)
+watch([()=>route.query.status, approvalOnly],loadRouteFilter)
 onMounted(async () => { if (!userStore.identity) await userStore.checkAuth(); await loadRouteFilter(); if (route.query.reportId) await openDetail(String(route.query.reportId)); else if (route.query.taskId) openCreate() })
 onBeforeUnmount(()=>{detailGeneration++;loadGeneration++;events.value=[];eventsError.value='';keys.clear()})
 </script>

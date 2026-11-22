@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell model-page">
-    <PageHero title="检测模型管理">
+    <PageHero :title="isSupervisor ? '检测模型管理' : '检测模型目录'">
       <template #actions>
         <el-button :loading="loading" @click="fetchModelList"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button>
         <ModelFileJournal />

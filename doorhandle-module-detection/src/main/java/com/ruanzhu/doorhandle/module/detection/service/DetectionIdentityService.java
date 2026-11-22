@@ -34,6 +34,23 @@ public class DetectionIdentityService {
     public BusinessUserDirectory.Identity current(long userId,String username){return users.current(userId,username);}
     @Deprecated public BusinessUserDirectory.Identity current(String username){var current=users.authenticated();if(!Objects.equals(username,current.username()))throw new SecurityException("缺少原账号稳定身份");return current;}
     public boolean canAccess(String task,long id){return Boolean.TRUE.equals(jdbc.queryForObject("SELECT COUNT(*)>0 FROM detection_task WHERE task_id=? AND "+predicate("","?"),Boolean.class,task,id,id));}
+    public String qualityAssigneePredicate(String alias,String userId,String username){
+        return qualityAssigneePredicate(alias,userId,username,active());
+    }
+    private String qualityAssigneePredicate(String alias,String userId,String username,boolean stable){
+        if(!alias.matches("(?:[A-Za-z][A-Za-z0-9_]*\\.)?"))throw new IllegalArgumentException("身份范围无效");
+        if(stable)return alias+"assignee_user_id="+userId+" AND "+bindingPredicate(alias,"assignee")
+                +(evidence==null?"":" AND "+evidence.authorizationPredicate(alias,"assignee"));
+        return "BINARY "+alias+"assignee=BINARY "+username+" AND ("+alias+"assignee_user_id IS NULL OR "
+                +alias+"assignee_user_id="+userId+")";
+    }
+    public boolean isQualityAssignee(String task, BusinessUserDirectory.Identity actor){
+        boolean stable=active();
+        String predicate=qualityAssigneePredicate("", "?", "?",stable);
+        Object[] parameters=stable?new Object[]{task,actor.userId()}:new Object[]{task,actor.username(),actor.userId()};
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM detection_task WHERE task_id=? AND "+predicate+")",
+                Boolean.class,parameters));
+    }
     public String predicate(String alias,String parameter){return "(("+alias+"created_user_id="+parameter+" AND "+bindingPredicate(alias,"created")+(evidence==null?"":" AND "+evidence.authorizationPredicate(alias,"created"))+") OR ("+alias+"assignee_user_id="+parameter+" AND "+bindingPredicate(alias,"assignee")+(evidence==null?"":" AND "+evidence.authorizationPredicate(alias,"assignee"))+"))";}
     private String bindingPredicate(String alias,String role){
         if(alias==null||!alias.matches("(?:[A-Za-z][A-Za-z0-9_]*\\.)?")||!ROLES.containsKey(role))throw new IllegalArgumentException("身份范围无效");

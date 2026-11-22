@@ -96,6 +96,7 @@ def api(route):
     if path.startswith('/api/chat-assistant/sessions/') or path == '/api/chat-assistant/session': return reply(route, operations_session if path.endswith('/operations-session') else alert_session if path.endswith('/alert-session') else session)
     if path == '/api/chat-projects': return reply(route, [])
     if path == '/api/agent/actions': return reply(route, [], raw=True)
+    if path == '/api/agent/actions/page': return reply(route, {'items': [], 'nextCursor': None},raw=True)
     if path == '/api/agent/commands': return reply(route, {'enabled': True, 'skills': []}, raw=True)
     if path.endswith('/agent-health'): return reply(route, {'framework': 'AgentScope', 'mode': 'READ_ONLY', 'defaultModel': 'fixture'})
     if path == '/agui/catalog': return reply(route, {'role': 'SUPERVISOR', 'mainAgent': 'supervisor-main', 'agents': [], 'mode': 'READ_ONLY'}, raw=True)

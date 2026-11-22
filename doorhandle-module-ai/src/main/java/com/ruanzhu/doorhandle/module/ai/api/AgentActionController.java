@@ -22,6 +22,11 @@ public class AgentActionController {
     public AgentActionController(AgentActionService actions,AgentActionProperties properties) {this.actions=actions;this.properties=properties;}
     @GetMapping public List<AgentActionService.View> list(Authentication auth,@RequestParam(required=false) String sessionId,
             @RequestParam(required=false) String runId,@RequestParam(defaultValue="50") int limit) {return actions.list(AgentIdentity.from(auth),sessionId,runId,limit);}
+    @GetMapping("/page") public AgentActionService.Page page(Authentication auth,@RequestParam(required=false) String sessionId,
+            @RequestParam(required=false) String runId,@RequestParam(defaultValue="active") String group,
+            @RequestParam(required=false) String before,@RequestParam(defaultValue="20") int limit) {
+        return actions.page(AgentIdentity.from(auth),sessionId,runId,group,before,limit);
+    }
     @GetMapping("/{id}") public AgentActionService.View get(Authentication auth,@PathVariable String id) {return actions.get(AgentIdentity.from(auth),id);}
     @GetMapping("/{id}/audit") public List<AgentActionService.Audit> audit(Authentication auth,@PathVariable String id) {return actions.audit(AgentIdentity.from(auth),id);}
     @PostMapping("/{id}/confirm") public AgentActionService.View confirm(Authentication auth,@PathVariable String id,@RequestBody Map<String,Object> body,

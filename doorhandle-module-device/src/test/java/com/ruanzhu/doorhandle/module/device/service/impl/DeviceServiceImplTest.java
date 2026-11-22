@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.device.service.impl;
 
 import com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceCaptureAlert;
 import com.ruanzhu.doorhandle.module.device.dto.device.DeviceAlertActionRequest;
@@ -15,6 +16,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -29,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -44,6 +47,9 @@ class DeviceServiceImplTest {
 
     @Mock
     private com.ruanzhu.doorhandle.module.device.service.DeviceUsageRecordService deviceUsageRecordService;
+
+    @Mock
+    private BusinessUserDirectory businessUsers;
 
     @InjectMocks
     private DeviceServiceImpl deviceService;
@@ -67,6 +73,18 @@ class DeviceServiceImplTest {
         SecurityContextHolder.setContext(context);
     }
 
+    private void supervisorHeartbeat() {
+        var actor = new BusinessUserDirectory.Identity(2L,"boss",true);
+        when(businessUsers.authenticated()).thenReturn(actor);
+        when(businessUsers.lockCurrent(actor.userId(),actor.username())).thenReturn(actor);
+    }
+
+    private void employeeHeartbeat() {
+        var actor = new BusinessUserDirectory.Identity(3L,"worker",false);
+        when(businessUsers.authenticated()).thenReturn(actor);
+        when(businessUsers.lockDetectionEmployeeId(actor.userId(),actor.username())).thenReturn(17L);
+    }
+
     @Test
     void heartbeatMarksDeviceOnlineAndRefreshesLastHeartbeatAt() {
         Device device = new Device();
@@ -74,7 +92,8 @@ class DeviceServiceImplTest {
         device.setDeviceCode("CAM-01");
         device.setStatus("OFFLINE");
 
-        when(deviceMapper.findByDeviceCode("CAM-01")).thenReturn(device);
+        supervisorHeartbeat();
+        when(deviceMapper.findByDeviceCodeForUpdate("CAM-01")).thenReturn(device);
         when(deviceMapper.updateById(device)).thenReturn(1);
 
         Device result = deviceService.heartbeat("CAM-01");
@@ -93,6 +112,7 @@ class DeviceServiceImplTest {
         Device device = new Device();
         device.setId(2L);
         device.setDeviceCode("CAM-02");
+        device.setEmployeeId(17L);
         device.setStatus("OFFLINE");
 
         DeviceHeartbeatRequest request = new DeviceHeartbeatRequest();
@@ -105,7 +125,8 @@ class DeviceServiceImplTest {
         request.setLastCaptureAt("2026-06-11T08:30:00+08:00");
         request.setRuntimeMetadata(Map.of("fps", 18, "exposure", "12ms"));
 
-        when(deviceMapper.findByDeviceCode("CAM-02")).thenReturn(device);
+        employeeHeartbeat();
+        when(deviceMapper.findByDeviceCodeForUpdate("CAM-02")).thenReturn(device);
         when(deviceMapper.updateById(device)).thenReturn(1);
 
         Device result = deviceService.heartbeat("CAM-02", request);
@@ -138,7 +159,8 @@ class DeviceServiceImplTest {
         request.setAlertLevel("MAJOR");
         request.setAlertMessage("相机连续 3 次采集超时");
 
-        when(deviceMapper.findByDeviceCode("CAM-03")).thenReturn(device);
+        supervisorHeartbeat();
+        when(deviceMapper.findByDeviceCodeForUpdate("CAM-03")).thenReturn(device);
         when(deviceMapper.updateById(device)).thenReturn(1);
         when(deviceCaptureAlertMapper.insert(any(DeviceCaptureAlert.class))).thenReturn(1);
 
@@ -154,6 +176,32 @@ class DeviceServiceImplTest {
         assertEquals("MAJOR", alert.getAlertLevel());
         assertEquals("OPEN", alert.getStatus());
         assertEquals("相机连续 3 次采集超时", alert.getAlertMessage());
+    }
+
+    @Test
+    void employeeCannotReportHeartbeatForUnassignedOrForeignDevice() {
+        employeeHeartbeat();
+        var device = new Device();
+        device.setId(4L);
+        device.setEmployeeId(99L);
+        when(deviceMapper.findByDeviceCodeForUpdate("CAM-04")).thenReturn(device);
+        var unassigned = new Device();
+        unassigned.setId(5L);
+        when(deviceMapper.findByDeviceCodeForUpdate("CAM-05")).thenReturn(unassigned);
+
+        assertThrows(AccessDeniedException.class, () -> deviceService.heartbeat("CAM-04"));
+        assertThrows(AccessDeniedException.class, () -> deviceService.heartbeat("CAM-05"));
+        assertThrows(AccessDeniedException.class, () -> deviceService.heartbeat("missing"));
+        verify(deviceMapper, never()).updateById(any(Device.class));
+        verifyNoInteractions(deviceCaptureAlertMapper);
+    }
+
+    @Test
+    void heartbeatWithoutTrustedBusinessIdentityDoesNotLookupDevice() {
+        when(businessUsers.authenticated()).thenThrow(new SecurityException("missing business principal"));
+
+        assertThrows(AccessDeniedException.class, () -> deviceService.heartbeat("CAM-03"));
+        verifyNoInteractions(deviceMapper, deviceCaptureAlertMapper);
     }
 
     @Test

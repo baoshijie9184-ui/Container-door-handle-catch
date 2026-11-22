@@ -53,7 +53,7 @@ public class SkillLinkService {
     private synchronized Map<String,Object> start(AgentActor actor,Request request,String targetSkillId,Integer expectedRevision){
         var current=fresh(actor);validateUrl(request.url());
         if(!request.confirmed()||!Set.of("INSPECTOR","SUPERVISOR").contains(request.targetRole())||!request.requestId().matches("[A-Za-z0-9_-]{8,64}"))throw fail(400,"请明确确认下载参数");
-        if(!current.supervisor()&&!current.role().name().equals(request.targetRole()))throw fail(403,"员工不能安装主管技能");
+        if(!current.role().name().equals(request.targetRole()))throw fail(403,"私人链接技能必须使用当前账号的角色");
         String hash=storage.digest(targetSkillId==null?request:Map.of("request",request,"targetSkillId",targetSkillId,"expectedRevision",expectedRevision)),id="download-"+UUID.randomUUID();
         boolean created=Boolean.TRUE.equals(tx.execute(status->{
             leases.lock(current.userId());

@@ -199,7 +199,7 @@ const navGroups = [
     label: '质检追溯',
     icon: Search,
     items: [
-      { path: '/quality/reports', label: '报告与审批', desc: '个人草稿与主管审批' },
+      { path: '/quality/reports', label: '报告与审批', employeeLabel: '我的质检报告', desc: '个人草稿与主管审批' },
       { path: '/quality/digests', label: '质检日报', desc: '定时统计与报告交付', supervisorOnly:true },
       { path: '/quality/work-order-trace', label: '工单追溯', desc: '按工单回溯检测链路' },
       { path: '/quality/batch-trace', label: '批次追溯', desc: '按批次追溯质量结果' }
@@ -210,7 +210,7 @@ const navGroups = [
     label: '模型中心',
     icon: Tickets,
     items: [
-      { path: '/models', label: '模型管理', desc: '版本、发布、校验' },
+      { path: '/models', label: '模型管理', employeeLabel: '检测模型目录', desc: '图像检测模型及其版本' },
       { path: '/models/upload', label: '上传模型', desc: '导入新模型版本', supervisorOnly:true }
     ]
   },
@@ -219,9 +219,9 @@ const navGroups = [
     label: '产线资源',
     icon: Operation,
     items: [
-      { path: '/devices', label: '设备管理', desc: '采集与检测设备' },
+      { path: '/devices', label: '设备管理', employeeLabel: '设备目录', desc: '采集与检测设备' },
       { path: '/device-records', label: '设备使用记录', desc: '设备调用与维护记录' },
-      { path: '/employees', label: '人员管理', desc: '采集、检测、维修人员' },
+      { path: '/employees', label: '人员管理', employeeLabel: '人员目录', desc: '采集、检测、维修人员' },
       { path: '/organization', label: '账号与组织', desc: '个人身份与账号关联' },
       { path: '/operations/identity', label: '任务账号关联', desc: '历史身份核对与迁移', supervisorOnly:true },
       { path: '/operations/audit', label: '操作审计', desc: '业务变更与交付记录' }
@@ -248,7 +248,10 @@ const navGroups = [
 
 const visibleNavGroups = computed(()=>{
   const supervisor=['SUPERVISOR','ADMIN'].includes(userStore.role)
-  return navGroups.map(group=>({...group,items:group.items.filter(item=>supervisor ? !item.inspectorOnly : !item.supervisorOnly)})).filter(group=>group.items.length)
+  return navGroups.map(group=>({...group,items:group.items
+    .filter(item=>supervisor ? !item.inspectorOnly : !item.supervisorOnly)
+    .map(item=>!supervisor && item.employeeLabel ? {...item,label:item.employeeLabel} : item)
+  })).filter(group=>group.items.length)
 })
 const sidebarNavGroups = computed(() => visibleNavGroups.value.map(group => group.key === 'agent'
   ? { ...group, items: group.items.filter(item => !item.advanced) }
@@ -260,12 +263,8 @@ const agentManagementActive = computed(() => agentManagement.value.some(item => 
 function openAgentManagement(path) {
   if (agentManagement.value.some(item => item.path === path)) router.push(path)
 }
-const menuTitleMap = navGroups
-  .flatMap(group => group.items.map(item => [item.path, { ...item, group: group.label }]))
-  .reduce((map, [path, item]) => {
-    map[path] = item
-    return map
-  }, {})
+const menuTitleMap = computed(() => Object.fromEntries(visibleNavGroups.value
+  .flatMap(group => group.items.map(item => [item.path, { ...item, group: group.label }]))))
 
 const activeMenu = computed(() => {
   const path = route.path
@@ -290,7 +289,7 @@ const activeMenu = computed(() => {
   return path
 })
 
-const currentNavItem = computed(() => menuTitleMap[activeMenu.value])
+const currentNavItem = computed(() => menuTitleMap.value[activeMenu.value])
 const currentPageTitle = computed(() => (route.meta.parent ? route.meta.title : currentNavItem.value?.label) || route.meta.title || '数据总览')
 const accountPresentation = computed(() => {
   if(userStore.role==='SUPERVISOR')return {role:'企业主管',scope:'企业业务',workspace:'企业质量工作空间',description:'查看企业任务，安排复核与处置'}
@@ -304,9 +303,9 @@ const breadcrumbs = computed(() => {
   const meta = route.meta
   if (route.path === '/home') return []
   if (meta.parent) {
-    const parent=menuTitleMap[meta.parentPath] || Object.values(menuTitleMap).find(item=>item.label===meta.parent)
+    const parent=menuTitleMap.value[meta.parentPath] || Object.values(menuTitleMap.value).find(item=>item.label===meta.parent)
     if(parent?.group)crumbs.push({label:parent.group})
-    crumbs.push({label:meta.parent,path:parent?.supervisorOnly&&userStore.role!=='SUPERVISOR'?undefined:meta.parentPath||parent?.path})
+    crumbs.push({label:parent?.label||meta.parent,path:meta.parentPath||parent?.path})
     if(meta.title&&meta.title!==meta.parent)crumbs.push({label:meta.title})
     return crumbs
   }

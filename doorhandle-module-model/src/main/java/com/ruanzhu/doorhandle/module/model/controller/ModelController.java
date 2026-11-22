@@ -217,7 +217,8 @@ public class ModelController {
                 log.info("模型列表第一条数据: ID={}, 名称={}, 版本={}", 
                     models.get(0).getModelId(), models.get(0).getModelName(), models.get(0).getVersion());
             }
-            return Result.success(models);
+            return Result.success(ModelDirectoryResponses.includesStoragePath() ? models
+                    : models.stream().map(ModelDirectoryResponses::withoutStoragePath).toList());
         } catch (Exception e) {
             if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("获取模型列表失败: {}", e.getMessage(), e);

@@ -2,6 +2,7 @@ package com.ruanzhu.doorhandle.module.detection.security;
 
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
+import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionQualityWorkflow;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
@@ -102,6 +103,46 @@ public class DetectionTaskAccessPolicy {
     }
     public void assertCanMutate(DetectionTask task,AgentActor actor) {
         if(!canMutate(task,actor))throw new SecurityException("领取任务后才可修改任务");
+    }
+    public boolean canOperateQuality(DetectionTask task,Authentication authentication) {
+        if(task==null || !authenticated(authentication))return false;
+        if(users!=null||identities!=null)return canOperateQuality(task,current(authentication));
+        return isAdmin(authentication)||assignedByName(task,authentication.getName());
+    }
+    public boolean canOperateQuality(DetectionTask task,BusinessUserDirectory.Identity actor) {
+        if(task==null || actor==null)return false;
+        if(actor.supervisor())return true;
+        if(identities!=null)return identities.isQualityAssignee(task.getTaskId(),actor);
+        if(folderAssignments!=null) {
+            String predicate=qualityAssigneeSql("","?","?");
+            return Boolean.TRUE.equals(folderAssignments.queryForObject(
+                    "SELECT EXISTS(SELECT 1 FROM detection_task WHERE task_id=? AND "+predicate+")",
+                    Boolean.class,task.getTaskId(),actor.username(),actor.userId()));
+        }
+        return assignedByName(task,actor.username());
+    }
+    public String qualityAssigneeSql(String alias,String userId,String username) {
+        if(alias==null||!alias.matches("(?:[A-Za-z][A-Za-z0-9_]*\\.)?"))throw new IllegalArgumentException("非法 SQL 别名");
+        return identities!=null?identities.qualityAssigneePredicate(alias,userId,username)
+                :"BINARY "+alias+"assignee=BINARY "+username+" AND ("+alias+"assignee_user_id IS NULL OR "
+                    +alias+"assignee_user_id="+userId+")";
+    }
+    private boolean assignedByName(DetectionTask task,String username) {
+        return StringUtils.hasText(task.getAssignee()) && task.getAssignee().equals(username);
+    }
+    public void assertCanOperateQuality(DetectionTask task, Authentication authentication) {
+        if(!canOperateQuality(task,authentication))throw new AccessDeniedException("仅当前校验责任人或主管可办理");
+    }
+    public void assertCanOperateQuality(DetectionTask task, AgentActor actor) {
+        if(actor==null||!canOperateQuality(task,current(actor)))throw new SecurityException("仅当前校验责任人或主管可办理");
+    }
+    public void assertCanRetry(DetectionTask task, Authentication authentication) {
+        if(DetectionQualityWorkflow.recheckRequired(task))assertCanOperateQuality(task,authentication);
+        else assertCanMutate(task,authentication);
+    }
+    public void assertCanRetry(DetectionTask task, AgentActor actor) {
+        if(DetectionQualityWorkflow.recheckRequired(task))assertCanOperateQuality(task,actor);
+        else assertCanMutate(task,actor);
     }
     public boolean readOnlyCandidate(DetectionTask task){
         if(task==null || (!"OSS_FOLDER".equals(task.getTaskType()) && (!candidateReadsEnabled||task.getClaimCandidateIds()==null)))return false;

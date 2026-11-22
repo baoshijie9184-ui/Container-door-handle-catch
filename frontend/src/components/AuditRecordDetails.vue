@@ -20,7 +20,7 @@
 </template>
 <script setup>
 import {computed} from 'vue'
-import {auditDomainLabel,auditScopeLabel,auditTime,auditValue,deliveryBytes,deliveryExpectedBytes,deliveryStateHint,auditPageLink} from '@/utils/auditPresentation'
+import {auditDomainLabel,auditScopeLabel,auditActionLabel,auditTime,auditValue,deliveryBytes,deliveryExpectedBytes,deliveryStateHint,auditPageLink} from '@/utils/auditPresentation'
 import RecordedFactList from './RecordedFactList.vue'
 import '@/assets/record-details.css'
 const props=defineProps({record:Object,delivery:Boolean})
@@ -39,7 +39,7 @@ const groups=computed(()=>{
       ['账号 ID',row.actor_user_id],['资源编号',row.resource_id],['资源版本',row.resource_version],['记录时间',auditTime(row.created_at)]
     ])},
     {id:'action',label:'动作信息',icon:'Operation',fields:fields([
-      ['业务域代码',row.domain],['动作代码',row.action]
+      ['业务域代码',row.domain],['操作',auditActionLabel(row.action)],['动作代码',row.action]
     ])}
   ]
 })

@@ -7,7 +7,8 @@
         <el-button v-if="!dispatchReason" size="small" :type="awaitingDispatch ? 'primary' : 'default'" @click="emit('dispatch', { upload: row })">
           {{ applicationId ? '选用此批次' : '派发检测任务' }}
         </el-button>
-        <router-link v-if="!awaitingDispatch && row.taskType !== 'SINGLE' && ['WAITING_CHECK','VERIFYING'].includes(row.listPhase)"
+        <router-link v-if="!awaitingDispatch && row.formalVerificationTaskId" :to="assignedTrace(row.formalVerificationTaskId)">查看已派任务</router-link>
+        <router-link v-else-if="!awaitingDispatch && row.taskType !== 'SINGLE' && ['WAITING_CHECK','VERIFYING'].includes(row.listPhase)"
           class="next-action" :to="{ path: '/inspection/tasks/verification', query: { keyword: row.taskId } }">前往校验</router-link>
         <small v-if="dispatchReason" class="action-note">{{ dispatchReason }}</small>
       </template>
@@ -21,15 +22,24 @@
       </template>
     </template>
     <template v-else>
-      <el-button v-if="Number(row.mine) && ['READY','FAILED'].includes(row.modelStatus)" size="small" type="primary" :disabled="busy" @click="emit('start', row)">
+      <el-button v-if="Number(row.mine) && row.flow !== 'RECHECK_REQUIRED' && ['READY','FAILED'].includes(row.modelStatus)" size="small" type="primary" :disabled="busy" @click="emit('start', row)">
         {{ row.modelStatus === 'FAILED' ? '重试模型检测' : '启动模型检测' }}
       </el-button>
       <el-button v-if="supervisor && row.taskType === 'OSS_FOLDER' && row.phase === 'READY'" size="small" @click="emit('assign', row)">改派检测</el-button>
       <template v-if="canReview(row)">
         <router-link v-if="supervisor && !row.qualityAssignee" class="next-action" :to="actionLink(row.taskId, 'assign')">分派校验任务</router-link>
-        <router-link v-if="supervisor || row.qualityAssignee === username" :class="{ 'next-action': !!row.qualityAssignee }"
+        <router-link v-if="canOperateQuality" :class="{ 'next-action': !!row.qualityAssignee }"
           :to="actionLink(row.taskId, 'review')">核对模型结果</router-link>
         <router-link v-if="supervisor && row.qualityAssignee" :to="actionLink(row.taskId, 'assign')">改派校验</router-link>
+      </template>
+      <template v-if="row.listPhase === 'FOLLOW_UP'">
+        <template v-if="canOperateQuality">
+          <router-link v-if="row.flow === 'REWORK_REQUIRED'" class="next-action" :to="actionLink(row.taskId, 'rework')">登记返工结果</router-link>
+          <el-button v-else-if="row.flow === 'RECHECK_REQUIRED'" type="primary" size="small" :disabled="busy" @click="emit('recheck', row)">启动复检</el-button>
+          <router-link v-else-if="row.flow === 'HOLD' || row.flow === 'CONFIRMED'" class="next-action"
+            :to="actionLink(row.taskId, 'disposition')">{{ row.flow === 'HOLD' ? '处理暂挂' : '安排复检' }}</router-link>
+        </template>
+        <router-link v-if="supervisor" :to="actionLink(row.taskId, 'assign')">{{ row.qualityAssignee ? '改派校验' : '分派校验任务' }}</router-link>
       </template>
       <button v-if="taskList === 'detection' && !['SINGLE','OSS_FOLDER'].includes(row.taskType) && row.modelStatus !== 'UPLOADING' && ossFolder"
         type="button" @click="emit('dispatch', { upload: row })">派发检测任务</button>
@@ -58,8 +68,10 @@ const props = defineProps({
   awaitingDispatch: Boolean,
   busy: Boolean
 })
-const emit = defineEmits(['start', 'assign', 'dispatch'])
+const emit = defineEmits(['start', 'assign', 'dispatch', 'recheck'])
 const ossFolder = computed(() => props.row.prefix?.startsWith('detection/') && props.row.prefix.endsWith('/'))
+const canOperateQuality = computed(() => props.supervisor || (props.row.qualityMine == null
+  ? Boolean(props.username && props.row.qualityAssignee === props.username) : Boolean(Number(props.row.qualityMine))))
 </script>
 
 <style scoped>

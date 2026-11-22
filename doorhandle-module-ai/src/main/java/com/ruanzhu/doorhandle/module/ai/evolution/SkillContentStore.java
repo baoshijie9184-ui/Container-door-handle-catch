@@ -52,8 +52,21 @@ final class SkillContentStore {
         if(lock)transaction();
         return jdbc.queryForList("SELECT "+IDENTITY+" FROM content_asset s WHERE s.asset_kind='SKILL' AND s.asset_id=?"+(lock?" FOR UPDATE":""),id);
     }
-    List<Map<String,Object>> versions(String id) {
-        return jdbc.queryForList("SELECT "+VERSION+" FROM content_revision r WHERE r.asset_kind='SKILL' AND r.asset_id=? ORDER BY r.version DESC",id);
+    private String readableVersion(boolean supervisor) {
+        if(!supervisor)return "COALESCE(r.source_type,'')<>'LINK' AND r.approval_status='APPROVED' AND s.required_role=?";
+        return """
+                (COALESCE(r.source_type,'')<>'LINK' AND r.approval_status IN ('SUBMITTED','APPROVED','REJECTED')
+                 OR r.source_type='LINK' AND (r.approval_status='SUBMITTED'
+                  OR r.approval_status IN ('APPROVED','REJECTED') AND r.reviewer_user_id=?
+                  OR r.approval_status='APPROVED' AND r.version=s.published_version AND EXISTS(
+                    SELECT 1 FROM content_revision submission
+                    WHERE submission.asset_kind='SKILL' AND submission.asset_id=s.asset_id AND submission.approval_status='SUBMITTED')))
+                """;
+    }
+    List<Map<String,Object>> versions(String id,long viewer,boolean owner,boolean supervisor,String role) {
+        String sql="SELECT "+VERSION+" FROM content_revision r JOIN content_asset s ON s.asset_kind='SKILL' AND s.asset_id=r.asset_id WHERE r.asset_kind='SKILL' AND r.asset_id=?";
+        return owner?jdbc.queryForList(sql+" ORDER BY r.version DESC",id)
+                :jdbc.queryForList(sql+" AND "+readableVersion(supervisor)+" ORDER BY r.version DESC",id,supervisor?(Object)viewer:role);
     }
     List<Map<String,Object>> version(String id,int version) {
         return jdbc.queryForList("SELECT "+VERSION+" FROM content_revision r WHERE r.asset_kind='SKILL' AND r.asset_id=? AND r.version=?",id,version);
@@ -65,12 +78,12 @@ final class SkillContentStore {
         return jdbc.queryForList("SELECT asset_id AS skill_id FROM content_revision WHERE asset_kind='SKILL' AND source_type='LINK' AND source_import_id=? AND owner_user_id=?",importId,owner);
     }
     List<Map<String,Object>> visible(long owner,boolean supervisor,String role) {
-        String predicate=supervisor?"r.approval_status IN ('SUBMITTED','APPROVED','REJECTED')":"r.approval_status='APPROVED' AND s.required_role=?";
-        return jdbc.queryForList("SELECT s.asset_id AS skill_id FROM content_asset s WHERE s.asset_kind='SKILL' AND (s.owner_user_id=? OR EXISTS(SELECT 1 FROM content_revision r WHERE r.asset_kind='SKILL' AND r.asset_id=s.asset_id AND "+predicate+")) ORDER BY s.id DESC LIMIT 50",
-                supervisor?new Object[]{owner}:new Object[]{owner,role});
+        return jdbc.queryForList("SELECT s.asset_id AS skill_id FROM content_asset s WHERE s.asset_kind='SKILL' AND (s.owner_user_id=? OR EXISTS(SELECT 1 FROM content_revision r WHERE r.asset_kind='SKILL' AND r.asset_id=s.asset_id AND "+readableVersion(supervisor)+")) ORDER BY s.id DESC LIMIT 50",
+                owner,supervisor?(Object)owner:role);
     }
-    long visibleVersions(String id,boolean supervisor) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM content_revision WHERE asset_kind='SKILL' AND asset_id=? AND "+(supervisor?"approval_status IN ('SUBMITTED','APPROVED','REJECTED')":"approval_status='APPROVED'"),Long.class,id);
+    boolean hasVisibleVersion(String id,long viewer,boolean supervisor,String role) {
+        String sql="SELECT 1 FROM content_revision r JOIN content_asset s ON s.asset_kind='SKILL' AND s.asset_id=r.asset_id WHERE r.asset_kind='SKILL' AND r.asset_id=? AND "+readableVersion(supervisor)+" LIMIT 1";
+        return !jdbc.queryForList(sql,Integer.class,id,supervisor?(Object)viewer:role).isEmpty();
     }
     List<Map<String,Object>> active(String role) {
         return jdbc.queryForList("SELECT "+IDENTITY+" FROM content_asset s WHERE s.asset_kind='SKILL' AND s.required_role=? AND s.published_version IS NOT NULL AND s.lifecycle IN ('ACTIVE','STALE') ORDER BY s.id LIMIT 30",role);

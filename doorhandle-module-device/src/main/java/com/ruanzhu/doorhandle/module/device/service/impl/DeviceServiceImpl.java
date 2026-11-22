@@ -7,7 +7,9 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.device.dto.device.DeviceAlertActionRequest;
 import com.ruanzhu.doorhandle.module.device.dto.device.DeviceHeartbeatRequest;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
@@ -18,6 +20,7 @@ import com.ruanzhu.doorhandle.module.device.service.DeviceService;
 import com.ruanzhu.doorhandle.module.device.service.DeviceUsageRecordService;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -41,6 +44,7 @@ public class DeviceServiceImpl implements DeviceService {
     private final DeviceMapper deviceMapper;
     private final DeviceCaptureAlertMapper deviceCaptureAlertMapper;
     private final DeviceUsageRecordService deviceUsageRecordService;
+    private final BusinessUserDirectory businessUsers;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -288,18 +292,24 @@ public class DeviceServiceImpl implements DeviceService {
     }
 
     @Override
+    @Transactional
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     public Device heartbeat(String deviceCode) {
         return heartbeat(deviceCode, null);
     }
 
     @Override
+    @Transactional
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     public Device heartbeat(String deviceCode, DeviceHeartbeatRequest request) {
         if (!StringUtils.hasText(deviceCode)) {
             throw new RuntimeException("设备编号不能为空");
         }
-        Device device = deviceMapper.findByDeviceCode(deviceCode);
+        Long employeeId = heartbeatEmployeeId();
+        Device device = deviceMapper.findByDeviceCodeForUpdate(deviceCode);
+        if (employeeId != null && (device == null || !employeeId.equals(device.getEmployeeId()))) {
+            throw new AccessDeniedException("仅可上报本人当前领用的设备");
+        }
         if (device == null) {
             throw new RuntimeException("设备不存在");
         }
@@ -311,9 +321,24 @@ public class DeviceServiceImpl implements DeviceService {
             device.setStatus("IDLE");
         }
         device.setUpdatedTime(LocalDateTime.now());
-        deviceMapper.updateById(device);
+        if (deviceMapper.updateById(device) != 1) {
+            throw new BusinessException(409, "设备已变化，请重新核对");
+        }
         createCaptureAlertIfNecessary(device, request);
         return device;
+    }
+
+    private Long heartbeatEmployeeId() {
+        try {
+            var actor = businessUsers.authenticated();
+            if (!actor.supervisor()) return businessUsers.lockDetectionEmployeeId(actor.userId(), actor.username());
+            if (!businessUsers.lockCurrent(actor.userId(), actor.username()).supervisor()) {
+                throw new SecurityException("主管资格已变化");
+            }
+            return null;
+        } catch (SecurityException denied) {
+            throw new AccessDeniedException("当前账号无设备心跳上报权限", denied);
+        }
     }
 
     @Override

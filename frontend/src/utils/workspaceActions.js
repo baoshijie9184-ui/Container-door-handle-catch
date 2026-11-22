@@ -24,7 +24,7 @@ const actions = {
   reports: { label:'查看质检报告', icon:'DocumentChecked', path:'/quality/reports' },
   quotas: { label:'查看我的额度', icon:'DataAnalysis', path:'/agent/model-quotas' },
   budgets: { label:'分配员工额度', keywords:'分配额度 员工限额 设置预算 分配限额', icon:'DataAnalysis', path:'/agent/model-quotas' },
-  approve: { label:'审批质检报告', keywords:'审批报告 审核报告 待审批', icon:'DocumentChecked', path:'/quality/reports', query:{status:'SUBMITTED'} }
+  approve: { label:'审批质检报告', keywords:'审批报告 审核报告 待审批', icon:'DocumentChecked', path:'/quality/reports', query:{status:'SUBMITTED',awaitingMyApproval:'1'} }
 }
 export function inspectionActions(supervisor) {
   const upload = { key:'upload', label:'上传图片', icon:'Upload', path:'/upload' }

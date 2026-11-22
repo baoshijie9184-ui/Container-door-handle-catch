@@ -107,13 +107,13 @@ const routes = [
         path: 'devices',
         name: 'devices',
         component: () => import('../views/device/DeviceList.vue'),
-        meta: { title: '设备管理', requiresAuth: true, icon: 'Monitor' }
+        meta: { title: '设备管理', employeeTitle: '设备目录', requiresAuth: true, icon: 'Monitor' }
       },
       {
         path: 'devices/add',
         name: 'deviceAdd',
         component: () => import('../views/device/DeviceForm.vue'),
-        meta: { title: '新增设备', requiresAuth: true, parent: '设备管理', parentPath: '/devices' }
+        meta: { title: '新增设备', requiresAuth: true, supervisorOnly: true, parent: '设备管理', parentPath: '/devices' }
       },
       {
         path: 'devices/:id',
@@ -125,19 +125,19 @@ const routes = [
         path: 'devices/edit/:id',
         name: 'deviceEdit',
         component: () => import('../views/device/DeviceForm.vue'),
-        meta: { title: '编辑设备', requiresAuth: true, parent: '设备管理', parentPath: '/devices' }
+        meta: { title: '编辑设备', requiresAuth: true, supervisorOnly: true, parent: '设备管理', parentPath: '/devices' }
       },
       {
         path: 'employees',
         name: 'employees',
         component: () => import('../views/employee/EmployeeList.vue'),
-        meta: { title: '人员管理', requiresAuth: true, icon: 'User' }
+        meta: { title: '人员管理', employeeTitle: '人员目录', requiresAuth: true, icon: 'User' }
       },
       {
         path: 'employees/add',
         name: 'employeeAdd',
         component: () => import('../views/employee/EmployeeForm.vue'),
-        meta: { title: '新增人员', requiresAuth: true, parent: '人员管理', parentPath: '/employees' }
+        meta: { title: '新增人员', requiresAuth: true, supervisorOnly: true, parent: '人员管理', parentPath: '/employees' }
       },
       {
         path: 'organization',
@@ -155,13 +155,13 @@ const routes = [
         path: 'employees/edit/:id',
         name: 'employeeEdit',
         component: () => import('../views/employee/EmployeeForm.vue'),
-        meta: { title: '编辑人员', requiresAuth: true, parent: '人员管理', parentPath: '/employees' }
+        meta: { title: '编辑人员', requiresAuth: true, supervisorOnly: true, parent: '人员管理', parentPath: '/employees' }
       },
       {
         path: 'models',
         name: 'models',
         component: () => import('../views/ModelList.vue'),
-        meta: { title: '模型管理', requiresAuth: true, icon: 'Tickets' }
+        meta: { title: '模型管理', employeeTitle: '检测模型目录', requiresAuth: true, icon: 'Tickets' }
       },
       {
         path: 'models/upload',
@@ -277,7 +277,6 @@ function finishProgress() {
 router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
   const detectionTitle = to.path === '/detection' ? detectionTabTitles[String(to.query.tab || 'workspace')] : ''
-  document.title = systemPageTitle(detectionTitle || to.meta.title)
 
   if (to.meta.requiresAuth && !userStore.isAuthenticated) {
     const authenticated = userStore.hasCheckedAuth ? false : await userStore.checkAuth()
@@ -287,9 +286,10 @@ router.beforeEach(async (to, from, next) => {
     }
   }
 
+  const supervisor = ['SUPERVISOR','ADMIN'].includes(userStore.role)
+  document.title = systemPageTitle(detectionTitle || (!supervisor && to.meta.employeeTitle) || to.meta.title)
   const tab = to.query.tab || to.meta.detectionTab
   if (to.name === 'legacyQualityQueue' || (to.path === '/detection' && tab === 'quality')) {
-    const supervisor = ['SUPERVISOR', 'ADMIN'].includes(userStore.role)
     const query = supervisor ? {} : { inbox: '1', kind: 'verification' }
     if (typeof to.query.keyword === 'string') query.keyword = to.query.keyword
     next({ name: supervisor ? 'supervisorVerificationTasks' : 'folderTaskBoard', query, replace: true })
@@ -302,7 +302,7 @@ router.beforeEach(async (to, from, next) => {
       query: { keyword: taskId, taskId, boardAction: action }, replace: true })
     return
   }
-  if (to.meta.supervisorOnly && !['SUPERVISOR','ADMIN'].includes(userStore.role)) {
+  if (to.meta.supervisorOnly && !supervisor) {
     next({name:'home'})
     return
   }

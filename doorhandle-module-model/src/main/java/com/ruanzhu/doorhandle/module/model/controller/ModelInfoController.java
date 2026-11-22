@@ -10,6 +10,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -43,6 +44,11 @@ public class ModelInfoController {
         
         log.info("分页查询模型信息: page={}, size={}, modelId={}, modelName={}, version={}, status={}", page, size, modelId, modelName, version, status);
         Page<ModelInfo> pageResult = modelInfoService.getModelInfoPage(page, size, modelId, modelName, version, status);
+        if (!ModelDirectoryResponses.includesStoragePath()) {
+            var response = new Page<ModelInfo>(pageResult.getCurrent(), pageResult.getSize(), pageResult.getTotal());
+            response.setRecords(pageResult.getRecords().stream().map(ModelDirectoryResponses::withoutStoragePath).toList());
+            return Result.success(response);
+        }
         return Result.success(pageResult);
     }
 
@@ -57,13 +63,15 @@ public class ModelInfoController {
         if (modelInfo == null) {
             return Result.error(404, "模型信息不存在");
         }
-        return Result.success(modelInfo);
+        return Result.success(ModelDirectoryResponses.includesStoragePath() ? modelInfo
+                : ModelDirectoryResponses.withoutStoragePath(modelInfo));
     }
 
     /**
      * 新增模型信息
      */
     @PostMapping
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<Void> saveModelInfo(@RequestBody ModelInfo modelInfo) {
         log.info("新增模型信息: {}", modelInfo);
 
@@ -78,6 +86,7 @@ public class ModelInfoController {
      * 更新模型信息
      */
     @PutMapping("/{modelId}")
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<Void> updateModelInfo(@PathVariable Integer modelId, @RequestBody ModelInfo modelInfo) {
         log.info("更新模型信息: modelId={}, modelInfo={}", modelId, modelInfo);
 
@@ -93,6 +102,7 @@ public class ModelInfoController {
      * 记录模型评估指标
      */
     @PostMapping("/{modelId}/evaluation")
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<Void> recordEvaluation(@PathVariable Integer modelId, @RequestBody ModelInfo evaluation) {
         log.info("记录模型评估指标: modelId={}, evaluation={}", modelId, evaluation);
 
@@ -107,6 +117,7 @@ public class ModelInfoController {
      * 配置模型部署策略
      */
     @PostMapping("/{modelId}/rollout")
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<Void> configureRollout(@PathVariable Integer modelId, @RequestBody ModelInfo rollout) {
         log.info("配置模型部署策略: modelId={}, rollout={}", modelId, rollout);
 
@@ -127,6 +138,7 @@ public class ModelInfoController {
      * 快捷回滚到指定模型
      */
     @PostMapping("/{modelId}/rollback")
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<Void> rollbackModel(@PathVariable Integer modelId, @RequestParam Integer targetModelId) {
         log.info("回滚模型: modelId={}, targetModelId={}", modelId, targetModelId);
 
@@ -141,6 +153,7 @@ public class ModelInfoController {
      * 删除模型信息
      */
     @DeleteMapping("/{modelId}")
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<Void> deleteModelInfo(@PathVariable Integer modelId) {
         log.info("删除模型信息: modelId={}", modelId);
 

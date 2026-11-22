@@ -8,7 +8,7 @@
       <h3><AgentSectionIcon kind="skills" small />从链接安装 Skill</h3>
       <dl v-if="storageStatus" class="skill-storage-metrics"><div><dt>本人存储</dt><dd>{{ mib(storageStatus.usedBytes) }} / {{ mib(storageStatus.quotaBytes) }} MiB</dd></div><div><dt>已登记文件</dt><dd>{{ storageStatus.files ?? '—' }}</dd></div><div><dt>下载预留</dt><dd>{{ mib(storageStatus.reservedBytes) }} MiB</dd></div></dl>
       <p>支持公开 GitHub 目录、skills.sh 技能详情和魔搭 Skill 链接 下载到本人后端存储 再评测并提交独立审核</p>
-      <div class="skill-link-form"><label class="skill-link-source">来源链接<el-input v-model="linkUrl" aria-label="Skill 来源链接" placeholder="https://github.com/组织/仓库/tree/main/skills/技能名" maxlength="1000" /></label><label>目标角色<el-select v-model="linkRole" aria-label="链接技能目标角色"><el-option label="员工" value="INSPECTOR" /><el-option v-if="supervisor" label="主管" value="SUPERVISOR" /></el-select></label><el-button type="primary" :disabled="busy || !linkUrl.trim() || !linksEnabled" :loading="linkBusy" @click="installLink"><AppIcon name="Download" :size="16" />确认下载为私人草稿</el-button></div>
+      <div class="skill-link-form"><label class="skill-link-source">来源链接<el-input v-model="linkUrl" aria-label="Skill 来源链接" placeholder="https://github.com/组织/仓库/tree/main/skills/技能名" maxlength="1000" /></label><span class="detail-note">本人角色 {{ linkRole ? roleLabel(linkRole) : '正在核对' }}</span><el-button type="primary" :disabled="busy || !linkUrl.trim() || !linksEnabled || !linkRole" :loading="linkBusy" @click="installLink"><AppIcon name="Download" :size="16" />确认下载为私人草稿</el-button></div>
       <p v-if="!linksEnabled && !linkError" class="detail-note">链接安装状态尚未核对，读取成功后才能下载。</p>
       <p>Git 来源固定提交 魔搭原生归档保存内容快照 脚本和附件只存档 不执行或自动启用</p>
       <p v-if="linkError" class="error" role="alert">{{ linkError }}</p>
@@ -56,7 +56,8 @@
         <SkillVersionRecord v-for="version in selected.versions" :key="version.version" :version="version" :active="version.version===selected.activeVersion&&version.evidence?.sourceType!=='EXTERNAL_UPLOAD'" :latest="version.version===latest?.version" />
         <el-button v-if="owned && latest?.evidence.sourceType === 'LINK' && selected.lifecycle !== 'ARCHIVED'" type="danger" :disabled="busy" @click="uninstallLink">卸载此链接技能</el-button>
         <section v-if="latest?.evidence.sourceType === 'LINK'" class="version-tools">
-          <el-button v-if="owned" :disabled="busy || !linksEnabled || latest.status === 'SUBMITTED'" @click="openUpgrade">下载原技能的新版本</el-button>
+          <el-button v-if="owned && selected.targetRole === linkRole" :disabled="busy || !linksEnabled || latest.status === 'SUBMITTED'" @click="openUpgrade">下载原技能的新版本</el-button>
+          <p v-else-if="owned && linkRole" class="detail-note">历史记录适用{{ roleLabel(selected.targetRole) }}。如需在当前角色使用，可从来源链接安装。</p>
           <template v-if="selected.versions.length > 1">
             <el-select v-model="compareFrom" aria-label="比较旧版本"><el-option v-for="v in selected.versions" :key="v.version" :label="'旧版本 v'+v.version" :value="v.version" /></el-select>
             <el-select v-model="compareTo" aria-label="比较新版本"><el-option v-for="v in selected.versions" :key="v.version" :label="'新版本 v'+v.version" :value="v.version" /></el-select>
@@ -130,7 +131,8 @@ const activeVisibleVersion=row=>Array.isArray(row.versions)?row.versions.find(ve
 const skillStages=[{title:'形成私人草稿',description:'从公开链接下载，或编写授权经验'},{title:'规则评测',description:'核对结构、工具权限与适用范围'},{title:'独立审核',description:'主管复核业务适用性与隐私'},{title:'确认发布',description:'发布审核通过的版本，保留回退记录'}]
 const route=useRoute()
 const storageStatus=ref(null), storageCommands=ref([])
-const downloads=ref([]), linkUrl=ref(typeof route.query.installUrl==='string'?route.query.installUrl:''), linkRole=ref('INSPECTOR'), linkBusy=ref(false), linkError=ref(''), linksEnabled=ref(false)
+const downloads=ref([]), linkUrl=ref(typeof route.query.installUrl==='string'?route.query.installUrl:''), linkBusy=ref(false), linkError=ref(''), linksEnabled=ref(false)
+const linkRole=computed(()=>['INSPECTOR','SUPERVISOR'].includes(mine.value?.role)?mine.value.role:'')
 const headers={'X-Skill-Action':'update'}
 const upgradeOpen=ref(false), upgradeUrl=ref(''), upgradeBusy=ref(false), upgradeError=ref(''), compareFrom=ref(null), compareTo=ref(null), comparisonOpen=ref(false), comparison=ref(null), comparisonError=ref('')
 const comparedBefore=computed(()=>selected.value?.versions.find(v=>v.version===compareFrom.value)?.instructions||''), comparedAfter=computed(()=>selected.value?.versions.find(v=>v.version===compareTo.value)?.instructions||'')
@@ -145,7 +147,16 @@ const downloadError=code=>({SOURCE_TIMEOUT:'公开来源响应超时',SOURCE_CON
 async function refreshDownloads(){const n=++downloadGeneration;clearTimeout(downloadTimer);if(stopped)return;try{const [result,stats,audit]=await Promise.all([request.get('/api/agent/skills/links'),request.get('/api/agent/skills/links/storage'),request.get('/api/agent/skills/links/storage/audit')]);if(stopped||n!==downloadGeneration)return;downloads.value=result.data;storageStatus.value=stats.data;storageCommands.value=audit.data;linksEnabled.value=true;linkError.value='';if(downloads.value.some(d=>d.status==='DOWNLOADING')){clearTimeout(downloadTimer);downloadTimer=setTimeout(async()=>{await refreshDownloads();await refresh()},2500)}}catch(e){if(stopped||n!==downloadGeneration)return;downloads.value=[];storageStatus.value=null;storageCommands.value=[];linksEnabled.value=false;linkError.value=e.response?.data?.message||'链接安装未启用或服务暂不可用'}}
 const mib=value=>knownCount(value)===null?'—':(knownCount(value)/1048576).toFixed(2)
 async function cleanupDownload(row){try{await ElMessageBox.confirm('清理本人未被任何技能版本引用的下载缓存 实际删除本地包文件 保留来源记录和清理审计 已审核及历史版本引用的包会拒绝清理','确认清理下载缓存',{confirmButtonText:'确认清理',cancelButtonText:'取消'});busy.value=true;const result=(await request.post('/api/agent/skills/links/downloads/'+row.download_id+'/cleanup',{requestId:crypto.randomUUID(),confirmed:true},{headers})).data;if(result.status!=='COMPLETED')throw new Error('清理结果尚未全部核实 请刷新存储和清理记录');await refreshDownloads()}catch(e){if(e!=='cancel'&&e!=='close')linkError.value=e.response?.data?.message||e.message||'清理结果未核实'}finally{busy.value=false}}
-async function installLink(){try{await ElMessageBox.confirm('将从此公开链接下载固定版本到本人后端存储 不运行脚本 不自动启用 下载完成后需规则 Eval 和另一名主管审核','确认链接下载',{confirmButtonText:'确认下载',cancelButtonText:'取消'});linkBusy.value=true;linkError.value='';await request.post('/api/agent/skills/links',{url:linkUrl.value.trim(),targetRole:linkRole.value,requestId:crypto.randomUUID(),confirmed:true},{headers});await refreshDownloads()}catch(e){if(e!=='cancel'&&e!=='close')linkError.value=e.response?.data?.message||'下载结果尚未核实 请刷新核对'}finally{linkBusy.value=false}}
+async function installLink(){
+  const url=linkUrl.value.trim(), targetRole=linkRole.value
+  if(!url || !targetRole || !linksEnabled.value || linkBusy.value || busy.value)return
+  linkBusy.value=true;linkError.value=''
+  try{
+    await ElMessageBox.confirm('将从此公开链接下载固定版本到本人后端存储 不运行脚本 不自动启用 下载完成后需规则 Eval 和另一名主管审核','确认链接下载',{confirmButtonText:'确认下载',cancelButtonText:'取消'})
+    await request.post('/api/agent/skills/links',{url,targetRole,requestId:crypto.randomUUID(),confirmed:true},{headers})
+    await refreshDownloads()
+  }catch(e){if(e!=='cancel'&&e!=='close')linkError.value=e.response?.data?.message||'下载结果尚未核实 请刷新核对'}finally{linkBusy.value=false}
+}
 function openUpgrade(){upgradeSkillId=selected.value.skillId;upgradeRevision=selected.value.revision;upgradeUrl.value=latest.value.evidence.sourceUrl;upgradeRequestId=crypto.randomUUID();upgradeError.value='';upgradeOpen.value=true}
 async function startUpgrade(){upgradeBusy.value=true;upgradeError.value='';try{await request.post('/api/agent/skills/links/'+upgradeSkillId+'/upgrade',{url:upgradeUrl.value.trim(),expectedRevision:upgradeRevision,requestId:upgradeRequestId,confirmed:true},{headers});upgradeOpen.value=false;await refreshDownloads()}catch(e){upgradeError.value=e.response?.data?.message||'升级下载结果尚未核实 请刷新核对 若更换参数需重新打开升级窗口'}finally{upgradeBusy.value=false}}
 async function compareVersions(){comparisonOpen.value=true;comparison.value=null;comparisonError.value='';try{comparison.value=(await request.get('/api/agent/skills/links/'+selected.value.skillId+'/compare',{params:{fromVersion:compareFrom.value,toVersion:compareTo.value}})).data}catch(e){comparisonError.value=e.response?.data?.message||'版本差异暂不可读取 请刷新核对权限和文件完整性'}}

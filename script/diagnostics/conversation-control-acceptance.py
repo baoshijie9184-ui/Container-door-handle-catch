@@ -23,6 +23,7 @@ def api(route):
  if path.startswith('/api/chat-assistant/sessions/') or path=='/api/chat-assistant/session':return reply(route,session,False)
  if path.endswith('/agent-health'):return reply(route,{'framework':'AgentScope','mode':'CONFIRMABLE','runJournalEnabled':True},False)
  if path=='/api/agent/actions':return reply(route,[])
+ if path == '/api/agent/actions/page': return reply(route, {'items': [], 'nextCursor': None})
  if path=='/api/agent/commands':return reply(route,{'enabled':True,'skills':[]})
  if path=='/agui/catalog':return reply(route,{'role':'SUPERVISOR','mainAgent':'supervisor-main','agents':[]})
  if path=='/agui/models':return reply(route,{'models':[]})

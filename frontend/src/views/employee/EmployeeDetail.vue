@@ -68,7 +68,7 @@
             <span class="profile-label">员工编号</span>
             <span class="profile-value">{{ employee.employeeNumber }}</span>
           </div>
-          <div class="profile-item">
+          <div v-if="isSupervisor" class="profile-item">
             <span class="profile-label">联系方式</span>
             <span class="profile-value">{{ employee.contact }}</span>
           </div>
