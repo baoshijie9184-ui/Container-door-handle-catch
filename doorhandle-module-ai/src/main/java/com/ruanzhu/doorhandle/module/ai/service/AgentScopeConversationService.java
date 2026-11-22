@@ -108,7 +108,6 @@ public class AgentScopeConversationService implements AgentConversationApi {
     @Override public Status status() { return new Status("AgentScope", (factory.confirmationEnabled()||factory.retryEnabled())?"CONFIRMABLE":factory.reportDraftsEnabled()||factory.evolutionEnabled()?"DRAFTS":"READ_ONLY", properties.getModel(), journal.enabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()); }
     @Override public int maxRunSeconds(){return controls==null?180:controls.maxRunSeconds();}
     @Override public void checkRequest(AgentActor actor, String entryPoint, String requestId) { journal.checkRequest(actor, entryPoint, requestId); }
-    @Override public boolean requestsCredentialRead(String content) { return CredentialReadRequest.matches(content); }
 
     @Override public Run start(AgentActor actor, String sessionId, List<Message> history, String reference, Consumer<Event> consumer) {
         return start(actor, sessionId, history, reference, consumer, "CHAT", java.util.UUID.randomUUID().toString());
@@ -133,9 +132,9 @@ public class AgentScopeConversationService implements AgentConversationApi {
         }
         if (!"user".equals(history.get(history.size() - 1).role())) throw new IllegalArgumentException("最后一条必须为用户问题");
         String last = history.get(history.size()-1).content();
-        boolean credentialRead = requestsCredentialRead(last);
+        var restriction = AgentRequestRestriction.detect(last).orElse(null);
         var sources = references.sources();
-        boolean includeReference = !credentialRead && (sources.isEmpty() || workbench != null && workbench.durableContextEnabled());
+        boolean includeReference = restriction == null && (sources.isEmpty() || workbench != null && workbench.durableContextEnabled());
         String reference = includeReference ? references.text() : "";
         if (!reference.isBlank()) {
             if (reference.length() > 6000) throw new IllegalArgumentException("参考资料过长");
@@ -156,7 +155,7 @@ public class AgentScopeConversationService implements AgentConversationApi {
         catch (RuntimeException error) { registry.release(session); throw error; }
         Agent agent;
         final com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Scope work;
-        try{work=workbench==null?null:workbench.prepare(actor,sessionId,credentialRead?"请求读取受保护的凭据":last,audit.id());}
+        try{work=workbench==null||restriction!=null?null:workbench.prepare(actor,sessionId,last,audit.id());}
         catch(RuntimeException error){try{audit.finish("ERROR");}finally{registry.release(session);}throw error;}
         final com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistry.Handle control;
         try{control=controls==null?null:controls.attach(actor,sessionId,audit);}
@@ -164,14 +163,14 @@ public class AgentScopeConversationService implements AgentConversationApi {
         var cards = new com.ruanzhu.doorhandle.module.ai.card.AgentCardCollector(new com.fasterxml.jackson.databind.ObjectMapper());
         var answerEvidence = new AgentAnswerEvidence();
         try {
-            var command = !credentialRead && last.stripLeading().startsWith("/")
+            var command = restriction == null && last.stripLeading().startsWith("/")
                     && !(work != null && com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.requestsPlan(last))
                     ? factory.slashCommands().prepare(actor,last,audit) : null;
-            String serverReply = credentialRead ? CredentialReadRequest.REFUSAL : command == null ? null : command.reply();
+            String serverReply = restriction != null ? restriction.refusal() : command == null ? null : command.reply();
             if(serverReply!=null){
                 consumer.accept(new Event("RUN_STARTED",main,null,null,0));
-                if (credentialRead) audit.event("AUTHORIZATION_DENIED", java.util.Map.of(
-                        "agent", main, "decision", "DENY", "scope", "PROTECTED_CREDENTIALS", "policyVersion", "agent-tool-access-v1"));
+                if (restriction != null) audit.event("AUTHORIZATION_DENIED", java.util.Map.of(
+                        "agent", main, "decision", "DENY", "scope", restriction.name(), "policyVersion", "agent-tool-access-v1"));
                 consumer.accept(new Event("TEXT_CHUNK",main,null,serverReply,0));
                 if(work!=null)work.finish("COMPLETED",serverReply);
                 if(control!=null)control.close();

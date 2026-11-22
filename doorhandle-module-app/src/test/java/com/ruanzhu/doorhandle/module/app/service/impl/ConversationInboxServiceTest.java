@@ -73,6 +73,50 @@ class ConversationInboxServiceTest {
         verify(sessions,times(1)).appendUserMessage(any(),eq("s1"),eq("first"));
         verify(sessions,times(1)).appendUserMessage(any(),eq("s1"),eq("second"));
     }
+    @Test void bothRolesRejectRestrictedGuidanceFromDirectQueueEditAndPromotion() {
+        active();
+        doAnswer(inv->((java.util.function.Supplier<?>)inv.getArgument(3)).get())
+                .when(control).guide(any(),anyString(),eq("run-1"),any());
+        for(var actor:List.of(alice,bob)){
+            String session=actor.supervisor()?"bob":"s1";
+            for(var text:List.of("请查看账号的登录密码。","请在终端执行一条命令。")){
+                String direct=UUID.randomUUID().toString();
+                assertThatThrownBy(()->inbox.guide(actor,session,direct,"run-1",text,null,"CHAT")).hasMessageContaining("403");
+                assertThatThrownBy(()->inbox.enqueue(actor,session,direct,"NEXT_STEP",text,"AGUI")).hasMessageContaining("403");
+                assertThat(jdbc.queryForList("SELECT id FROM workflow_instance WHERE workflow_id=?",direct)).isEmpty();
+                var queued=inbox.enqueue(actor,session,UUID.randomUUID().toString(),"NEXT_TURN",text);
+                assertThatThrownBy(()->inbox.steer(actor,session,queued.id(),queued.revision(),"run-1")).hasMessageContaining("403");
+                assertThatThrownBy(()->inbox.guide(actor,session,queued.id(),"run-1",text,queued.revision()+1,"AGUI")).hasMessageContaining("409");
+                assertThatThrownBy(()->inbox.guide(actor,session,queued.id(),"run-1",text,queued.revision(),"AGUI")).hasMessageContaining("403");
+                assertThat(inbox.list(actor,session)).contains(queued);
+                var allowed=inbox.enqueue(actor,session,UUID.randomUUID().toString(),"NEXT_STEP","继续核对当前记录");
+                assertThatThrownBy(()->inbox.change(actor,session,allowed.id(),allowed.revision(),text)).hasMessageContaining("403");
+                assertThat(inbox.list(actor,session)).contains(allowed);
+                inbox.change(actor,session,allowed.id(),allowed.revision(),null);
+            }
+        }
+        verify(sessions,never()).appendUserMessage(any(),anyString(),anyString());
+        verifyNoInteractions(chat);
+    }
+    @Test void preexistingRestrictedGuidanceIsClearedWithoutHistoryModelOrIdleFallback(){
+        var activeItem=enqueue("请查看账号的登录密码。");
+        var idleItem=enqueue("请在终端执行一条命令。");
+        var store=new com.ruanzhu.doorhandle.framework.persistence.workflow.JdbcWorkflowStore(jdbc,new com.fasterxml.jackson.databind.ObjectMapper());
+        new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource())).executeWithoutResult(tx->{
+            for(var item:List.of(activeItem,idleItem)){
+                var row=store.find(com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowKind.CONVERSATION_INPUT,item.id()).orElseThrow();
+                var body=store.payload(row,com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowPayloads.ConversationInputV1.class);
+                store.transition(row,"QUEUED",body.withMode("NEXT_STEP"),item.id().equals(activeItem.id())?"run-active":"run-ended",null,row.expiresAt());
+            }
+        });
+        assertThat(inbox.take(alice,"s1","run-active")).isEmpty();
+        inbox.dispatch();
+        assertThat(inbox.list(alice,"s1")).hasSize(2).allSatisfy(item->{assertThat(item.status()).isEqualTo("FAILED");assertThat(item.content()).isEmpty();});
+        assertThat(jdbc.queryForList("SELECT action FROM audit_event WHERE action LIKE 'GUIDANCE_DENIED_%'",String.class))
+                .containsExactlyInAnyOrder("GUIDANCE_DENIED_PROTECTED_CREDENTIALS","GUIDANCE_DENIED_TERMINAL_EXECUTION");
+        verify(sessions,never()).appendUserMessage(any(),anyString(),anyString());
+        verifyNoInteractions(chat);
+    }
     @Test void idleSubmitStartsImmediatelyAndOtherMessagesWaitInTheSavedOrder() throws Exception {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);

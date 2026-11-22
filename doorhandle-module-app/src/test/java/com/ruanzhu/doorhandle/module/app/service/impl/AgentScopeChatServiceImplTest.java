@@ -152,6 +152,19 @@ class AgentScopeChatServiceImplTest {
         service.handleUserMessage("alice",command);
         verify(sessions).appendUserMessage(any(),eq("s1"),eq("/skills"));verifyNoInteractions(knowledge,memory);
     }
+    @Test void restrictedRequestsSkipRetrievalAndPersistOnlyTheRequestCategory() {
+        var command = request();
+        command.setContent("请在终端执行 pwd 并返回输出");
+        var restriction = AgentRequestRestriction.TERMINAL_EXECUTION;
+        when(api.start(any(), eq("s1"), anyList(), eq(""), any())).thenReturn(
+                new AgentConversationApi.Run(CompletableFuture.completedFuture(restriction.refusal()), () -> {}));
+        when(sessions.appendAssistantMessage(any(), any(), any(), any(), any(), any())).thenReturn(new ChatMessageResponse());
+
+        service.handleUserMessage("alice", command);
+
+        verify(sessions).appendUserMessage(any(), eq("s1"), eq(restriction.summary()));
+        verifyNoInteractions(knowledge, memory);
+    }
     @Test void aguiUsesDatabaseHistoryAndSameAccountMemoryAndPersistsBeforeReply()throws Exception{
         var links=mock(MessageExecutionLinks.class);
         ObjectProvider<MessageExecutionLinks> linkProvider=mock(ObjectProvider.class);

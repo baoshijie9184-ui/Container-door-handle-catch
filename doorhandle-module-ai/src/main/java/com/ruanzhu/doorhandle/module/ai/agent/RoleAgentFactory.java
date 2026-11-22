@@ -210,6 +210,8 @@ public class RoleAgentFactory {
                         || question.isBlank() || question.length() > 4000) {
                     return Mono.just(ToolResultBlock.error("请提供有效的专业问题"));
                 }
+                var restriction = com.ruanzhu.doorhandle.contracts.agent.AgentRequestRestriction.detect(question);
+                if (restriction.isPresent()) return Mono.just(ToolResultBlock.error(restriction.get().refusal()));
                 var childMiddleware = middleware instanceof com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddleware audit
                         ? audit.child(param.getToolUseBlock() == null ? null : param.getToolUseBlock().getId()) : middleware;
                 var childMiddlewares=new java.util.ArrayList<io.agentscope.core.middleware.MiddlewareBase>();

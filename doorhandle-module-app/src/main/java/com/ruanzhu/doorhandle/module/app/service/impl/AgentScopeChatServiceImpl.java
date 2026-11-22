@@ -169,10 +169,10 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             for (var message : textHistory.subList(Math.max(0, textHistory.size() - keep), textHistory.size()))
                 history.add(new AgentConversationApi.Message(message.getRole(), message.getContent()));
             history.add(new AgentConversationApi.Message("user", request.getContent()));
-            boolean credentialRead = api.requestsCredentialRead(request.getContent());
+            var restriction = AgentRequestRestriction.detect(request.getContent()).orElse(null);
             boolean command=request.getContent().stripLeading().startsWith("/");
-            boolean usePrivateContext = !command && !credentialRead;
-            if (!credentialRead) output.accept(ChatStreamEvent.status(sessionId, "AgentScope 正在检索并处理问题"));
+            boolean usePrivateContext = !command && restriction == null;
+            if (restriction == null) output.accept(ChatStreamEvent.status(sessionId, "AgentScope 正在检索并处理问题"));
             ReferenceContext context = usePrivateContext ? referenceContext(actor, tenant, sessionId, request.getContent())
                     : new ReferenceContext("", List.of());
             Consumer<AgentConversationApi.Event> consume = event -> {
@@ -193,7 +193,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             }
             holder.set(run); if (run.runId() != null) runId = run.runId(); if (disconnected.get()) run.cancel().run();
             if (disconnected.get()) throw new CancellationException();
-            sessions.appendUserMessage(tenant, sessionId, credentialRead ? "请求读取受保护的凭据" : request.getContent());
+            sessions.appendUserMessage(tenant, sessionId, restriction == null ? request.getContent() : restriction.summary());
             String reply = run.result().get(Math.max(185,api.maxRunSeconds()+5), TimeUnit.SECONDS);
             if (disconnected.get()) throw new CancellationException();
             var cards = run.cards().get();

@@ -135,6 +135,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
             if(previous.isPresent()){
                 var old=previous.get();if(old.ownerUserId()!=current.userId()||!digest.equals(old.requestSha256()))throw fail(409,"消息编号已使用，请核对原提交");requireCurrentClock(old);return item(old);
             }
+            if("NEXT_STEP".equals(mode))rejectRestrictedGuidance(content);
             if(workflows.count(KIND,current.userId(),null,null,PENDING)>=16)throw fail(429,"本人待处理消息已达 16 条，请等待或撤回");
             var run=control.getObject().inspect(current,session);String target=null,actualMode=mode;
             if("NEXT_STEP".equals(mode)&&run.runId()!=null){
@@ -160,7 +161,10 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
             if(!session.equals(entry.sessionId()))throw fail(404,"消息不存在或无权限");
             requireCurrentClock(entry);
             if(!"QUEUED".equals(entry.status())||entry.revision()!=revision)throw fail(409,"消息状态已变化，请刷新核对");
-            if(content!=null&&"NEXT_STEP".equals(payload.mode())&&content.length()>4000)throw fail(400,"补充要求最多 4000 字符");
+            if(content!=null&&isGuidance(payload)){
+                if(content.length()>4000)throw fail(400,"补充要求最多 4000 字符");
+                rejectRestrictedGuidance(content);
+            }
             var updated=workflows.transition(entry,content==null?"CANCELLED":"QUEUED",payload.withContent(content==null?"":content,content==null?payload.contentSha256():hash(content)),entry.runId(),null,entry.expiresAt());
             audit(updated,content==null?"CANCELLED":"EDITED");return item(updated);
         });
@@ -175,6 +179,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
             if(payload.content().length()>4000)throw fail(400,"补充要求最多 4000 字符，请先编辑消息");
             var run=control.getObject().inspect(current,session);
             if(run.runId()==null||!run.runId().equals(expectedRunId)||"IDLE".equals(run.phase()))throw fail(409,"当前任务已变化，请刷新后重新选择引导");
+            rejectRestrictedGuidance(payload.content());
             if(workflows.count(KIND,current.userId(),null,run.runId(),Set.of("QUEUED","APPLIED"))>=6)throw fail(429,"本轮补充要求已达上限，请保留排队或稍后重试");
             var updated=workflows.transition(entry,"QUEUED",payload.withMode("NEXT_STEP"),run.runId(),null,entry.expiresAt());
             audit(updated,"PROMOTED_NEXT_STEP");return item(updated);
@@ -188,6 +193,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
         String digest = hash(content);
         var existing = workflows.find(KIND,id).orElse(null);
         if (alreadyGuided(existing,current,session,runId,digest)) return;
+        if (revision==null && existing==null) rejectRestrictedGuidance(content);
         control.getObject().guide(current,session,runId,() -> tx.execute(status -> {
             lock(current.userId());
             var row = workflows.find(KIND,id).orElse(null);
@@ -196,9 +202,6 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
                 throw fail(429,"本轮引导已达上限");
             if (revision==null) {
                 if (row!=null) throw fail(409,"消息编号已使用，请核对原提交");
-                var payload = new ConversationInputV1(current.username(),"NEXT_STEP","NEXT_STEP",entryPoint,content,digest);
-                row = workflows.create(new WorkflowDraft(id,KIND,"GLOBAL",id,hash("guide|"+id+"|"+runId+"|"+digest),
-                        current.userId(),current.userId(),null,"SESSION",session,null,session,runId,"QUEUED",now().plusMinutes(15),1,payload));
             } else {
                 if (row==null || row.ownerUserId()!=current.userId() || !session.equals(row.sessionId()))
                     throw fail(404,"消息不存在或无权限");
@@ -206,6 +209,12 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
                 if (!"QUEUED".equals(row.status()) || !"NEXT_TURN".equals(body(row).mode()) || row.revision()!=revision
                         || !digest.equals(body(row).contentSha256()) || !row.expiresAt().isAfter(now()))
                     throw fail(409,"待发消息已变化，请刷新后重新选择");
+            }
+            rejectRestrictedGuidance(content);
+            if (revision==null) {
+                var payload = new ConversationInputV1(current.username(),"NEXT_STEP","NEXT_STEP",entryPoint,content,digest);
+                row = workflows.create(new WorkflowDraft(id,KIND,"GLOBAL",id,hash("guide|"+id+"|"+runId+"|"+digest),
+                        current.userId(),current.userId(),null,"SESSION",session,null,session,runId,"QUEUED",now().plusMinutes(15),1,payload));
             }
             sessions.appendUserMessage(new TenantContext(current.userId(),current.username()),session,content);
             audit(workflows.transition(row,"APPLIED",body(row).withMode("NEXT_STEP").withContent("",digest),runId,null,row.expiresAt()),"GUIDED");
@@ -222,6 +231,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
             for(var entry:waiting(current.userId(),session,runId,true)){
                 if(entry.legacyClockUnresolved())continue;
                 var payload=body(entry);if(!"NEXT_STEP".equals(payload.mode()))continue;
+                if(discardRestrictedGuidance(entry,payload))continue;
                 result.add(new Input(entry.workflowId(),payload.content()));
                 sessions.appendUserMessage(new TenantContext(current.userId(),current.username()),session,payload.content());
                 audit(workflows.transition(entry,"APPLIED",payload.withContent("",payload.contentSha256()),entry.runId(),null,entry.expiresAt()),"APPLIED_AT_BOUNDARY");
@@ -257,6 +267,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
                     .filter(row -> canDispatch(actor,session,row.workflowId())).findFirst().orElse(null);
             if (entry == null) return false;
             var payload=body(entry);
+            if(isGuidance(payload)&&discardRestrictedGuidance(entry,payload))return false;
             if("NEXT_STEP".equals(payload.mode())){entry=workflows.transition(entry,"QUEUED",payload.withMode("NEXT_TURN"),null,null,entry.expiresAt());audit(entry,"FALLBACK_NEXT_TURN");payload=body(entry);}
             return startAfterCommit(actor,session,entry,payload)!=null;
         });
@@ -317,6 +328,19 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
         if(entry.legacyClockUnresolved())return;
         audit(workflows.transition(entry,"FAILED",payload.withContent("",payload.contentSha256()),entry.runId(),null,entry.expiresAt()),action);
     });}
+    private static boolean isGuidance(ConversationInputV1 payload){
+        return "NEXT_STEP".equals(payload.mode())||"NEXT_STEP".equals(payload.requestedMode());
+    }
+    private static void rejectRestrictedGuidance(String content){
+        AgentRequestRestriction.detect(content).ifPresent(restriction->{throw fail(403,restriction.refusal());});
+    }
+    private boolean discardRestrictedGuidance(WorkflowRecord entry,ConversationInputV1 payload){
+        var restriction=AgentRequestRestriction.detect(payload.content());
+        if(restriction.isEmpty())return false;
+        audit(workflows.transition(entry,"FAILED",payload.withContent("",payload.contentSha256()),entry.runId(),null,entry.expiresAt()),
+                "GUIDANCE_DENIED_"+restriction.get().name());
+        return true;
+    }
     public void expire(){for(var candidate:workflows.expired(KIND,PENDING,50))tx.executeWithoutResult(status->{lock(candidate.ownerUserId());var entry=row(candidate.ownerUserId(),candidate.workflowId());
         if(entry.legacyClockUnresolved())return;
         if(!PENDING.contains(entry.status())||entry.expiresAt().isAfter(now()))return;var payload=body(entry);
