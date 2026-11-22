@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.ai.evolution;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.constraints.*;
 import java.util.List;
 import java.util.Map;
@@ -26,4 +27,5 @@ public final class SkillDtos {
             Map<String,Object> evidence,String sourceRunId,String reviewReason,String createdAt) {}
     public record View(String skillId,long ownerUserId,String name,String targetRole,int revision,int latestVersion,Integer activeVersion,
             String lifecycle,long useCount,String lastUsedAt,List<Version> versions,List<Map<String,Object>> evaluations,List<Map<String,Object>> audit) {}
+    public record Page(List<View> items,@JsonInclude(JsonInclude.Include.ALWAYS) String nextCursor) {}
 }

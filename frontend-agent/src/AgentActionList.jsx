@@ -3,7 +3,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {Button} from 'antd';
 import StatusBadge from './StatusBadge';
 import {ClipboardCheck,LockKeyhole,TriangleAlert} from 'lucide-react';
-import {agentCreationReviewSession,isActiveAgentAction,readAgentActionPage,validAgentAction as valid} from '../../frontend/src/utils/agentActions.js';
+import {agentCreationReviewPath,agentCreationReviewSession,isActiveAgentAction,readAgentActionPage,validAgentAction as valid} from '../../frontend/src/utils/agentActions.js';
 import {beijingDateTime} from '../../frontend/src/utils/beijingTime.js';
 import {DetectionProposalImages} from './DetectionProposalImages';
 import {DetectionCreationReview} from './DetectionCreationReview';
@@ -116,7 +116,7 @@ export function AgentActionList({sessionId,base='',refreshKey}) {
   {create&&action.status==='EXECUTING'&&<p>已保存批准 正在准备检测文件 可刷新核对状态 不要重复提交</p>}
   {(retry||create)&&action.status==='SUCCEEDED'&&<p>已受理新的检测派发 不表示检测已完成 请到检测记录查看实际进度</p>}
   {action.reasonCode&&<p>{create&&action.reasonCode==='EXECUTION_NEEDS_REVIEW'?'图片传输或检测创建结果待核对 不会自动重传或重复提交':reasons[action.reasonCode]||'操作未执行 请重新核对'}</p>}
-  {agentCreationReviewSession(action)&&<p><a href={base.replace(/\/$/,'')+'/#/agent/actions?sessionId='+encodeURIComponent(agentCreationReviewSession(action))+'#creation-review'}>打开原会话核对</a></p>}
+  {agentCreationReviewSession(action)&&<p><a href={base.replace(/\/$/,'')+'/#'+agentCreationReviewPath(agentCreationReviewSession(action))}>打开原会话核对</a></p>}
   {action.status==='PENDING'&&<div className="action-buttons"><Button type="primary" danger={retry} loading={busy.has(action.actionId)} disabled={busy.has(action.actionId)||!verified||loading||!!loadingMore} onClick={()=>decide(action,'APPROVE')}>{create?'确认创建检测':retry?'确认重新检测':'确认分配'}</Button><Button disabled={busy.has(action.actionId)||!verified||loading||!!loadingMore} onClick={()=>decide(action,'REJECT')}>拒绝</Button><Button disabled={busy.has(action.actionId)||!verified||loading||!!loadingMore} onClick={()=>decide(action,'CANCEL')}>取消</Button></div>}
   <AgentActionAudit key={JSON.stringify([base,sessionId,action.actionId,action.version])} actionId={action.actionId} revision={action.version} operation={action.operation} scopeKey={sessionId} base={base} disabled={busy.has(action.actionId)}/>
  </article>;

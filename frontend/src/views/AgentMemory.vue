@@ -24,7 +24,7 @@
       <div class="memory-pagination"><span>已读取 {{ items.length }} 条{{ memoryQuery.trim() ? ' · 当前匹配 '+visibleItems.length+' 条' : '' }}{{ hasMore?' · 还有更多记忆':'' }}</span><el-button v-if="hasMore" :loading="loading" :disabled="loading||busy||editor.visible||policy.visible" @click="loadMore">读取更多</el-button></div>
       <p v-if="items.length">列表变化后可刷新重新核对 编辑或删除完成后回到首批记录</p>
     </section>
-    <MemoryDuplicateReview ref="duplicatePanel" @updated="refresh" />
+    <MemoryDuplicateReview ref="duplicatePanel" :read-enabled="settings?.readEnabled===true" @updated="refresh" />
     <details class="memory-lifecycle-history">
       <summary><AppIcon name="Clock" :size="16" />有效期与清理记录</summary>
       <p v-if="lifecycleError" class="memory-error" role="alert">{{ lifecycleError }}</p>

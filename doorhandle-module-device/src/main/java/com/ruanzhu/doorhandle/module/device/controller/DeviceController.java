@@ -171,6 +171,7 @@ public class DeviceController {
     }
 
     @GetMapping("/devices/capture-alerts")
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPERVISOR')")
     @Operation(summary = "分页查询采集告警")
     public Result<Map<String, Object>> listCaptureAlerts(
             @RequestParam(required = false) String status,

@@ -81,6 +81,26 @@ final class SkillContentStore {
         return jdbc.queryForList("SELECT s.asset_id AS skill_id FROM content_asset s WHERE s.asset_kind='SKILL' AND (s.owner_user_id=? OR EXISTS(SELECT 1 FROM content_revision r WHERE r.asset_kind='SKILL' AND r.asset_id=s.asset_id AND "+readableVersion(supervisor)+")) ORDER BY s.id DESC LIMIT 50",
                 owner,supervisor?(Object)owner:role);
     }
+    record PageRow(long id,String skillId) {}
+
+    List<PageRow> page(long owner,boolean supervisor,String role,boolean review,Long before,int limit){
+        String sql="SELECT s.id,s.asset_id FROM content_asset s WHERE s.asset_kind='SKILL'";
+        var args=new ArrayList<Object>();
+        args.add(owner);
+        if(review){
+            sql+="""
+                 AND s.owner_user_id<>? AND EXISTS(SELECT 1 FROM content_revision r
+                    WHERE r.asset_kind='SKILL' AND r.asset_id=s.asset_id AND r.version=s.current_version
+                    AND r.approval_status='SUBMITTED' AND r.source_type IN ('RUN','LINK'))
+                 """;
+        }else{
+            sql+=" AND (s.owner_user_id=? OR EXISTS(SELECT 1 FROM content_revision r WHERE r.asset_kind='SKILL' AND r.asset_id=s.asset_id AND "+readableVersion(supervisor)+"))";
+            args.add(supervisor?(Object)owner:role);
+        }
+        if(before!=null){sql+=" AND s.id<?";args.add(before);}
+        args.add(limit);
+        return jdbc.query(sql+" ORDER BY s.id DESC LIMIT ?",(row,index)->new PageRow(row.getLong(1),row.getString(2)),args.toArray());
+    }
     boolean hasVisibleVersion(String id,long viewer,boolean supervisor,String role) {
         String sql="SELECT 1 FROM content_revision r JOIN content_asset s ON s.asset_kind='SKILL' AND s.asset_id=r.asset_id WHERE r.asset_kind='SKILL' AND r.asset_id=? AND "+readableVersion(supervisor)+" LIMIT 1";
         return !jdbc.queryForList(sql,Integer.class,id,supervisor?(Object)viewer:role).isEmpty();

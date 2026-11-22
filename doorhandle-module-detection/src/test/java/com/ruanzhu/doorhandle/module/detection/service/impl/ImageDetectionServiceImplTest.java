@@ -149,9 +149,10 @@ class ImageDetectionServiceImplTest {
 
         DetectionTask task = new DetectionTask();
         task.setId(10L);
+        task.setTaskType("BATCH_DIRECT");
         task.setSourceOssPrefix(imageDir.toString());
         task.setResultOssPrefix(resultDir.toString());
-        when(detectionTaskMapper.selectById(10L)).thenReturn(task);
+        when(detectionTaskMapper.selectOne(any())).thenReturn(task);
 
         imageDetectionService.deleteDetectionData(10L);
 
@@ -171,10 +172,35 @@ class ImageDetectionServiceImplTest {
         DetectionTask task = new DetectionTask();
         task.setId(10L);
         task.setCreatedBy("bob");
-        when(detectionTaskMapper.selectById(10L)).thenReturn(task);
+        when(detectionTaskMapper.selectOne(any())).thenReturn(task);
 
         assertThrows(org.springframework.security.access.AccessDeniedException.class,
                 () -> imageDetectionService.deleteDetectionData(10L));
+        verify(detectionTaskMapper, never()).deleteById(10L);
+    }
+
+    @Test
+    void deleteDetectionDataRejectsReadOnlyAndFormalTasksBeforeDeletingFilesOrRow() throws Exception {
+        Path image = Files.writeString(tempDir.resolve("source.jpg"), "source");
+        DetectionTask task = new DetectionTask();
+        task.setId(10L);
+        task.setTaskType("OSS_FOLDER");
+        task.setSourceOssPrefix(image.toString());
+        task.setCreatedBy("bob");
+        when(detectionTaskMapper.selectOne(any())).thenReturn(task);
+
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken("alice", "N/A", List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"))));
+        org.mockito.Mockito.doReturn(true).when(detectionTaskAccessPolicy).canAccess(eq(task), any(org.springframework.security.core.Authentication.class));
+        assertTrue(detectionTaskAccessPolicy.canAccess(task, SecurityContextHolder.getContext().getAuthentication()));
+        assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                () -> imageDetectionService.deleteDetectionData(10L));
+
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken("admin", "N/A", List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))));
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> imageDetectionService.deleteDetectionData(10L)).getCode());
+        assertTrue(Files.exists(image));
         verify(detectionTaskMapper, never()).deleteById(10L);
     }
 

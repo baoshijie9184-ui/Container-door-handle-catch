@@ -1,6 +1,6 @@
 <template>
   <section class="skills-page app-panel">
-    <header><div><h2><AgentSectionIcon kind="skills" />Agent 技能演化</h2></div><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新</el-button></header>
+    <header><div><h2><AgentSectionIcon kind="skills" />Agent 技能演化</h2></div><el-button :loading="loading||skillLoading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新</el-button></header>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
     <el-alert title="自动 Eval 检查结构与权限规则 业务适用性和隐私仍需主管人工审核" type="info" :closable="false" />
     <AgentLifecycleGuide label="Skill 从私人草稿到发布的流程" :steps="skillStages" />
@@ -26,16 +26,22 @@
       <p>仅保存成功工具名和完成时间 不复制聊天正文或业务参数 授权后可让助手按明确要求提议私人技能草稿</p>
       <el-button type="primary" :disabled="!sources.length || busy" @click="newDraft">编写技能草稿</el-button>
     </section>
-    <el-table :scrollbar-tabindex="0" role="region" aria-label="可查看的技能记录" :data="skills" row-key="skillId" v-loading="loading">
-      <template #empty><CollectionEmptyState :loading="loading" :error="error" empty-title="暂无可查看的技能" empty-description="可从链接下载私人草稿，或授权已有运行经验后编写；评测与审核仍需分别完成。" @retry="refresh" /></template>
+    <div v-if="supervisor" class="skill-list-controls" role="group" aria-label="技能列表范围">
+      <el-button :type="skillGroup==='all'?'primary':'default'" :aria-pressed="skillGroup==='all'" :disabled="busy" @click="switchSkillGroup('all')">全部可见技能</el-button>
+      <el-button :type="skillGroup==='review'?'primary':'default'" :aria-pressed="skillGroup==='review'" :disabled="busy" @click="switchSkillGroup('review')">待我审核</el-button>
+    </div>
+    <el-table :scrollbar-tabindex="0" role="region" :aria-label="skillGroup==='review'?'待我审核的技能':'可查看的技能记录'" :data="skills" row-key="skillId" v-loading="skillLoading">
+      <template #empty><CollectionEmptyState :loading="skillLoading" :error="skillError" :empty-title="skillCursor?'本批记录未能显示':skillGroup==='review'?'暂无待我审核的技能':'暂无可查看的技能'" :empty-description="skillCursor?'可读取下一批记录。':skillGroup==='review'?'这里显示由其他账号提交、等待独立审核的技能。':'可从链接下载私人草稿，或授权已有运行经验后编写。'" @retry="refreshSkills()" /></template>
       <el-table-column label="技能" min-width="180"><template #default="{row}"><div class="skill-list-name"><strong>{{ row.name||'技能名称未记录' }}</strong><small>最新可见版本 {{ latestVisibleVersion(row)?.version??'未记录' }}</small></div></template></el-table-column>
       <el-table-column label="目标角色" width="100"><template #default="{ row }">{{ roleLabel(row.targetRole) }}</template></el-table-column>
       <el-table-column label="最新版本状态" min-width="145"><template #default="{ row }"><StatusBadge domain="skillVersion" :code="latestVisibleVersion(row)?.status" :label="stateLabel(latestVisibleVersion(row)?.status)" /></template></el-table-column>
       <el-table-column label="发布版本" width="100"><template #default="{ row }">{{ activeVisibleVersion(row)?.evidence?.sourceType === 'EXTERNAL_UPLOAD' ? '历史记录' : row.activeVersion ? 'v' + row.activeVersion : '未发布' }}</template></el-table-column>
       <el-table-column label="实际加载" width="100"><template #default="{row}">{{ knownCount(row.useCount)??'—' }}</template></el-table-column>
       <el-table-column label="维护" min-width="140"><template #default="{ row }"><StatusBadge domain="skillMaintenance" :code="skillMaintenance(row).code" /></template></el-table-column>
-      <el-table-column label="操作" width="150"><template #default="{ row }"><el-button text :disabled="busy" @click="select(row)"><AppIcon name="Search" :size="15" />查看与管理</el-button></template></el-table-column>
+      <el-table-column label="操作" width="150"><template #default="{ row }"><el-button text :disabled="busy" @click="select(row)"><AppIcon name="Search" :size="15" />{{ skillGroup==='review'?'查看并审核':'查看与管理' }}</el-button></template></el-table-column>
     </el-table>
+    <p v-if="skillError && skills.length" class="error" role="alert">{{ skillError }}</p>
+    <el-button v-if="skillCursor" class="skill-list-more" :loading="skillLoading" :disabled="busy" @click="refreshSkills(skillCursor)">加载更多{{ skillGroup==='review'?'待审记录':'技能' }}</el-button>
     <el-dialog v-model="editing" class="learned-skill-dialog" append-to-body :title="editingSkill ? '修订技能版本' : '创建私人技能草稿'" width="min(720px, 94vw)" :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy">
       <el-form label-position="top" :disabled="busy" @submit.prevent="saveDraft">
         <el-form-item label="名称 小写字母数字和短横线"><el-input v-model="form.name" :disabled="!!editingSkill" maxlength="64" /></el-form-item>
@@ -113,7 +119,7 @@ import AgentLifecycleGuide from '@/components/chat/AgentLifecycleGuide.vue'
 import AgentOperationHistory from '@/components/chat/AgentOperationHistory.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import SkillVersionRecord from '@/components/chat/SkillVersionRecord.vue'
-import {skillTime,skillMaintenance,skillRuleState,skillRuleLabel,readSkillView} from '@/utils/skillPresentation'
+import {skillTime,skillMaintenance,skillRuleState,skillRuleLabel,readSkillView,readSkillPage,skillPublishNotice} from '@/utils/skillPresentation'
 import { knownCount } from '@/utils/countPresentation'
 import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { captureAccountRequest } from '@/api/request'
@@ -121,6 +127,7 @@ const request=captureAccountRequest()
 import { useRoute } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 const skills=ref([]), sources=ref([]), runs=ref([]), mine=ref(null), selected=ref(null), loading=ref(false), busy=ref(false), error=ref(''), dialogError=ref('')
+const skillGroup=ref('all'),skillLoading=ref(false),skillError=ref(''),skillCursor=ref(null)
 const detailLoading=ref(false),selectedSkillId=ref('')
 let detailGeneration=0
 const sourceRunId=ref(''), sourceTools=ref([]), editing=ref(false), detailOpen=ref(false), editingSkill=ref(null), reason=ref(''), targetVersion=ref(null), businessReviewed=ref(false), privacyReviewed=ref(false)
@@ -138,10 +145,30 @@ const upgradeOpen=ref(false), upgradeUrl=ref(''), upgradeBusy=ref(false), upgrad
 const comparedBefore=computed(()=>selected.value?.versions.find(v=>v.version===compareFrom.value)?.instructions||''), comparedAfter=computed(()=>selected.value?.versions.find(v=>v.version===compareTo.value)?.instructions||'')
 let upgradeRequestId='', upgradeRevision=0, upgradeSkillId=''
 let downloadTimer=null, downloadGeneration=0, stopped=false
-let generation=0, requestId=''
+let generation=0, skillGeneration=0, requestId=''
 const roleLabel=role=>role==='SUPERVISOR'?'主管':'员工'
 const stateLabel=status=>({DRAFT:'私人草稿',EVALUATED:'规则通过',SUBMITTED:'待主管审核',APPROVED:'已审核',REJECTED:'已驳回'}[status]||'无可见版本')
-async function refresh(){if(stopped)return;const n=++generation;loading.value=true;error.value='';try{const [identity,list,sourceList,history]=await Promise.all([request.get('/api/organization/me'),request.get('/api/agent/skills'),request.get('/api/agent/skills/sources'),request.get('/api/agent/runs',{params:{limit:50}})]);if(n!==generation)return;if(!Array.isArray(list.data)||!Array.isArray(sourceList.data)||!Array.isArray(history.data))throw Error('技能列表未完整返回');mine.value=identity.data.data;skills.value=list.data;sources.value=sourceList.data;runs.value=history.data.filter(run=>run.status==='COMPLETED')}catch(e){if(n===generation)error.value=e.response?.data?.message||'技能演化尚未启用或服务暂不可用'}finally{if(n===generation)loading.value=false}}
+async function refresh(){await Promise.all([refreshContext(),refreshSkills()])}
+async function refreshContext(){if(stopped)return;const n=++generation;loading.value=true;error.value='';try{const [identity,sourceList,history]=await Promise.all([request.get('/api/organization/me'),request.get('/api/agent/skills/sources'),request.get('/api/agent/runs',{params:{limit:50}})]);if(n!==generation)return;if(!Array.isArray(sourceList.data)||!Array.isArray(history.data))throw Error('技能来源未完整返回');mine.value=identity.data.data;sources.value=sourceList.data;runs.value=history.data.filter(run=>run.status==='COMPLETED')}catch(e){if(n===generation)error.value=e.response?.data?.message||'技能来源尚未启用或服务暂不可用'}finally{if(n===generation)loading.value=false}}
+async function refreshSkills(before=null){
+  if(stopped)return
+  const n=++skillGeneration,group=skillGroup.value
+  skillLoading.value=true;skillError.value=''
+  try{
+    const {data}=await request.get('/api/agent/skills/page',{params:{group,before}})
+    if(n!==skillGeneration)return
+    const page=readSkillPage(data,before)
+    const merged=new Map((before?skills.value:[]).map(row=>[row.skillId,row]))
+    for(const row of page.items)merged.set(row.skillId,row)
+    skills.value=[...merged.values()];skillCursor.value=page.nextCursor
+  }catch(e){if(n===skillGeneration)skillError.value=e.response?.data?.message||e.message||'技能列表暂不可用'}
+  finally{if(n===skillGeneration)skillLoading.value=false}
+}
+function switchSkillGroup(group){
+  if(group===skillGroup.value)return
+  skillGroup.value=group;skills.value=[];skillCursor.value=null
+  refreshSkills()
+}
 const downloadLabel=status=>({NEEDS_REVIEW:'退出待核对 保留配额',DOWNLOADING:'正在下载与核验',DRAFT_CREATED:'下载完成 已保存',ERROR:'下载失败 请核对来源',DOWNLOADED:'正在创建草稿',NO_CHANGE:'已核对 无版本变化',PURGING:'清理中 结果待核对',PURGED:'文件已清理',CLEANUP_ERROR:'清理未核实 请重试'}[status]||status)
 const downloadError=code=>({SOURCE_TIMEOUT:'公开来源响应超时',SOURCE_CONNECTION_FAILED:'公开来源连接失败',DOWNLOAD_EXIT_UNVERIFIED:'尚不能确认下载进程退出 保留目录和配额 不自动重试',DOWNLOAD_NOT_STARTED:'排队任务未启动 已释放预留 可重新发起',SOURCE_AUTHENTICATION_REQUIRED:'来源要求认证 当前未配置',REMOTE_FILE_UNAVAILABLE:'公开来源暂不可访问',MARKET_SOURCE_NOT_VERIFIED:'市场页面的源码无法核验',PUBLIC_REPOSITORY_REQUIRED:'无法确认公开仓库',PUBLIC_SKILL_METADATA_REQUIRED:'公开技能资料不可核验',SKILL_DIRECTORY_AMBIGUOUS:'找到多个技能目录 请提供更明确的链接',SKILL_DIRECTORY_NOT_FOUND:'未找到对应技能目录',LICENSE_REQUIRED:'缺少许可证原文',PACKAGE_LICENSE_REQUIRED:'缺少技能目录适用的许可',SUPPORTED_LICENSE_REQUIRED:'许可无法核实或不在支持范围',LICENSE_DECLARATION_MISMATCH:'市场许可声明与包内许可不一致',PACKAGE_LIMIT_EXCEEDED:'下载包超过文件或大小限制',PACKAGE_STORAGE_LIMIT:'原始快照与技能文件超过存储上限',MARKET_SKILL_NAME_MISMATCH:'源码中的技能名称与市场不一致',REMOTE_BLOB_DIGEST_MISMATCH:'源码字节与固定提交摘要不一致',DOWNLOAD_LEASE_EXPIRED:'下载进程状态需核对',DOWNLOAD_OR_IMPORT_FAILED:'下载或导入未完成 请核对来源与权限'}[code]||'来源核验未通过：'+code)
 async function refreshDownloads(){const n=++downloadGeneration;clearTimeout(downloadTimer);if(stopped)return;try{const [result,stats,audit]=await Promise.all([request.get('/api/agent/skills/links'),request.get('/api/agent/skills/links/storage'),request.get('/api/agent/skills/links/storage/audit')]);if(stopped||n!==downloadGeneration)return;downloads.value=result.data;storageStatus.value=stats.data;storageCommands.value=audit.data;linksEnabled.value=true;linkError.value='';if(downloads.value.some(d=>d.status==='DOWNLOADING')){clearTimeout(downloadTimer);downloadTimer=setTimeout(async()=>{await refreshDownloads();await refresh()},2500)}}catch(e){if(stopped||n!==downloadGeneration)return;downloads.value=[];storageStatus.value=null;storageCommands.value=[];linksEnabled.value=false;linkError.value=e.response?.data?.message||'链接安装未启用或服务暂不可用'}}
@@ -168,13 +195,14 @@ async function select(row){if(busy.value||stopped||!row?.skillId)return;const n=
 async function revise(){editingSkill.value=selected.value;const v=latest.value;form.value={name:selected.value.name,targetRole:selected.value.targetRole,description:v.description,instructions:v.instructions,sourceRunId:v.sourceRunId,tools:[...v.tools]};requestId=crypto.randomUUID();dialogError.value='';editing.value=true;sourceTools.value=v.evidence.tools||[]}
 async function saveDraft(){if(busy.value||stopped)return;busy.value=true;dialogError.value='';try{const url=editingSkill.value?'/api/agent/skills/'+editingSkill.value.skillId+'/versions?expectedRevision='+editingSkill.value.revision:'/api/agent/skills';const r=await request.post(url,{...form.value,requestId},{headers});if(stopped)return;selected.value=readSkillView(r.data);editing.value=false;detailOpen.value=true;await refresh()}catch(e){if(!stopped)dialogError.value=e.response?.data?.message||'保存结果尚未核实 请刷新后核对'}finally{busy.value=false}}
 async function perform(action,extra={}){busy.value=true;dialogError.value='';try{selected.value=(await request.post('/api/agent/skills/'+selected.value.skillId+'/'+action,{expectedRevision:selected.value.revision,...extra},{headers})).data;await refresh()}catch(e){dialogError.value=e.response?.data?.message||'操作结果尚未核实 请刷新后核对'}finally{busy.value=false}}
-async function decision(value){try{await ElMessageBox.confirm(value==='APPROVE'?'发布后该角色的助手可在下一轮读取此技能 请再次核对正文、规则评测及脱敏内容':'确认驳回此技能版本','确认审核决定',{confirmButtonText:value==='APPROVE'?'确认发布':'确认驳回',cancelButtonText:'取消'});await perform('decision',{decision:value,reason:reason.value,businessReviewed:businessReviewed.value,privacyReviewed:privacyReviewed.value})}catch{}}
+async function decision(value){try{await ElMessageBox.confirm(value==='APPROVE'?skillPublishNotice(latest.value?.evidence.sourceType,selected.value.targetRole):'确认驳回此技能版本','确认审核决定',{confirmButtonText:value==='APPROVE'?'确认发布':'确认驳回',cancelButtonText:'取消'});await perform('decision',{decision:value,reason:reason.value,businessReviewed:businessReviewed.value,privacyReviewed:privacyReviewed.value})}catch{}}
 async function rollback(){try{await ElMessageBox.confirm('确认切换到已审核 v'+targetVersion.value+' 后续技能读取将使用该版本','确认版本切换',{confirmButtonText:'确认切换',cancelButtonText:'取消'});await perform('rollback',{targetVersion:targetVersion.value,reason:reason.value})}catch{}}
 async function archive(){try{await ElMessageBox.confirm('停用后助手不能继续加载此技能 保留全部版本与审计','确认停用',{confirmButtonText:'确认停用',cancelButtonText:'取消'});await perform('archive',{reason:reason.value})}catch{}}
 watch(detailOpen,open=>{if(!open){detailGeneration++;detailLoading.value=false}})
-onMounted(async()=>{await refresh();await refreshDownloads()});onBeforeUnmount(()=>{stopped=true;generation++;downloadGeneration++;detailGeneration++;clearTimeout(downloadTimer)})
+onMounted(async()=>{await refresh();await refreshDownloads()});onBeforeUnmount(()=>{stopped=true;generation++;skillGeneration++;downloadGeneration++;detailGeneration++;clearTimeout(downloadTimer)})
 </script>
 <style scoped>
+.skill-list-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.skill-list-controls .el-button+.el-button{margin-left:0}.skill-list-more{margin-top:12px}
 .download-source{overflow-wrap:anywhere}.link-install-panel>.el-input{margin-bottom:12px}.skills-page{padding:24px;background:white;border:1px solid #e3eaf5;border-radius:16px}.skills-page>header{display:flex;justify-content:space-between;align-items:center;gap:16px}.skills-page p{color:#64748b;font-size:13px;line-height:1.7}.source-panel,.version-card,.review-panel,.eval-row{margin:18px 0;padding:16px;background:#f7faff;border:1px solid #dce7f7;border-radius:12px}.source-panel .el-select{width:min(520px,100%);margin-right:12px}.version-card pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.8;color:#23344d}.actions,.review-panel{display:flex;gap:12px;flex-wrap:wrap}.review-panel .el-textarea,.review-panel .el-input{width:100%}.error{color:#b42318!important}.audit-row{overflow-wrap:anywhere}.skills-page :deep(.el-dialog__body){max-height:70vh;overflow:auto}.skills-page :deep(button){transition:transform .15s ease}.skills-page :deep(button:hover:not(:disabled)){transform:scale(1.02)}.skills-page :deep(button:active:not(:disabled)){transform:scale(.98)}@media(prefers-reduced-motion:reduce){.skills-page :deep(button){transition:none;transform:none!important}}@media(max-width:600px){.skills-page{padding:12px}.skills-page>header{align-items:flex-start}.source-panel .el-button{margin:10px 0}}
 </style>
 <style>

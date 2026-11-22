@@ -114,6 +114,35 @@ class SkillEvolutionTest {
         jdbc.update("UPDATE content_revision SET content_text='tampered' WHERE asset_kind='SKILL' AND asset_id=?",id);
         assertThatThrownBy(()->service.repository(alice)).hasMessageContaining("完整性");
     }
+    @Test void independentReviewPageFindsOlderSubmissionsBeyondTheGeneralListAndPaginates(){
+        var first=create();first=service.evaluate(alice,first.skillId(),first.revision());first=service.submit(alice,first.skillId(),first.revision());
+        var second=service.create(alice,draft("request-second-review"));second=service.evaluate(alice,second.skillId(),second.revision());second=service.submit(alice,second.skillId(),second.revision());
+        var oldId=first.skillId();var nextId=second.skillId();
+        var source=journal.get(alice,"source-1");var events=journal.events(alice,"source-1",0,100);
+        when(journal.get(boss,"source-1")).thenReturn(source);when(journal.events(boss,"source-1",0,100)).thenReturn(events);
+        service.capture(boss,"source-1");
+        for(int n=0;n<50;n++){
+            var sample=draft("review-filler-"+n);
+            service.create(boss,new SkillDtos.Draft("guide-"+n,sample.targetRole(),sample.description(),sample.instructions(),sample.tools(),sample.sourceRunId(),sample.requestId()));
+        }
+        var own=service.create(boss,draft("review-owned"));own=service.evaluate(boss,own.skillId(),own.revision());service.submit(boss,own.skillId(),own.revision());
+        assertThat(service.list(boss)).extracting(SkillDtos.View::skillId).doesNotContain(oldId,nextId);
+        var all=service.page(boss,"all",null,50);
+        assertThat(all.items()).extracting(SkillDtos.View::skillId).doesNotContain(oldId,nextId);
+        assertThat(service.page(boss,"all",all.nextCursor(),50).items()).extracting(SkillDtos.View::skillId).contains(nextId,oldId);
+        var pending=service.page(boss,"review",null,1);
+        assertThat(pending.items()).extracting(SkillDtos.View::skillId).containsExactly(nextId);
+        assertThat(pending.nextCursor()).isNotBlank();
+        var remaining=service.page(boss,"review",pending.nextCursor(),1);
+        assertThat(remaining.items()).extracting(SkillDtos.View::skillId).containsExactly(oldId);
+        assertThat(remaining.items().get(0).versions().get(0).sourceRunId()).isNull();
+        assertThat(remaining.nextCursor()).isNull();
+        assertThat(service.page(bob,"all",null,50).items()).isEmpty();
+        assertThatThrownBy(()->service.page(alice,"review",null,1)).hasMessageContaining("主管");
+        assertThatThrownBy(()->service.page(boss,"review","invalid",1)).hasMessageContaining("分页编号");
+        service.decide(boss,nextId,new SkillDtos.Decision(second.revision(),"APPROVE","已核对脱敏经验",true,true));
+        assertThat(service.page(boss,"review",pending.nextCursor(),1).items()).extracting(SkillDtos.View::skillId).containsExactly(oldId);
+    }
     @Test void versionRevisionDoesNotReplaceActiveSkillUntilApprovedAndRollbackArchivePreserveHistory(){
         var first=publish();var d=draft("request-next");var next=service.revise(alice,first.skillId(),first.revision(),d);assertThat(next.activeVersion()).isEqualTo(1);assertThat(service.repository(alice).getAllSkills().get(0).getName()).endsWith("-v1");
         next=service.evaluate(alice,next.skillId(),next.revision());next=service.submit(alice,next.skillId(),next.revision());next=service.decide(boss,next.skillId(),new SkillDtos.Decision(next.revision(),"APPROVE","第二版已复核",true,true));

@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.detection.service;
 
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -16,7 +17,8 @@ class DetectionWorkloadDashboardServiceTest {
     private final DetectionWorkUnitMapper mapper = mock(DetectionWorkUnitMapper.class);
     private final com.ruanzhu.doorhandle.module.detection.mapper.DetectionDuplicateTicketMapper duplicateMapper =
             mock(com.ruanzhu.doorhandle.module.detection.mapper.DetectionDuplicateTicketMapper.class);
-    private final DetectionWorkloadDashboardService service = new DetectionWorkloadDashboardService(mapper, duplicateMapper);
+    private final BusinessUserDirectory users = mock(BusinessUserDirectory.class);
+    private final DetectionWorkloadDashboardService service = new DetectionWorkloadDashboardService(mapper, duplicateMapper, users);
 
     @Test void duplicateCountsAreAssignedOnlyAndExcludeResolvedTickets() {
         login("alice", "ROLE_INSPECTOR");
@@ -50,21 +52,25 @@ class DetectionWorkloadDashboardServiceTest {
     }
 
     @Test void inspectorOnlyQueriesAuthenticatedAssignee() {
-        login("alice", "ROLE_INSPECTOR");
-        when(mapper.countAssignedStatuses("alice")).thenReturn(List.of(Map.of("status", "ASSIGNED", "total", 2L)));
+        login("DET-0001", "ROLE_INSPECTOR");
+        when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(28L,"DET-0001",false));
+        when(mapper.countAssignedStatuses("DET-0001",28L)).thenReturn(List.of(Map.of("status", "PROCESSING", "total", 1L)));
         var result = service.summary();
         assertEquals("MINE", result.get("scope"));
-        assertEquals(2L, result.get("activeCount"));
+        assertEquals(1L, result.get("activeCount"));
+        assertEquals(1L, ((Map<?,?>)result.get("counts")).get("PROCESSING"));
+        verify(mapper).countAssignedStatuses("DET-0001",28L);
         verify(mapper, never()).countDepartmentStatuses();
     }
 
     @Test void supervisorCanSeeDepartmentAndEmptyCountsAreZero() {
         login("manager", "ROLE_SUPERVISOR");
+        when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(1L,"manager",true));
         when(mapper.countDepartmentStatuses()).thenReturn(List.of());
         var result = service.summary();
         assertEquals("DEPARTMENT", result.get("scope"));
         assertEquals(0L, result.get("activeCount"));
-        verify(mapper, never()).countAssignedStatuses(anyString());
+        verify(mapper, never()).countAssignedStatuses(anyString(),anyLong());
     }
 
     @Test void unsupportedRoleCannotQueryDatabase() {

@@ -171,7 +171,7 @@ public class StatisticsController {
     @GetMapping("/detection-trend")
     public Result getDetectionTrend(@RequestParam(defaultValue = "month") String timeRange,
                                     @RequestParam(name = "scope", defaultValue = "ACCOUNT") DashboardScope audience) {
-        var scope = audience.forAggregate(accessPolicy, "");
+        var scope = audience.forCompletedResults(accessPolicy, "detection_task.");
         log.info("获取检测记录趋势统计，时间范围: {}", timeRange);
 
         String dateFormat;
@@ -282,23 +282,24 @@ public class StatisticsController {
      */
     @GetMapping("/detection-distribution")
     public Result getDetectionDistribution(@RequestParam(name = "scope", defaultValue = "ACCOUNT") DashboardScope audience) {
-        var scope = audience.forAggregate(accessPolicy, "");
+        var scope = audience.forCompletedResults(accessPolicy, "detection_task.");
         log.info("获取检测结果分布统计");
 
         String jc = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.%s')) AS UNSIGNED), 0)";
-        String filter = " FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate();
-
-        String sql = "SELECT '正常' AS result, SUM(" + String.format(jc, "Normal") + ") AS count" + filter +
-                " UNION ALL " +
-                "SELECT '弯曲' AS result, SUM(" + String.format(jc, "Bent") + ") AS count" + filter +
-                " UNION ALL " +
-                "SELECT '形变' AS result, SUM(" + String.format(jc, "Deformed") + ") AS count" + filter +
-                " UNION ALL " +
-                "SELECT '锈蚀' AS result, SUM(" + String.format(jc, "Rusty") + ") AS count" + filter +
-                " UNION ALL " +
-                "SELECT '缺失' AS result, SUM(" + String.format(jc, "Missing") + ") AS count" + filter +
-                " UNION ALL " +
-                "SELECT '结构损伤' AS result, SUM(" + String.format(jc, "Compromised") + ") AS count" + filter;
+        String sql = """
+                WITH totals AS (
+                    SELECT SUM(%s) AS normal, SUM(%s) AS bent, SUM(%s) AS deformed,
+                           SUM(%s) AS rusty, SUM(%s) AS missing, SUM(%s) AS compromised
+                    FROM detection_task WHERE status IN ('COMPLETED','PARTIAL_FAILED') AND %s
+                )
+                SELECT '正常' AS result, normal AS count FROM totals
+                UNION ALL SELECT '弯曲', bent FROM totals
+                UNION ALL SELECT '形变', deformed FROM totals
+                UNION ALL SELECT '锈蚀', rusty FROM totals
+                UNION ALL SELECT '缺失', missing FROM totals
+                UNION ALL SELECT '结构损伤', compromised FROM totals
+                """.formatted(jc.formatted("Normal"), jc.formatted("Bent"), jc.formatted("Deformed"),
+                jc.formatted("Rusty"), jc.formatted("Missing"), jc.formatted("Compromised"), scope.predicate());
 
         List<Map<String, Object>> result = scopedJdbc.queryForList(sql, scope.parameters());
         log.info("查询到检测结果分布统计: {}", result);

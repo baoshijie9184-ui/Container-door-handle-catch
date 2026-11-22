@@ -227,6 +227,7 @@ public class ModelController {
     }
 
     @GetMapping("/{modelId}/operations")
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<List<ModelOperationLog>> getModelOperations(@PathVariable Integer modelId) {
         try {
             return Result.success(modelService.getOperationLogs(modelId));

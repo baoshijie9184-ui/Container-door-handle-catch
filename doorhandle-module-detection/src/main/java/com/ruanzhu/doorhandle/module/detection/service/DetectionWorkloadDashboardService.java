@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.detection.service;
 
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
@@ -7,6 +8,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** 工作单元概览：身份仅取自服务端认证上下文，不使用跨用户缓存。 */
@@ -15,6 +17,7 @@ import java.util.Map;
 public class DetectionWorkloadDashboardService {
     private final DetectionWorkUnitMapper mapper;
     private final com.ruanzhu.doorhandle.module.detection.mapper.DetectionDuplicateTicketMapper duplicateMapper;
+    private final BusinessUserDirectory users;
 
     public Map<String, Object> summary() {
         return summarize(false);
@@ -35,9 +38,14 @@ public class DetectionWorkloadDashboardService {
         if (!supervisor && !roles.contains("ROLE_INSPECTOR")) {
             throw new AccessDeniedException("无权查看检测工作量");
         }
-        var rows = duplicates
-                ? (supervisor ? duplicateMapper.countDepartmentStatuses() : duplicateMapper.countAssignedStatuses(authentication.getName()))
-                : (supervisor ? mapper.countDepartmentStatuses() : mapper.countAssignedStatuses(authentication.getName()));
+        List<Map<String,Object>> rows;
+        if (duplicates) {
+            rows = supervisor ? duplicateMapper.countDepartmentStatuses() : duplicateMapper.countAssignedStatuses(authentication.getName());
+        } else {
+            var actor = users.authenticated();
+            supervisor = actor.supervisor();
+            rows = supervisor ? mapper.countDepartmentStatuses() : mapper.countAssignedStatuses(actor.username(), actor.userId());
+        }
         Map<String, Long> counts = new LinkedHashMap<>();
         var statuses = duplicates ? java.util.List.of("OPEN", "ASSIGNED", "COMPARING", "PENDING_APPROVAL")
                 : java.util.List.of("WAITING", "ASSIGNED", "PROCESSING", "SUBMITTED");

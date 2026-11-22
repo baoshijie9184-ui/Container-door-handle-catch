@@ -2,6 +2,7 @@ package com.ruanzhu.doorhandle.module.model.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
+import com.ruanzhu.doorhandle.module.model.entity.ModelOperationLog;
 import com.ruanzhu.doorhandle.module.model.service.ModelInfoService;
 import com.ruanzhu.doorhandle.module.model.service.ModelService;
 import org.junit.jupiter.api.AfterEach;
@@ -95,5 +96,18 @@ class ModelDirectoryAuthorizationTest {
 
         login("ROLE_SUPERVISOR");
         assertEquals("/private/models/model.onnx", modern.getAllModels().getData().get(0).getModelPath());
+    }
+
+    @Test void modelOperationLogsRequireSupervisor() {
+        var controller = context.getBean(ModelController.class);
+        var models = context.getBean(ModelService.class);
+        login("ROLE_INSPECTOR");
+        assertThrows(AccessDeniedException.class, () -> controller.getModelOperations(7));
+        verifyNoInteractions(models);
+
+        login("ROLE_SUPERVISOR");
+        var operation = new ModelOperationLog();
+        when(models.getOperationLogs(7)).thenReturn(List.of(operation));
+        assertEquals(List.of(operation), controller.getModelOperations(7).getData());
     }
 }

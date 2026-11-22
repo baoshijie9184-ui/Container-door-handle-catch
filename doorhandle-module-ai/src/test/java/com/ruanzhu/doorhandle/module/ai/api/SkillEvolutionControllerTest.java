@@ -25,6 +25,14 @@ class SkillEvolutionControllerTest {
         when(service.sources(any())).thenReturn(List.of());mvc.perform(get("/api/agent/skills/sources").principal(auth)).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"));
         mvc.perform(get("/api/agent/skills/sources")).andExpect(status().isForbidden());verify(service,times(1)).sources(any());
     }
+    @Test void pageRouteIsTypedAndLegacyListStillReturnsAnArray()throws Exception {
+        when(service.page(any(),eq("all"),isNull(),eq(20))).thenReturn(new SkillDtos.Page(List.of(),null));
+        when(service.list(any())).thenReturn(List.of());
+        mvc.perform(get("/api/agent/skills/page").principal(auth)).andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control","no-store")).andExpect(content().json("{\"items\":[],\"nextCursor\":null}"));
+        mvc.perform(get("/api/agent/skills").principal(auth)).andExpect(status().isOk()).andExpect(content().json("[]"));
+        mvc.perform(get("/api/agent/skills/page")).andExpect(status().isForbidden());
+    }
     @Test void removedUploadAndToolMappingRoutesCannotCreateImports()throws Exception {
         var file=new org.springframework.mock.web.MockMultipartFile("file","skill.zip","application/zip",new byte[]{'P','K',3,4});
         mvc.perform(multipart("/api/agent/skills/imports").file(file).principal(auth).header("X-Skill-Action","update")).andExpect(status().isGone());

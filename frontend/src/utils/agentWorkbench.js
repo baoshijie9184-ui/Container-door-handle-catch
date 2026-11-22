@@ -1,4 +1,11 @@
 import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
+import { agentCreationReviewPath } from './agentActions.js'
+
+export function workbenchManagementPath(item,sessionId){
+ const path=item?.data?.managementPath
+ if(path==='/agent/actions'&&item.kind==='EXTERNAL_JOB'&&item.data.source==='DETECTION_CREATION')return agentCreationReviewPath(sessionId)
+ return ['/detection','/agent/mcp','/agent/actions'].includes(path)?path:''
+}
 
 export const workbenchTabs=[['PLAN','计划与任务'],['QUESTION','待回答'],['FILE','文件产物'],['CHILD','子 Agent'],['EXECUTION','后台任务'],['USAGE','用量'],['RECOVERY','恢复'],['FORK','分支']]
 export function availableWorkbenchTabs(capabilities={}){const keys={PLAN:'plans',QUESTION:'questions',FILE:'files',CHILD:'children',EXECUTION:'jobs',USAGE:'usage',RECOVERY:'recovery',FORK:'forks'};return workbenchTabs.filter(([key])=>capabilities[keys[key]]!==false)}

@@ -29,7 +29,7 @@
     <header><span class="wb-kind-icon"><AppIcon :name="workbenchKind(item.kind).icon" :size="18" /></span><strong>{{ workbenchTitle(item) }}</strong><StatusBadge :domain="item.kind==='CONTEXT'?'contextRecord':item.kind==='TASKS'?'checklistRecord':'task'" :code="item.kind==='CONTEXT'?contextStatusCode(item):item.status" :label="['CONTEXT','TASKS'].includes(item.kind)?undefined:workbenchInteractionStatus(item) || status[item.status]" /></header>
     <p v-if="item.kind==='QUESTION'" class="wb-purpose"><AppIcon name="ChatDotRound" :size="14" />补充任务信息，回答不等于业务授权</p>
     <p v-if="item.kind==='PLAN'" class="wb-purpose"><AppIcon name="DocumentChecked" :size="14" />审阅执行范围，业务操作仍需单独确认</p>
-    <a v-if="['/detection','/agent/mcp','/agent/actions'].includes(item.data.managementPath)" :href="'/#'+item.data.managementPath">打开原任务页面</a>
+    <a v-if="workbenchManagementPath(item,sessionId)" :href="'/#'+workbenchManagementPath(item,sessionId)">打开原任务页面</a>
     <WorkbenchInteractionRecord v-if="['PLAN','QUESTION'].includes(item.kind)" :key="item.id+':'+item.revision+':body'" :item="item" part="body" />
     <pre v-else-if="item.data.text && item.kind!=='CONTEXT'" tabindex="0" aria-label="工作记录正文">{{ item.data.text }}</pre>
     <p v-if="item.kind==='EXECUTION'&&item.data.result" class="wb-output">{{ item.data.result }}</p>
@@ -75,7 +75,7 @@
 <script setup>
 import {nextTick,ref,reactive,computed,watch,onBeforeUnmount} from 'vue'
 import {ElMessageBox} from 'element-plus'
-import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,workbenchTaskGroups,tokenDisplay,recoveryInput} from '@/utils/agentWorkbench'
+import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,workbenchTaskGroups,tokenDisplay,recoveryInput,workbenchManagementPath} from '@/utils/agentWorkbench'
 import {composerAttachment} from '@/utils/composerPresentation'
 import AgentWorkbenchFiles from './AgentWorkbenchFiles.vue'
 import AgentFileImage from './AgentFileImage.vue'

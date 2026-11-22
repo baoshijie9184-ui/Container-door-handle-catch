@@ -183,7 +183,7 @@
         <ResourceChangeHistory resource-type="DETECTION_MODEL" :resource-id="detailModel.modelId" domain="DETECTION_MODEL" compact />
         <DetectionModelDetails :key="String(detailModel.modelId)+':'+String(detailModel.version ?? '')" :model="detailModel" />
 
-        <div class="detail-section">
+        <div v-if="isSupervisor" class="detail-section">
           <div class="detail-header">
             <h3><AppIcon name="DocumentCopy" :size="17" />操作日志</h3><el-button size="small" :loading="operationLoading" @click="fetchOperationLogs(selectedModelId)"><AppIcon name="Refresh" :size="14" />重新读取</el-button>
           </div>
@@ -481,6 +481,7 @@ const handleDelete=async(modelId,expectedVersion)=>{
   }finally{if(currentAccount(scope))lifecyclePending.value=false}
 }
 const fetchOperationLogs = (modelId) => {
+  if (!isSupervisor.value) return
   const generation = detailGeneration
   const requestVersion=++operationReadVersion
   operationLoading.value = true

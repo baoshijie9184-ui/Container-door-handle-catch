@@ -13,9 +13,10 @@ import { useRoute } from 'vue-router'
 import AgentSectionIcon from "@/components/chat/AgentSectionIcon.vue"
 import AgentActionList from '@/components/chat/AgentActionList.vue'
 import DetectionCreationReview from '@/components/chat/DetectionCreationReview.vue'
+import { validReviewSession } from '@/utils/agentActions'
 
 const route = useRoute()
-const reviewSessionId = computed(() => typeof route.query.sessionId === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(route.query.sessionId) ? route.query.sessionId : '')
+const reviewSessionId = computed(() => validReviewSession(route.query.sessionId) ? route.query.sessionId : '')
 const reviewPanel = ref(null)
 const refreshKey = ref(0)
 watch([reviewSessionId,()=>route.hash], async () => {

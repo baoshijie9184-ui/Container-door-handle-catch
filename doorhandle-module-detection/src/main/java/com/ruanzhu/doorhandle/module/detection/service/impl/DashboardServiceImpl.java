@@ -1,6 +1,5 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
-import com.ruanzhu.doorhandle.module.detection.service.BusinessDetectionTasks;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
 import com.ruanzhu.doorhandle.module.detection.service.RegionCollectionSummary;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
@@ -42,19 +41,21 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getStats() {
-        var scope = accessPolicy.currentSqlScope("");
+        var scope = DashboardScope.ACCOUNT.forCompletedResults(accessPolicy, "detection_task.");
+        var company = DashboardScope.COMPANY.forCompletedResults(accessPolicy, "detection_task.");
         Map<String, Object> stats = new HashMap<>();
 
         // 从 detection_task 表统计 COMPLETED / PARTIAL_FAILED 的任务数
         var detectionCounts = scopedJdbc.queryForMap(
-                "SELECT COUNT(*) AS companyCount, COUNT(CASE WHEN " + scope.predicate() + " THEN 1 END) AS visibleCount " +
-                "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + BusinessDetectionTasks.FILTER, scope.parameters());
+                "SELECT COUNT(CASE WHEN " + company.predicate() + " THEN 1 END) AS companyCount, " +
+                "COUNT(CASE WHEN " + scope.predicate() + " THEN 1 END) AS visibleCount " +
+                "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED')", scope.parameters());
 
         // 从 statistics_json 提取平均漏检率
         List<Double> missRates = scopedJdbc.queryForList(
             "SELECT AVG(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.missDetectionRate')) AS DECIMAL(10,4))) " +
             "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND statistics_json IS NOT NULL AND " +
-            BusinessDetectionTasks.FILTER + " AND (" + scope.predicate() + ")", scope.parameters(), Double.class);
+            scope.predicate(), scope.parameters(), Double.class);
         Double avgMissRate = missRates.isEmpty() ? null : missRates.get(0);
 
         List<Integer> employeeCounts = jdbcTemplate.queryForList(
@@ -77,7 +78,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getDetectionTrend(String timeRange) {
-        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
+        var scope = DashboardScope.ACCOUNT.forCompletedResults(accessPolicy, "detection_task.");
         Map<String, Object> result = new HashMap<>();
         
         // 设置查询参数
@@ -259,7 +260,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getDetectionDistribution() {
-        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
+        var scope = DashboardScope.ACCOUNT.forCompletedResults(accessPolicy, "detection_task.");
         Map<String, Object> result = new HashMap<>();
         List<Map<String, Object>> seriesList = new ArrayList<>();
         
@@ -314,7 +315,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public RegionCollectionSummary getRegionSummary(DashboardScope audience) {
-        var scope = audience.forAggregate(accessPolicy, "");
+        var scope = audience.forCompletedCollections(accessPolicy, "detection_task.");
         String sql = """
                 SELECT MIN(region) AS region, COALESCE(SUM(total_images), 0) AS imageCount, COUNT(*) AS taskCount
                 FROM detection_task
@@ -413,7 +414,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getQualityDispositionStats() {
-        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
+        var scope = DashboardScope.ACCOUNT.forVerification(accessPolicy, "detection_task.");
         String summarySql = "SELECT 'summary' AS summary, " +
                 "COUNT(*) AS reviewedCount, " +
                 "SUM(CASE WHEN review_status = 'REVIEWED' AND (disposition_status IS NULL OR disposition_status = 'PENDING') THEN 1 ELSE 0 END) AS pendingDispositionCount, " +
@@ -448,15 +449,20 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Map<String, Object> getQualityWorkload() {
-        var scope = DashboardScope.ACCOUNT.forAggregate(accessPolicy, "");
-        String sql = "SELECT 'quality_workload' AS workload, " +
-                "SUM(CASE WHEN status IN ('COMPLETED', 'PARTIAL_FAILED') AND review_status = 'PENDING' THEN 1 ELSE 0 END) AS pendingReviewCount, " +
-                "SUM(CASE WHEN review_status = 'REVIEWED' AND (disposition_status IS NULL OR disposition_status = 'PENDING') THEN 1 ELSE 0 END) AS pendingDispositionCount, " +
-                "SUM(CASE WHEN flow_status = 'RECHECK_REQUIRED' OR recheck_required = 1 THEN 1 ELSE 0 END) AS recheckRequiredCount, " +
-                "SUM(CASE WHEN flow_status = 'REWORK_REQUIRED' THEN 1 ELSE 0 END) AS reworkRequiredCount, " +
-                "SUM(CASE WHEN flow_status = 'HOLD' THEN 1 ELSE 0 END) AS holdCount, " +
-                "SUM(CASE WHEN status = 'FAILED' OR flow_status = 'FAILED' THEN 1 ELSE 0 END) AS failedCount " +
-                "FROM detection_task WHERE " + scope.predicate();
+        var scope = DashboardScope.ACCOUNT.forVerification(accessPolicy, "detection_task.");
+        String sql = """
+                SELECT COUNT(CASE WHEN status IN ('COMPLETED','PARTIAL_FAILED') AND flow_status IN ('PENDING_REVIEW','REVIEWING')
+                             AND review_status='PENDING' THEN 1 END) AS pendingReviewCount,
+                       COUNT(CASE WHEN status IN ('COMPLETED','PARTIAL_FAILED') AND flow_status='CONFIRMED'
+                             AND review_status='REVIEWED' AND reviewed_at IS NOT NULL AND COALESCE(review_conclusion,'')<>''
+                             AND (disposition_status IS NULL OR disposition_status='PENDING') THEN 1 END) AS pendingDispositionCount,
+                       COUNT(CASE WHEN status IN ('COMPLETED','PARTIAL_FAILED','FAILED')
+                             AND flow_status='RECHECK_REQUIRED' THEN 1 END) AS recheckRequiredCount,
+                       COUNT(CASE WHEN status IN ('COMPLETED','PARTIAL_FAILED') AND flow_status='REWORK_REQUIRED' THEN 1 END) AS reworkRequiredCount,
+                       COUNT(CASE WHEN status IN ('COMPLETED','PARTIAL_FAILED') AND flow_status='HOLD' THEN 1 END) AS holdCount,
+                       COUNT(CASE WHEN status='FAILED' AND COALESCE(flow_status,'')<>'RECHECK_REQUIRED' THEN 1 END) AS failedCount
+                FROM detection_task WHERE %s
+                """.formatted(scope.predicate());
         List<Map<String, Object>> rows = scopedJdbc.queryForList(sql, scope.parameters());
         Map<String, Object> row = rows.isEmpty() ? Map.of() : rows.get(0);
 

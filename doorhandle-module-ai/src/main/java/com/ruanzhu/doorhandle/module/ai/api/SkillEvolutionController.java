@@ -17,6 +17,10 @@ public class SkillEvolutionController {
     public SkillEvolutionController(SkillEvolutionService service){this.service=service;}
     @ModelAttribute public void noCache(jakarta.servlet.http.HttpServletResponse response){response.setHeader("Cache-Control","no-store");}
     @GetMapping public Object list(Authentication auth){return service.list(AgentIdentity.from(auth));}
+    @GetMapping("/page") public SkillDtos.Page page(Authentication auth,@RequestParam(defaultValue="all") String group,
+            @RequestParam(required=false) String before,@RequestParam(defaultValue="20") int limit){
+        return service.page(AgentIdentity.from(auth),group,before,limit);
+    }
     @GetMapping("/{id}") public Object get(Authentication auth,@PathVariable String id){return service.get(AgentIdentity.from(auth),id);}
     @GetMapping("/sources") public Object sources(Authentication auth){return service.sources(AgentIdentity.from(auth));}
     /** 旧地址明确告知已移除，避免通用异常处理将不存在的上传请求包装成 HTTP 200。 */

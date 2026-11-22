@@ -183,11 +183,15 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
 
     @Override
     public void deleteDetectionData(Long id) {
-        DetectionTask task = detectionTaskMapper.selectById(id);
+        var query = new LambdaQueryWrapper<DetectionTask>().eq(DetectionTask::getId, id).last("FOR UPDATE");
+        DetectionTask task = detectionTaskMapper.selectOne(query);
         if (task == null) {
-            throw new BusinessException("检测数据不存在");
+            throw new BusinessException(404, "检测数据不存在");
         }
-        detectionTaskAccessPolicy.assertCanAccess(task, currentAuthentication());
+        detectionTaskAccessPolicy.assertCanMutate(task, currentAuthentication());
+        if (!"BATCH_DIRECT".equals(task.getTaskType()) && !"SINGLE".equals(task.getTaskType())) {
+            throw new BusinessException(409, "此记录属于正式业务流程，不能通过兼容接口删除");
+        }
         if (task.getSourceOssPrefix() != null) {
             deleteRecursively(Paths.get(task.getSourceOssPrefix()));
         }

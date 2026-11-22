@@ -14,8 +14,10 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.web.bind.annotation.GetMapping;
 import java.lang.reflect.InvocationTargetException;
 import java.util.List;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -46,7 +48,7 @@ class ManagementAuthorizationTest {
         for (Class<?> type : List.of(DeviceController.class, DeviceUsageRecordController.class, EmployeeController.class)) {
             Object controller = context.getBean(type);
             for (var method : type.getDeclaredMethods()) {
-                if (!method.isAnnotationPresent(PreAuthorize.class)) continue;
+                if (!method.isAnnotationPresent(PreAuthorize.class) || method.isAnnotationPresent(GetMapping.class)) continue;
                 var failure = assertThrows(InvocationTargetException.class,
                         () -> method.invoke(controller, new Object[method.getParameterCount()]), method.getName());
                 assertInstanceOf(AccessDeniedException.class, failure.getCause(), method.getName());
@@ -74,6 +76,18 @@ class ManagementAuthorizationTest {
         context.getBean(EmployeeController.class).getById(2L);
         verify(context.getBean(DeviceService.class)).getDeviceById(1L);
         verify(context.getBean(EmployeeService.class)).getById(2L);
+    }
+
+    @Test void captureAlertsRequireSupervisor() {
+        var controller = context.getBean(DeviceController.class);
+        var devices = context.getBean(DeviceService.class);
+        login("ROLE_INSPECTOR");
+        assertThrows(AccessDeniedException.class, () -> controller.listCaptureAlerts("OPEN", null, null, 1, 20));
+        verifyNoInteractions(devices);
+
+        login("ROLE_SUPERVISOR");
+        when(devices.listCaptureAlerts("OPEN", null, null, 1, 20)).thenReturn(Map.of("total", 1));
+        assertEquals(1, controller.listCaptureAlerts("OPEN", null, null, 1, 20).getData().get("total"));
     }
 
     @Test void contactDetailsAreRestrictedWithoutMutatingDirectoryOrHistoryRecords() {

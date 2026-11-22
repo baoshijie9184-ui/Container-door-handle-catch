@@ -234,6 +234,27 @@ public class SkillEvolutionService {
         }
         return List.copyOf(visible);
     }
+    public SkillDtos.Page page(AgentActor actor,String group,String before,int limit){
+        var current=fresh(actor);
+        if((!"all".equals(group)&&!"review".equals(group))||limit<1||limit>50)throw fail(400,"技能分页范围不合法");
+        boolean review="review".equals(group);
+        if(review)boss(current);
+        Long cursor=null;
+        if(before!=null){
+            try{if(!before.matches("[1-9][0-9]{0,18}"))throw new NumberFormatException();cursor=Long.valueOf(before);}
+            catch(NumberFormatException invalid){throw fail(400,"技能分页编号不合法");}
+        }
+        var rows=store.page(current.userId(),current.supervisor(),current.role().name(),review,cursor,limit+1);
+        var items=new ArrayList<SkillDtos.View>();
+        for(var row:rows.subList(0,Math.min(limit,rows.size()))){
+            try{
+                var view=get(current,row.skillId());
+                if(!review||view.versions().stream().anyMatch(version->version.version()==view.latestVersion()&&"SUBMITTED".equals(version.status())))
+                    items.add(view);
+            }catch(ResponseStatusException changed){if(changed.getStatusCode().value()!=404)throw changed;}
+        }
+        return new SkillDtos.Page(List.copyOf(items),rows.size()>limit?Long.toString(rows.get(limit-1).id()):null);
+    }
     public SkillDtos.View get(AgentActor actor,String id){var current=fresh(actor);var skill=accessible(current,id,false);boolean owner=number(skill,"owner_user_id")==current.userId();
         var versions=new ArrayList<SkillDtos.Version>();var visible=new HashSet<Integer>();
         for(var v:store.versions(id,current.userId(),owner,current.supervisor(),current.role().name())){

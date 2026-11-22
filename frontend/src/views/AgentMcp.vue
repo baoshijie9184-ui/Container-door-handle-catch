@@ -16,7 +16,8 @@
         <p v-if="state.status==='CANCELLED'" role="status">本次安装登记已撤销，不会自动启用。后台执行会尽力中断，已有文件保留；重新安装需再次确认来源与许可证。</p>
         <p v-if="state.status==='UNINSTALLED'" role="status">本人安装登记已移除，助手不能调用此工具。已有文件与审计保留，未释放磁盘空间；再次使用需重新确认安装。</p>
         <p v-if="state.errorCode" class="error">{{ state.errorCode }} · {{ state.status==='INSTALLED'?'上次安装未启用 已保留原版本 请核对后手动启用':'安装未完成 不会自动启用 请刷新核对' }}</p>
-        <div class="actions"><el-button v-if="state.status!=='INSTALLING'&&(['NOT_INSTALLED','PENDING_CONFIRM','ERROR','CANCELLED','UNINSTALLED'].includes(state.status)||state.requiresMigration||state.upgradeAvailable)" type="primary" :disabled="busy||state.writesEnabled===false" @click="openInstall">{{ state.status==='INSTALLED'?'升级到已批准版本':'安装到我的 Agent 目录' }}</el-button><el-button v-if="state.status==='INSTALLING'&&state.operationId" :disabled="busy" @click="cancelInstallation">取消本次安装</el-button><el-button v-if="state.status==='INSTALLED'&&!state.requiresMigration" :disabled="busy||state.writesEnabled===false" @click="probe">核验 MCP 连接</el-button><el-button v-if="state.status==='INSTALLED'&&(state.enabled||!state.requiresMigration)" :type="state.enabled?'default':'primary'" :disabled="busy||state.writesEnabled===false&&!state.enabled" @click="toggle">{{ state.enabled?'停用本人 MCP':'启用本人 MCP' }}</el-button><el-button v-if="state.status==='INSTALLED'&&state.operationId&&state.registrationRemovalSupported===true" :disabled="busy||state.enabled" @click="removeRegistration">移除安装登记</el-button></div>
+        <div class="actions"><el-button v-if="state.status!=='INSTALLING'&&(['NOT_INSTALLED','PENDING_CONFIRM','ERROR','CANCELLED','UNINSTALLED'].includes(state.status)||state.requiresMigration||state.upgradeAvailable)" type="primary" :disabled="busy||state.writesEnabled===false||hasPendingExits" @click="openInstall">{{ state.status==='INSTALLED'?'升级到已批准版本':'安装到我的 Agent 目录' }}</el-button><el-button v-if="state.status==='INSTALLING'&&state.operationId" :disabled="busy" @click="cancelInstallation">取消本次安装</el-button><el-button v-if="state.status==='INSTALLED'&&!state.requiresMigration" :disabled="busy||state.writesEnabled===false" @click="probe">核验 MCP 连接</el-button><el-button v-if="state.status==='INSTALLED'&&(state.enabled||!state.requiresMigration)" :type="state.enabled?'default':'primary'" :disabled="busy||(!state.enabled&&(state.writesEnabled===false||hasPendingExits))" @click="toggle">{{ state.enabled?'停用本人 MCP':'启用本人 MCP' }}</el-button><el-button v-if="state.status==='INSTALLED'&&state.operationId&&state.registrationRemovalSupported===true" :disabled="busy||state.enabled||hasPendingExits" @click="removeRegistration">移除安装登记</el-button></div>
+        <p v-if="hasPendingExits" role="status">请先在「执行与退出回执」核对执行状态，再安装、启用或移除 MCP。</p>
         <p v-if="state.status==='INSTALLED'&&state.enabled&&state.registrationRemovalSupported===true">移除安装登记前，请先停用本人 MCP</p>
         <p v-if="state.status==='INSTALLED'&&!state.requiresMigration">{{ state.enabled?'已启用 后续助手可读取你明确提供的公开网页':'尚未启用 助手不能调用' }} · 调用结束会请求清理运行环境 退出与清理结果以执行回执为准</p>
         <p v-if="probeResult" role="status">{{ probeResult }}</p>
@@ -74,7 +75,7 @@ import AgentSectionIcon from "@/components/chat/AgentSectionIcon.vue"
 import AgentLifecycleGuide from '@/components/chat/AgentLifecycleGuide.vue'
 import AgentOperationHistory from '@/components/chat/AgentOperationHistory.vue'
 import SharedFetchImages from '@/components/SharedFetchImages.vue'
-import { ref,onMounted,onBeforeUnmount } from 'vue'
+import { computed,ref,onMounted,onBeforeUnmount } from 'vue'
 import { Connection, CircleCheck, Clock, Collection, Lock as ShieldCheck } from '@element-plus/icons-vue'
 import { beijingDateTime as renderBeijingTime } from '@/utils/beijingTime'
 import {knownCount} from '@/utils/countPresentation'
@@ -83,6 +84,7 @@ import { ElMessageBox } from 'element-plus'
 import { captureAccountRequest } from '@/api/request'
 const request=captureAccountRequest()
 const state=ref(null),loading=ref(false),busy=ref(false),error=ref(''),dialogError=ref(''),probeResult=ref(''),installOpen=ref(false),licenseAccepted=ref(false)
+const hasPendingExits=computed(()=>knownCount(state.value?.executionReceipts?.pendingCount)>0)
 const headers={'X-MCP-Action':'update'}
 const beijingDateTime=value=>value?renderBeijingTime(value)||'时间格式未知':'未记录'
 const mcpStages=[{title:'本人确认来源',description:'核对固定版本、用途与许可证'},{title:'安装与连接核验',description:'保存登记并核对安装、连接回执'},{title:'本人主动启用',description:'安装完成后仍需单独启用'},{title:'执行与清理核对',description:'保留退出及清理证据，未知结果待核对'}]
@@ -109,8 +111,8 @@ async function versionAction(item,action){
   finally{lifecyclePromptOpen=false;if(mounted)busy.value=false}
 }
 async function refresh(){if(!mounted)return;const n=++generation;loading.value=true;error.value='';clearTimeout(timer);try{const result=await request.get('/api/agent/mcp/fetch');if(n!==generation)return;const value=result.data;if(!value||typeof value.name!=='string'||typeof value.status!=='string'||!Number.isSafeInteger(value.revision)||value.revision<0)throw Error('MCP 状态响应不完整');state.value=value;if(state.value.status==='INSTALLING')timer=setTimeout(refresh,4000)}catch(e){if(n===generation){state.value=null;error.value=e.response?.data?.message||'本地 MCP 状态暂不可核对，请核对服务与前后端版本'}}finally{if(n===generation)loading.value=false}}
-function openInstall(){licenseAccepted.value=false;dialogError.value='';requestId=crypto.randomUUID();installOpen.value=true}
-async function install(){if(busy.value)return;busy.value=true;dialogError.value='';try{state.value=(await request.post('/api/agent/mcp/fetch/install',{expectedRevision:state.value.revision,requestId,licenseAccepted:licenseAccepted.value},{headers})).data;installOpen.value=false;await refresh()}catch(e){dialogError.value=e.response?.data?.message||'安装结果尚未核实 请刷新状态后核对'}finally{busy.value=false}}
+function openInstall(){if(hasPendingExits.value)return;licenseAccepted.value=false;dialogError.value='';requestId=crypto.randomUUID();installOpen.value=true}
+async function install(){if(busy.value||hasPendingExits.value)return;busy.value=true;dialogError.value='';try{state.value=(await request.post('/api/agent/mcp/fetch/install',{expectedRevision:state.value.revision,requestId,licenseAccepted:licenseAccepted.value},{headers})).data;installOpen.value=false;await refresh()}catch(e){dialogError.value=e.response?.data?.message||'安装结果尚未核实 请刷新状态后核对'}finally{busy.value=false}}
 async function probe(){busy.value=true;probeResult.value='';try{const result=await request.post('/api/agent/mcp/fetch/probe',null,{headers,timeout:30000});probeResult.value=result.data.connected?'MCP 握手成功 已发现 fetch 工具':'连接未完成';await refresh()}catch(e){error.value=e.response?.data?.message||'MCP 连接失败'}finally{busy.value=false}}
 async function reconcile(item){
   if(busy.value||item.cleanupConfirmed)return
@@ -138,7 +140,7 @@ async function cancelInstallation(){
   finally{cancelPromptOpen=false;if(mounted){busy.value=false;if(state.value?.status==='INSTALLING')timer=setTimeout(refresh,4000)}}
 }
 async function removeRegistration(){
-  if(busy.value||state.value?.status!=='INSTALLED'||state.value.enabled||!state.value.operationId||state.value.registrationRemovalSupported!==true)return
+  if(busy.value||hasPendingExits.value||state.value?.status!=='INSTALLED'||state.value.enabled||!state.value.operationId||state.value.registrationRemovalSupported!==true)return
   const operationId=state.value.operationId,expectedRevision=state.value.revision
   busy.value=true;error.value='';clearTimeout(timer);generation++;loading.value=false;removePromptOpen=true
   try{
@@ -150,7 +152,7 @@ async function removeRegistration(){
   }catch(e){if(mounted&&e!=='cancel'&&e!=='close')error.value=e.response?.data?.message||'移除结果尚未核实，请刷新状态核对，不会自动重试'}
   finally{removePromptOpen=false;if(mounted)busy.value=false}
 }
-async function toggle(){const enabled=!state.value.enabled;try{await ElMessageBox.confirm(enabled?'启用后助手可按你明确提供的公开网页地址调用 此配置仅属于当前账号':'停用会关闭本人当前 MCP 连接 后续调用将拒绝','确认 MCP 状态变更',{confirmButtonText:enabled?'确认启用':'确认停用',cancelButtonText:'取消'});busy.value=true;state.value=(await request.post('/api/agent/mcp/fetch/enabled',{expectedRevision:state.value.revision,enabled},{headers})).data;await refresh()}catch(e){if(e!=='cancel'&&e!=='close')error.value=e.response?.data?.message||'状态变更尚未核实 请刷新后核对'}finally{busy.value=false}}
+async function toggle(){const enabled=!state.value.enabled;if(enabled&&hasPendingExits.value)return;try{await ElMessageBox.confirm(enabled?'启用后助手可按你明确提供的公开网页地址调用 此配置仅属于当前账号':'停用会关闭本人当前 MCP 连接 后续调用将拒绝','确认 MCP 状态变更',{confirmButtonText:enabled?'确认启用':'确认停用',cancelButtonText:'取消'});busy.value=true;state.value=(await request.post('/api/agent/mcp/fetch/enabled',{expectedRevision:state.value.revision,enabled},{headers})).data;await refresh()}catch(e){if(e!=='cancel'&&e!=='close')error.value=e.response?.data?.message||'状态变更尚未核实 请刷新后核对'}finally{busy.value=false}}
 onMounted(refresh);onBeforeUnmount(()=>{mounted=false;generation++;clearTimeout(timer);if(cancelPromptOpen||removePromptOpen||reconcilePromptOpen||lifecyclePromptOpen)ElMessageBox.close()})
 </script>
 <style scoped>

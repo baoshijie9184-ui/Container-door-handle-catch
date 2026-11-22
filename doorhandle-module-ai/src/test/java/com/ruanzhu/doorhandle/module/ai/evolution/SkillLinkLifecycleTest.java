@@ -66,12 +66,15 @@ class SkillLinkLifecycleTest {
         var evaluated=service.evaluate(alice,draft.skillId(),draft.revision());
         var submitted=service.submit(alice,draft.skillId(),evaluated.revision());
         assertThat(service.list(otherSupervisor)).extracting(SkillDtos.View::skillId).containsExactly(draft.skillId());
+        assertThat(service.page(otherSupervisor,"review",null,1).items()).extracting(SkillDtos.View::skillId).containsExactly(draft.skillId());
         assertThat(service.get(boss,draft.skillId()).versions()).extracting(SkillDtos.Version::status).containsExactly("SUBMITTED");
         var accepted=service.decide(boss,draft.skillId(),new SkillDtos.Decision(submitted.revision(),"APPROVE","已核对来源及适用性",true,true));
         assertThat(service.list(alice)).extracting(SkillDtos.View::skillId).containsExactly(draft.skillId());
         assertThat(service.get(boss,draft.skillId()).activeVersion()).isEqualTo(accepted.activeVersion());
+        assertThat(service.page(boss,"review",null,1).items()).isEmpty();
         for(var unrelated:List.of(bob,otherSupervisor)){
             assertThat(service.list(unrelated)).isEmpty();
+            assertThat(service.page(unrelated,"all",null,1).items()).isEmpty();
             assertThatThrownBy(()->service.get(unrelated,draft.skillId())).hasMessageContaining("无权限");
         }
     }

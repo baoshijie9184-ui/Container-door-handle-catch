@@ -14,7 +14,11 @@ export function readAgentActionPage(value,group,before=null){
 }
 export function agentCreationReviewSession(action){
   return action.operation==='CREATE_DETECTION'&&action.status==='NEEDS_REVIEW'
-    &&typeof action.sessionId==='string'&&/^[A-Za-z0-9_.-]{1,128}$/.test(action.sessionId)?action.sessionId:''
+    &&validReviewSession(action.sessionId)?action.sessionId:''
+}
+export const validReviewSession=value=>typeof value==='string'&&/^[A-Za-z0-9_.-]{1,128}$/.test(value)
+export function agentCreationReviewPath(sessionId){
+  return validReviewSession(sessionId)?'/agent/actions?sessionId='+encodeURIComponent(sessionId)+'#creation-review':''
 }
 export function agentImagePreview(image){
  const path=image?.previewPath

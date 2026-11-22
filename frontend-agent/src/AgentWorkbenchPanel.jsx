@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {Modal,Button,Dropdown} from 'antd';
 import {useReducedMotion,usePreviewEscape} from './useReducedMotion';
-import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,workbenchTaskGroups,tokenDisplay,recoveryInput} from '../../frontend/src/utils/agentWorkbench';
+import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,workbenchTaskGroups,tokenDisplay,recoveryInput,workbenchManagementPath} from '../../frontend/src/utils/agentWorkbench';
 import {readFilePreview,boundedTextPreview} from '../../frontend/src/utils/chatFileReferences';
 import '../../frontend/src/assets/agent-workbench.css';
 import StatusBadge from './StatusBadge';
@@ -89,11 +89,12 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],attentionPhas
  const rows=groups?groups.current:workbenchRows(state.items,tab);
  const empty=tab==='TASK'&&state.loaded&&!state.error?{title:'暂无进行中的任务',icon:'Operation'}:workbenchEmpty(tab,state);
  function renderRecord(item){
+  const managementPath=workbenchManagementPath(item,sessionId);
   return <article key={item.id} data-kind={item.kind}>
     <header><span className="wb-kind-icon"><WorkbenchIcon name={workbenchKind(item.kind).icon}/></span><strong>{workbenchTitle(item)}</strong><StatusBadge domain={item.kind==='CONTEXT'?'contextRecord':item.kind==='TASKS'?'checklistRecord':'task'} code={item.kind==='CONTEXT'?contextStatusCode(item):item.status} label={['CONTEXT','TASKS'].includes(item.kind)?undefined:workbenchInteractionStatus(item)||workbenchStatus[item.status]} /></header>
     {item.kind==='QUESTION'&&item.status==='PENDING'&&<p className="wb-purpose"><MessageSquare size={14} aria-hidden="true"/>补充任务信息，回答不等于业务授权</p>}
     {item.kind==='PLAN'&&item.status==='PENDING'&&<p className="wb-purpose"><FileCheck size={14} aria-hidden="true"/>审阅执行范围，业务操作仍需单独确认</p>}
-    {['/detection','/agent/mcp','/agent/actions'].includes(item.data.managementPath)&&<a href={base+'/#'+item.data.managementPath}>打开原任务页面</a>}
+    {managementPath&&<a href={base+'/#'+managementPath}>打开原任务页面</a>}
     {['PLAN','QUESTION'].includes(item.kind)?<WorkbenchInteractionRecord key={item.id+':'+item.revision+':body'} item={item} part="body"/>:item.data.text&&item.kind!=='CONTEXT'&&<pre tabIndex={0} aria-label="工作记录正文">{item.data.text}</pre>}
     {item.kind==='EXECUTION'&&item.data.result&&<p className="wb-output">{item.data.result}</p>}
     {item.kind==='EXECUTION'&&activeExecutionStates.has(item.status)&&<button type="button" className="wb-button-danger wb-execution-cancel" disabled={busy} onClick={()=>cancelTask(item)}><WorkbenchIcon name="Close" size={14}/>取消任务</button>}

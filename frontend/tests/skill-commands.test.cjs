@@ -4,7 +4,21 @@ const fs = require('node:fs')
 const path = require('node:path')
 const source = fs.readFileSync(path.join(__dirname, '../src/utils/skillCommands.js'), 'utf8')
 const modulePromise = import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+const presentation = require('./helpers/project-source.cjs').importFrontendModule('src','utils','skillPresentation.js')
 const skill = (name, n=1) => ({name, skillId:'skill-00000000-0000-0000-0000-'+String(n).padStart(12,'0'), version:1, description:'经审核的任务查询经验'})
+
+test('skill review preserves the publication scope and accepts only advancing list pages', async () => {
+  const {readSkillPage,skillPublishNotice}=await presentation
+  assert.match(skillPublishNotice('LINK','INSPECTOR'),/仅安装者本人/)
+  assert.match(skillPublishNotice('RUN','SUPERVISOR'),/主管助手/)
+  assert.match(skillPublishNotice('RUN','INSPECTOR'),/员工助手/)
+  assert.deepEqual(readSkillPage({items:[],nextCursor:'99'},'100'),{items:[],nextCursor:'99'})
+  assert.deepEqual(readSkillPage({items:[],nextCursor:null},'99'),{items:[],nextCursor:null})
+  assert.throws(()=>readSkillPage({items:[],nextCursor:'99'},'99'),/分页/)
+  assert.throws(()=>readSkillPage({items:[],nextCursor:'101'},'100'),/分页/)
+  const row={skillId:'one',versions:[],evaluations:[],audit:[]}
+  assert.throws(()=>readSkillPage({items:[row,row],nextCursor:null}),/重复/)
+})
 
 test('link-install completion is shown only when backend supports confirmation navigation', async () => {
   const {filterSkillCommands,skillCommandOptions}=await modulePromise

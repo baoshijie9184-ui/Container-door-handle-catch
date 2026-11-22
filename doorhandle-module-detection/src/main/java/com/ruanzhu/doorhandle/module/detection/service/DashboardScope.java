@@ -19,4 +19,24 @@ public enum DashboardScope {
         access.assertAuthenticated(SecurityContextHolder.getContext().getAuthentication());
         return new SqlScope(formal, Map.of());
     }
+
+    public SqlScope forCompletedResults(DetectionTaskAccessPolicy access, String alias) {
+        var scope = forAggregate(access, alias);
+        String folderScope = this == ACCOUNT ? access.currentSqlScope("f.").predicate() : "1=1";
+        return new SqlScope(scope.predicate() + " AND " + BusinessDetectionTasks.completedResultFilter(alias, folderScope),
+                scope.parameters());
+    }
+
+    public SqlScope forCompletedCollections(DetectionTaskAccessPolicy access, String alias) {
+        var scope = forAggregate(access, alias);
+        String uploadScope = this == ACCOUNT ? access.currentSqlScope("o.").predicate() : "1=1";
+        return new SqlScope(scope.predicate() + " AND " + BusinessDetectionTasks.completedCollectionFilter(alias, uploadScope),
+                scope.parameters());
+    }
+
+    public SqlScope forVerification(DetectionTaskAccessPolicy access, String alias) {
+        var scope = forAggregate(access, alias);
+        return new SqlScope(scope.predicate() + " AND " + BusinessDetectionTasks.verificationTaskFilter(alias),
+                scope.parameters());
+    }
 }

@@ -143,7 +143,7 @@ public class ImageDetectionController {
             imageDetectionService.deleteDetectionData(id);
             log.info("成功删除检测记录: ID={}", id);
             return Result.success();
-        } catch (BusinessException e) {
+        } catch (BusinessException | org.springframework.security.access.AccessDeniedException e) {
             throw e;
         } catch (Exception e) {
             log.error("删除检测记录异常: {}", e.getMessage(), e);

@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
@@ -16,8 +17,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class DashboardServiceImplTest {
@@ -37,6 +40,25 @@ class DashboardServiceImplTest {
         SecurityContextHolder.clearContext();
         org.junit.jupiter.api.Assertions.assertThrows(com.ruanzhu.doorhandle.common.BusinessException.class,
                 () -> DashboardScope.COMPANY.forAggregate(access, ""));
+    }
+
+    @Test
+    void aggregateScopesPreferCompletedFolderResultsAndKeepOriginalCaptureLocation() {
+        var access = new DetectionTaskAccessPolicy();
+        var results = DashboardScope.COMPANY.forCompletedResults(access, "detection_task.");
+        assertTrue(results.predicate().contains("detection_task.task_type <> 'SINGLE'"));
+        assertTrue(results.predicate().contains("a.source_batch_id=detection_task.task_id"));
+        assertTrue(results.predicate().contains("f.status IN ('COMPLETED','PARTIAL_FAILED')"));
+
+        var account = DashboardScope.ACCOUNT.forCompletedResults(access, "detection_task.");
+        assertTrue(account.predicate().contains("detection_task.created_by = :scopeUsername"));
+        assertTrue(account.predicate().contains("f.created_by = :scopeUsername"));
+        assertEquals(Map.of("scopeUsername", "alice"), account.parameters());
+
+        var collections = DashboardScope.COMPANY.forCompletedCollections(access, "detection_task.");
+        assertTrue(collections.predicate().contains("detection_task.task_type='OSS_FOLDER'"));
+        assertTrue(collections.predicate().contains("o.status IN ('COMPLETED','PARTIAL_FAILED')"));
+        assertTrue(collections.predicate().contains("a.source_batch_id=o.task_id"));
     }
 
     @Test
@@ -135,5 +157,12 @@ class DashboardServiceImplTest {
         assertEquals(6, queues.size());
         assertEquals(Map.of("name", "待复核", "status", "PENDING_REVIEW", "count", 4), queues.get(0));
         assertEquals(Map.of("name", "待处置", "status", "PENDING_DISPOSITION", "count", 3), queues.get(1));
+
+        var query = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForList(query.capture(), org.mockito.ArgumentMatchers.eq(Map.of("scopeUsername", "alice")));
+        assertTrue(query.getValue().contains("a.source_batch_id=detection_task.task_id"));
+        assertTrue(query.getValue().contains("flow_status='RECHECK_REQUIRED' THEN 1 END) AS recheckRequiredCount"));
+        assertTrue(query.getValue().contains("COALESCE(flow_status,'')<>'RECHECK_REQUIRED'"));
+        assertFalse(query.getValue().contains("recheck_required = 1"));
     }
 }

@@ -2,6 +2,15 @@ const test=require('node:test'),assert=require('node:assert/strict')
 const {importFrontendModule}=require('./helpers/project-source.cjs')
 const utility=importFrontendModule('src','utils','agentWorkbench.js')
 const id='00000000-0000-0000-0000-000000000001'
+test('creation workbench links open review for the current owned session in both clients',async()=>{
+ const {workbenchManagementPath}=await utility
+ const item={kind:'EXTERNAL_JOB',data:{managementPath:'/agent/actions',source:'DETECTION_CREATION'}}
+ assert.equal(workbenchManagementPath(item,'owned.session-1'),'/agent/actions?sessionId=owned.session-1#creation-review')
+ assert.equal(workbenchManagementPath(item,'../foreign'),'')
+ assert.equal(workbenchManagementPath(item,''),'')
+ assert.equal(workbenchManagementPath({data:{managementPath:'/detection'}},'owned'),'/detection')
+ assert.equal(workbenchManagementPath({data:{managementPath:'https://example.invalid'}},'owned'),'')
+})
 test('file normalization retains unknown historical civil time without coercing an offset',async()=>{
  const {normalizeWorkbench}=await utility
  const times={created_at:'2026-10-17 11:43:52.871087',updated_at:null}
