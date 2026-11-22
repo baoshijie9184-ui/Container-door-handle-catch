@@ -27,6 +27,27 @@ public class AgentActionService {
     public static final String RETRY_POLICY="detection-retry-confirmation-v1";
     public static final String CREATE_TOOL="propose_detection_creation";
     public static final String CREATE_POLICY="detection-creation-confirmation-v2";
+    private static final String FAST_AUTHORIZATION = "FAST_MODE_EXACT_USER_INTENT";
+
+    /** Constructed by the trusted FAST run ingress from the original human message, never tool parameters. */
+    public record ApprovalContext(String directHumanInput) {
+        public boolean requestsRetry() { return FastActionIntent.retryTask(directHumanInput) != null; }
+        public boolean requestsCreation() { return FastActionIntent.creation(directHumanInput) != null; }
+
+        private boolean matches(View action) {
+            if (action.retry() != null) return action.retry().taskId().equals(FastActionIntent.retryTask(directHumanInput));
+            if (action.creation() == null) return false;
+            var intent = FastActionIntent.creation(directHumanInput);
+            return intent != null && intent.matches(action.creation());
+        }
+    }
+
+    private record FastApproval(String runId, String callId, ApprovalContext context) {
+        private boolean matches(Stored action) {
+            return runId.equals(action.view().runId()) && callId.equals(action.callId()) && context.matches(action.view());
+        }
+    }
+    private record Proposal(View action, boolean created) {}
     public record View(String actionId,String runId,String sessionId,String operation,String status,long version,
                        DetectionAssignmentApi.Command command,DetectionAssignmentApi.Values before,
                        DetectionAssignmentApi.Applied result,String reasonCode,LocalDateTime createdAt,LocalDateTime expiresAt,
@@ -56,7 +77,8 @@ public class AgentActionService {
     public record Audit(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt,String clockStatus,Map<String,String> sourceWallTimes) {
         public Audit(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt){this(id,eventType,actorRole,result,reasonCode,occurredAt,null,null);}
     }
-    private record Stored(View view,String resourceVersion,String digest,String policy,long userId,com.ruanzhu.doorhandle.common.time.LegacyClockEvidence clock) {}
+    private record Stored(View view,String resourceVersion,String digest,String policy,long userId,
+                          com.ruanzhu.doorhandle.common.time.LegacyClockEvidence clock,String callId) {}
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final ObjectMapper json;
@@ -110,12 +132,15 @@ public class AgentActionService {
             return saved.view();
         });
     }
-    /** Only records an immutable proposal. The model cannot approve this operation. */
     public View proposeRetry(AgentActor actor,String runId,String callId,String taskId) {
+        return proposeRetry(actor,runId,callId,taskId,null);
+    }
+
+    public View proposeRetry(AgentActor actor,String runId,String callId,String taskId,ApprovalContext approval) {
         requireEnabled();if(!retryEnabled())throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"检测执行功能尚未启用");
         validateId(runId);validateId(taskId);
         if(callId!=null&&!callId.matches("[A-Za-z0-9_:.-]{1,160}"))throw bad("调用编号格式不正确");
-        return tx.execute(ignored->{
+        var proposed = tx.execute(ignored->{
             var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
             if(run.isEmpty())throw missing();
             if(!Set.of("RUNNING","COMPLETED").contains(run.get(0).get("status").toString()))throw conflict("该运行不再接受操作提议");
@@ -123,20 +148,25 @@ public class AgentActionService {
             var command=new DetectionExecutionApi.RetryApproval(preview.taskId(),preview.resourceVersion());
             String arguments=digest(write(List.of("RETRY_DETECTION",command,preview)));
             var duplicates=persistence.byArguments(actor.userId(),runId,arguments).stream().map(this::stored).toList();
-            if(!duplicates.isEmpty())return expire(actor,duplicates.get(0)).view();
+            if(!duplicates.isEmpty())return new Proposal(expire(actor,duplicates.get(0)).view(),false);
             var prior=persistence.pendingResource(actor.userId(),taskId).stream().map(this::stored).toList();
             for(var old:prior)close(actor,old,"INVALIDATED","PARAMETERS_SUPERSEDED","CONFIRMATION_INVALIDATED");
             Integer count=persistence.count(actor.userId(),runId);
             if(count!=null&&count>=20)throw conflict("单次运行的操作提议已达上限");
             String id=UUID.randomUUID().toString();
             persistence.create(id,actor.userId(),runId,(String)run.get(0).get("session_id"),callId,"RETRY_DETECTION",taskId,preview.resourceVersion(),arguments,write(command),write(preview),RETRY_POLICY,now().plusMinutes(10));
-            var saved=load(actor,id,false);audit(actor,saved,"CONFIRMATION_CREATED","PENDING",null);return saved.view();
+            var saved=load(actor,id,false);audit(actor,saved,"CONFIRMATION_CREATED","PENDING",null);return new Proposal(saved.view(),true);
         });
+        return finishFastIfAuthorized(actor,runId,callId,approval,proposed);
     }
     public View proposeCreation(AgentActor actor,String runId,String callId,DetectionCreationApi.Request request){
         return proposeCreation(actor,runId,callId,request,null);
     }
     public View proposeCreation(AgentActor actor,String runId,String callId,DetectionCreationApi.Request request,String replacesActionId){
+        return proposeCreation(actor,runId,callId,request,replacesActionId,null);
+    }
+
+    public View proposeCreation(AgentActor actor,String runId,String callId,DetectionCreationApi.Request request,String replacesActionId,ApprovalContext approval){
         requireEnabled();if(!creationEnabled())throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"会话图片创建检测尚未启用");
         validateId(runId);if(callId!=null&&!callId.matches("[A-Za-z0-9_:.-]{1,160}"))throw bad("调用编号格式不正确");
         if(replacesActionId!=null)validateId(replacesActionId);
@@ -144,13 +174,13 @@ public class AgentActionService {
         if(initial.isEmpty())throw missing();if(!Set.of("RUNNING","COMPLETED").contains(initial.get(0).get("status")))throw conflict("该运行不再接受操作提议");
         // Business originals may require bounded OSS reads; finish those before locking any proposal/run row.
         var prepared=creation.preview(actor,(String)initial.get(0).get("session_id"),request);
-        return tx.execute(ignored->{
+        var proposed = tx.execute(ignored->{
             var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
             if(run.isEmpty())throw missing();if(!Set.of("RUNNING","COMPLETED").contains(run.get(0).get("status")))throw conflict("该运行不再接受操作提议");
             String session=(String)run.get(0).get("session_id");if(!session.equals(prepared.sessionId()))throw conflict("会话已变化 请重新生成提议");creation.revalidate(actor,prepared);var preview=prepared;String body=write(preview),arguments=digest(body);
             if(replacesActionId!=null){var old=load(actor,replacesActionId,true);if(!runId.equals(old.view().runId())||old.view().creation()==null||!"PENDING".equals(old.view().status()))throw conflict("只能修改当前运行尚未确认的检测创建提议");}
             var duplicate=persistence.byArguments(actor.userId(),runId,arguments).stream().map(this::stored).toList();
-            if(!duplicate.isEmpty())return expire(actor,duplicate.get(0)).view();
+            if(!duplicate.isEmpty())return new Proposal(expire(actor,duplicate.get(0)).view(),false);
             Integer count=persistence.count(actor.userId(),runId);if(count>=20)throw conflict("单次运行的操作提议已达上限");
             String id=UUID.randomUUID().toString();
             // Disjoint batches can coexist; overlapping images or an explicit replacement supersede the old pending proposal.
@@ -159,8 +189,15 @@ public class AgentActionService {
                 if(Objects.equals(replacesActionId,old.view().actionId())||old.view().creation().images().stream().anyMatch(image->ids.contains(image.fileId())))
                     close(actor,old,"INVALIDATED","PARAMETERS_SUPERSEDED","CONFIRMATION_INVALIDATED");
             persistence.create(id,actor.userId(),runId,session,callId,"CREATE_DETECTION",id,preview.resourceVersion(),arguments,body,body,CREATE_POLICY,now().plusMinutes(10));
-            var saved=load(actor,id,false);audit(actor,saved,"CONFIRMATION_CREATED","PENDING",null);return saved.view();
+            var saved=load(actor,id,false);audit(actor,saved,"CONFIRMATION_CREATED","PENDING",null);return new Proposal(saved.view(),true);
         });
+        return finishFastIfAuthorized(actor,runId,callId,replacesActionId==null?approval:null,proposed);
+    }
+
+    private View finishFastIfAuthorized(AgentActor actor,String runId,String callId,ApprovalContext approval,Proposal proposed) {
+        View action = proposed.action();
+        if (approval == null || callId == null || !proposed.created() || !approval.matches(action)) return action;
+        return decide(actor,action.actionId(),action.version(),"APPROVE",new FastApproval(runId,callId,approval));
     }
     public List<View> list(AgentActor actor,String sessionId,String runId,int limit) {
         requireEnabled();validateListScope(sessionId,runId,limit);
@@ -217,22 +254,32 @@ public class AgentActionService {
         return persistence.audits(actor.userId(),id).stream().map(row->new Audit(row.id(),row.eventType(),row.actorRole(),row.result(),row.reasonCode(),display(row.occurredAt()),row.legacyClockEvidence()==null?null:row.legacyClockEvidence().clockStatus(),row.legacyClockEvidence()==null?null:row.legacyClockEvidence().sourceWallTimes())).toList();
     }
     public View decide(AgentActor actor,String id,long expectedVersion,String decision) {
+        return decide(actor,id,expectedVersion,decision,null);
+    }
+
+    private View decide(AgentActor actor,String id,long expectedVersion,String decision,FastApproval fast) {
         requireEnabled();validateId(id);
         if (expectedVersion<1 || !Set.of("APPROVE","REJECT","CANCEL").contains(Objects.toString(decision,""))) throw bad("确认决策或版本不正确");
         var resultView=tx.execute(ignored->{
             // 与提议一致采用 run -> action -> resource 的锁顺序，取消先提交时拒绝执行。
             var initial=load(actor,id,false);
             if(initial.clock()!=null)throw conflict("历史确认时钟待核对，不能重新执行或决策");
-            var origin="APPROVE".equals(decision)?jdbc.queryForList("SELECT status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE",actor.userId(),initial.view().runId()):List.<Map<String,Object>>of();
+            var origin="APPROVE".equals(decision)?jdbc.queryForList("""
+                    SELECT status,session_id,CASE WHEN lease_expires_at>UTC_TIMESTAMP(6) THEN 1 ELSE 0 END AS live
+                    FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE
+                    """,actor.userId(),initial.view().runId()):List.<Map<String,Object>>of();
             var action=expire(actor,load(actor,id,true));
             if (!"PENDING".equals(action.view().status())) {if(action.view().creation()!=null)return reconcileCreation(actor,action).view();return action.view();}
+            if (fast != null && (!fast.matches(action) || !liveFastOrigin(origin,action)
+                    || !unusedFastAuthorization(actor,action))) return action.view();
             if (action.view().version()!=expectedVersion) throw conflict("操作版本已变化，请刷新卡片");
             if (!"APPROVE".equals(decision)) {
                 assertReadable(actor,action.view());
                 return close(actor,action,"REJECT".equals(decision)?"REJECTED":"CANCELLED","USER_"+decision,"CONFIRMATION_DECIDED").view();
             }
-            if("RETRY_DETECTION".equals(action.view().operation()))return approveRetry(actor,action,origin);
-            if("CREATE_DETECTION".equals(action.view().operation()))return approveCreation(actor,action,origin);
+            String reason = fast == null ? null : FAST_AUTHORIZATION;
+            if("RETRY_DETECTION".equals(action.view().operation()))return approveRetry(actor,action,origin,reason);
+            if("CREATE_DETECTION".equals(action.view().operation()))return approveCreation(actor,action,origin,reason);
             if (!actor.supervisor()) return close(actor,action,"INVALIDATED","ROLE_REVOKED","AUTHORIZATION_DENIED").view();
             if (!POLICY.equals(action.policy())) return close(actor,action,"INVALIDATED","POLICY_CHANGED","CONFIRMATION_INVALIDATED").view();
             if (!digest(write(action.view().command())).equals(action.digest())) throw new IllegalStateException("已存参数校验失败，未执行分配");
@@ -263,11 +310,27 @@ public class AgentActionService {
             return withoutSnapshot(resultView);
         }
     }
+
+    private static boolean liveFastOrigin(List<Map<String,Object>> origin, Stored action) {
+        if (origin.isEmpty()) return false;
+        var run = origin.get(0);
+        return "RUNNING".equals(run.get("status")) && action.view().sessionId().equals(run.get("session_id"))
+                && run.get("live") instanceof Number live && live.intValue() == 1;
+    }
+
+    private boolean unusedFastAuthorization(AgentActor actor, Stored action) {
+        // Caller holds the originating run lock so parallel tool calls cannot spend the same intent twice.
+        return Boolean.FALSE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM audit_event
+                 WHERE kind='AGENT_ACTION' AND owner_user_id=? AND run_id=? AND action='CONFIRMATION_DECIDED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.reasonCode'))=?)
+                """,Boolean.class,actor.userId(),action.view().runId(),FAST_AUTHORIZATION));
+    }
     private static View withoutSnapshot(View view) {
         return new View(view.actionId(),null,null,view.operation(),view.status(),view.version(),
                 null,null,null,view.reasonCode(),null,null);
     }
-    private View approveCreation(AgentActor actor,Stored action,List<Map<String,Object>> origin){
+    private View approveCreation(AgentActor actor,Stored action,List<Map<String,Object>> origin,String authorizationReason){
         if(!creationEnabled())throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"会话图片创建检测尚未启用");
         if(!CREATE_POLICY.equals(action.policy()))return close(actor,action,"INVALIDATED","POLICY_CHANGED","CONFIRMATION_INVALIDATED").view();
         if(!digest(write(action.view().creation())).equals(action.digest()))throw new IllegalStateException("检测创建参数摘要不匹配");
@@ -278,7 +341,7 @@ public class AgentActionService {
         }catch(SecurityException denied){return close(actor,action,"INVALIDATED","ROLE_REVOKED","AUTHORIZATION_DENIED").view();}
         catch(DetectionExecutionApi.ResourceChanged changed){return close(actor,action,"INVALIDATED","RESOURCE_CHANGED","CONFIRMATION_INVALIDATED").view();}
         catch(IllegalArgumentException changed){return close(actor,action,"INVALIDATED","BUSINESS_PRECONDITION_CHANGED","CONFIRMATION_INVALIDATED").view();}
-        audit(actor,action,"AUTHORIZATION_ALLOWED","APPROVED",null);audit(actor,action,"CONFIRMATION_DECIDED","APPROVED",null);
+        audit(actor,action,"AUTHORIZATION_ALLOWED","APPROVED",authorizationReason);audit(actor,action,"CONFIRMATION_DECIDED","APPROVED",authorizationReason);
         var receipt=creation.reserve(actor,action.view().actionId(),action.view().actionId(),p);
         if(receipt==null||!"PREPARING".equals(receipt.status()))throw new IllegalStateException("检测创建命令未核实");
         persistence.result(actor.userId(),action.view().actionId(),action.view().version(),write(receipt));
@@ -296,7 +359,7 @@ public class AgentActionService {
         }
         return action;
     }
-    private View approveRetry(AgentActor actor,Stored action,List<Map<String,Object>> origin) {
+    private View approveRetry(AgentActor actor,Stored action,List<Map<String,Object>> origin,String authorizationReason) {
         if(!retryEnabled())throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"检测执行功能尚未启用");
         if(!RETRY_POLICY.equals(action.policy()))return close(actor,action,"INVALIDATED","POLICY_CHANGED","CONFIRMATION_INVALIDATED").view();
         var preview=action.view().retry();
@@ -314,7 +377,7 @@ public class AgentActionService {
         } catch(IllegalArgumentException|com.ruanzhu.doorhandle.common.BusinessException error) {
             return close(actor,action,"INVALIDATED","BUSINESS_PRECONDITION_CHANGED","CONFIRMATION_INVALIDATED").view();
         }
-        audit(actor,action,"AUTHORIZATION_ALLOWED","APPROVED",null);audit(actor,action,"CONFIRMATION_DECIDED","APPROVED",null);
+        audit(actor,action,"AUTHORIZATION_ALLOWED","APPROVED",authorizationReason);audit(actor,action,"CONFIRMATION_DECIDED","APPROVED",authorizationReason);
         audit(actor,action,"TOOL_EXECUTION_STARTED","EXECUTING",null);
         // Joins this transaction. A failure after writes must roll back, never be converted to a closed success.
         var result=detection.retry(actor,action.view().actionId(),action.view().actionId(),command);
@@ -357,7 +420,7 @@ public class AgentActionService {
                 retry||create?null:read(payload.commandJson(),DetectionAssignmentApi.Command.class),retry||create?null:read(payload.beforeJson(),DetectionAssignmentApi.Values.class),
                 retry||create||result==null?null:read(result,DetectionAssignmentApi.Applied.class),row.reasonCode(),display(row.createdAt()),display(row.expiresAt()),
                 preview,retry&&result!=null?read(result,DetectionExecutionApi.Receipt.class):null,creationPreview,create&&result!=null?read(result,DetectionCreationApi.Receipt.class):null,
-                row.legacyClockEvidence()==null?null:row.legacyClockEvidence().clockStatus(),row.legacyClockEvidence()==null?null:row.legacyClockEvidence().sourceWallTimes()),payload.resourceVersion(),row.digest(),payload.policyVersion(),row.userId(),row.legacyClockEvidence());
+                row.legacyClockEvidence()==null?null:row.legacyClockEvidence().clockStatus(),row.legacyClockEvidence()==null?null:row.legacyClockEvidence().sourceWallTimes()),payload.resourceVersion(),row.digest(),payload.policyVersion(),row.userId(),row.legacyClockEvidence(),payload.callId());
     }
     private LocalDateTime now(){return persistence.now();}
     private static LocalDateTime display(LocalDateTime utc){return utc==null?null:utc.plusHours(8);}

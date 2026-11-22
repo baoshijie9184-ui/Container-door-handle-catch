@@ -1,13 +1,28 @@
 import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
 
-// Both chat entrances use session-owned files and a versioned server model preference.
+// Both chat entrances use session-owned files and versioned server preferences.
+export const APPROVAL_MODES = [
+  { value:'MANUAL', label:'请求人工审查', description:'每次工具调用前由你审查。' },
+  { value:'DEFAULT', label:'默认', description:'日常操作直接运行，敏感业务沿用原有确认。' },
+  { value:'AUTO', label:'自动', description:'按风险决定是否审查，外部网页抓取等操作先确认。' },
+  { value:'FAST', label:'极速模式', description:'已授权的调用直接执行，业务审批与许可仍按原流程。' }
+]
+const initialApprovalMode = () => ({ mode:'DEFAULT', revision:0, ready:false, loading:false, unavailable:false, unverified:false, error:'', notice:'' })
+export function approvalModeDetails(mode){return APPROVAL_MODES.find(option=>option.value===mode) || APPROVAL_MODES[1]}
+function validApprovalSelection(value){
+  if(!APPROVAL_MODES.some(option=>option.value===value?.mode)||!Number.isSafeInteger(value.revision)||value.revision<0){
+    throw Error('审批模式回执无效，请重新读取')
+  }
+  return {mode:value.mode,revision:value.revision}
+}
+
 export function modelLabel(model){const provider={dashscope:'百炼',deepseek:'DeepSeek 直连',openai:'OpenAI'}[model.provider]||model.provider;return provider?`${model.model} · ${provider}`:model.model}
 export function defaultModelLabel(state){const model=state.models.find(item=>item.id===state.defaultModelId);return model?'系统默认 · '+modelLabel(model):'系统默认'}
 export function selectedModelMissing(state){return !!state.modelId&&!state.models.some(model=>model.id===state.modelId)}
 function validSelection(value){if(typeof value?.modelId!=='string'||!Number.isSafeInteger(value.revision)||value.revision<0)throw Error('模型选择响应无效，请核对后再试');return value}
 function catalogState(catalog){if(!Array.isArray(catalog?.models))throw Error('模型目录暂不可用');return {models:catalog.models.filter(m=>m.configured===true&&typeof m.id==='string'&&typeof m.model==='string'),defaultModelId:typeof catalog.selectedModel==='string'?catalog.selectedModel:'',fallbackEnabled:catalog.fallbackEnabled===true}}
 export class ComposerResources {
- constructor({base='',fetcher=captureWorkspaceFetch(),onState=()=>{},onDraft=()=>{},storage}={}){Object.assign(this,{base,fetcher,onState,onDraft,storage});this.generation=0;this.pending=new Map();this.text='';this.edits=0;this.hydrated=false;this.state={ready:false,modelDisabled:false,filesEnabled:false,filesLoaded:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:''}}
+ constructor({base='',fetcher=captureWorkspaceFetch(),onState=()=>{},onDraft=()=>{},storage}={}){Object.assign(this,{base,fetcher,onState,onDraft,storage});this.generation=0;this.pending=new Map();this.text='';this.edits=0;this.hydrated=false;this.state={ready:false,modelDisabled:false,filesEnabled:false,filesLoaded:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:'',approvalMode:initialApprovalMode()}}
  publish(value){this.state={...this.state,...value};this.onState(this.state);if(Object.hasOwn(value,'files'))this.persist()}
  draft(text){const value=typeof text==='string'?text:'';if(value!==this.text){this.text=value;this.edits++;this.persist()}}
  persist(){
@@ -31,13 +46,15 @@ export class ComposerResources {
   const status=response.ok&&Number.isInteger(data?.code)&&data.code!==200?data.code:response.status;
   if(!response.ok||status>=400){
    const message={400:'文件类型或模型选择无效',401:'登录已失效，请重新登录',403:'当前账号无权访问此会话',404:'会话或服务入口不存在',409:'状态已变化，请重新读取模型选择',413:'文件大小、尺寸或账号配额超出限制',415:'文件格式、编码或内容无效，请核对后重新上传',429:'文件解析繁忙，请稍后重试'}[status];
-   const error=Error(status===409&&path.endsWith('/model-selection')&&typeof data?.message==='string'?data.message:message||'操作结果未确认，请刷新核对后手动重试');
+   const preference=path.endsWith('/model-selection')||path.endsWith('/approval-mode');
+   const fallback=status===409&&path.endsWith('/approval-mode')?'会话状态已变化，请核对当前审批模式':message;
+   const error=Error(status===409&&preference&&typeof data?.message==='string'?data.message:fallback||'操作结果未确认，请刷新核对后手动重试');
    error.status=status;throw error
   }
   return data
  }
- async open(session){const generation=++this.generation;this.session=session;this.hydrated=false;this.draftKey=null;this.text='';this.edits=0;this.onDraft('');this.publish({draftWarning:'',ready:false,modelDisabled:false,filesEnabled:false,filesLoaded:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:''});if(!session)return;
-  await Promise.all([this.readModels(generation),this.restoreDraft(session,generation)])
+ async open(session){const generation=++this.generation;this.session=session;this.hydrated=false;this.draftKey=null;this.text='';this.edits=0;this.onDraft('');this.publish({draftWarning:'',ready:false,modelDisabled:false,filesEnabled:false,filesLoaded:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:'',approvalMode:initialApprovalMode()});if(!session)return;
+  await Promise.all([this.readModels(generation),this.restoreDraft(session,generation),this.readApprovalMode(generation)])
  }
  async restoreDraft(session,generation){
   const [cap,identity]=await Promise.all([this.request('/api/agent/workbench/capabilities').catch(()=>null),this.request('/api/auth/check').catch(()=>null)]);
@@ -75,6 +92,53 @@ export class ComposerResources {
   }
   throw error
  }finally{if(generation===this.generation){this.persist();this.publish({busy:false})}}}
+ updateApprovalMode(value){this.publish({approvalMode:{...this.state.approvalMode,...value}})}
+ async readApprovalMode(generation,notice=''){
+  this.updateApprovalMode({loading:true,error:'',notice:''});
+  try{
+   const selection=validApprovalSelection(await this.request(this.path()+'/approval-mode'));
+   if(generation===this.generation)this.updateApprovalMode({...selection,ready:true,loading:false,unavailable:false,unverified:false,error:'',notice});
+  }catch(error){
+   if(generation!==this.generation)return;
+   const unavailable=error.status===404&&!this.state.approvalMode.unverified&&!this.state.approvalMode.ready;
+   this.updateApprovalMode({ready:false,loading:false,unavailable,error:unavailable?'':'审批模式暂不可读取，请重新核对',notice:''});
+  }
+ }
+ async refreshApprovalMode(){
+  if(!this.session||this.state.busy||this.state.approvalMode.loading)return;
+  await this.readApprovalMode(this.generation)
+ }
+ async selectApprovalMode(mode){
+  const current=this.state.approvalMode;
+  if(this.state.busy||!current.ready||current.loading||current.unverified)throw Error('请先核对当前审批模式');
+  if(mode===current.mode)return;
+  if(!APPROVAL_MODES.some(option=>option.value===mode))throw Error('审批模式无效');
+  const generation=this.generation;
+  this.publish({busy:true});
+  this.updateApprovalMode({error:'',notice:''});
+  try{
+   const selection=validApprovalSelection(await this.request(this.path()+'/approval-mode',{
+    method:'POST',headers:{'Content-Type':'application/json','X-Agent-Action':'workbench'},
+    body:JSON.stringify({mode,revision:current.revision,requestId:crypto.randomUUID()})
+   }));
+   if(generation===this.generation){
+    if(selection.mode!==mode||selection.revision<=current.revision)throw Error('审批模式回执不一致');
+    this.updateApprovalMode({...selection,ready:true,unverified:false,notice:''})
+   }
+  }catch(error){
+   if(generation===this.generation){
+    if(error.status===409){
+     this.updateApprovalMode({ready:false,unverified:true});
+     await this.readApprovalMode(generation,error.message);
+    }
+    else{
+     const unverified=![400,401,403,404].includes(error.status);
+     this.updateApprovalMode({ready:false,unverified,error:unverified?'审批模式更新结果待核对，重新读取后可继续发送':error.message})
+    }
+   }
+   throw error
+  }finally{if(generation===this.generation)this.publish({busy:false})}
+ }
  async upload(files){if(this.state.busy||!this.state.filesEnabled)throw Error('文件工作区暂不可用');const generation=this.generation;if(files.length+this.state.files.length>8)throw Error('一条消息最多附加 8 个文件');this.publish({busy:true,error:''});try{
   for(const file of files){if(generation!==this.generation)break;if(file.size>26214400)throw Error('每个文件最多 25 MB');const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');if(generation!==this.generation)break;
    const key=JSON.stringify([this.session,file.name,file.size,digest]);if(!this.pending.has(key)){if(this.pending.size>=16)throw Error('存在未确认的上传，请先核对文件工作区');this.pending.set(key,crypto.randomUUID())}this.persist();

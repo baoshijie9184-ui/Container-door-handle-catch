@@ -1,5 +1,6 @@
 import { beijingDateTime } from './beijingTime'
 import { composerAttachment } from './composerPresentation'
+import { isWorkbenchToolReview, TOOL_REVIEW_ALLOW, TOOL_REVIEW_DENY } from './workbenchToolReview.js'
 
 // Display metadata only. Execution state and available commands remain server-owned.
 const kinds = {
@@ -27,9 +28,14 @@ const emptyViews = {
 export function workbenchKind(kind) { return kinds[kind] || { label: '工作记录', icon: 'Document' } }
 export function workbenchTabIcon(tab) { return ({ FILE:'Files', FORK:'DocumentCopy', RECOVERY:'Refresh' })[tab] || workbenchKind(tab).icon }
 export function workbenchInteractionStatus(item) {
+  if (isWorkbenchToolReview(item)) {
+    if (item.status === 'PENDING') return '待审查'
+    if (item.status === 'ANSWERED' && item.data.answer === TOOL_REVIEW_ALLOW) return '已允许'
+    if (item.status === 'ANSWERED' && item.data.answer === TOOL_REVIEW_DENY) return '已拒绝'
+  }
   if (item?.status === 'PENDING') return item.kind === 'PLAN' ? '待审阅' : item.kind === 'QUESTION' ? '待回答' : undefined
 }
-export function workbenchTitle(item) { return item?.data?.title || item?.data?.specialist || workbenchKind(item?.kind).label }
+export function workbenchTitle(item) { return isWorkbenchToolReview(item) ? '工具调用审查' : item?.data?.title || item?.data?.specialist || workbenchKind(item?.kind).label }
 export function workbenchEmpty(tab,state) {
   if(state?.error)return {title:'工作记录暂不可读取',description:'读取未完成，请刷新核对，不根据空列表推断任务未执行。',icon:'Warning'}
   if(state?.loaded===false)return {title:'正在读取工作记录',description:'读取完成后显示本会话已保存的计划、任务与用量。',icon:'Connection'}

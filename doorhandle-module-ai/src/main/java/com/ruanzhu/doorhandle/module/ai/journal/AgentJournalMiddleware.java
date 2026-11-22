@@ -22,6 +22,8 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     private com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService evolution;
     private com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService mcp;
     private Set<String> workbenchTools=Set.of();
+    private Set<String> directTools=Set.of();
+    public void withDirectTools(Set<String> tools){this.directTools=Set.copyOf(tools);}
     private boolean detectionRetry, detectionCreation;
     public AgentJournalMiddleware withDetectionCreation(boolean enabled){detectionCreation=enabled;return this;}
     public AgentJournalMiddleware withDetectionRetry(boolean enabled){detectionRetry=enabled;return this;}
@@ -39,6 +41,12 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     public void recordToolAccessDenied(String agent) {
         run.event("AUTHORIZATION_DENIED", Map.of("agent", agent, "decision", "DENY",
                 "scope", "CURRENT_ACCOUNT", "policyVersion", "agent-tool-access-v1"));
+    }
+    public void recordToolReview(String event,String agent,String tool,String callId,String approvalId,String mode){
+        var metadata=fields(agent);
+        metadata.put("tool",tool);metadata.put("callId",identifier(callId));metadata.put("inputId",approvalId);
+        metadata.put("scope","TOOL_APPROVAL");metadata.put("policyVersion","tool-approval-mode-v1");metadata.put("result",mode);
+        run.event(event,metadata);
     }
     public void recordContext(String type,Map<String,Object> metadata){var payload=fields((String)metadata.get("agent"));payload.putAll(metadata);run.event(type,payload);}
     private Map<String,Object> fields(String agent) {
@@ -87,6 +95,7 @@ public class AgentJournalMiddleware implements MiddlewareBase {
             var allowed=new HashSet<String>();
             allowed.addAll(workbenchTools);
             if(agent.getName().equals(RoleAgentCatalog.mainId(actor))) {
+                allowed.addAll(directTools);
                 RoleAgentCatalog.specialists(actor,confirmation,reports,drafts,detectionRetry,detectionCreation).forEach(def->allowed.add("delegate_"+def.id().replace('-','_')));
                 if(evolution!=null){allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.PROPOSE);allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD);if(evolution.linksEnabled())allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillLinkProposalTool.NAME);}
                 if(mcp!=null){allowed.add(com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService.PROPOSE);if(mcp.available(actor))allowed.add(com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.TOOL);}

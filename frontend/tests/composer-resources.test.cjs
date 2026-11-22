@@ -91,3 +91,82 @@ test('a pending attachment capability cannot block the model picker',async()=>{
  const opened=client.open('mine');await new Promise(resolve=>setImmediate(resolve));
  assert.equal(client.state.ready,true);finish(response({files:false,enabled:false}));await opened;
 });
+
+test('approval mode is a versioned server preference for the current conversation',async()=>{
+ const {ComposerResources,APPROVAL_MODES}=await mod;
+ assert.deepEqual(APPROVAL_MODES.map(option=>[option.value,option.label]),[
+  ['MANUAL','请求人工审查'],['DEFAULT','默认'],['AUTO','自动'],['FAST','极速模式']
+ ]);
+ const confirmed=new Map();
+ let posted;
+ const client=new ComposerResources({fetcher:async(path,options)=>{
+  if(!path.endsWith('/approval-mode'))return fixture(path);
+  if(options.method){
+   posted={path,headers:options.headers,body:JSON.parse(options.body)};
+   confirmed.set(path,{mode:posted.body.mode,revision:posted.body.revision+1});
+  }
+  return response(confirmed.get(path)||{mode:'DEFAULT',revision:0});
+ }});
+ await client.open('mine');
+ assert.equal(client.state.approvalMode.ready,true);
+ assert.equal(client.state.approvalMode.mode,'DEFAULT');
+ await client.selectApprovalMode('MANUAL');
+ assert.equal(posted.path,'/api/agent/conversations/mine/approval-mode');
+ assert.equal(posted.headers['X-Agent-Action'],'workbench');
+ assert.equal(posted.body.mode,'MANUAL');
+ assert.equal(posted.body.revision,0);
+ assert.match(posted.body.requestId,/^[a-f0-9-]{36}$/);
+ await client.open('another');
+ assert.equal(client.state.approvalMode.mode,'DEFAULT');
+ await client.open('mine');
+ assert.equal(client.state.approvalMode.mode,'MANUAL');
+ assert.equal(client.state.approvalMode.revision,1);
+});
+
+test('approval conflicts re-read the server choice and preserve the draft without reposting',async()=>{
+ const {ComposerResources}=await mod;
+ let reads=0,writes=0;
+ const client=new ComposerResources({fetcher:async(path,options)=>{
+  if(!path.endsWith('/approval-mode'))return fixture(path);
+  if(options.method){writes++;return response({message:'当前有活动任务，暂不能更改审批模式'},409)}
+  return response(++reads===1?{mode:'DEFAULT',revision:0}:{mode:'AUTO',revision:1});
+ }});
+ await client.open('mine');
+ client.draft('准备查询的内容');
+ await assert.rejects(client.selectApprovalMode('FAST'),/当前有活动任务/);
+ assert.equal(reads,2);
+ assert.equal(writes,1);
+ assert.equal(client.state.approvalMode.mode,'AUTO');
+ assert.equal(client.state.approvalMode.unverified,false);
+ assert.match(client.state.approvalMode.notice,/当前有活动任务/);
+ assert.equal(client.text,'准备查询的内容');
+});
+
+test('an uncertain approval update requires readback and late results stay in the old conversation',async()=>{
+ const {ComposerResources}=await mod;
+ let release,writes=0;
+ const client=new ComposerResources({fetcher:async(path,options)=>{
+  if(!path.endsWith('/approval-mode'))return fixture(path);
+  if(options.method){
+   if(++writes===1)throw Error('request receipt lost');
+   return new Promise(resolve=>{release=resolve});
+  }
+  return response({mode:'DEFAULT',revision:0});
+ }});
+ await client.open('old');
+ await assert.rejects(client.selectApprovalMode('FAST'));
+ assert.equal(client.state.approvalMode.unverified,true);
+ await assert.rejects(client.selectApprovalMode('MANUAL'),/先核对/);
+ assert.equal(writes,1);
+ await client.refreshApprovalMode();
+ assert.equal(client.state.approvalMode.unverified,false);
+ const pending=client.selectApprovalMode('MANUAL');
+ assert.equal(client.state.busy,true);
+ assert.equal(client.state.approvalMode.mode,'DEFAULT');
+ await client.open('new');
+ release(response({mode:'MANUAL',revision:1}));
+ await pending;
+ assert.equal(client.state.approvalMode.mode,'DEFAULT');
+ assert.equal(client.state.approvalMode.revision,0);
+ assert.equal(client.state.busy,false);
+});

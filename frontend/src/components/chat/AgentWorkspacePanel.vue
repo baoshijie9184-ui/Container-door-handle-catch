@@ -5,7 +5,7 @@
       <button type="button" aria-label="关闭工作面板" @click="$emit('close')"><el-icon><Close /></el-icon></button>
     </header>
     <div class="context-content">
-      <AgentWorkbenchPanel :session-id="sessionId" :messages="messages" :task-attention="taskAttention" @reference="$emit('reference',$event)" />
+      <AgentWorkbenchPanel :session-id="sessionId" :messages="messages" :task-attention="taskAttention" :active="active" @reference="$emit('reference',$event)" @pending-review="$emit('pending-review',$event)" />
       <details class="context-details" @toggle="toggleDetails">
         <summary>最近执行</summary>
         <AgentRecentExecution v-if="detailsOpen" :session-id="sessionId" :trace="trace" :loaded="traceLoaded" :error="traceError" :loading="loading" @refresh="$emit('refresh')" />
@@ -20,8 +20,8 @@ import { Close } from '@element-plus/icons-vue'
 import AgentWorkbenchPanel from './AgentWorkbenchPanel.vue'
 import AgentRecentExecution from './AgentRecentExecution.vue'
 
-const props=defineProps({sessionId:String,taskAttention:String,trace:Object,traceLoaded:Boolean,traceError:String,loading:Boolean,messages:{type:Array,default:()=>[]}})
-const emit=defineEmits(['close','refresh','reference'])
+const props=defineProps({sessionId:String,taskAttention:String,active:Boolean,trace:Object,traceLoaded:Boolean,traceError:String,loading:Boolean,messages:{type:Array,default:()=>[]}})
+const emit=defineEmits(['close','refresh','reference','pending-review'])
 const detailsOpen=ref(false)
 function toggleDetails(event){
   detailsOpen.value=event.currentTarget.open

@@ -294,6 +294,8 @@ public class AgentScopeConversationService implements AgentConversationApi {
                         }
                     }, error -> {
                         if (outcome.isDone()) return;
+                        var stopped=com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.ToolApprovalStopped.find(error);
+                        if(stopped!=null){outcome.complete(new Outcome(stopped.getMessage(),false));return;}
                         try { if(work!=null&&work.waiting()){outcome.complete(new Outcome(work.waitingReply(), true));return;} }
                         catch (RuntimeException ignored) {}
                         outcome.completeExceptionally(new IllegalStateException("AgentScope 执行失败，请稍后重试"));

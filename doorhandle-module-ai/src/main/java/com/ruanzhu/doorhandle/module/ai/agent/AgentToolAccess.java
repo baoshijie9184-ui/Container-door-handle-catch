@@ -4,6 +4,7 @@ import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddleware;
 import com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime;
+import com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -27,19 +28,26 @@ final class AgentToolAccess implements MiddlewareBase {
     private final Set<String> allowedTools;
     private final Set<URI> fetchTargets;
     private final AgentJournalMiddleware audit;
+    private final AgentWorkbenchService.Scope workbench;
 
     AgentToolAccess(AgentActor actor, BusinessUserDirectory users, Set<String> allowedTools,
                     String userRequest, AgentJournalMiddleware audit) {
+        this(actor,users,allowedTools,userRequest,audit,null);
+    }
+
+    AgentToolAccess(AgentActor actor, BusinessUserDirectory users, Set<String> allowedTools,
+                    String userRequest, AgentJournalMiddleware audit,AgentWorkbenchService.Scope workbench) {
         this.actor = actor;
         this.users = users;
         this.allowedTools = Set.copyOf(allowedTools);
         this.fetchTargets = allowedTools.contains(FetchMcpRuntime.TOOL) ? requestedUrls(userRequest) : Set.of();
         this.audit = audit;
+        this.workbench=workbench;
     }
 
     @Override
     public int order() {
-        return 20;
+        return -170;
     }
 
     @Override
@@ -48,6 +56,7 @@ final class AgentToolAccess implements MiddlewareBase {
         if (input.toolCalls().isEmpty()) return Flux.defer(() -> next.apply(input));
         return Mono.fromRunnable(() -> authorize(input))
                 .subscribeOn(Schedulers.boundedElastic())
+                .then(Mono.defer(()->workbench==null?Mono.empty():workbench.awaitToolApproval(agent,input,audit,()->authorize(input))))
                 .doOnError(AccessDeniedException.class, denied -> {
                     if (audit != null) audit.recordToolAccessDenied(agent.getName());
                 })

@@ -195,6 +195,11 @@ function App() {
     catch(error){if(error.name!=='AbortError'&&generation===commandGeneration.current){setCommandCatalog(null);setCommandError(error.message);}}
   }
   const [threadId,setThreadId]=useState('');
+  const [reportedToolReview,setReportedToolReview]=useState(null);
+  const pendingToolReview=reportedToolReview?.sessionId===threadId?reportedToolReview.id:'';
+  useEffect(()=>{
+    if(pendingToolReview){setShowModels(false);setInfoOpen(true);}
+  },[pendingToolReview]);
   useReadableMessageRegions(transcriptRef,threadId);
   useEffect(()=>{
     const viewport=transcriptRef.current;
@@ -260,7 +265,7 @@ function App() {
     const selectedSession=currentSession.current
     const controlled=await controlsRef.current?.ready()
     operationFetch.assert()
-    if(selectedSession!==currentSession.current)return
+    if(selectedSession!==currentSession.current||resourcesRef.current?.busy())return
     if(controlled || guideRunId){
       if(!query)return;returnToLatest();const sessionId=currentSession.current;setDraft('');
       try{if(guideRunId)await controlsRef.current.guide(query,guideRunId);else await controlsRef.current.submit(query);if(currentSession.current===sessionId)resourcesRef.current?.clear();return true;}catch{if(currentSession.current===sessionId)setDraft(current=>current||query);return false;}
@@ -409,6 +414,9 @@ function App() {
           {showTranscriptReturn && items.length > 0 && <div className="transcript-return"><button type="button" onClick={handleReturnToLatest}><ArrowDown size={16} aria-hidden="true"/>回到最新消息</button></div>}
           {(catalogError || catalogAuthRequired || modelAuthRequired) && <p className="agent-service-error agent-service-gate" role="alert">{catalogError || modelCatalogError || '正在核对目录访问权限'}<button type="button" disabled={catalogLoading || modelCatalogLoading} onClick={refreshServiceCatalogs}><RefreshCw size={13} aria-hidden="true"/>重新读取目录</button>{(catalogAuthRequired || modelAuthRequired) && <a href={LOGIN}>前往登录</a>}</p>}
           <ConversationControls ref={controlsRef} sessionId={threadId} base={CONVERSATION_CONTROLS} onSnapshot={setControlState} onRefresh={refreshControlHistory}/>
+          {pendingToolReview&&(!infoOpen||showModels)&&<div className="composer-guidance" role="status">
+            <button type="button" onClick={()=>{setShowModels(false);setInfoOpen(true)}}>查看待审查的工具调用</button>
+          </div>}
           <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={text=>submit(text)} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} streaming={loading} onStop={()=>loading?stopStream():controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
@@ -419,7 +427,7 @@ function App() {
           <Button ref={closeInfoRef} type="text" aria-label="关闭侧栏" title="关闭侧栏" icon={<X size={17} aria-hidden="true"/>} onClick={closeWorkbench}/>
         </header>
         <div className="agent-info-body" hidden={showModels}>
-          <AgentWorkbenchPanel sessionId={threadId} base={new URL(API,window.location.href).origin} messages={items} attentionPhase={attentionPhase} onFork={loadSession} onReference={value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){setDraft(current=>(current?current.trimEnd()+' ':'')+value+' ');senderRef.current?.focus()}}}/>
+          <AgentWorkbenchPanel sessionId={threadId} base={new URL(API,window.location.href).origin} messages={items} attentionPhase={attentionPhase} onPendingReview={setReportedToolReview} onFork={loadSession} onReference={value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){setDraft(current=>(current?current.trimEnd()+' ':'')+value+' ');senderRef.current?.focus()}}}/>
         </div>
         {showModels&&<div className="agent-info-body">
           <AgentModelOverview catalog={catalog} modelCatalog={modelCatalog} catalogLoading={catalogLoading} modelLoading={modelCatalogLoading} catalogError={catalogError} modelError={modelCatalogError} authRequired={catalogAuthRequired || modelAuthRequired} onRefresh={refreshServiceCatalogs} loginHref={LOGIN} traceHref={traceHref} actionsHref={ACTIONS} reportsHref={REPORTS} modelQuotasHref={MODEL_QUOTAS}/>

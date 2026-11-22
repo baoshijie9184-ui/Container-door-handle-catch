@@ -1,5 +1,6 @@
 import { captureWorkspaceFetch } from './captureWorkspaceFetch.js'
 import { agentCreationReviewPath } from './agentActions.js'
+import { isWorkbenchToolReview } from './workbenchToolReview.js'
 
 export function workbenchManagementPath(item,sessionId){
  const path=item?.data?.managementPath
@@ -98,7 +99,7 @@ export function workbenchTaskGroups(items, capabilities = {}) {
   for (const row of items) {
     if (!Object.hasOwn(taskCapability, row.kind)) continue
     const needsRecovery = row.status === 'NEEDS_REVIEW' && capabilities.recovery !== false
-    if (capabilities[taskCapability[row.kind]] === false && !needsRecovery) continue
+    if (capabilities[taskCapability[row.kind]] === false && !needsRecovery && !isWorkbenchToolReview(row)) continue
     if (needsRecovery || (row.status === 'PENDING' && ['PLAN','QUESTION'].includes(row.kind))) attention.push(row)
     else if (settledTaskStatus.has(row.status)) history.push(row)
     else active.push(row)

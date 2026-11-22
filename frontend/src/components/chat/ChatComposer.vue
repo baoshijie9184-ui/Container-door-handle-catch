@@ -30,15 +30,25 @@
         @keydown="handleKey"
       />
       <div v-if="canGuide(run)" class="composer-guidance">
-        <button type="button" :disabled="loading || resources.busy || (!draft.trim() && !resources.files.length)"
+        <button type="button" :disabled="loading || blocksSend() || (!draft.trim() && !resources.files.length)"
           title="把补充要求发给当前 Agent" @click="handleSend(run.runId)">引导当前任务</button>
       </div>
       <div class="composer-toolbar">
         <input ref="fileInputRef" type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" @change="uploadFiles" />
         <button class="composer-add" type="button" aria-label="添加附件" :title="composerUploadHint(resources,loading)" :disabled="!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon aria-hidden="true"><Plus /></el-icon></button>
-        <el-dropdown v-if="!loading&&showPresets" trigger="click" @command="sendPreset"><button type="button" class="composer-add" aria-label="快捷提问" title="快捷提问" :disabled="resources.busy"><AppIcon name="MagicStick" :size="17" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="chip in quickChips" :key="chip.text" :command="chip.text" :disabled="resources.busy"><AppIcon :name="chip.icon" :size="14" />{{ chip.label }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
+        <el-dropdown v-if="!loading&&showPresets" trigger="click" @command="sendPreset"><button type="button" class="composer-add" aria-label="快捷提问" title="快捷提问" :disabled="blocksSend()"><AppIcon name="MagicStick" :size="17" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="chip in quickChips" :key="chip.text" :command="chip.text" :disabled="blocksSend()"><AppIcon :name="chip.icon" :size="14" />{{ chip.label }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
         <span v-if="resources.busy" class="composer-upload-status" role="status">处理中</span>
         <select aria-label="使用模型" :title="composerModelTitle(resources,modelLocked,loading)" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">{{ composerDefaultModel(resources) }}</option><option v-if="selectedModelMissing(resources)" :value="resources.modelId" disabled>{{ resources.modelId }}（已不可用）</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ modelLabel(model) }}</option></select>
+        <div v-if="showApprovalMode" class="composer-approval-mode">
+          <AppIcon name="Lock" :size="15" />
+          <select aria-label="审批模式" :aria-describedby="approvalModeHintId" :title="approvalModeHint"
+            :value="approvalMode.ready ? approvalMode.mode : ''"
+            :disabled="!approvalMode.ready || approvalMode.loading || resources.busy || modelLocked || loading"
+            @change="selectApprovalMode">
+            <option v-if="!approvalMode.ready" value="">{{ approvalMode.loading ? '读取审批模式…' : '审批模式未核对' }}</option>
+            <option v-for="option in APPROVAL_MODES" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </div>
       </div>
 
       <button
@@ -63,7 +73,7 @@
         type="button"
         class="composer-send"
         :class="{ active: draft.trim() && !loading }"
-        :disabled="loading || resources.busy || (!draft.trim()&&!resources.files.length)"
+        :disabled="loading || blocksSend() || (!draft.trim()&&!resources.files.length)"
         @click="handleSend()"
         title="发送" aria-label="发送消息"
       >
@@ -75,6 +85,10 @@
     <Transition name="slash-menu"><section v-if="pendingVoice" class="composer-voice-review" aria-label="待插入的语音识别结果"><h4><AppIcon name="ChatDotRound" :size="16" />识别结果待插入</h4><p>原输入已保留，追加后仍需手动发送。未插入结果会在关闭面板或切换会话时清除。</p><details class="composer-voice-text"><summary>查看识别全文<AppIcon class="composer-voice-chevron" name="ArrowDown" :size="13" /></summary><div class="composer-voice-result" tabindex="0" role="region" aria-label="已识别的语音全文，可使用方向键滚动">{{ pendingVoice.text }}</div></details><div class="composer-voice-actions"><button type="button" :disabled="loading || resources.busy" @click="insertPendingVoice"><AppIcon name="Plus" :size="14" />追加到输入</button><button type="button" @click="pendingVoice=null;voiceHint='已放弃此段识别结果，原输入保留'"><AppIcon name="Close" :size="14" />放弃此段</button></div></section></Transition>
     <p v-if="resources.error" class="command-error" role="alert">{{ resources.error }}</p>
     <div v-if="selectedModelMissing(resources)||resources.modelNotice||resources.modelError" class="model-selection-feedback"><span v-if="selectedModelMissing(resources)" role="status">原选模型已不在可用目录，请选择其他模型</span><span v-else-if="resources.modelNotice" role="status">{{ resources.modelNotice }}</span><button v-if="resources.modelError" type="button" :disabled="resources.busy||loading" @click="resourceClient.refreshModels()">重新读取</button></div>
+    <div v-if="showApprovalMode" class="model-selection-feedback composer-approval-feedback">
+      <span :id="approvalModeHintId" role="status">{{ approvalModeHint }}</span>
+      <button v-if="approvalMode.error" type="button" :disabled="resources.busy || approvalMode.loading" @click="resourceClient.refreshApprovalMode()">重新读取审批模式</button>
+    </div>
     <p v-if="resources.draftWarning" class="command-error" role="status">{{ resources.draftWarning }}</p>
     <p v-if="resources.storageWarning" class="composer-state-note" data-tone="warning" role="status"><AppIcon name="Warning" :size="14" />{{ resources.storageWarning }}</p>
     <p v-if="browserOffline" class="composer-state-note" data-tone="warning" role="status"><AppIcon name="Connection" :size="14" />浏览器报告网络离线，当前输入保留；恢复连接后请手动发送，不会自动重发。</p>
@@ -92,7 +106,7 @@ const request=captureAccountRequest()
 import { useUserStore } from '@/stores/user'
 import { filterSkillCommands } from '@/utils/skillCommands'
 import {Plus,Close} from '@element-plus/icons-vue'
-import {ComposerResources,modelLabel,selectedModelMissing} from '@/utils/composerResources'
+import {APPROVAL_MODES,approvalModeDetails,ComposerResources,modelLabel,selectedModelMissing} from '@/utils/composerResources'
 import {composerAttachment,composerDefaultModel,composerUploadHint,composerModelTitle} from '@/utils/composerPresentation'
 import {canGuide} from '@/utils/conversationControl'
 import '@/assets/composer-presentation.css'
@@ -117,12 +131,24 @@ window.addEventListener('online',updateBrowserConnection)
 window.addEventListener('offline',updateBrowserConnection)
 const resources=ref({ready:false,files:[],models:[],modelId:'',busy:false,error:''}),fileInputRef=ref(null)
 const resourceClient=new ComposerResources({base:(import.meta.env.VITE_API_URL||'').replace(/\/$/,''),onState:value=>{resources.value=value},onDraft:value=>{draft.value=value}})
+const approvalMode=computed(()=>resources.value.approvalMode)
+const showApprovalMode=computed(()=>props.sessionId && approvalMode.value && !approvalMode.value.unavailable)
+const approvalModeHintId='chat-approval-mode-hint-'+getCurrentInstance().uid
+const approvalModeHint=computed(()=>{
+  const selection=approvalMode.value
+  return selection?.error || selection?.notice || (selection?.ready ? approvalModeDetails(selection.mode).description : '正在读取当前会话的审批模式。')
+})
+const blocksSend=()=>resources.value.busy||approvalMode.value?.unverified===true
 watch(draft,value=>{draftRevision++;resourceClient.draft(value)},{flush:'sync'})
 watch(()=>props.sessionId,id=>resourceClient.open(id),{immediate:true})
 async function uploadFiles(event){const files=Array.from(event.target.files||[]);event.target.value='';try{await resourceClient.upload(files)}catch(error){resourceClient.publish({error:error.message})}}
 async function selectModel(event){try{await resourceClient.select(event.target.value)}catch{/* Keep the server-confirmed selection. */}finally{event.target.value=resources.value.modelId}}
-function sendPreset(text){if(props.loading||resources.value.busy)return;emit('send',resourceClient.content(text));resourceClient.clear()}
-defineExpose({restoreDraft:value=>{if(!draft.value)draft.value=value},appendReference:value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){draft.value=(draft.value?draft.value.trimEnd()+' ':'')+value+' ';nextTick(()=>{textareaRef.value?.focus();autoResize()})}}})
+async function selectApprovalMode(event){
+  try{await resourceClient.selectApprovalMode(event.target.value)}catch{/* The server-confirmed mode or the readback status stays visible. */}
+  finally{event.target.value=approvalMode.value?.ready?approvalMode.value.mode:''}
+}
+function sendPreset(text){if(props.loading||blocksSend())return;emit('send',resourceClient.content(text));resourceClient.clear()}
+defineExpose({blocksSend,restoreDraft:value=>{if(!draft.value)draft.value=value},appendReference:value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){draft.value=(draft.value?draft.value.trimEnd()+' ':'')+value+' ';nextTick(()=>{textareaRef.value?.focus();autoResize()})}}})
 const user=useUserStore(), commandCatalog=ref(null), commandError=ref(''), menuDismissed=ref(false), activeCommand=ref(0)
 const commandOptions=computed(()=>filterSkillCommands(commandCatalog.value,draft.value))
 const menuVisible=computed(()=>!props.loading&&!menuDismissed.value&&commandOptions.value.length>0)
@@ -190,7 +216,7 @@ watch(draft,autoResize,{flush:'post'})
 
 const handleSend = (guideRunId) => {
   const value = resourceClient.content(draft.value)
-  if (!value || props.loading||resources.value.busy) return
+  if (!value || props.loading||blocksSend()) return
   emit('send', value, guideRunId)
   resourceClient.clear()
   draft.value = ''

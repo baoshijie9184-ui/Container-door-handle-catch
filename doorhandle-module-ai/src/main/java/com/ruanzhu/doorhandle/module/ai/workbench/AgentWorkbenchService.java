@@ -40,6 +40,10 @@ import static com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchStore.fail;
 public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
     public static final Set<String> TOOL_NAMES=Set.of("update_task_list","submit_plan","ask_user_question","list_workspace_files","read_workspace_file","create_artifact","start_background_task","get_background_task");
     private final WorkbenchStore store;private final WorkbenchProperties settings;private final BusinessUserDirectory users;
+    private final ToolApprovalGate toolApprovals;
+    private ConversationApprovalModes approvalModes;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void setApprovalModes(ConversationApprovalModes approvalModes){this.approvalModes=approvalModes;}
     private final ObjectProvider<WorkbenchSessionApi> sessions;private final RoleAgentFactory factory;private final AgentJournal journal;
     private final String instance=UUID.randomUUID().toString();
     private TraceContextStore traceContexts;
@@ -69,7 +73,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
     @org.springframework.beans.factory.annotation.Autowired public void setReports(ObjectProvider<QualityReportAgentApi> reports){this.reports=reports;}
     @org.springframework.beans.factory.annotation.Autowired public void setMcp(ObjectProvider<com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService> mcp){this.mcp=mcp;}
     @org.springframework.beans.factory.annotation.Autowired public void setControl(ObjectProvider<AgentConversationControlApi> control){this.control=control;}
-    public AgentWorkbenchService(WorkbenchStore store,WorkbenchProperties settings,BusinessUserDirectory users,ObjectProvider<WorkbenchSessionApi> sessions,RoleAgentFactory factory,AgentJournal journal){this.store=store;this.settings=settings;this.users=users;this.sessions=sessions;this.factory=factory;this.journal=journal;}
+    public AgentWorkbenchService(WorkbenchStore store,WorkbenchProperties settings,BusinessUserDirectory users,ObjectProvider<WorkbenchSessionApi> sessions,RoleAgentFactory factory,AgentJournal journal){this.store=store;this.settings=settings;this.users=users;this.sessions=sessions;this.factory=factory;this.journal=journal;this.toolApprovals=new ToolApprovalGate(store);}
     @PostConstruct void validate(){store.validate();store.jdbc().queryForList("SELECT state_key FROM runtime_state WHERE namespace='SDK_CHECKPOINT' AND 1=0");if(!journal.enabled())throw new IllegalStateException("Agent 工作台要求运行日志已启用");if(control!=null&&control.getIfAvailable()==null)throw new IllegalStateException("Agent 工作台需要启用会话控制及 compact 消息队列");}
     private void owned(AgentActor actor,String session){var identity=users.current(actor.userId(),actor.username());if(identity.userId()!=actor.userId()||identity.supervisor()!=actor.supervisor())throw new SecurityException("账号授权已变化");sessions.getObject().assertOwned(actor,session);}
     @org.springframework.beans.factory.annotation.Value("${agentscope.model-selection.enabled:${agentscope.workbench.enabled:false}}")
@@ -145,6 +149,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             if(!continuation) {
                 String logicalTaskId=UUID.randomUUID().toString();
                 data.put("logicalTaskId",logicalTaskId);
+                if(approvalModes!=null)toolApprovals.captureMode(actor,session,logicalTaskId,approvalModes.read(actor,session));
                 if(traceContexts!=null)traceContexts.remember("workbench:"+logicalTaskId,Duration.ofHours(24));
                 data.put("planRequired",settings.isPlans()&&requestsPlan(question));
                 String preference=modelSelectionEnabled?ConversationModelPreferences.read(store,actor,session).modelId():"";
@@ -163,7 +168,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             validateTaskModel(data);
             job=job==null?store.create(actor.userId(),session,id,"EXECUTION","RUNNING",data):store.update(job,"RUNNING",data,"EXECUTION_STARTED");
             liveExecutions.put(id,runId);durableAttempts.put(id,store.attempt(job));
-            return new Scope(actor,session,id,runId,null);
+            return new Scope(actor,session,id,runId,null,continuation?null:question);
         });
     }
     public static boolean requestsPlan(String input) {
@@ -204,7 +209,19 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         owned(actor,session);if(input==null)input=Map.of();final var body=input;
         var result=store.request(actor.userId(),request,store.encode(List.of(session,id,revision,action,body)),Item.class,()->{
             var row=store.require(actor.userId(),session,id);if(row.revision()!=revision)throw fail(409,"工作项版本已变化，请刷新");
-            if(Set.of("PLAN","QUESTION").contains(row.kind())){var parent=store.require(actor.userId(),session,(String)row.data().get("parentId"));if(!row.status().equals("PENDING")||!Objects.equals(row.data().get("logicalTaskId"),parent.data().get("logicalTaskId"))||!parent.status().equals(row.kind().equals("PLAN")?"WAITING_PLAN":"WAITING_INPUT"))throw fail(409,"此交互已结束或不属于当前逻辑任务");if(!Boolean.TRUE.equals(parent.data().get("yieldReady")))throw fail(409,"正在保存等待状态，请稍后刷新再处理");if(Set.of("approve-plan","revise-plan","answer").contains(action))assertCheckpointReadable(actor,session,parent);}
+            boolean toolQuestion=toolApprovals.isToolQuestion(row);
+            if(Set.of("PLAN","QUESTION").contains(row.kind())){
+                var parent=store.require(actor.userId(),session,(String)row.data().get("parentId"));
+                String expected=toolQuestion?"RUNNING":row.kind().equals("PLAN")?"WAITING_PLAN":"WAITING_INPUT";
+                if(!row.status().equals("PENDING")||!Objects.equals(row.data().get("logicalTaskId"),parent.data().get("logicalTaskId"))||!parent.status().equals(expected))throw fail(409,"此交互已结束或不属于当前逻辑任务");
+                if(toolQuestion){
+                    if(!action.equals("answer"))throw fail(400,"请批准或拒绝此工具调用");
+                    toolApprovals.requireLive(actor,row,parent);
+                }else{
+                    if(!Boolean.TRUE.equals(parent.data().get("yieldReady")))throw fail(409,"正在保存等待状态，请稍后刷新再处理");
+                    if(Set.of("approve-plan","revise-plan","answer").contains(action))assertCheckpointReadable(actor,session,parent);
+                }
+            }
             var data=new LinkedHashMap<>(row.data());String status;
             switch(action){
                 case "approve-plan"->{if(!settings.isPlans()||!row.kind().equals("PLAN")||!row.status().equals("PENDING"))throw fail(409,"计划不再等待审阅");status="APPROVED";}
@@ -246,7 +263,10 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                 default->throw fail(400,"不支持的工作台操作");
             }
             if(action.equals("resume"))data.put("yieldReady",true);
-            var saved=store.update(row,status,data,action.toUpperCase(Locale.ROOT).replace('-','_'));
+            String auditAction=toolQuestion?(ToolApprovalGate.ALLOW.equals(data.get("answer"))?"TOOL_APPROVAL_APPROVED":"TOOL_APPROVAL_REJECTED")
+                    :action.toUpperCase(Locale.ROOT).replace('-','_');
+            var saved=store.update(row,status,data,auditAction);
+            if(toolQuestion)return store.view(saved);
             if(row.kind().equals("PLAN")||row.kind().equals("QUESTION")){
                 var parent=store.require(actor.userId(),session,(String)row.data().get("parentId"));var parentData=new LinkedHashMap<>(parent.data());
                 if(action.equals("approve-plan"))parentData.put("approvedPlan",saved.id()+":"+saved.revision());
@@ -260,6 +280,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             }
             return store.view(saved);
         });
+        if(action.equals("answer"))toolApprovals.signal(actor,session,id,result.data().get("answer"));
         if(action.equals("cancel")){String execution=Set.of("PLAN","QUESTION").contains(result.kind())?(String)result.data().get("parentId"):id;Object task=result.data().get("logicalTaskId");cancelInteractions(actor,session,execution,task);var settled=store.require(actor.userId(),session,execution);if(Objects.equals(task,settled.data().get("logicalTaskId"))){cancelAttempt(settled);if(execution.equals(mainSlot(actor,session).id()))cancelChildren(actor,session,execution,task);if(settled.kind().equals("CHILD"))wakeParent(actor,session,execution);}}
         return result;
     }
@@ -355,6 +376,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         return store.locked(actor.userId(),()->{var origin=store.require(actor.userId(),session,parent);if(!Objects.equals(parentTask,origin.data().get("logicalTaskId"))||!Objects.equals(parentRun,origin.data().get("runId"))||origin.status().equals("CANCELLED"))throw fail(409,"父任务执行尝试已变化");store.assertAttempt(store.attempt(origin));String id=WorkbenchStore.stable(actor.userId(),session,"child:"+parentTask+":"+callId);var existing=store.find(actor.userId(),session,id);if(existing!=null)return existing;
             long pending=store.pendingChildCount(actor.userId());if(pending>=16)throw fail(429,"本人未结束的专业任务已达上限");
             var data=new LinkedHashMap<String,Object>();data.put("parentId",parent);data.put("parentTaskId",store.require(actor.userId(),session,parent).data().get("logicalTaskId"));data.put("specialist",specialist);data.put("question",question);data.put("title",bounded(question,160));data.put("username",actor.username());data.put("role",actor.role().name());data.put("logicalTaskId",UUID.randomUUID().toString());
+            toolApprovals.captureMode(actor,session,(String)data.get("logicalTaskId"),toolApprovals.mode(actor,session,parentTask));
             data.put("modelId",Objects.toString(origin.data().get("modelId"),""));if(origin.data().containsKey("modelConfigVersion"))data.put("modelConfigVersion",origin.data().get("modelConfigVersion"));if(origin.data().containsKey("modelDefault"))data.put("modelDefault",origin.data().get("modelDefault"));return store.create(actor.userId(),session,id,"CHILD","QUEUED",data);
         });
     }
@@ -424,7 +446,17 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                     .contextWrite(reactorContext->reactorContext.put(ModelBudgetContext.CONTEXT_KEY,modelBudget))
                     .timeout(Duration.ofMinutes(10)).block().getTextContent();
             scope.finish("COMPLETED",text);String settled=store.require(actor.userId(),session,job.id()).status();audit.finish(settled.equals("CANCELLED")?"CANCELLED":settled.startsWith("WAITING_")?"INTERRUPTED":"COMPLETED");
-        }catch(RuntimeException error){interrupted=Thread.interrupted();org.slf4j.LoggerFactory.getLogger(getClass()).warn("专业任务未完成：item={}, errorType={}",job.id(),error.getClass().getSimpleName());if(scope!=null){if(scope.waiting())scope.checkpointStatus();else scope.finish("NEEDS_REVIEW","");}else{var current=store.require(actor.userId(),session,job.id());if(current.status().equals("RUNNING")&&Objects.equals(current.claimToken(),job.claimToken())&&current.fence()==job.fence())store.update(current,"NEEDS_REVIEW",current.data(),"CHILD_START_FAILED");}if(audit!=null)audit.finish(store.require(actor.userId(),session,job.id()).status().equals("CANCELLED")?"CANCELLED":"INTERRUPTED");}
+        }catch(RuntimeException error){
+            interrupted=Thread.interrupted();
+            var stopped=ToolApprovalStopped.find(error);
+            if(stopped!=null&&scope!=null){scope.finish("COMPLETED",stopped.getMessage());if(audit!=null)audit.finish("COMPLETED");}
+            else {
+                org.slf4j.LoggerFactory.getLogger(getClass()).warn("专业任务未完成：item={}, errorType={}",job.id(),error.getClass().getSimpleName());
+                if(scope!=null){if(scope.waiting())scope.checkpointStatus();else scope.finish("NEEDS_REVIEW","");}
+                else{var current=store.require(actor.userId(),session,job.id());if(current.status().equals("RUNNING")&&Objects.equals(current.claimToken(),job.claimToken())&&current.fence()==job.fence())store.update(current,"NEEDS_REVIEW",current.data(),"CHILD_START_FAILED");}
+                if(audit!=null)audit.finish(store.require(actor.userId(),session,job.id()).status().equals("CANCELLED")?"CANCELLED":"INTERRUPTED");
+            }
+        }
         finally{interrupted=Thread.interrupted()||interrupted;try{if(agent!=null)agent.close();}finally{try{if(scope!=null)scope.release();}finally{releaseAttempt(job.id(),scope==null?"claim:"+job.revision():scope.runId());childSlots.release();try{wakeParent(actor,session,job.id());}catch(RuntimeException ignored){}if(interrupted)Thread.currentThread().interrupt();}}}
     }
     private void wakeParent(AgentActor actor,String session,String childId){
@@ -452,7 +484,10 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             var cancellation=cancellations.get(entry.getKey());if(cancellation!=null&&Objects.equals(cancellation.run(),entry.getValue().runId()))cancellation.callback().run();
             String live=liveExecutions.get(entry.getKey());if(live!=null)releaseAttempt(entry.getKey(),live);
         }
-        for(var stale:store.stale())store.recover(stale);
+        for(var stale:store.stale()){
+            store.recover(stale);
+            toolApprovals.closeOrphans(store.require(stale.user(),stale.session(),stale.id()));
+        }
     }
 
     @Override @PreDestroy public void close(){try{for(var cancellation:cancellations.values())try{cancellation.callback().run();}catch(RuntimeException error){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Agent 关闭时执行取消失败：{}",error.getClass().getSimpleName());}}finally{children.shutdownNow();try{children.awaitTermination(5,TimeUnit.SECONDS);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}}}
@@ -462,11 +497,20 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
 
     private static final Set<String> PLAN_PREVIEW_TOOLS = Set.of("submit_plan","update_task_list","ask_user_question",
             "list_workspace_files","read_workspace_file","read_context_file");
+    private static final Set<String> TOOL_APPROVAL_ORCHESTRATION=Set.of("submit_plan","ask_user_question","update_task_list",
+            "start_background_task","propose_quality_assignment","propose_detection_retry","propose_detection_creation",
+            "propose_fetch_mcp_install","propose_linked_skill_install","propose_learned_skill");
+    private static final java.util.regex.Pattern PRIVATE_LABEL=java.util.regex.Pattern.compile(
+            "(?i)(密码|口令|密钥|凭证|password|token|secret|private[-_ ]?key|api[-_ ]?key|sk-[a-z0-9]|[a-z0-9_-]{32,})");
+    private static final com.ruanzhu.doorhandle.module.system.security.SensitiveDataSanitizer LABEL_SANITIZER=
+            new com.ruanzhu.doorhandle.module.system.security.SensitiveDataSanitizer();
 
     public final class Scope implements MiddlewareBase {
         final AgentActor actor;final String session,jobId,runId,specialist,logicalTaskId;
         private final JdbcWorkbenchStateStore sdkStateStore;
         private final WorkbenchStore.Attempt attempt;
+        private final AgentApprovalMode approvalMode;
+        private final String directHumanInput;
         private List<Msg> initialContext=List.of();
         private List<AgentContextDataApi.Source> initialSources=List.of();
         public AgentActor contextActor(){return actor;}public String contextSession(){return session;}public String contextTask(){return logicalTaskId;}
@@ -486,7 +530,71 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             return List.of(new UserMessage(question));
         }
         public void persistContext(Agent agent,RuntimeContext context){if(!settings.isRecovery())throw new IllegalStateException("持久上下文要求启用检查点恢复");checkpoint(agent,context==null?RuntimeContext.empty():context,"CONTEXT_INITIALIZED");}
-        Scope(AgentActor actor,String session,String jobId,String runId,String specialist){this.actor=actor;this.session=session;this.jobId=jobId;this.runId=runId;this.specialist=specialist;var current=store.require(actor.userId(),session,jobId);this.logicalTaskId=Objects.toString(current.data().get("logicalTaskId"));this.attempt=store.attempt(current);if(!Objects.equals(runId,attempt.runId()))throw fail(409,"执行尝试已变化");this.sdkStateStore=new JdbcWorkbenchStateStore(store,true,()->store.assertAttempt(attempt),Long.toString(actor.userId()),sdkSession());}
+        Scope(AgentActor actor,String session,String jobId,String runId,String specialist){this(actor,session,jobId,runId,specialist,null);}
+        Scope(AgentActor actor,String session,String jobId,String runId,String specialist,String directHumanInput){
+            this.actor=actor;this.session=session;this.jobId=jobId;this.runId=runId;this.specialist=specialist;this.directHumanInput=directHumanInput;
+            var current=store.require(actor.userId(),session,jobId);
+            this.logicalTaskId=Objects.toString(current.data().get("logicalTaskId"));this.attempt=store.attempt(current);
+            if(!Objects.equals(runId,attempt.runId()))throw fail(409,"执行尝试已变化");
+            this.sdkStateStore=new JdbcWorkbenchStateStore(store,true,()->store.assertAttempt(attempt),Long.toString(actor.userId()),sdkSession());
+            this.approvalMode=toolApprovals.mode(actor,session,logicalTaskId).mode();
+        }
+        public String fastHumanInput(){return specialist==null&&approvalMode==AgentApprovalMode.FAST?directHumanInput:null;}
+
+        public Mono<Void> awaitToolApproval(Agent agent,ActingInput input,com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddleware audit,Runnable reauthorize){
+            if(approvalMode==AgentApprovalMode.DEFAULT||approvalMode==AgentApprovalMode.FAST)return Mono.empty();
+            var required=input.toolCalls().stream().filter(call->approvalMode==AgentApprovalMode.MANUAL||requiresAutomaticReview(agent,call))
+                    .map(call->new ToolApprovalGate.Request(approvalInvocation(call),approvalSummary(call))).toList();
+            if(required.isEmpty())return Mono.empty();
+            if(audit==null||!settings.isQuestions())return Mono.error(fail(409,"当前工作台无法安全完成工具确认，请结束任务或使用可用的审批模式"));
+            var original=input.toolCalls().stream().map(this::approvalInvocation).toList();
+            return toolApprovals.await(actor,attempt,required,(event,held)->audit.recordToolReview(event,agent.getName(),
+                    held.request().invocation().tool(),held.request().invocation().callId(),held.id(),approvalMode.name()))
+                    .then(Mono.fromRunnable(()->{
+                        if(!original.equals(input.toolCalls().stream().map(this::approvalInvocation).toList()))throw fail(409,"工具调用参数已变化，原确认已失效");
+                        reauthorize.run();
+                        owned(actor,session);
+                        store.assertAttempt(attempt);
+                    }));
+        }
+
+        private ToolApprovalGate.Invocation approvalInvocation(ToolUseBlock call){
+            if(call.getId()==null||!call.getId().matches("[A-Za-z0-9_:.-]{1,160}"))throw fail(403,"工具调用编号无效");
+            return new ToolApprovalGate.Invocation(call.getId(),call.getName(),WorkbenchStore.hash(store.encode(call.getInput())));
+        }
+
+        private String approvalSummary(ToolUseBlock call){
+            var args=Objects.requireNonNullElse(call.getInput(),Map.<String,Object>of());
+            return switch(call.getName()){
+                case "read_workspace_file"->{
+                    String fileId=required(args,"fileId",64);
+                    var file=sessions.getObject().files(actor,session).stream().filter(candidate->candidate.id().equals(fileId))
+                            .findFirst().orElseThrow(()->fail(404,"文件不存在或无权限"));
+                    yield " · 读取本人会话文件 "+approvalLabel(file.name(),"编号 "+file.id());
+                }
+                case "create_artifact"->" · 生成会话产物 "+approvalLabel(args.get("filename"),"（查看当前会话中的请求）");
+                case com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.TOOL->{
+                    String host=java.net.URI.create(required(args,"url",2048)).getHost();
+                    if(host==null)throw fail(403,"Fetch 仅允许用户提供的公开网页");
+                    yield " · 访问公开网页主机 "+approvalLabel(host,"（查看当前会话中的网址）");
+                }
+                default->"";
+            };
+        }
+
+        private String approvalLabel(Object value,String fallback){
+            if(value instanceof String label&&label.matches("[\\p{L}\\p{N}_. -]{1,120}")&&!PRIVATE_LABEL.matcher(label).find()
+                    &&!LABEL_SANITIZER.containsSensitiveData(label))return label;
+            return fallback;
+        }
+
+        private boolean requiresAutomaticReview(Agent agent,ToolUseBlock call){
+            String name=call.getName();
+            if(com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.TOOL.equals(name))return true;
+            if(name.startsWith("delegate_")||TOOL_APPROVAL_ORCHESTRATION.contains(name))return false;
+            var tool=agent.getToolkit().getTool(name);
+            return tool==null||!tool.isReadOnly();
+        }
         public String sdkSession(){return "wb:"+logicalTaskId+":"+(specialist==null?"main":jobId);}
         public JdbcWorkbenchStateStore stateStore(){return sdkStateStore;}
         public String runId(){return runId;}
@@ -677,6 +785,15 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                 return operation.map(result->{var state=AgentState.builder().userId(Long.toString(actor.userId())).sessionId(sdkSession()).context(List.of(new ToolResultMessage(result.withIdAndName(call,getName())))).build();var recorded=new LinkedHashMap<>(data);recorded.put("resultState",state.toJson());store.withAttempt(Scope.this.attempt,()->{var row=store.require(actor.userId(),session,id);store.update(row,"COMPLETED",recorded,"TOOL_RESULT_SAVED");return null;});return contextResult(param,result);});
             });}
         };}
+    }
+    public static final class ToolApprovalStopped extends RuntimeException {
+        ToolApprovalStopped(String message){super(message);}
+        public static ToolApprovalStopped find(Throwable failure){
+            for(int depth=0;failure!=null&&depth<12;depth++,failure=failure.getCause()){
+                if(failure instanceof ToolApprovalStopped stopped)return stopped;
+            }
+            return null;
+        }
     }
     public static final class Yield extends RuntimeException {public Yield(){super("Agent 等待持久交互");}}
 }

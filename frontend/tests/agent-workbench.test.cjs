@@ -2,6 +2,23 @@ const test=require('node:test'),assert=require('node:assert/strict')
 const {importFrontendModule}=require('./helpers/project-source.cjs')
 const utility=importFrontendModule('src','utils','agentWorkbench.js')
 const id='00000000-0000-0000-0000-000000000001'
+test('tool review detection requires the server question marker, exact choices and a pending decision',async()=>{
+ const {isWorkbenchToolReview,pendingWorkbenchToolReview,TOOL_REVIEW_ALLOW,TOOL_REVIEW_DENY}=await importFrontendModule('src','utils','workbenchToolReview.js')
+ const {workbenchTaskGroups}=await utility
+ const {workbenchInteractionRecords}=await importFrontendModule('src','utils','workbenchRecordPresentation.js')
+ const review={id,kind:'QUESTION',status:'PENDING',revision:1,
+  data:{questionType:'SINGLE',text:'工具调用待确认，请核对调用范围',options:[TOOL_REVIEW_ALLOW,TOOL_REVIEW_DENY]}}
+ const question={...review,id:'00000000-0000-0000-0000-000000000002',data:{...review.data,text:'这是一道普通问题'}}
+ const malformed={...review,data:{...review.data,options:[TOOL_REVIEW_ALLOW,'继续']}}
+ const decided={...review,status:'ANSWERED',data:{...review.data,answer:TOOL_REVIEW_DENY}}
+ assert.equal(isWorkbenchToolReview(review),true)
+ assert.equal(isWorkbenchToolReview(question),false)
+ assert.equal(isWorkbenchToolReview(malformed),false)
+ assert.equal(pendingWorkbenchToolReview([question,decided,review]),id)
+ assert.equal(pendingWorkbenchToolReview([question,malformed,decided]),'')
+ assert.deepEqual(workbenchTaskGroups([question,review],{questions:false}).current,[review])
+ assert.deepEqual(workbenchInteractionRecords(decided).map(record=>record.label),['工具调用信息','已保存的审查决定'])
+})
 test('creation workbench links open review for the current owned session in both clients',async()=>{
  const {workbenchManagementPath}=await utility
  const item={kind:'EXTERNAL_JOB',data:{managementPath:'/agent/actions',source:'DETECTION_CREATION'}}

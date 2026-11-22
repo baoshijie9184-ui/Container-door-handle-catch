@@ -16,6 +16,10 @@
         <button type="button" class="wb-button-quiet" :disabled="busy" @click="command('cancel')"><AppIcon name="Close" :size="14" />取消计划</button>
       </div>
     </template>
+    <div v-else-if="toolReview" class="wb-actions" role="group" aria-label="决定本次工具调用">
+      <button type="button" class="wb-button-primary" :disabled="busy" @click="command('answer', { answer: TOOL_REVIEW_ALLOW })"><AppIcon name="CircleCheck" :size="14" />{{ TOOL_REVIEW_ALLOW }}</button>
+      <button type="button" class="wb-button-danger" :disabled="busy" @click="command('answer', { answer: TOOL_REVIEW_DENY })"><AppIcon name="Close" :size="14" />{{ TOOL_REVIEW_DENY }}</button>
+    </div>
     <form v-else-if="item.kind === 'QUESTION'" @submit.prevent="answer">
       <fieldset class="wb-question-fields" :disabled="busy">
         <legend>{{ type === 'TEXT' ? '填写回答' : type === 'SINGLE' ? '选择一项' : type === 'MULTIPLE' ? '选择一项或多项' : '问题格式待核对' }}</legend>
@@ -39,8 +43,10 @@
 <script setup>
 import { computed } from 'vue'
 import { WORKBENCH_RESPONSE_LIMIT, workbenchQuestionType, workbenchQuestionOptions, workbenchAnswerReady } from '@/utils/workbenchPresentation'
+import { isWorkbenchToolReview, TOOL_REVIEW_ALLOW, TOOL_REVIEW_DENY } from '@/utils/workbenchToolReview'
 const props = defineProps({ item: { type: Object, required: true }, value: { type: [String, Array], default: '' }, busy: Boolean })
 const emit = defineEmits(['update:value', 'command'])
+const toolReview = computed(() => isWorkbenchToolReview(props.item))
 const text = computed(() => typeof props.value === 'string' ? props.value : '')
 const type = computed(() => workbenchQuestionType(props.item.data))
 const options = computed(() => type.value === 'UNKNOWN' ? [] : workbenchQuestionOptions(props.item.data))

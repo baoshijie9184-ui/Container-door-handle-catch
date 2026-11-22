@@ -92,11 +92,14 @@
           />
 
           <!-- 输入区 -->
+          <div v-if="pendingToolReview && !contextOpen" class="composer-guidance" role="status">
+            <button type="button" @click="contextOpen=true">查看待审查的工具调用</button>
+          </div>
            <ChatComposer ref="composerRef" :active="fullScreen || chatStore.visible" :show-presets="chatStore.messages.length > 0" :loading="chatStore.loading || chatStore.openingFirstSession" :session-id="chatStore.sessionId" :run="controlState.run" :model-locked="!!controlState.run&&controlState.run.phase!=='IDLE'" @send="handleSend" @stop="conversationControlsRef?.cancel()"><template #queue><ConversationControls v-if="chatStore.sessionId" ref="conversationControlsRef" :session-id="chatStore.sessionId" @snapshot="controlState=$event" @refresh="chatStore.refreshControlHistory"><template #navigation><ChatQuestionNavigator inline :questions="questionItems" :active-key="activeQuestionKey" :reset-key="`${chatStore.sessionId}-${chatStore.visible}`" @locate="handleLocateQuestion" /></template></ConversationControls></template></ChatComposer>
         </div>
         <button v-if="contextOpen&&!contextDocked" class="context-scrim" type="button" tabindex="-1" aria-label="收起工作面板遮罩" @click="closeContext"></button>
         <Transition name="workspace-context">
-          <AgentWorkspacePanel v-if="contextOpen" id="chat-workspace-context" :class="{ 'context-floating': !contextDocked }" :session-id="chatStore.sessionId" :messages="chatStore.messages" :task-attention="taskAttention" @reference="composerRef?.appendReference($event)" :trace="chatStore.executionTrace" :loading="chatStore.diagnosticsLoading" :trace-loaded="chatStore.diagnosticsLoaded.trace" :trace-error="chatStore.diagnosticsErrors.trace" @close="closeContext" @refresh="chatStore.loadDiagnostics" />
+          <AgentWorkspacePanel v-if="contextOpen || observeToolReviews" v-show="contextOpen" id="chat-workspace-context" :active="contextOpen" :class="{ 'context-floating': !contextDocked }" :session-id="chatStore.sessionId" :messages="chatStore.messages" :task-attention="taskAttention" @reference="composerRef?.appendReference($event)" @pending-review="showToolReview" :trace="chatStore.executionTrace" :loading="chatStore.diagnosticsLoading" :trace-loaded="chatStore.diagnosticsLoaded.trace" :trace-error="chatStore.diagnosticsErrors.trace" @close="closeContext" @refresh="chatStore.loadDiagnostics" />
         </Transition>
       </div>
 
@@ -140,6 +143,17 @@ const activeQuestionKey = ref('')
 const resizeTooltip = '拖拽或使用左右方向键调整面板宽度'
 const diagnosticsVisible = ref(false)
 const workspaceRef=ref(null),contextToggleRef=ref(null),contextOpen=ref(false),workspaceWidth=ref(0)
+const pendingToolReview=ref('')
+const observeToolReviews=computed(()=>{
+  const run=controlState.value.run
+  return !!chatStore.sessionId && (props.fullScreen||chatStore.visible) &&
+    (chatStore.loading||!!run&&run.phase!=='IDLE'||!!pendingToolReview.value)
+})
+function showToolReview({sessionId,id}){
+  if(sessionId!==chatStore.sessionId)return
+  if(id&&id!==pendingToolReview.value&&(props.fullScreen||chatStore.visible))contextOpen.value=true
+  pendingToolReview.value=id
+}
 const contextDocked=computed(()=>props.fullScreen&&workspaceWidth.value>=1000)
 const taskAttention=computed(()=>{
   const run=controlState.value.run
@@ -181,6 +195,7 @@ const handleLocateQuestion = (key) => {
 }
 
 watch(() => chatStore.sessionId, () => {
+  pendingToolReview.value = ''
   activeQuestionKey.value = ''
   followTranscript.value = true
   scrollToBottom()
@@ -372,6 +387,7 @@ const handleSend = async (content, guideRunId) => {
   await conversationControlsRef.value?.ready()
   accountSession.assert(account)
   if(chatStore.sessionId!==currentSession)return
+  if(composerRef.value?.blocksSend()){composerRef.value.restoreDraft(content);return}
   returnToLatest()
   if(controlState.value.enabled || guideRunId){const session=chatStore.sessionId;try{if(guideRunId)await conversationControlsRef.value.guide(content,guideRunId);else await conversationControlsRef.value.submit(content)}catch{if(chatStore.sessionId===session)composerRef.value?.restoreDraft(content)}return}
   await chatStore.sendMessage(content)
@@ -384,6 +400,7 @@ const handleConfirm = async (actionId, confirmed) => {
 }
 
 const handleRetry = async () => {
+  if(composerRef.value?.blocksSend())return
   returnToLatest()
   await chatStore.retryLastMessage()
   scrollToBottom()

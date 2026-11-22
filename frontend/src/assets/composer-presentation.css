@@ -23,6 +23,11 @@
 :is(.composer,.composer-resources) .model-selection-feedback button:hover:not(:disabled) { background:#dbeafe; transform:scale(1.02); }
 :is(.composer,.composer-resources) .model-selection-feedback button:disabled { opacity:.5; cursor:wait; }
 :is(.composer,.composer-resources) .model-selection-feedback button:focus-visible,:is(.composer,.composer-resources) select[aria-label="使用模型"]:focus-visible { outline:2px solid var(--app-primary); outline-offset:2px; }
+.composer .composer-toolbar, .composer-resources .composer-resource-toolbar { flex-wrap:wrap; }
+.composer-approval-mode { display:inline-flex; align-items:center; gap:2px; flex:0 0 auto; max-width:100%; color:var(--app-text-secondary); }
+.composer-approval-mode > :is(svg,.el-icon) { flex:0 0 auto; }
+:is(.composer-toolbar,.composer-resource-toolbar) .composer-approval-mode select { width:auto; max-width:100%; margin:0; }
+.composer-approval-mode select:focus-visible { outline:2px solid var(--app-primary); outline-offset:2px; }
 @container (max-width:540px) {
   .composer-permission > span, .composer-context { display:none; }
   .composer .composer-toolbar, .composer-resources .composer-resource-toolbar { gap:3px; }

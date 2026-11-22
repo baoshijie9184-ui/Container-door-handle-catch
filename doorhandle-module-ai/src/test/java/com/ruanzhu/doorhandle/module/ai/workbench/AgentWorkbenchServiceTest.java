@@ -138,6 +138,37 @@ class AgentWorkbenchServiceTest {
         finally {org.springframework.test.util.ReflectionTestUtils.setField(service,"children",actual);}
     }
     AgentWorkbenchService.Scope scope(String question){return service.prepare(alice,"s1",question,"run-1");}
+
+    @Test void manualApprovalFencesTheOriginalCallAndKeepsOrdinaryTaskLifecycle(){
+        var modes=mock(ConversationApprovalModes.class);
+        when(modes.read(alice,"s1")).thenReturn(new ConversationApprovalModes.Selection(AgentApprovalMode.MANUAL,1));
+        service.setApprovalModes(modes);
+        var work=scope("整理本人的资料");
+        var agent=mock(io.agentscope.core.agent.Agent.class);when(agent.getName()).thenReturn("employee-main");
+        var run=mock(AgentJournal.Run.class);
+        var journal=new com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddleware(run,alice);
+        var resumed=new AtomicInteger();
+        var read=new io.agentscope.core.middleware.ActingInput(List.of(new ToolUseBlock("file-1","read_workspace_file",Map.of("fileId","foreign"))));
+        when(app.files(alice,"s1")).thenReturn(List.of());
+        assertThatThrownBy(()->work.awaitToolApproval(agent,read,journal,resumed::incrementAndGet)).hasMessageContaining("404");
+        assertThat(service.list(alice,"s1")).noneMatch(row->row.kind().equals("QUESTION"));
+        var write=new io.agentscope.core.middleware.ActingInput(List.of(new ToolUseBlock("file-2","create_artifact",Map.of("filename","summary.md","content","unlisted contents"))));
+        var pending=work.awaitToolApproval(agent,write,journal,resumed::incrementAndGet).toFuture();
+        try{
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(10)).until(()->service.list(alice,"s1").stream().anyMatch(row->row.kind().equals("QUESTION")));
+            var question=item("QUESTION");
+            assertThat(question.data().get("text").toString()).contains("工具调用待确认","summary.md").doesNotContain("unlisted contents");
+            assertThat(resumed.get()).isZero();
+            assertThatThrownBy(()->service.command(alice,"s1",question.id(),question.revision()+1,UUID.randomUUID().toString(),"answer",Map.of("answer",ToolApprovalGate.ALLOW))).hasMessageContaining("409");
+            var request=UUID.randomUUID().toString();
+            var decision=service.command(alice,"s1",question.id(),question.revision(),request,"answer",Map.of("answer",ToolApprovalGate.ALLOW));
+            assertThat(decision.status()).isEqualTo("ANSWERED");
+            pending.join();assertThat(resumed.get()).isEqualTo(1);
+            assertThat(service.command(alice,"s1",question.id(),question.revision(),request,"answer",Map.of("answer",ToolApprovalGate.ALLOW))).isEqualTo(decision);
+            assertThat(resumed.get()).isEqualTo(1);
+            assertThat(item("EXECUTION").status()).isEqualTo("RUNNING");
+        }finally{pending.cancel(false);work.finish("COMPLETED","");work.release();}
+    }
     private void commitBoundary(AgentWorkbenchService.Scope scope){
         var current=scope.stateStore().getVersioned("1",scope.sdkSession(),"agent_state",AgentState.class);
         long saved=scope.stateStore().saveIfVersion("1",scope.sdkSession(),"agent_state",AgentState.builder().userId("1").sessionId(scope.sdkSession()).context(List.of(new UserMessage("explicit fixture boundary"))).build(),current.version());

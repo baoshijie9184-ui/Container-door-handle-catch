@@ -164,6 +164,42 @@ class AgentActionServiceTest {
         verify(execution).retry(eq(employee),eq(pending.actionId()),eq(pending.actionId()),eq(new DetectionExecutionApi.RetryApproval("task-1","a".repeat(64))));
         assertThat(actions.audit(employee,pending.actionId())).hasSize(6);verifyNoInteractions(assignments);
     }
+
+    @Test void fastRetryUsesOneLiveHumanGrantAndRetainsTransactionalReceipt(){
+        var execution=retryFixture();markLive("run-1");
+        var approval=new AgentActionService.ApprovalContext("请立即重试检测任务 task-1");
+        var done=actions.proposeRetry(boss,"run-1","fast-call","task-1",approval);
+        assertThat(done.status()).isEqualTo("SUCCEEDED");
+        assertThat(done.execution().status()).isEqualTo("QUEUED");
+        assertThat(actions.audit(boss,done.actionId())).anySatisfy(event->{
+            assertThat(event.eventType()).isEqualTo("CONFIRMATION_DECIDED");
+            assertThat(event.reasonCode()).isEqualTo("FAST_MODE_EXACT_USER_INTENT");
+        });
+        when(execution.previewRetry(boss,"task-1")).thenReturn(retryPreview("b".repeat(64)));
+        var repeated=actions.proposeRetry(boss,"run-1","second-call","task-1",approval);
+        assertThat(repeated.status()).isEqualTo("PENDING");
+        assertThat(writes()).isEqualTo(1);
+        verify(execution,times(1)).retry(eq(boss),eq(done.actionId()),eq(done.actionId()),any());
+    }
+
+    @Test void fastRetryDoesNotPromoteAnotherToolCallOrExpiredOrigin(){
+        var execution=retryFixture();markLive("run-1");
+        var prepared=actions.proposeRetry(boss,"run-1","earlier-call","task-1");
+        var exact=new AgentActionService.ApprovalContext("请重试 task-1");
+        var negated=new AgentActionService.ApprovalContext("请不要重试 task-1");
+        assertThat(actions.proposeRetry(boss,"run-1","earlier-call","task-1",negated).status()).isEqualTo("PENDING");
+        assertThat(actions.proposeRetry(boss,"run-1","different-call","task-1",exact).actionId()).isEqualTo(prepared.actionId());
+        assertThat(actions.proposeRetry(boss,"run-1","earlier-call","task-1",exact).status()).isEqualTo("PENDING");
+        when(execution.previewRetry(boss,"task-1")).thenReturn(retryPreview("b".repeat(64)));
+        jdbc.update("UPDATE agent_run SET lease_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE run_id='run-1'");
+        assertThat(actions.proposeRetry(boss,"run-1","expired-origin-call","task-1",exact).status()).isEqualTo("PENDING");
+        verify(execution,never()).retry(any(),anyString(),anyString(),any());
+        assertThat(writes()).isZero();
+    }
+
+    private void markLive(String run) {
+        assertThat(jdbc.update("UPDATE agent_run SET status='RUNNING',active_slot=1,lease_expires_at=UTC_TIMESTAMP(6)+INTERVAL 5 MINUTE WHERE run_id=?",run)).isEqualTo(1);
+    }
     @Test void retrySnapshotChangeInvalidatesRatherThanApprovingChangedParameters(){
         var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
         when(execution.previewRetry(boss,"task-1")).thenReturn(retryPreview("b".repeat(64)));
@@ -274,5 +310,47 @@ class AgentActionServiceTest {
         assertThat(hidden.hasReadableSnapshot()).isFalse();
         assertThat(hidden.creationResult()).isNull();
         assertThat(writes()).isEqualTo(1);
+    }
+
+    @Test void fastCreationOnlyReservesExactRequestedImagesAndParameters(){
+        markLive("run-1");
+        var creation=mock(DetectionCreationApi.class);
+        String fileId="11111111-1111-1111-1111-111111111111";
+        var model=new DetectionModelSelectionApi.Model(12,"fixture","v1","r1");
+        var capture=new DetectionCreationApi.Capture("2026-11-22","上海","张三","CAM-01","门把手批次");
+        var file=new WorkspaceDetectionImagesApi.Image(fileId,"原图.jpg","image/jpeg",10L,"a".repeat(64),"/preview/1");
+        var threshold=new java.math.BigDecimal("0.5");
+        var request=new DetectionCreationApi.Request(List.of(fileId),12,threshold,capture);
+        var preview=new DetectionCreationApi.Preview("session-1",List.of(file),model,threshold,capture,"b".repeat(64));
+        when(creation.preview(boss,"session-1",request)).thenReturn(preview);
+        when(creation.reserve(any(),anyString(),anyString(),any())).thenAnswer(inv->{
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            jdbc.update("UPDATE fixture_task SET writes=writes+1");
+            return new DetectionCreationApi.Receipt(inv.getArgument(1),"created-task",null,"PREPARING");
+        });
+        actions.setDetectionCreation(creation);
+        String text="""
+                请直接创建检测任务
+                图片：@file:%s
+                采集日期：2026-11-22
+                区域：上海
+                采集人：张三
+                设备：CAM-01
+                批次文件夹：门把手批次
+                检测模型编号：12
+                """.formatted(fileId);
+        var wrong=new AgentActionService.ApprovalContext(text.replace("检测模型编号：12","检测模型编号：13"));
+        assertThat(actions.proposeCreation(boss,"run-1","create-call",request,null,wrong).status()).isEqualTo("PENDING");
+        assertThat(writes()).isZero();
+        jdbc.update("UPDATE agent_run SET status='COMPLETED',active_slot=NULL WHERE run_id='run-1'");
+        fixture.seedRun("next-turn",1,"session-1");
+        markLive("next-turn");
+        var granted=actions.proposeCreation(boss,"next-turn","create-call",request,null,new AgentActionService.ApprovalContext(text));
+        assertThat(granted.status()).isEqualTo("EXECUTING");
+        assertThat(granted.creationResult().status()).isEqualTo("PREPARING");
+        assertThat(writes()).isEqualTo(1);
+        verify(creation).reserve(eq(boss),eq(granted.actionId()),eq(granted.actionId()),eq(preview));
+        assertThat(actions.audit(boss,granted.actionId())).extracting(AgentActionService.Audit::reasonCode)
+                .contains("FAST_MODE_EXACT_USER_INTENT");
     }
 }

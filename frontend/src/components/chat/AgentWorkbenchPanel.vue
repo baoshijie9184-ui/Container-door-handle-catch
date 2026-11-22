@@ -27,7 +27,8 @@
    <summary v-if="group.history">历史任务 <span>{{ group.rows.length }}</span></summary>
    <article v-for="item in group.rows" :key="item.id" :data-kind="item.kind">
     <header><span class="wb-kind-icon"><AppIcon :name="workbenchKind(item.kind).icon" :size="18" /></span><strong>{{ workbenchTitle(item) }}</strong><StatusBadge :domain="item.kind==='CONTEXT'?'contextRecord':item.kind==='TASKS'?'checklistRecord':'task'" :code="item.kind==='CONTEXT'?contextStatusCode(item):item.status" :label="['CONTEXT','TASKS'].includes(item.kind)?undefined:workbenchInteractionStatus(item) || status[item.status]" /></header>
-    <p v-if="item.kind==='QUESTION'" class="wb-purpose"><AppIcon name="ChatDotRound" :size="14" />补充任务信息，回答不等于业务授权</p>
+    <p v-if="isWorkbenchToolReview(item)" class="wb-purpose"><AppIcon name="Lock" :size="14" />决定仅适用于本次调用，业务审批仍按原流程</p>
+    <p v-else-if="item.kind==='QUESTION'" class="wb-purpose"><AppIcon name="ChatDotRound" :size="14" />补充任务信息，回答不等于业务授权</p>
     <p v-if="item.kind==='PLAN'" class="wb-purpose"><AppIcon name="DocumentChecked" :size="14" />审阅执行范围，业务操作仍需单独确认</p>
     <a v-if="workbenchManagementPath(item,sessionId)" :href="'/#'+workbenchManagementPath(item,sessionId)">打开原任务页面</a>
     <WorkbenchInteractionRecord v-if="['PLAN','QUESTION'].includes(item.kind)" :key="item.id+':'+item.revision+':body'" :item="item" part="body" />
@@ -90,11 +91,12 @@ import { contextStatusCode } from '@/utils/contextPresentation'
 import WorkbenchInteraction from './WorkbenchInteraction.vue'
 import WorkbenchInteractionRecord from './WorkbenchInteractionRecord.vue'
 import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime} from '@/utils/workbenchPresentation'
+import {isWorkbenchToolReview,pendingWorkbenchToolReview} from '@/utils/workbenchToolReview'
 import {readFilePreview,boundedTextPreview} from '@/utils/chatFileReferences'
 import '@/assets/agent-workbench.css'
 import '@/assets/chat-file-references.css'
-const props=defineProps({sessionId:String,taskAttention:String,messages:{type:Array,default:()=>[]}})
-const emit=defineEmits(['reference'])
+const props=defineProps({sessionId:String,taskAttention:String,active:{type:Boolean,default:true},messages:{type:Array,default:()=>[]}})
+const emit=defineEmits(['reference','pending-review'])
 const state=ref({enabled:false,items:[],files:[],capabilities:{}}),tab=ref('TASK'),advancedOpen=ref(false),error=ref(''),busy=ref(false),drafts=reactive({}),selections=reactive({})
 const workbenchTabs=ref(null)
 function selectMain(view){tab.value=view;advancedOpen.value=false}
@@ -129,6 +131,12 @@ const emptyView=computed(()=>tab.value==='TASK'&&state.value.loaded&&!state.valu
  ? {title:'暂无会话任务',icon:'Operation'}
  : workbenchEmpty(tab.value,state.value))
 watch(()=>props.taskAttention,value=>{if(value)selectMain('TASK')})
+const pendingReview=computed(()=>state.value.sessionId===props.sessionId?pendingWorkbenchToolReview(state.value.items):'')
+watch(pendingReview,id=>{
+ if(id)selectMain('TASK')
+ emit('pending-review',{sessionId:props.sessionId,id})
+})
+watch(()=>props.active,value=>{if(!value){previewOpen.value=false;previewVersion++}})
 watch(()=>props.sessionId,session=>{selectMain('TASK');operationVersion++;busy.value=false;error.value='';previewOpen.value=false;previewVersion++;businessId.value='';for(const map of [recoveryChoices,drafts,selections])for(const id of Object.keys(map))delete map[id];client.open(session)},{immediate:true})
 onBeforeUnmount(()=>{operationVersion++;client.close();if(previewUrl.value)URL.revokeObjectURL(previewUrl.value)})
 async function run(action,previewing=false){if(busy.value)return;const generation=client.generation,operation=++operationVersion;busy.value=true;error.value='';try{const result=await action();return generation===client.generation&&operation===operationVersion?result:undefined}catch(cause){if(generation===client.generation&&operation===operationVersion){error.value=cause.message||'操作结果尚未核对，请刷新资料';if(previewing)previewError.value=error.value;if([403,404].includes(cause.status))previewOpen.value=false}}finally{if(operation===operationVersion)busy.value=false}}

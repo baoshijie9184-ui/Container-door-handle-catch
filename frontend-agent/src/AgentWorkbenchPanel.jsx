@@ -20,6 +20,7 @@ import WorkbenchInteractionRecord from './WorkbenchInteractionRecord';
 import {composerAttachment} from '../../frontend/src/utils/composerPresentation';
 import {FileText,FileCheck,Files,ListChecks,MessageSquare,Network,Activity,ChartNoAxesCombined,Clock,Copy,RefreshCw,Upload,Download,Image,TriangleAlert,ChevronRight,Ellipsis,X} from 'lucide-react';
 import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime} from '../../frontend/src/utils/workbenchPresentation';
+import {isWorkbenchToolReview,pendingWorkbenchToolReview} from '../../frontend/src/utils/workbenchToolReview.js';
 import '../../frontend/src/assets/chat-file-references.css';
 
 const workbenchIcons={Document:FileText,DocumentChecked:FileCheck,Files,Tickets:ListChecks,ChatDotRound:MessageSquare,Connection:Network,Operation:Activity,DataAnalysis:ChartNoAxesCombined,Picture:Image,Clock,DocumentCopy:Copy,Refresh:RefreshCw,Upload,Warning:TriangleAlert,ArrowRight:ChevronRight,Close:X};
@@ -28,7 +29,7 @@ const activeExecutionStates=new Set(['RUNNING','QUEUED','READY','WAITING_PLAN','
 
 function WorkbenchIcon({name,size=18,className}){const Icon=workbenchIcons[name]||FileText;return <Icon size={size} className={className} aria-hidden="true"/>}
 
-export function AgentWorkbenchPanel({sessionId,base='',messages=[],attentionPhase,onFork,onReference}){
+export function AgentWorkbenchPanel({sessionId,base='',messages=[],attentionPhase,onFork,onReference,onPendingReview}){
  const reducedMotion=useReducedMotion();
  const pdfNavigation=useRef(null),pdfFocusPending=useRef(false);
  const [state,setState]=useState({enabled:false,items:[],files:[],capabilities:{}}),[tab,setTab]=useState('TASK'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[drafts,setDrafts]=useState({}),[preview,setPreview]=useState(null),[previewError,setPreviewError]=useState('');
@@ -51,6 +52,11 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],attentionPhas
  useEffect(()=>{if(preview?.type==='pdf'&&!busy&&pdfFocusPending.current){pdfFocusPending.current=false;pdfNavigation.current?.focus()}},[preview?.type,preview?.page,busy]);
  useEffect(()=>{operationVersion.current++;operationBusy.current=false;setBusy(false);setError('');closePreview();setDrafts({});recoveryChoicesRef.current={};setRecoveryChoices({});setBusinessId('');setTab('TASK');client.open(sessionId);return()=>{operationVersion.current++;operationBusy.current=false;client.close()}},[client,sessionId]);
  useEffect(()=>{if(['WAITING_PLAN','WAITING_INPUT','AWAITING_RECOVERY'].includes(attentionPhase))setTab('TASK')},[attentionPhase]);
+ const pendingReview=state.sessionId===sessionId?pendingWorkbenchToolReview(state.items):'';
+ useEffect(()=>{
+  if(pendingReview)setTab('TASK');
+  onPendingReview?.({sessionId,id:pendingReview});
+ },[onPendingReview,pendingReview,sessionId]);
  useEffect(()=>()=>{if(previewUrl.current)URL.revokeObjectURL(previewUrl.current)},[]);
  async function run(action,previewing=false){if(operationBusy.current)return;const generation=client.generation,operation=++operationVersion.current;operationBusy.current=true;setBusy(true);setError('');try{const result=await action();return generation===client.generation&&operation===operationVersion.current?result:undefined}catch(cause){if(generation===client.generation&&operation===operationVersion.current){const message=cause.message||'操作结果尚未核对，请刷新资料';setError(message);if(previewing)setPreviewError(message);if([403,404].includes(cause.status))closePreview()}}finally{if(operation===operationVersion.current){operationBusy.current=false;setBusy(false)}}}
  function confirmWorkbench(options){return Modal.confirm({transitionName:reducedMotion?'':'ant-zoom',maskTransitionName:reducedMotion?'':'ant-fade',...options})}
@@ -92,7 +98,7 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],attentionPhas
   const managementPath=workbenchManagementPath(item,sessionId);
   return <article key={item.id} data-kind={item.kind}>
     <header><span className="wb-kind-icon"><WorkbenchIcon name={workbenchKind(item.kind).icon}/></span><strong>{workbenchTitle(item)}</strong><StatusBadge domain={item.kind==='CONTEXT'?'contextRecord':item.kind==='TASKS'?'checklistRecord':'task'} code={item.kind==='CONTEXT'?contextStatusCode(item):item.status} label={['CONTEXT','TASKS'].includes(item.kind)?undefined:workbenchInteractionStatus(item)||workbenchStatus[item.status]} /></header>
-    {item.kind==='QUESTION'&&item.status==='PENDING'&&<p className="wb-purpose"><MessageSquare size={14} aria-hidden="true"/>补充任务信息，回答不等于业务授权</p>}
+    {item.kind==='QUESTION'&&item.status==='PENDING'&&<p className="wb-purpose"><MessageSquare size={14} aria-hidden="true"/>{isWorkbenchToolReview(item)?'决定仅适用于本次调用，业务审批仍按原流程':'补充任务信息，回答不等于业务授权'}</p>}
     {item.kind==='PLAN'&&item.status==='PENDING'&&<p className="wb-purpose"><FileCheck size={14} aria-hidden="true"/>审阅执行范围，业务操作仍需单独确认</p>}
     {managementPath&&<a href={base+'/#'+managementPath}>打开原任务页面</a>}
     {['PLAN','QUESTION'].includes(item.kind)?<WorkbenchInteractionRecord key={item.id+':'+item.revision+':body'} item={item} part="body"/>:item.data.text&&item.kind!=='CONTEXT'&&<pre tabIndex={0} aria-label="工作记录正文">{item.data.text}</pre>}
