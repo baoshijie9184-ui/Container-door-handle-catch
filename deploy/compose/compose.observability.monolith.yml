@@ -57,23 +57,6 @@ services:
     logging: *obs-logging
     networks: [doorhandle-network]
     restart: unless-stopped
-  alertmanager:
-    profiles: [observability]
-    image: ${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.35.0}
-    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager", "--data.retention=72h", "--web.listen-address=0.0.0.0:9093"]
-    volumes:
-      - ${ALERTMANAGER_CONFIG_FILE:-./deploy/observability/alertmanager.yml}:/etc/alertmanager/alertmanager.yml:ro
-      - doorhandle-alertmanager:/alertmanager
-    ports: ["127.0.0.1:19093:9093"]
-    mem_limit: 128m
-    cpus: 0.25
-    read_only: true
-    tmpfs: [/tmp:size=16m]
-    security_opt: [no-new-privileges:true]
-    cap_drop: [ALL]
-    logging: *obs-logging
-    networks: [doorhandle-network]
-    restart: unless-stopped
   langfuse-resource-gate:
     profiles: [langfuse]
     image: ${OBSERVABILITY_PREFLIGHT_IMAGE:-busybox:1.37.0}
@@ -219,7 +202,6 @@ services:
     restart: unless-stopped
 volumes:
   doorhandle-prometheus:
-  doorhandle-alertmanager:
   doorhandle-langfuse-gate:
   doorhandle-langfuse-postgres:
   doorhandle-langfuse-clickhouse:

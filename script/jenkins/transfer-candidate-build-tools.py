@@ -16,7 +16,7 @@ FLOOR = 2 * 1024 ** 3 + 256 * 1024 ** 2
 LOCAL_BASE = Path('D:/AI/lunwen1/DoorHandleCatch/work/jenkins/build-deps')
 RECIPE = 'script/jenkins/transfer-candidate-build-tools.py'
 SHA = re.compile(r'[a-f0-9]{64}')
-COMPONENTS = ('buildkit', 'qdrant', 'prometheus', 'alertmanager')
+COMPONENTS = ('buildkit', 'qdrant', 'prometheus')
 
 
 def archive_field(component):

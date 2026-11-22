@@ -26,7 +26,7 @@ def config():
             'volumes': [{'type': 'bind', 'source': '/production/secret', 'target': '/run/observability-secrets'},
                         {'type': 'volume', 'source': 'doorhandle-' + name, 'target': '/' + name}]}
     services['langfuse-web'] = {'image': 'never-start'}
-    value = {'services': services, 'volumes': {'doorhandle-prometheus': {}, 'doorhandle-alertmanager': {}, 'doorhandle-langfuse-postgres': {}}}
+    value = {'services': services, 'volumes': {'doorhandle-prometheus': {}, 'doorhandle-langfuse-postgres': {}}}
     monitoring.select_overlay(value, IMAGES)
     # The existing isolated_config owns naming and strips all host ports.
     for name, volume in value['volumes'].items(): volume['name'] = PROJECT + '_' + name
@@ -46,7 +46,7 @@ def vector(number='1'):
     return {'status': 'success', 'data': {'resultType': 'vector', 'result': [{'value': [200, number]}]}}
 
 
-def test_overlay_reuses_only_the_two_pinned_services_and_owned_volumes():
+def test_overlay_reuses_only_pinned_prometheus_and_owned_volumes():
     value = config()
     assert not any('langfuse' in name for name in (*value['services'], *value['volumes']))
     for name in monitoring.COMPONENTS:
@@ -153,13 +153,11 @@ def proof_files(tmp_path):
         value = {**context, 'kind': 'doorhandle-runtime-observability', 'phase': phase, 'status': 'PASS',
             'containers': {name: {'containerId': 'f' * 64, 'image': IMAGES[name] if name in monitoring.COMPONENTS else proof['images'][name]}
                            for name in (*monitoring.COMPONENTS, *monitoring.APPLICATIONS)},
-            'volumes': {name: PROJECT + '_' + name for name in (monitoring.CONFIG_VOLUME, monitoring.SECRET_VOLUME, 'doorhandle-prometheus', 'doorhandle-alertmanager')},
+            'volumes': {name: PROJECT + '_' + name for name in (monitoring.CONFIG_VOLUME, monitoring.SECRET_VOLUME, 'doorhandle-prometheus')},
             'tracingEnabled': False, 'langfuseEnabled': False, 'storageRecovery': monitoring_proof['storageRecovery'],
             'scrapedAfterUnix': 199, 'evidence': {'targets': targets(), 'queries': queries,
                 'rules': {'status': 'success', 'data': {'groups': [{'rules': [{'name': rule, 'health': 'ok'} for rule in monitoring.RULES]}]}},
-                'alertmanagers': {'status': 'success', 'data': {'activeAlertmanagers': [{'url': 'http://alertmanager:9093/api/v2/alerts'}]}},
-                'alertmanagerStatus': {'config': {'original': (ROOT / 'deploy/observability/alertmanager.yml').read_text(encoding='utf8')}},
-                'alertmanagerGroups': []}}
+                'notificationTargets': {'status': 'success', 'data': {'activeAlertmanagers': [], 'droppedAlertmanagers': []}}}}
         name = 'observability-' + phase + '.json'
         readbacks[phase] = {'file': 'checkout/work/runtime-acceptance/' + name, 'sha256': write(tmp_path / name, value)}
     def read(path):
@@ -173,7 +171,7 @@ def test_byte_validator_binds_all_actual_phases_and_reused_image_preparation(tmp
     assert result['status'] == 'VERIFIED' and result['phases'] == list(monitoring.PHASES)
 
 
-@pytest.mark.parametrize('damage', ['missing-phase', 'foreign-app', 'changed-volume', 'stale-scrape', 'lost-rule', 'changed-image'])
+@pytest.mark.parametrize('damage', ['missing-phase', 'foreign-app', 'changed-volume', 'stale-scrape', 'lost-rule', 'changed-image', 'unexpected-receiver'])
 def test_collected_monitoring_cannot_pass_with_changed_or_incomplete_evidence(tmp_path, damage):
     proof, read, write = proof_files(tmp_path)
     if damage == 'missing-phase': proof['observability']['readbacks'].pop('after-restart')
@@ -183,12 +181,13 @@ def test_collected_monitoring_cannot_pass_with_changed_or_incomplete_evidence(tm
         if damage == 'foreign-app': value['containers']['mem0']['image'] = 'sha256:' + '0' * 64
         elif damage == 'changed-volume': value['volumes']['doorhandle-prometheus'] = 'another-project'
         elif damage == 'stale-scrape': value['scrapedAfterUnix'] = 201
+        elif damage == 'unexpected-receiver': value['evidence']['notificationTargets']['data']['activeAlertmanagers'] = [{'url': 'http://unexpected:9093/api/v2/alerts'}]
         else: value['evidence']['rules']['data']['groups'][0]['rules'].pop()
         proof['observability']['readbacks'][phase]['sha256'] = write(path, value)
     with pytest.raises(ValueError): monitoring.validate_files(proof, tmp_path, read)
 
 
-def test_jenkins_archives_both_downloaded_image_resource_probe_originals():
+def test_jenkins_archives_downloaded_prometheus_resource_probe_originals():
     workflow = (ROOT / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
     catalogues = [set(value.split(',')) for value in re.findall(r"archiveArtifacts\s+artifacts:\s*'([^']+)'", workflow)]
     runtime = next(value for value in catalogues if 'artifacts/runtime-resources/resource-probes.jsonl' in value)

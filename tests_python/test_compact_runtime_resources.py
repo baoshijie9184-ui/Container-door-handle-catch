@@ -82,7 +82,7 @@ def evidence(include_browser=False, observability=True):
         'commit': 'a' * 40, 'sourceSha256': 'b' * 64, 'identity': {'instanceId': 'i-test', 'machineId': 'c' * 32},
         'acceptanceProfileSha256': 'd' * 64, 'candidateBuildSha256': 'e' * 64}
     project = 'doorhandle-rehearsal-' + 'f' * 12
-    daemons = sorted(runtime.CORE_DAEMON_SERVICES if observability else runtime.CORE_DAEMON_SERVICES - {'prometheus', 'alertmanager'})
+    daemons = sorted(runtime.CORE_DAEMON_SERVICES if observability else runtime.CORE_DAEMON_SERVICES - {'prometheus'})
     metrics = [{'containerId': format(index + 1, '064x'), 'service': name, 'image': 'sha256:' + '1' * 64,
         'memoryLimitBytes': (256 if name == 'redis' else runtime.SERVICE_MEMORY_MIB[name]) * runtime.MIB, 'currentBytes': 128,
         'peakBytes': 256, 'oom': 0, 'oomKills': 0, 'running': True, 'exitCode': 0} for index, name in enumerate(daemons)]

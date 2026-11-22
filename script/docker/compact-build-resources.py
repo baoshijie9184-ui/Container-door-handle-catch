@@ -55,11 +55,6 @@ OBSERVABILITY_IMAGES = {
         'config': 'sha256:9bd9cbec4bd4f33bb6ccedf8c25a5132f8e7b2fb158c9a223a54485e4332e962',
         'compressedBytes': 116078268, 'version': '3.16.0',
         'source': 'https://github.com/prometheus/prometheus/tree/v3.16.0'},
-    'alertmanager': {
-        'reference': 'docker.io/prom/alertmanager@sha256:0f6727a39ff00b6cf95e8a5ebaf7442c55af855b79c689fb9a060e2bada1ecbf',
-        'config': 'sha256:0f7fe4e2351f9f07c89ddc48be52c7bfd24577c5df6fccc0a59bcb2178a75a01',
-        'compressedBytes': 44225164, 'version': '0.35.0',
-        'source': 'https://github.com/prometheus/alertmanager/tree/v0.35.0'},
 }
 SENSITIVE = re.compile(r'PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY', re.I)
 SHA = re.compile(r'[a-f0-9]{64}')
@@ -671,7 +666,7 @@ def buildkit_archive_source(root, binding, check):
 @contextlib.contextmanager
 def component_archive_source(root, binding, component, check):
     """Hold one immutable shared public input through validation and consumption."""
-    require(component in ('buildkit', 'qdrant', 'prometheus', 'alertmanager')
+    require(component in ('buildkit', 'qdrant', 'prometheus')
             and type(binding) is dict and set(binding) == {'file', 'sha256', 'bytes'}
             and type(binding['sha256']) is str and SHA.fullmatch(binding['sha256'])
             and type(binding['bytes']) is int and 0 < binding['bytes'] <= BUILDKIT_ARCHIVE_MAX,
@@ -916,7 +911,7 @@ def host_diff_ids(actor):
 
 
 def component_pin(component):
-    require(component in ('qdrant', 'prometheus', 'alertmanager'), 'Only reviewed component inputs are admitted')
+    require(component in ('qdrant', 'prometheus'), 'Only reviewed component inputs are admitted')
     return {
         'reference': QDRANT_REFERENCE, 'config': QDRANT_CONFIG,
         'compressedBytes': QDRANT_COMPRESSED_BYTES, 'version': QDRANT_VERSION,
@@ -957,7 +952,7 @@ def prepare_qdrant_image(directory, context, module_directory, archive=None):
 
 
 def prepare_observability_image(directory, context, module_directory, component, archive=None):
-    require(component in OBSERVABILITY_IMAGES, 'Only reviewed Prometheus/Alertmanager images are admitted')
+    require(component in OBSERVABILITY_IMAGES, 'Only reviewed Prometheus images are admitted')
     return _prepare_component_image(directory, context, module_directory, component, component_pin(component), archive)
 
 

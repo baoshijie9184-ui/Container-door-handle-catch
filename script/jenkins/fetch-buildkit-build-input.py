@@ -27,7 +27,7 @@ MAX_ARCHIVE = 128 * MIB
 MAX_METADATA = 4 * MIB
 MEDIA = 'application/vnd.oci.image.manifest.v1+json'
 SHA = re.compile(r'sha256:[a-f0-9]{64}')
-COMPONENTS = ('buildkit', 'qdrant', 'prometheus', 'alertmanager')
+COMPONENTS = ('buildkit', 'qdrant', 'prometheus')
 
 
 def need(value, code):

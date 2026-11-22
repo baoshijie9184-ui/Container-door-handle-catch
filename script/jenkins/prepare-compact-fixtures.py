@@ -2009,7 +2009,7 @@ class FixtureWatch:
         self.memory_admission = None
         self.check()
         require(type(tool_memory_bytes) is int and tool_memory_bytes >= 0, 'Explicit tool memory bound required')
-        limits = {'qdrant': 512 * MIB, 'prometheus': 512 * MIB, 'alertmanager': 128 * MIB, 'redis': 128 * MIB}
+        limits = {'qdrant': 512 * MIB, 'prometheus': 512 * MIB, 'redis': 128 * MIB}
         owners = {} if fixture_owners is None else fixture_owners
         require(type(owners) is dict and set(owners) <= set(limits) and all(callable(value) for value in owners.values()),
                 'Only the registered owned fixtures can contribute memory credit')

@@ -516,7 +516,6 @@ def admit_fixture_memory(fixture_watch, tool_runtime, tool_value, middleware_fix
     if middleware_fixture is not None: owners['qdrant'] = middleware_fixture.owned
     if observability_fixture is not None:
         owners['prometheus'] = lambda: observability_fixture.owned('prometheus')
-        owners['alertmanager'] = lambda: observability_fixture.owned('alertmanager')
     if redis_fixture is not None: owners['redis'] = redis_fixture.owned
     return fixture_watch.admit(tool_bound, fixture_owners=owners)
 

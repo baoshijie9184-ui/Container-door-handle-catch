@@ -5,11 +5,11 @@
 ## 默认路径与可选组件
 
 - Java、检测 Worker、Mem0 直接通过 OTel HTTP/protobuf 向 Langfuse 发出安全追踪；不默认增加 OTel Collector、Jaeger 或 VictoriaLogs。
-- Prometheus 抓取业务容器的私有指标端点；Alertmanager 分组与展示告警。默认通知接收者只在本机 UI 展示，**尚未配置外部通知渠道**。
+- Prometheus 从业务容器的私有端点采集指标，在 Alerts 页面显示规则状态。
 - Langfuse 完整自建栈是单独 `langfuse` profile：Web、Worker、PostgreSQL、ClickHouse、专用 Redis、现有 OSS 的隔离前缀。不能用 MySQL 代替 PostgreSQL，不能省略 ClickHouse，也不能让业务 Redis 的淘汰策略承担 Langfuse 队列。
 - 单体不引入 Seata、Nacos、Dubbo、额外业务网关或 Langfuse AI Gateway。保留的分布式历史设计和原数据不因本轮配置调整而删除。
 
-新增入口为 `deploy/compose/compose.observability.monolith.yml`；`observability` profile 仅启动 Prometheus/Alertmanager，`langfuse` profile 才包含完整 Langfuse 栈。所有入口都仍由本地 Jenkins 调度 ECS，不能在开发机运行这些 Compose。
+观测入口为 `deploy/compose/compose.observability.monolith.yml`。`observability` profile 启动 Prometheus，`langfuse` profile 启动完整 Langfuse 栈。本机网关与实时追踪见 [单机 Higress 和 OpenTelemetry](local-edge.md)。
 
 本轮验收必要组件 Qdrant、Resilience4j、OTel 和 Prometheus；完整 Langfuse 暂留配置，待资源审定后再部署。OTel 使用真实 SDK 向本轮自有假 HTTP 接收端导出，验证关联、协议、脱敏和失败隔离；该结果不代替后续 Langfuse 存储查询验收。
 
@@ -87,7 +87,7 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 新代码完成整合后再由固定提交的本地Jenkins执行：
 
 - Java：脱敏、安全快照、异步导出故障/容量释放、Agent原生关联、机器采集鉴权、原ModelCircuit/Redis/额度/路由回归及新增Bulkhead取消/拒绝；Python：真实SDK假HTTP摄入、无敏感内容、队列满、停机、metrics授权、Worker golden/commit顺序、资源门边界。
-- ECS有限合成烟测：真实Prometheus抓取、401/405拒绝、告警实际触发/解除和Alertmanager分组；配置外部通知后才验证送达。
+- ECS 有限合成验收包括真实 Prometheus 抓取、401/405 拒绝，以及告警规则实际触发和解除。
 - 全Langfuse需先独立资源审核和预检，随后完整栈健康、项目初始化、跨运行追踪查询、OSS上述完整链路、exporter故障不影响业务、组件重启后历史可读。未满足资源不拉镜像、不删业务缓存凑数。
 - 收集脱敏回执、清理本轮自有夹具；按2026-11-14用户更新，ECS保持开启并由用户自行关闭，助手及流水线不执行启停。Jenkins继续运行，正式并发/容量压测仍按用户决定后置。
 
@@ -95,26 +95,26 @@ Langfuse 将 OSS 归为社区支持的 S3-compatible 选项。模板隔离 `lang
 
 ### 用真实 Prometheus 验收 Java 和 Python 指标
 
-现有 source 验证由 `script/jenkins/observability-fixture.py` 的 `Fixture(checkout, context)` 创建本轮自有 Prometheus 3.16.0 与 Alertmanager 0.35.0。它复用受管 OCI 镜像准备接口，不调用 daemon pull；仅绑定随机 `127.0.0.1` 端口，以 UID1000、只读根文件系统和固定 CPU/内存限额运行。Alertmanager 只接收本轮合成规则，接收者 `owned-null` 不发送外部消息。
+源码验收由 `script/jenkins/observability-fixture.py` 创建专属 Prometheus 3.16.0，复用受管 OCI 镜像准备接口。容器仅绑定随机的本机回环端口，使用 UID 1000、只读根文件系统和固定 CPU、内存限额。
 
-镜像准备前及容器启动前要求实际可用内存至少 **9.125GiB**、自由磁盘至少 **3GiB**。内存按串行工具6GiB、Qdrant512MiB、单个测试MySQL1GiB、Prometheus512MiB、Alertmanager128MiB和主机保留1GiB相加；运行中保留2.25GiB磁盘。既有工具和数据库自己的更高资源门仍生效。
+镜像准备前及容器启动前要求实际可用内存至少 **9 GiB**、自由磁盘至少 **3 GiB**。内存包括串行工具 6 GiB、Qdrant 512 MiB、单个验收 MySQL 1 GiB、Prometheus 512 MiB 和主机保留 1 GiB。运行中保留 2.25 GiB 磁盘。
 
 - Java `PrometheusScrapeIntegrationTest.realPrometheusScrapesAuthenticatedActuatorCountersAndHistogram` 启动最小 Spring/Actuator 应用，不扫描业务模块或连接数据库。真实计数器和直方图经原 `/actuator/prometheus` 机器认证端点被 Prometheus 抓取。
 - Python `tests_python.test_observability_scrape.test_real_prometheus_scrapes_authenticated_python_counter_and_histogram` 使用共享 `RuntimeTelemetry` 的真实 HTTP 服务和指标注册表，不创建模型客户端。
 - 两端都必须实测缺失/错误令牌401、正确令牌200，经 file-SD 登记随机端点，并从真实 Prometheus API 读到 `up`、计数器及直方图。最终收尾再次独立查询历史样本。
-- 告警闭环使用同一 attempt 的两条合成告警，核对真实 Prometheus 规则状态与 Alertmanager 的两条告警、一个分组；随后只修改本轮规则并重载自有 Prometheus。只有规则变为 inactive、Alertmanager 告警和分组消失，且实际 resolved 接收计数至少增加2，才记为解除成功。每阶段保留实际 HTTP 响应，不以容器停止或自然过期充当解除证明。#312实际完成两条同组告警及解除，接收计数从0增至2，`alertLifecycle.status=PASS`。
+- 告警验收使用同一轮的两条合成规则。在 Prometheus API 读取两条规则的 firing 状态，再重载规则并核对两条规则恢复 inactive 且告警实例清空。每阶段保留实际 HTTP 响应和对应规则。
 
-`prepare()` 返回五项 `DOORHANDLE_` 环境变量：`TEST_PROMETHEUS_URL`、`TEST_ALERTMANAGER_URL`、`TEST_OBSERVABILITY_TARGETS`、`TEST_OBSERVABILITY_TOKEN_FILE`、`REQUIRE_OBSERVABILITY_TESTS=true`。令牌只存私有文件，不进入容器命令行、环境变量值或安全回执。
+`prepare()` 返回四项 `DOORHANDLE_` 环境变量，包括 `TEST_PROMETHEUS_URL`、`TEST_OBSERVABILITY_TARGETS`、`TEST_OBSERVABILITY_TOKEN_FILE` 和 `REQUIRE_OBSERVABILITY_TESTS=true`。采集令牌通过私有文件读取。
 
-`stop()` 即使指标验收失败也逐个停止自己的容器，保全实际 inspect、stdout/stderr、查询和告警原件后再移除容器；仅清理本轮令牌及合成 TSDB/静默数据。安全回执区分 `metricsAcceptance` 与 `cleanupConfirmed`，清理成功不能冒充指标通过；镜像导入终态未知时保留原件并拒绝确认完成。查询原件留在本轮 `work/observability-fixture/evidence`，通用归档仅收录安全 `observability-fixture.json` 引用。
+`stop()` 即使指标验收失败也逐个停止自己的容器，保全实际 inspect、stdout/stderr、查询和告警原件后再移除容器；仅清理本轮令牌及合成 TSDB 数据。安全回执区分 `metricsAcceptance` 与 `cleanupConfirmed`，清理成功不能冒充指标通过；镜像导入终态未知时保留原件并拒绝确认完成。查询原件留在本轮 `work/observability-fixture/evidence`，通用归档仅收录安全 `observability-fixture.json` 引用。
 
 ### 候选运行验收抓取实际三项应用
 
-`compact-runtime-acceptance.py` 在既有单体候选栈合并观测 overlay，只保留 Prometheus/Alertmanager；同构建源码验收已经导入的固定镜像通过原始 image/resource 回执和 Docker 实际身份重新准入，不再拉取镜像。Langfuse 服务、卷及凭据不会进入候选，运行追踪仍明确关闭。
+`compact-runtime-acceptance.py` 在既有单体候选栈合并观测 overlay，只保留 Prometheus；同构建源码验收已经导入的固定镜像通过原始 image/resource 回执和 Docker 实际身份重新准入，不再拉取镜像。Langfuse 服务、卷及凭据不会进入候选，运行追踪仍明确关闭。
 
-后端、检测 Worker、Mem0 与 Prometheus 只读挂载本轮随机采集令牌。配置、令牌、TSDB 和 Alertmanager 数据使用四个独立 owned volumes，既不绑定正式凭据目录，也不新增宿主端口。应用启动、后端重启、业务卷恢复、业务场景完成后，分别读取实际三个 target 的最新抓取、三个 `up=1`、JVM 堆字节与 Worker/Mem0 readiness，并核对六条既有规则的实际求值健康、Alertmanager 目的地址和分组配置。#312 已完成的合成告警触发/解除闭环不重复搭建。
+后端、检测 Worker、Mem0 与 Prometheus 只读挂载本轮随机采集令牌。配置、令牌和 TSDB 使用三个专属卷。应用启动、后端重启、业务卷恢复和业务场景完成后，分别读取三个目标的最新抓取状态、`up=1`、JVM 堆字节和两个 Python 服务的就绪指标，并核对六条既有规则的求值状态。
 
-两观测容器增加640MiB内存限额；原四个运行阶段各保留576MiB观测可写增长包络，原磁盘2.25GiB/内存1GiB底线不变。候选将TSDB保留目标缩为2小时/64MB，但该目标不是WAL/head/压缩峰值，也不是实际目录硬限额。资源监视器继续观察真实cgroup和文件系统余量，触底即失败。
+Prometheus 使用 512 MiB 内存限额；原四个运行阶段各保留576MiB观测可写增长包络，原磁盘2.25GiB/内存1GiB底线不变。候选将TSDB保留目标缩为2小时/64MB，但该目标不是WAL/head/压缩峰值，也不是实际目录硬限额。资源监视器继续观察真实cgroup和文件系统余量，触底即失败。
 
 业务恢复期间观测卷保持连续运行，不伪称已克隆或恢复TSDB历史；恢复后核对相同卷与新一轮实际抓取。统一收尾只停止本轮owned容器，按原恢复保全合同保留卷，不停止业务服务或ECS。四阶段API原件和镜像准入证据归档到`artifacts/runtime-observability`，新运行回执与资源回执均要求`observabilityRequired=true`；历史回执仍按原合同读取。
 
@@ -136,5 +136,5 @@ Java仅引入OTel小BOM 1.61.0和Reactor instrumentation 2.27.0-alpha，与Agent
 - [OpenTelemetry1.61.0](https://github.com/open-telemetry/opentelemetry-java/releases/tag/v1.61.0)、[Resilience4j2.4.0](https://github.com/resilience4j/resilience4j/releases/tag/v2.4.0)：Apache-2.0；使用公开SDK API，不复制内部队列实现。
 - [Langfuse4.79.0](https://github.com/langfuse/langfuse/releases/tag/v4.79.0)、[官方Compose](https://github.com/langfuse/langfuse/blob/v4.79.0/docker-compose.yml)、[核心/EE许可证边界](https://github.com/langfuse/langfuse/blob/v4.79.0/LICENSE)：核心MIT，EE目录另有许可；本轮不依赖EE。
 - [Langfuse资源下限](https://langfuse.com/self-hosting/configuration/scaling)、[OTel接入](https://langfuse.com/docs/opentelemetry/get-started)、[S3兼容Blob配置](https://langfuse.com/self-hosting/deployment/infrastructure/blobstorage)、[自建保留策略许可](https://langfuse.com/docs/administration/data-retention)。
-- [Prometheus3.16.0](https://github.com/prometheus/prometheus/releases/tag/v3.16.0)、[Alertmanager0.35.0](https://github.com/prometheus/alertmanager/releases/tag/v0.35.0)、[TSDB保留与空间](https://prometheus.io/docs/prometheus/latest/storage/)：Apache-2.0。
+- [Prometheus3.16.0](https://github.com/prometheus/prometheus/releases/tag/v3.16.0)、[TSDB保留与空间](https://prometheus.io/docs/prometheus/latest/storage/)：Apache-2.0。
 - PostgreSQL为PostgreSQL License；ClickHouse为Apache-2.0；Redis7.4为RSALv2/SSPLv1双许可，限本企业内部部署而非再销售托管Redis服务。镜像保留上游许可证；Redis许可与Langfuse的Redis/Valkey兼容性可在后续替换评估中单独审定，本轮不顺带升级业务Redis。

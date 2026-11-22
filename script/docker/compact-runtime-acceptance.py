@@ -89,7 +89,7 @@ SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'qdrant': 512
     'detection-worker': 2048, 'higress': 512, 'redis': 128, 'nginx': 64, 'mcp-runner': 256,
     'mcp-egress': 128, 'model-fixture': 128, 'oss-proxy': 128, 'kafka-init': 256,
     'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128, 'qdrant-storage-init': 64,
-    'prometheus': 512, 'alertmanager': 128}
+    'prometheus': 512}
 OBSERVABILITY_GROWTH_BYTES = 576 * MIB
 MCP_CHILD_MEMORY = 2 * 256 * MIB
 BGE_VERIFIER_MEMORY = 768 * MIB
@@ -345,7 +345,7 @@ def validate_resource_evidence(summary, raw, context, project, *, manual_pending
     required = set(summary.get('requiredDaemonServices', []))
     # Historical receipts remain readable under their original service contract.
     # Every newly executed runtime explicitly opts into the monitoring contract.
-    expected_daemons = CORE_DAEMON_SERVICES if summary.get('observabilityRequired') is True else CORE_DAEMON_SERVICES - {'prometheus', 'alertmanager'}
+    expected_daemons = CORE_DAEMON_SERVICES if summary.get('observabilityRequired') is True else CORE_DAEMON_SERVICES - {'prometheus'}
     require((summary.get('observabilityRequired') is None or summary.get('observabilityRequired') is True) and required == expected_daemons
             and required <= observed, 'Some required runtime service peaks were never observed')
     transient = summary.get('requiredTransientServices', [])
@@ -387,7 +387,7 @@ class RuntimeResources:
 
     def admit(self, phase, growth_bytes, measured, memory_bytes=0):
         with self.lock:
-            if getattr(self.runtime, 'config', None) and {'prometheus', 'alertmanager'} <= set(self.runtime.config['services']):
+            if getattr(self.runtime, 'config', None) and 'prometheus' in self.runtime.config['services']:
                 growth_bytes += OBSERVABILITY_GROWTH_BYTES
                 measured = {**measured, 'observabilityWritableGrowthEnvelopeBytes': OBSERVABILITY_GROWTH_BYTES,
                     'observabilityRetentionIsNotPeakPrediction': True,

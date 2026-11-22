@@ -61,7 +61,7 @@ def shared_archive(tmp_path, raw, component='qdrant'):
     return {'file': str(path), 'sha256': checksum, 'bytes': len(raw)}
 
 
-@pytest.mark.parametrize('component', ['qdrant', 'prometheus', 'alertmanager'])
+@pytest.mark.parametrize('component', ['qdrant', 'prometheus'])
 def test_current_literal_component_pins_match_resource_owner_without_executing_source(component):
     fixed = FETCH.pins(ROOT / 'script/docker/compact-build-resources.py', component)
     pin = RES.component_pin(component)
@@ -132,7 +132,7 @@ def test_component_archive_measures_original_shared_bytes_without_per_build_blob
     assert {'official-archive-validation', 'measure-shared-qdrant'} == {row[0] for row in actor.phases}
 
 
-@pytest.mark.parametrize('component', ['qdrant', 'prometheus', 'alertmanager'])
+@pytest.mark.parametrize('component', ['qdrant', 'prometheus'])
 def test_shared_custody_reuses_bytes_and_binds_each_release_pointer(tmp_path, monkeypatch, component):
     (tmp_path / 'inbox').mkdir(mode=0o700); inbox = tmp_path / 'inbox' / CONTEXT['release']; inbox.mkdir(mode=0o700)
     raw = b'synthetic public input'; binding = TRANSFER.binding(tmp_path, hashlib.sha256(raw).hexdigest(), len(raw), component)
@@ -219,7 +219,7 @@ def test_controller_prepares_all_components_after_fixed_source_upload_in_existin
     source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     start = source.index("if ($Action -in @('PrepareTools', 'CleanupTools'))")
     prepare = source[start:source.index("if ($Action -eq 'VerifyEcs')", start)]
-    assert prepare.index("@('artifacts/source.tar.gz','source.tar.gz')") < prepare.index("foreach($component in @('qdrant','prometheus','alertmanager'))")
+    assert prepare.index("@('artifacts/source.tar.gz','source.tar.gz')") < prepare.index("foreach($component in @('qdrant','prometheus'))")
     assert 'Send-CandidateBuildToolsArchive -Component $component' in prepare
     assert 'componentArchive' in source and 'rawArchiveArchived=$false' in source
     for file in ('middleware-fixture.py', 'observability-fixture.py'):

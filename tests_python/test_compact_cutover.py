@@ -81,7 +81,7 @@ def fixture_build_resources(directory, context, name):
 def attach_runtime_resources(directory, context, project, proof, images, fixture_images):
     resource = directory / 'checkout/work/runtime-acceptance'
     # Existing persisted runtime receipts predate the opt-in monitoring contract.
-    daemons = sorted(runtime.CORE_DAEMON_SERVICES - {'prometheus', 'alertmanager'})
+    daemons = sorted(runtime.CORE_DAEMON_SERVICES - {'prometheus'})
     metrics = []
     for index, service in enumerate(daemons, 1):
         image = images.get(service, 'sha256:' + hashlib.sha256(('infra:' + service).encode()).hexdigest())

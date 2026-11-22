@@ -234,7 +234,7 @@ function Get-BuildRegistryAssignment {
 }
 
 function Send-CandidateBuildToolsArchive {
-    param([ValidateSet('buildkit','qdrant','prometheus','alertmanager')][string]$Component='buildkit')
+    param([ValidateSet('buildkit','qdrant','prometheus')][string]$Component='buildkit')
     if ($Component -ceq 'buildkit') {
         if ($env:ACTION -cnotin @('verify-runtime', 'compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql') { throw 'This action must not prepare candidate build inputs.' }
     } elseif ($env:ACTION -cnotin @('verify','verify-runtime','compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cnotin @('source','mysql')) { throw 'This action must not prepare middleware image inputs.' }
@@ -869,7 +869,7 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
         $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine'"
         $prepareArguments = $arguments
         if ($env:ACTION -cin @('verify','verify-runtime','compact-cutover') -and $env:DOORHANDLE_CI_SCOPE -cin @('source','mysql')) {
-            foreach($component in @('qdrant','prometheus','alertmanager')) {
+            foreach($component in @('qdrant','prometheus')) {
                 $null=Send-CandidateBuildToolsArchive -Component $component
             }
         }
@@ -1247,7 +1247,7 @@ if ($Action -in @('VerifyRuntime', 'CleanupRuntime')) {
             if ($reference.file -cne "checkout/work/runtime-acceptance/$name") { throw 'Monitoring evidence escaped its owned directory.' }
             Receive-RuntimeBrowserFile "$remoteRoot/verification/$tag/$($reference.file)" "artifacts/runtime-observability/$name" $reference.sha256 262144
         }
-        foreach ($component in @('prometheus','alertmanager')) {
+        foreach ($component in @('prometheus')) {
             $reference = $Proof.observability.images.$component
             $expected = "checkout/work/observability-fixture/$component-image/image.json"
             if ($reference.file -cne $expected -or $reference.resourceSummarySha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Monitoring image proof differs from this source acceptance.' }

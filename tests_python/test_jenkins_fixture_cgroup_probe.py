@@ -916,7 +916,7 @@ class FixtureWatchTests(unittest.TestCase):
 
     def test_all_live_fixture_headroom_and_watch_credit_keep_the_full_limits(self):
         limits = {'mysql': 3 * preparer.GIB, 'qdrant': 512 * preparer.MIB,
-                  'prometheus': 512 * preparer.MIB, 'alertmanager': 128 * preparer.MIB, 'redis': 128 * preparer.MIB}
+                  'prometheus': 512 * preparer.MIB, 'redis': 128 * preparer.MIB}
         def measured(name, owned, limit):
             self.assertEqual(limits[name], limit)
             return {'component': name, 'containerId': name, 'cgroup': '/' + name,
@@ -929,12 +929,12 @@ class FixtureWatchTests(unittest.TestCase):
              patch.object(self.watch, 'watch_anonymous_memory', return_value=32 * preparer.MIB), \
              patch.object(preparer, 'Path', side_effect=lambda value: meminfo if value == '/proc/meminfo' else original(value)):
             result = self.watch.admit(6 * preparer.GIB, fixture_owners={name: Mock() for name in limits if name != 'mysql'})
-        expected = 7 * preparer.GIB + sum(limits.values()) + preparer.WATCH_MEMORY - 352 * preparer.MIB
+        expected = 7 * preparer.GIB + sum(limits.values()) + preparer.WATCH_MEMORY - 288 * preparer.MIB
         self.assertEqual(expected, result['requiredAvailableMemoryBytes'])
         self.assertEqual(6 * preparer.GIB, result['toolMemoryBoundBytes'])
         self.assertEqual(preparer.GIB, result['hostMemoryReserveBytes'])
         self.assertEqual('OWNED_ANONYMOUS_ONLY', result['creditPolicy'])
-        self.assertEqual(5, len(result['fixtures']))
+        self.assertEqual(4, len(result['fixtures']))
 
     def test_admission_uses_lower_before_after_available_and_keeps_exact_shortfall(self):
         meminfo = self.temp / 'meminfo'; meminfo.write_text('MemAvailable: 1048576 kB\n')
@@ -1161,11 +1161,11 @@ class FixtureWatchTests(unittest.TestCase):
              patch.object(preparer.subprocess, 'Popen') as spawn:
             result = remote.admit_fixture_memory(watch, runtime, {}, vector, metrics, redis)
         spawn.assert_not_called()
-        self.assertEqual(['alertmanager', 'prometheus', 'qdrant', 'redis'], seen)
+        self.assertEqual(['prometheus', 'qdrant', 'redis'], seen)
         vector.owned.assert_called_once_with(); redis.owned.assert_called_once_with()
-        self.assertEqual(['alertmanager', 'prometheus'], [call.args[0] for call in metrics.owned.call_args_list])
+        self.assertEqual(['prometheus'], [call.args[0] for call in metrics.owned.call_args_list])
         self.assertEqual('ADMITTED', result['capacityVerdict'])
-        self.assertEqual(5, len(result['fixtures']))
+        self.assertEqual(4, len(result['fixtures']))
         self.assertEqual(5888 * preparer.MIB, result['toolMemoryBoundBytes'])
         self.assertEqual(self.descriptor['containerId'], result['fixtures'][0]['containerId'])
         self.assertEqual(512, result['fixtures'][0]['anonymousMemoryBytes'])

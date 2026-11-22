@@ -1,12 +1,11 @@
-"""Owned real Prometheus/Alertmanager for the existing ECS source verifier.
+"""Owned real Prometheus for the existing ECS source verifier.
 
-Only synthetic metrics and a null notification receiver are configured. This
+Only synthetic metrics and local rule evaluation are configured. This
 does not start Langfuse, a business app, or a model/provider client.
 """
 from __future__ import annotations
 import importlib.util
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -22,12 +21,11 @@ from urllib.parse import urlencode
 MIB = 1024 ** 2
 GIB = 1024 ** 3
 LABEL = 'io.doorhandle.observability-fixture'
-ENVIRONMENT = frozenset({'DOORHANDLE_TEST_PROMETHEUS_URL','DOORHANDLE_TEST_ALERTMANAGER_URL',
+ENVIRONMENT = frozenset({'DOORHANDLE_TEST_PROMETHEUS_URL',
     'DOORHANDLE_TEST_OBSERVABILITY_TARGETS','DOORHANDLE_TEST_OBSERVABILITY_TOKEN_FILE',
     'DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS'})
-# Serial nested tools6GiB + Qdrant512MiB + MySQL1GiB + Prom512MiB
-# + Alert128MiB + host1GiB. MySQL is the existing single source fixture.
-RUNTIME_RESERVE = 9 * GIB + 128 * MIB
+# Serial nested tools6GiB + Qdrant512MiB + MySQL1GiB + Prom512MiB + host1GiB.
+RUNTIME_RESERVE = 9 * GIB
 STARTUP_DISK_RESERVE = 3 * GIB
 ALERT_NAME = 'DoorhandleOwnedFixtureAlert'
 ALERT_PROBES = ('first', 'second')
@@ -45,20 +43,8 @@ def alert_rules(token, firing=True):
 ''' for probe in ALERT_PROBES)
 
 
-def resolved_received(raw):
-    values=[]
-    for labels,value in re.findall(rb'(?m)^alertmanager_alerts_received_total\{([^\n}]+)\}\s+([^\s]+)\s*$',raw):
-        if dict(re.findall(rb'([a-z_]+)="([^"]*)"',labels))=={b'status':b'resolved',b'version':b'v2'}:
-            values.append(float(value))
-    require(len(values)==1 and math.isfinite(values[0]) and values[0]>=0 and values[0].is_integer(),
-            'Alertmanager resolved-receipt counter is missing or invalid')
-    return int(values[0])
-
-
-def alert_phase_matches(token, phase, rules, alerts, groups, resolved, baseline):
-    """Read the live rules and both AM views; absence alone is not resolution."""
-    # Alertmanager 0.35 omits resolved alerts from both API views. Its v2
-    # received-resolved counter also has to advance: expiry is not delivery.
+def alert_phase_matches(token, phase, rules):
+    """Check both owned rules and their instances in the Prometheus rule engine."""
     firing=phase=='firing'
     expected=[{'attempt':token,'source':'source-fixture','probe':probe} for probe in ALERT_PROBES]
     rule_groups=rules.get('data',{}).get('groups',[])
@@ -74,19 +60,8 @@ def alert_phase_matches(token, phase, rules, alerts, groups, resolved, baseline)
             if not isinstance(instances,list) or len(instances)!=1 or instances[0].get('state')!='firing' \
                     or instances[0].get('labels')!={**row['labels'],'alertname':ALERT_NAME}:return False
         elif instances!=[]:return False
-    if not isinstance(alerts,list) or not isinstance(groups,list):return False
-    if not firing:return alerts==[] and groups==[] and resolved>=baseline+2
-    expected_alerts=[{**labels,'alertname':ALERT_NAME} for labels in expected]
-    if len(alerts)!=2 or sorted([row.get('labels',{}) for row in alerts],key=lambda row:row.get('probe',''))!=expected_alerts:return False
-    if any(row.get('status',{}).get('state')!='active' or row.get('receivers')!=[{'name':'owned-null'}] for row in alerts):return False
-    fingerprints={row.get('fingerprint','') for row in alerts}
-    if len(fingerprints)!=2 or any(not re.fullmatch('[a-f0-9]{16}',value) for value in fingerprints):return False
-    if len(groups)!=1 or groups[0].get('labels')!={'alertname':ALERT_NAME,'attempt':token} \
-            or groups[0].get('receiver')!={'name':'owned-null'}:return False
-    members=groups[0].get('alerts',[])
-    return len(members)==2 and {row.get('fingerprint') for row in members}==fingerprints \
-        and sorted([row.get('labels',{}) for row in members],key=lambda row:row.get('probe',''))==expected_alerts \
-        and all(row.get('status',{}).get('state')=='active' for row in members)
+    return True
+
 
 def require(value, message):
     if not value: raise ValueError(message)
@@ -125,7 +100,7 @@ class Fixture:
         return result.stdout
 
     def request_raw(self,component,route):
-        require(component in ('prometheus','alertmanager') and route.startswith('/') and '\n' not in route,'Invalid observability readback')
+        require(component == 'prometheus' and route.startswith('/') and '\n' not in route,'Invalid observability readback')
         with self.opener.open('http://127.0.0.1:'+str(self.ports[component])+route,timeout=3) as response:
             raw=response.read(2*MIB+1)
             require(response.status==200 and len(raw)<=2*MIB,'Observability endpoint readback failed')
@@ -187,16 +162,15 @@ class Fixture:
         spec=importlib.util.spec_from_file_location('owned_observability_images',helper)
         resources=importlib.util.module_from_spec(spec);spec.loader.exec_module(resources)
         self.admit_runtime(resources,'before-images')
-        for component in ('alertmanager','prometheus'):
-            self.image_attempts.add(component)
-            proof=resources.prepare_observability_image(self.folder/(component+'-image'),self.context,helper.parent,component,
-                archive=resources.component_input(self.checkout,self.context,component))
-            self.images[component]=proof['engineIdentity']['engineImageId']
+        component='prometheus'
+        self.image_attempts.add(component)
+        proof=resources.prepare_observability_image(self.folder/(component+'-image'),self.context,helper.parent,component,
+            archive=resources.component_input(self.checkout,self.context,component))
+        self.images[component]=proof['engineIdentity']['engineImageId']
         self.admit_runtime(resources,'after-images')
-        for name in ('targets','secrets','evidence','prometheus-data','alertmanager-data'):(self.folder/name).mkdir(mode=0o700)
+        for name in ('targets','secrets','evidence','prometheus-data'):(self.folder/name).mkdir(mode=0o700)
         preserve(self.folder/'secrets/metrics-token',secrets.token_hex(32))
-        self.ports={component:free_port() for component in ('prometheus','alertmanager')}
-        require(len(set(self.ports.values()))==2,'Observability ports collided; use a fresh owned attempt')
+        self.ports={component:free_port()}
         prometheus=f'''global:
   scrape_interval: 1s
   scrape_timeout: 500ms
@@ -204,10 +178,6 @@ class Fixture:
   external_labels:
     attempt: {self.token}
 rule_files: [/etc/prometheus/rules.yml]
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ["127.0.0.1:{self.ports['alertmanager']}"]
 scrape_configs:
   - job_name: owned-runtime
     authorization:
@@ -224,49 +194,33 @@ scrape_configs:
     label_value_length_limit: 128
 '''
         rules=alert_rules(self.token)
-        alertmanager='''route:
-  receiver: owned-null
-  group_by: [alertname, attempt]
-  group_wait: 1s
-  group_interval: 1s
-  repeat_interval: 1h
-receivers:
-  - name: owned-null
-'''
-        for name,content in (('prometheus.yml',prometheus),('rules.yml',rules),('alertmanager.yml',alertmanager)):
+        for name,content in (('prometheus.yml',prometheus),('rules.yml',rules)):
             preserve(self.folder/name,content)
-        for component in ('alertmanager','prometheus'):
-            config=self.folder/(component+'.yml');data=self.folder/(component+'-data')
-            if component=='prometheus':
-                command=['--config.file=/etc/prometheus/prometheus.yml','--storage.tsdb.path=/prometheus',
-                    '--storage.tsdb.retention.time=1h','--storage.tsdb.retention.size=64MB',
-                    '--storage.tsdb.wal-segment-size=10MB','--web.listen-address=127.0.0.1:'+str(self.ports[component])]
-                mounts=[(config,'/etc/prometheus/prometheus.yml',False),(self.folder/'rules.yml','/etc/prometheus/rules.yml',False),
-                    (self.folder/'targets','/run/owned/targets',False),(self.folder/'secrets','/run/owned/secrets',False),(data,'/prometheus',True)]
-                memory=512*MIB
-            else:
-                command=['--config.file=/etc/alertmanager/alertmanager.yml','--storage.path=/alertmanager','--data.retention=1h',
-                    '--web.listen-address=127.0.0.1:'+str(self.ports[component]),'--cluster.listen-address=']
-                mounts=[(config,'/etc/alertmanager/alertmanager.yml',False),(data,'/alertmanager',True)];memory=128*MIB
-            self.rows[component]={'name':'doorhandle-'+component+'-test-'+self.token,'command':command,'mounts':mounts,'memory':memory}
-            args=['create','--pull','never','--name',self.rows[component]['name'],'--restart','no','--user','1000:1000',
-                '--network','host','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true',
-                '--memory',str(memory),'--memory-swap',str(memory),'--cpus','1','--pids-limit','128',
-                '--tmpfs','/tmp:rw,nosuid,nodev,size=64m','--no-healthcheck','--workdir','/',
-                '--log-driver','json-file','--log-opt','max-size=5m','--log-opt','max-file=1',
-                '--label',LABEL+'='+self.token,'--label','io.doorhandle.release='+self.context['release'],
-                '--label','io.doorhandle.source='+self.context['sourceSha256'],'--entrypoint','/bin/'+component]
-            for source,destination,writable in mounts:
-                args+=['--mount','type=bind,src='+str(source)+',dst='+destination+('' if writable else ',readonly')]
-            self.started.add(component);self.docker(*args,self.images[component],*command)
-            row=self.owned(component);self.rows[component]['id']=row['Id'];self.docker('start',row['Id'])
+        config=self.folder/(component+'.yml');data=self.folder/(component+'-data')
+        command=['--config.file=/etc/prometheus/prometheus.yml','--storage.tsdb.path=/prometheus',
+            '--storage.tsdb.retention.time=1h','--storage.tsdb.retention.size=64MB',
+            '--storage.tsdb.wal-segment-size=10MB','--web.listen-address=127.0.0.1:'+str(self.ports[component])]
+        mounts=[(config,'/etc/prometheus/prometheus.yml',False),(self.folder/'rules.yml','/etc/prometheus/rules.yml',False),
+            (self.folder/'targets','/run/owned/targets',False),(self.folder/'secrets','/run/owned/secrets',False),(data,'/prometheus',True)]
+        memory=512*MIB
+        self.rows[component]={'name':'doorhandle-'+component+'-test-'+self.token,'command':command,'mounts':mounts,'memory':memory}
+        args=['create','--pull','never','--name',self.rows[component]['name'],'--restart','no','--user','1000:1000',
+            '--network','host','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true',
+            '--memory',str(memory),'--memory-swap',str(memory),'--cpus','1','--pids-limit','128',
+            '--tmpfs','/tmp:rw,nosuid,nodev,size=64m','--no-healthcheck','--workdir','/',
+            '--log-driver','json-file','--log-opt','max-size=5m','--log-opt','max-file=1',
+            '--label',LABEL+'='+self.token,'--label','io.doorhandle.release='+self.context['release'],
+            '--label','io.doorhandle.source='+self.context['sourceSha256'],'--entrypoint','/bin/'+component]
+        for source,destination,writable in mounts:
+            args+=['--mount','type=bind,src='+str(source)+',dst='+destination+('' if writable else ',readonly')]
+        self.started.add(component);self.docker(*args,self.images[component],*command)
+        row=self.owned(component);self.rows[component]['id']=row['Id'];self.docker('start',row['Id'])
         deadline=time.monotonic()+60
         while True:
             try:self.check();break
             except (ValueError,OSError):
                 require(time.monotonic()<deadline,'Owned observability services did not become ready');time.sleep(.2)
         self.environment={'DOORHANDLE_TEST_PROMETHEUS_URL':'http://127.0.0.1:'+str(self.ports['prometheus']),
-            'DOORHANDLE_TEST_ALERTMANAGER_URL':'http://127.0.0.1:'+str(self.ports['alertmanager']),
             'DOORHANDLE_TEST_OBSERVABILITY_TARGETS':str(self.folder/'targets'),
             'DOORHANDLE_TEST_OBSERVABILITY_TOKEN_FILE':str(self.folder/'secrets/metrics-token'),
             'DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS':'true'}
@@ -279,37 +233,27 @@ receivers:
         config=self.request('prometheus','/api/v1/status/config')
         require(config.get('status')=='success' and re.search(r'(?m)^\s+attempt:\s*[\"\']?'+self.token+r'[\"\']?\s*$',config.get('data',{}).get('yaml','')),
                 'Prometheus endpoint belongs to another attempt')
-        status=self.request('alertmanager','/api/v2/status')
-        require('owned-null' in status.get('config',{}).get('original',''),'Alertmanager null receiver differs')
         fs=os.statvfs(self.folder);require(fs.f_bavail*fs.f_frsize>=2*GIB+256*MIB,'Observability disk reserve exhausted')
 
-    def observe_alert_phase(self,phase,evidence,baseline=0):
+    def observe_alert_phase(self,phase,evidence):
         require(phase in ('firing','resolved'),'Invalid owned alert phase')
-        endpoints=(('prometheus','/api/v1/rules?type=alert','rules'),
-            ('alertmanager','/api/v2/alerts','alerts'),('alertmanager','/api/v2/alerts/groups','groups'),
-            ('alertmanager','/metrics','received'))
-        deadline=time.monotonic()+60;originals={};polls=0
+        route='/api/v1/rules?type=alert'
+        deadline=time.monotonic()+60;raw=None;polls=0
         try:
             while True:
-                polls+=1;originals={}
-                for component,route,name in endpoints:
-                    originals[name]=self.request_raw(component,route)
-                count=resolved_received(originals['received'])
-                if alert_phase_matches(self.token,phase,*[json.loads(originals[name]) for name in ('rules','alerts','groups')],count,baseline):
+                polls+=1
+                raw=self.request_raw('prometheus',route)
+                if alert_phase_matches(self.token,phase,json.loads(raw)):
                     self.check()
-                    return {'status':'PASS','polls':polls,'ownedAlertCount':2 if phase=='firing' else 0,
-                        'ownedGroupCount':1 if phase=='firing' else 0,'resolvedReceipts':count}
-                require(time.monotonic()<deadline,'Owned alert grouping or resolution was not observed')
+                    return {'status':'PASS','polls':polls,'ownedAlertCount':len(ALERT_PROBES) if phase=='firing' else 0}
+                require(time.monotonic()<deadline,'Owned alert firing or resolution was not observed')
                 time.sleep(.2)
         finally:
-            # Keep the exact final HTTP bodies even when a phase fails. Intermediate
-            # polling is bounded in memory; it cannot grow an on-disk sample stream.
-            for component,route,name in endpoints:
-                if name not in originals:continue
-                path=self.folder/'evidence'/('alert-'+phase+'-'+name+('.txt' if name=='received' else '.json'))
-                preserve(path,originals[name])
+            if raw is not None:
+                path=self.folder/'evidence'/('alert-'+phase+'-rules.json')
+                preserve(path,raw)
                 evidence.append({'file':str(path),'kind':'actual-alert-lifecycle-http','phase':phase,
-                                 'component':component,'route':route,'httpStatus':200})
+                                 'component':'prometheus','route':route,'httpStatus':200})
 
     def resolve_alert_rules(self,evidence):
         row=self.owned('prometheus')
@@ -351,7 +295,7 @@ receivers:
                 require(prior.get('ownerToken')==self.token and prior.get('images')==self.images
                     and all(prior.get(key)==self.context[key] for key in ('release','commit','sourceSha256','identity')),
                     'Observability acceptance belongs to another attempt')
-                public.update({key:prior[key] for key in ('metricsAcceptance','evidence','alertmanagerReceivedOwnedAlert','alertLifecycle','acceptanceErrorType') if key in prior})
+                public.update({key:prior[key] for key in ('metricsAcceptance','evidence','alertLifecycle','acceptanceErrorType') if key in prior})
                 require(public['metricsAcceptance']!='PASS' or public.get('alertLifecycle',{}).get('status')=='PASS',
                         'Observability acceptance lacks the owned alert lifecycle')
             except Exception as error:
@@ -359,18 +303,15 @@ receivers:
                 # Do not replace this original or reuse its acceptance claim.
                 prior={};public.update(metricsAcceptance='FAILED',acceptanceErrorType=type(error).__name__)
                 preservation_errors.append({'component':'acceptance-original','errorType':type(error).__name__})
-        if prior is None and len(self.started)==2:
+        if prior is None and self.started=={'prometheus'}:
             try:
                 public['metricsAcceptance']='FAILED'
                 self.check()
                 public['alertLifecycle']={'status':'FAILED'}
-                firing=self.observe_alert_phase('firing',public['evidence'])
-                public['alertmanagerReceivedOwnedAlert']=True
-                public['alertLifecycle']['firing']=firing
+                public['alertLifecycle']['firing']=self.observe_alert_phase('firing',public['evidence'])
                 self.resolve_alert_rules(public['evidence'])
-                resolved=self.observe_alert_phase('resolved',public['evidence'],firing['resolvedReceipts'])
-                public['alertLifecycle'].update(status='PASS',resolved=resolved,
-                    resolvedReceiptIncrease=resolved['resolvedReceipts']-firing['resolvedReceipts'])
+                resolved=self.observe_alert_phase('resolved',public['evidence'])
+                public['alertLifecycle'].update(status='PASS',resolved=resolved)
                 targets=self.request('prometheus','/api/v1/targets')
                 preserve(self.folder/'evidence/prometheus-targets.json',json.dumps(targets,sort_keys=True))
                 public['evidence'].append({'file':str(self.folder/'evidence/prometheus-targets.json'),'kind':'actual-target-discovery'})
@@ -405,8 +346,7 @@ receivers:
                 public.update(metricsAcceptance='FAILED',acceptanceErrorType=type(error).__name__)
                 preservation_errors.append({'component':'acceptance-original','errorType':type(error).__name__})
         stopped=[];cleanup_errors=preservation_errors
-        for component in ('prometheus','alertmanager'):
-            if component not in self.started:continue
+        for component in sorted(self.started):
             try:
                 item=self.rows[component]
                 names=self.docker('ps','-a','--format','{{.Names}}').decode().splitlines()
@@ -425,8 +365,8 @@ receivers:
         if not cleanup_errors:
             try:
                 # These directories contain only this attempt's credentials and synthetic
-                # TSDB/silence data. Keep actual HTTP, image, owner and stopped-log originals.
-                for name in ('secrets','prometheus-data','alertmanager-data'):
+                # TSDB data. Keep actual HTTP, image, owner and stopped-log originals.
+                for name in ('secrets','prometheus-data'):
                     directory=self.folder/name
                     if directory.exists() or directory.is_symlink():
                         require(directory.resolve(strict=True)==directory and directory.stat().st_uid==os.getuid(),

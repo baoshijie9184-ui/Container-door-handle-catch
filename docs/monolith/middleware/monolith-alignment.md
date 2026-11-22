@@ -33,7 +33,7 @@
 | Mem0 | 记忆提炼、检索与治理 | 向量用 Qdrant；历史与回执仍为单写者 SQLite 文件 |
 | Resilience4j | 模型并发隔离与现有调用入口的故障处理 | 保留 Redis 熔断栅栏与原子额度扣减，不重放未知计费请求 |
 | OpenTelemetry | 脱敏后的智能体、模型、工具和 Worker 追踪 | 有界队列、独立开关；原始业务内容与秘密不出队列 |
-| Prometheus / Alertmanager | 私网指标抓取与告警 | 独立运行数据；业务审计仍归 MySQL |
+| Prometheus | 私网指标抓取与告警 | 独立运行数据；业务审计仍归 MySQL |
 | Langfuse（可选完整栈） | 智能体追踪、评估与调试 | 自有 PostgreSQL、ClickHouse、专用 Redis 与 OSS 前缀 |
 
 Langfuse 的内部表不是 29 张业务表的一部分，但必须纳入实际存储清单和备份。单体不增加 Seata、Nacos、Dubbo、额外 AI 网关、Collector、Jaeger 或第二套日志数据库。
@@ -62,13 +62,13 @@ Langfuse 的内部表不是 29 张业务表的一部分，但必须纳入实际�
 
 `#297` 在启动测试前访问 Docker Hub 失败；当次镜像尚未下载、导入或创建容器。ECS 到认证和 registry 两个官方域均不可达，而本地既有网络可以到达。后续沿用已有 BuildKit 公共构建输入链：本地 Python 只下载官方固定 OCI 字节，受管 SCP 发布到 ECS，ECS 原量测器验证后才导入。没有增加代理、镜像平台、常驻服务或本地容器。
 
-三组件的官方 linux/amd64 manifest、config 和版本仍由固定提交的 `compact-build-resources.py` 决定。`fetch-buildkit-build-input.py --component` 只允许 `buildkit`、`qdrant`、`prometheus`、`alertmanager`；省略参数继续原 BuildKit 入口和缓存契约。Qdrant 官方重复空层保留原有顺序与每一位置的 DiffID，仅对相同 digest、大小、media type 的 blob 去重下载和传输；重复 tar 成员、冲突 descriptor 或额外未引用数据仍拒绝。
+固定镜像的官方 linux/amd64 manifest、config 和版本仍由固定提交的 `compact-build-resources.py` 决定。`fetch-buildkit-build-input.py --component` 只允许 `buildkit`、`qdrant`、`prometheus`；省略参数继续原 BuildKit 入口和缓存契约。Qdrant 官方重复空层保留原有顺序与每一位置的 DiffID，仅对相同 digest、大小、media type 的 blob 去重下载和传输；重复 tar 成员、冲突 descriptor 或额外未引用数据仍拒绝。
 
 代码提交后，可在 ECS 开机前用既有本地 Python 预取（不是运行测试）：
 
 ```powershell
 Set-Location D:/AI/lunwen1/DoorHandleCatch
-foreach ($component in 'qdrant','prometheus','alertmanager') {
+foreach ($component in 'qdrant','prometheus') {
     python -I -B script/jenkins/fetch-buildkit-build-input.py `
         --component $component `
         --resources-source script/docker/compact-build-resources.py `

@@ -217,10 +217,10 @@ def test_memory_admission_keeps_nested_python_java_and_passes_owned_fixture_read
     assert args == (5888 * 1024 ** 2 if prepared else 0,)
     assert type(args[0]) is int
     owners = keywords['fixture_owners']
-    assert set(owners) == {'qdrant', 'prometheus', 'alertmanager', 'redis'}
+    assert set(owners) == {'qdrant', 'prometheus', 'redis'}
     for callback in owners.values(): callback()
     vector.owned.assert_called_once_with(); redis.owned.assert_called_once_with()
-    assert metrics.owned.call_args_list == [mock.call('prometheus'), mock.call('alertmanager')]
+    assert metrics.owned.call_args_list == [mock.call('prometheus')]
 
 
 def test_serial_larger_tool_is_not_falsely_added_to_the_nested_java_bound():

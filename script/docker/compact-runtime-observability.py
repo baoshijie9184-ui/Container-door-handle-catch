@@ -1,4 +1,4 @@
-"""Prometheus/Alertmanager inside the existing owned candidate runtime.
+"""Prometheus inside the existing owned candidate runtime.
 
 No host ports, provider credentials, collector or Langfuse stack. Monitoring
 volumes remain live across business-data recovery; they are not business clones.
@@ -12,7 +12,7 @@ import secrets
 import time
 import urllib.parse
 
-COMPONENTS = ('prometheus', 'alertmanager')
+COMPONENTS = ('prometheus',)
 APPLICATIONS = ('backend', 'detection-worker', 'mem0')
 JOBS = {'monolith': ('backend:8080', '/actuator/prometheus'),
         'detection-worker': ('detection-worker:9464', '/metrics'), 'mem0': ('mem0:9465', '/metrics')}
@@ -20,7 +20,7 @@ PHASES = ('after-start', 'after-restart', 'after-volume-restore', 'after-busines
 TOKEN_FILE = '/run/observability-secrets/metrics-token'
 CONFIG_VOLUME = 'runtime-observability-config'
 SECRET_VOLUME = 'runtime-observability-private'
-FILES = {'prometheus.yml': 'prometheus.yml', 'alerts.yml': 'alerts.yml', 'alertmanager.yml': 'alertmanager.yml'}
+FILES = {'prometheus.yml': 'prometheus.yml', 'alerts.yml': 'alerts.yml'}
 RULES = {'DoorhandleMonolithUnavailable', 'DoorhandleTelemetryDropped', 'DoorhandleTelemetryExportFailed',
          'DoorhandleWorkerNotReady', 'DoorhandleJvmMemoryPressure', 'DoorhandleFilesystemLow'}
 
@@ -66,7 +66,7 @@ def prepare_images(ctx):
 
 def select_overlay(config, images):
     """Normalize only our optional overlay before the existing isolation gate."""
-    require(set(images) == set(COMPONENTS), 'Both pinned monitoring images are required')
+    require(set(images) == set(COMPONENTS), 'The pinned Prometheus image is required')
     for name in list(config['services']):
         if name.startswith('langfuse-') or name == 'langfuse':
             del config['services'][name]
@@ -141,7 +141,7 @@ def install(ctx):
     files = {name: (ctx.source / 'deploy/observability' / source).read_text(encoding='utf8')
              for name, source in FILES.items()}
     volumes = {name: ctx.config['volumes'][name]['name'] for name in
-               (CONFIG_VOLUME, SECRET_VOLUME, 'doorhandle-prometheus', 'doorhandle-alertmanager')}
+               (CONFIG_VOLUME, SECRET_VOLUME, 'doorhandle-prometheus')}
     for name in volumes.values():
         ctx.ops.docker('volume', 'create', '--label', 'io.doorhandle.rehearsal=' + ctx.project, name)
         row = json.loads(ctx.ops.docker('volume', 'inspect', name))[0]
@@ -152,7 +152,7 @@ def install(ctx):
         command += ['--mount', 'type=volume,src=' + name + ',dst=/v' + str(index)]
     code = """import json,os,sys
 data=json.load(sys.stdin)
-for index in range(4):
+for index in range(3):
  p='/v'+str(index);os.chown(p,10001,10001);os.chmod(p,0o750 if index>1 else 0o550)
 for name,body in data['files'].items():
  p='/v0/'+name;f=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o440);os.write(f,body.encode());os.close(f);os.chown(p,10001,10001)
@@ -166,7 +166,7 @@ p='/v1/metrics-token';f=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o440);os.wri
 
 def request(ctx, service, path):
     require(service in COMPONENTS and path.startswith('/') and '\n' not in path, 'Invalid monitoring readback')
-    url = 'http://' + service + (':9090' if service == 'prometheus' else ':9093') + path
+    url = 'http://' + service + ':9090' + path
     code = """import sys,urllib.request
 with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[1],timeout=5) as response:
  raw=response.read(2097153)
@@ -176,6 +176,12 @@ with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[
     raw = ctx.ops.docker('exec', ctx.row('mem0')['Id'], 'python', '-B', '-c', code, url, timeout=10)
     require(len(raw) <= 2 * 1024 * 1024, 'Oversized monitoring evidence')
     return json.loads(raw)
+
+
+def require_local_alerts(value):
+    require(value.get('status') == 'success'
+            and value.get('data') == {'activeAlertmanagers': [], 'droppedAlertmanagers': []},
+            'Prometheus must evaluate alerts without notification destinations')
 
 
 def require_targets(value, since=0):
@@ -244,19 +250,8 @@ def verify(ctx, phase):
     require(evidence['rules'].get('status') == 'success' and {rule.get('name') for rule in rules} == RULES
             and all(rule.get('health') == 'ok' and not rule.get('lastError') for rule in rules),
             'The existing production alert rules did not load and evaluate')
-    evidence['alertmanagers'] = request(ctx, 'prometheus', '/api/v1/alertmanagers')
-    require(evidence['alertmanagers'].get('status') == 'success'
-            and evidence['alertmanagers'].get('data', {}).get('activeAlertmanagers') == [{'url': 'http://alertmanager:9093/api/v2/alerts'}],
-            'The actual rule engine has no candidate Alertmanager destination')
-    evidence['alertmanagerStatus'] = request(ctx, 'alertmanager', '/api/v2/status')
-    actual = evidence['alertmanagerStatus'].get('config', {}).get('original', '')
-    # AM returns normalized YAML; inspect its reviewed route values, not byte formatting.
-    require('receiver: local-console' in actual and 'alertname' in actual and 'job' in actual
-            and 'group_wait: 30s' in actual and 'group_interval: 5m' in actual
-            and 'repeat_interval: 4h' in actual,
-            'Actual Alertmanager grouping/receiver configuration differs')
-    evidence['alertmanagerGroups'] = request(ctx, 'alertmanager', '/api/v2/alerts/groups')
-    require(isinstance(evidence['alertmanagerGroups'], list), 'Alertmanager groups endpoint failed')
+    evidence['notificationTargets'] = request(ctx, 'prometheus', '/api/v1/alertmanagers')
+    require_local_alerts(evidence['notificationTargets'])
     value = {**ctx.context(), 'kind': 'doorhandle-runtime-observability', 'project': ctx.project,
         'phase': phase, 'status': 'PASS', 'containers': containers, 'volumes': ctx.owner['observabilityVolumes'],
         'scrapedAfterUnix': since,
@@ -298,7 +293,7 @@ def validate_files(proof, directory, read_json):
                 and value.get('storageRecovery') == monitoring.get('storageRecovery'),
                 'Actual monitoring readback identity or bytes changed')
         current = value.get('volumes', {})
-        require(set(current) == {CONFIG_VOLUME, SECRET_VOLUME, 'doorhandle-prometheus', 'doorhandle-alertmanager'}
+        require(set(current) == {CONFIG_VOLUME, SECRET_VOLUME, 'doorhandle-prometheus'}
                 and all(name == proof['project'] + '_' + key for key, name in current.items())
                 and (volumes is None or current == volumes), 'Monitoring volumes changed across business recovery')
         volumes = current
@@ -320,13 +315,7 @@ def validate_files(proof, directory, read_json):
         require(evidence['rules'].get('status') == 'success' and {rule.get('name') for rule in rules} == RULES
                 and all(rule.get('health') == 'ok' and not rule.get('lastError') for rule in rules),
                 'Archived runtime rule evaluation is incomplete')
-        require(evidence['alertmanagers'].get('status') == 'success'
-                and evidence['alertmanagers'].get('data', {}).get('activeAlertmanagers') == [{'url': 'http://alertmanager:9093/api/v2/alerts'}],
-                'Archived actual Alertmanager destination is missing')
-        actual = evidence['alertmanagerStatus'].get('config', {}).get('original', '')
-        require(all(text in actual for text in ('receiver: local-console', 'alertname', 'job', 'group_wait: 30s',
-                    'group_interval: 5m', 'repeat_interval: 4h')) and isinstance(evidence['alertmanagerGroups'], list),
-                'Archived actual Alertmanager route/grouping is missing')
+        require_local_alerts(evidence['notificationTargets'])
     for component, reference in monitoring['images'].items():
         require(reference.get('file') == 'checkout/work/observability-fixture/' + component + '-image/image.json',
                 'Monitoring image proof escaped the same-build fixture')
