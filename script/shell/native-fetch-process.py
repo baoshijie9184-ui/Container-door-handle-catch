@@ -98,9 +98,16 @@ class Records:
             return
         # Fixed module only. SDK stdio and JSON-RPC messages remain untouched.
         sys.argv = ['mcp-server-fetch']; sys.dont_write_bytecode = True
-        with open(os.devnull, 'wb') as sink:
-            os.dup2(sink.fileno(), 2)
-        runpy.run_module('mcp_server_fetch', run_name='__main__')
+        # The Java STDIO transport treats EOF on stderr as a closed connection.
+        # Keep the pipe open while discarding Fetch diagnostics.
+        original_stderr = os.dup(2)
+        try:
+            with open(os.devnull, 'wb') as sink:
+                os.dup2(sink.fileno(), 2)
+            runpy.run_module('mcp_server_fetch', run_name='__main__')
+        finally:
+            os.dup2(original_stderr, 2)
+            os.close(original_stderr)
 
     def abandon(self, nonce):
         # Only the Java pre-launch failure branch uses this command. No SDK connection exists yet.
