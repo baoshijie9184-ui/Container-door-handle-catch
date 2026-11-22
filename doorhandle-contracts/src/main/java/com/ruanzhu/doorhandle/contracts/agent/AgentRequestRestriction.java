@@ -12,6 +12,7 @@ public enum AgentRequestRestriction {
             "当前请求涉及使用终端或执行系统命令。Agent 无权使用终端或执行这些命令，人工确认也不能授予执行权限。");
 
     private static final int MATCH_FLAGS = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
+    private static final String CLAUSE_BOUNDARY = "[。；，、,;\\r\\n]+";
     private static final String CREDENTIAL = "(?:密码(?!策略|规则|要求|格式|强度)|口令|密[钥鑰](?!类型|格式)|访问令牌|认证令牌|数据库连接串|"
             + "凭据(?!策略|规则|管理|格式)|"
             + "\\b(?:passwords?|passphrases?|api[ _-]*keys?|secret[ _-]*keys?|access[ _-]*tokens?|"
@@ -52,14 +53,14 @@ public enum AgentRequestRestriction {
     public static Optional<AgentRequestRestriction> detect(String text) {
         if (text == null || text.isBlank()) return Optional.empty();
         String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
-        for (String clause : normalized.split("[。；，、;\\r\\n]+")) {
+        for (String clause : normalized.split(CLAUSE_BOUNDARY)) {
             if (PROHIBITION.matcher(clause.stripLeading()).find()) continue;
             var reset = RESET_INSTRUCTIONS.matcher(clause);
             if (CREDENTIAL_REQUEST.matcher(reset.find() ? clause.substring(reset.end()) : clause).find()) {
                 return Optional.of(PROTECTED_CREDENTIALS);
             }
         }
-        for (String clause : normalized.split("[。；，、;\\r\\n]+|并且|然后|并(?=执行|运行|启动|打开|进入|调用)|(?i:\\band then\\b)")) {
+        for (String clause : normalized.split(CLAUSE_BOUNDARY + "|并且|然后|并(?=执行|运行|启动|打开|进入|调用)|(?i:\\band then\\b)")) {
             String command = clause.stripLeading();
             if (!PROHIBITION.matcher(command).find() && !TERMINAL_EXPLANATION.matcher(command).find()
                     && TERMINAL_REQUEST.matcher(command).find()) {
