@@ -2,7 +2,7 @@
 
 8080 由 Higress 接收 HTTP 流量。容器网络中的 Nginx 负责前端文件、OSS 上传代理和业务路由。Higress 控制台、Nginx 和 OTLP 接收端口都留在容器网络。单机镜像使用 Higress gateway 模式，关闭自带的指标和日志组件。
 
-Higress 通过 OTLP gRPC 导出入口跨度。Java 和 Mem0 沿用既有 OTLP HTTP 埋点，经 Collector 转发到 Langfuse。HTTP 与排队的 Agent 输入之间只保存 W3C `traceparent`。工作台继续执行和专业 Agent 复用原任务的追踪上下文。请求头里的账号凭据、正文和完整 URL 不进入导出的跨度。Prometheus 从原有的业务和 Worker 指标端点采集数据。
+Higress 通过 OTLP gRPC 导出入口跨度。Java 和 Mem0 沿用既有 OTLP HTTP 埋点，经 Collector 转发到 Langfuse。HTTP 与排队的 Agent 输入之间通过项目 Redis 传递 W3C `traceparent`，有效期 30 分钟。工作台继续执行和专业 Agent 可在 24 小时内复用原任务的追踪上下文。请求头里的账号凭据、正文和完整 URL 不进入导出的跨度。Prometheus 从原有的业务和 Worker 指标端点采集数据。
 
 ## 单机部署与验收
 

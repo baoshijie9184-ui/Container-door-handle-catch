@@ -92,8 +92,12 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 emitter.complete();
             }
         };
-        taskExecutor.execute(new DelegatingSecurityContextRunnable(io.opentelemetry.context.Context.current().wrap(task), SecurityContextHolder.getContext()));
+        executeAsync(task);
         return emitter;
+    }
+    private void executeAsync(Runnable task) {
+        var traced = io.opentelemetry.context.Context.current().wrap(task);
+        taskExecutor.execute(new DelegatingSecurityContextRunnable(traced, SecurityContextHolder.getContext()));
     }
     private ChatMessageResponse execute(AgentActor actor, ChatSendMessageRequest request, Consumer<ChatStreamEvent> output,
             AtomicReference<AgentConversationApi.Run> holder, AtomicBoolean disconnected) {
@@ -121,7 +125,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
         var holder = new AtomicReference<AgentConversationApi.Run>();
         var disconnected = new AtomicBoolean();
         Runnable cancel = () -> { disconnected.set(true); var run = holder.get(); if (run != null) run.cancel().run(); result.cancel(true); };
-        taskExecutor.execute(new DelegatingSecurityContextRunnable(() -> {
+        executeAsync(() -> {
             try {
                 var saved = execute(supplied, request, event -> {}, holder, disconnected, requestId, events);
                 String text = saved.getContent(); java.util.List<AgentCards.Reference> cards = java.util.List.of();
@@ -133,7 +137,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 log.warn("持久 AG-UI 会话执行失败：errorType={}", error.getClass().getSimpleName());
                 result.completeExceptionally(new IllegalStateException("智能助手执行失败，请稍后重试"));
             }
-        }, SecurityContextHolder.getContext()));
+        });
         return new AgentChatSessionApi.Run(result, cancel);
     }
     private ChatMessageResponse execute(AgentActor actor, ChatSendMessageRequest request, Consumer<ChatStreamEvent> output,

@@ -2,7 +2,8 @@ package com.ruanzhu.doorhandle.module.ai.workbench;
 
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
-import com.ruanzhu.doorhandle.framework.observability.TraceParent;
+import com.ruanzhu.doorhandle.framework.observability.TraceContextStore;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.instrumentation.reactor.v3_1.ContextPropagationOperator;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
@@ -39,6 +40,13 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
     private final WorkbenchStore store;private final WorkbenchProperties settings;private final BusinessUserDirectory users;
     private final ObjectProvider<WorkbenchSessionApi> sessions;private final RoleAgentFactory factory;private final AgentJournal journal;
     private final String instance=UUID.randomUUID().toString();
+    private TraceContextStore traceContexts;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setTraceContextStore(TraceContextStore store){this.traceContexts=store;}
+    private Context taskTrace(Object logicalTaskId){
+        return traceContexts!=null&&logicalTaskId instanceof String id
+                ?traceContexts.restore("workbench:"+id):Context.root();
+    }
     private volatile long dispatchCursor;
     private record Cancellation(String run,String task,Runnable callback){}
     private final Map<String,Cancellation> cancellations=new ConcurrentHashMap<>();
@@ -112,9 +120,9 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             if(continuation&&!actor.role().name().equals(data.get("role")))throw fail(403,"账号角色已变化，不能继续原任务");
             data.put("username",actor.username());data.put("role",actor.role().name());data.put("runId",runId);data.put("instance",instance);data.put("yieldReady",false);data.put("title",bounded(question,200));
             if(!continuation) {
-                String traceparent=TraceParent.capture();
-                if(traceparent!=null)data.put("traceparent",traceparent);
-                data.put("logicalTaskId",UUID.randomUUID().toString());
+                String logicalTaskId=UUID.randomUUID().toString();
+                data.put("logicalTaskId",logicalTaskId);
+                if(traceContexts!=null)traceContexts.remember("workbench:"+logicalTaskId,Duration.ofHours(24));
                 data.put("planRequired",settings.isPlans()&&!simple(question));
                 String preference=modelSelectionEnabled?ConversationModelPreferences.read(store,actor,session).modelId():"";
                 data.put("modelId",preference);
@@ -235,7 +243,6 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         return store.locked(actor.userId(),()->{var origin=store.require(actor.userId(),session,parent);if(!Objects.equals(parentTask,origin.data().get("logicalTaskId"))||!Objects.equals(parentRun,origin.data().get("runId"))||origin.status().equals("CANCELLED"))throw fail(409,"父任务执行尝试已变化");store.assertAttempt(store.attempt(origin));String id=WorkbenchStore.stable(actor.userId(),session,"child:"+parentTask+":"+callId);var existing=store.find(actor.userId(),session,id);if(existing!=null)return existing;
             long pending=store.pendingChildCount(actor.userId());if(pending>=16)throw fail(429,"本人未结束的专业任务已达上限");
             var data=new LinkedHashMap<String,Object>();data.put("parentId",parent);data.put("parentTaskId",store.require(actor.userId(),session,parent).data().get("logicalTaskId"));data.put("specialist",specialist);data.put("question",question);data.put("title",bounded(question,160));data.put("username",actor.username());data.put("role",actor.role().name());data.put("logicalTaskId",UUID.randomUUID().toString());
-            if(origin.data().get("traceparent") instanceof String traceparent)data.put("traceparent",traceparent);
             data.put("modelId",Objects.toString(origin.data().get("modelId"),""));if(origin.data().containsKey("modelConfigVersion"))data.put("modelConfigVersion",origin.data().get("modelConfigVersion"));if(origin.data().containsKey("modelDefault"))data.put("modelDefault",origin.data().get("modelDefault"));return store.create(actor.userId(),session,id,"CHILD","QUEUED",data);
         });
     }
@@ -256,7 +263,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
                         if(current.legacyClockEvidence()!=null||!current.kind().equals("EXECUTION")||!current.status().equals("READY"))return null;
                         String request=WorkbenchStore.stable(user,session,"continue:"+id+":"+current.revision());
                         // This facade only admits the local inbox; no model or external work runs here.
-                        try(var trace=TraceParent.restore((String)current.data().get("traceparent")).makeCurrent()){
+                        try(var trace=taskTrace(current.data().get("logicalTaskId")).makeCurrent()){
                             sessions.getObject().continueSession(actor,session,request,bounded(Objects.toString(current.data().get("continuation"),"按已确认的检查点继续任务；不要重复已完成操作。"),7500));
                         }
                         return null;
@@ -286,7 +293,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             scope.repairState();
             var modelBudget=new ModelBudgetContext(actor,attemptRun);
             var call=agent.call(List.of(new UserMessage((String)job.data().get("question"))),context);
-            var parent=TraceParent.restore((String)job.data().get("traceparent"));
+            var parent=taskTrace(job.data().get("parentTaskId"));
             String text=ContextPropagationOperator.runWithContext(call,parent)
                     .contextWrite(reactorContext->reactorContext.put(ModelBudgetContext.CONTEXT_KEY,modelBudget))
                     .timeout(Duration.ofMinutes(10)).block().getTextContent();
