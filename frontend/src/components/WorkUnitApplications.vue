@@ -1,31 +1,54 @@
 <template>
   <section class="applications app-panel" aria-labelledby="my-applications" :aria-busy="loading">
     <header>
-      <h2 id="my-applications">我的检测申请</h2>
-      <div class="application-actions">
-        <el-button :loading="loading" @click="load()">刷新申请</el-button>
-        <el-button type="primary" @click="open">申请检测任务</el-button>
+      <div class="application-overview">
+        <h2 id="my-applications">我的检测申请</h2>
+        <p v-if="loaded && !loadError && !keyword && (waitingCount || rejectedCount)" class="application-summary">
+          <span v-if="waitingCount">待主管审批 {{ waitingCount }} 条</span>
+          <span v-if="rejectedCount">已驳回 {{ rejectedCount }} 条</span>
+        </p>
+        <p v-else-if="keyword" class="application-summary">按申请编号筛选</p>
       </div>
+      <router-link v-if="keyword" :to="allApplications" @click="historyOpen = true">查看全部申请</router-link>
+      <el-button v-else link type="primary" aria-controls="my-application-history" :aria-expanded="historyExpanded" @click="historyOpen = !historyOpen">
+        {{ historyExpanded ? '收起申请记录' : loaded && !loadError ? '查看申请记录（'+rows.length+'）' : '查看申请记录' }}
+      </el-button>
     </header>
-    <p v-if="notice" role="status">{{ notice }}</p>
-    <el-alert v-if="loadError" :title="loadError" type="warning" :closable="false" role="alert" />
-    <template v-else>
-      <ul v-if="visibleRows.length">
-        <li v-for="row in visibleRows" :key="row.workUnitId" :data-status="row.status">
-          <span>
-            <strong>{{ statusLabel(row) }}</strong><small>{{ row.workUnitId }} · 最多 {{ row.imageCount }} 张</small>
-            <small v-if="row.status==='REJECTED' && row.decisionReason">驳回原因 {{ row.decisionReason }}</small>
-          </span>
-          <router-link v-if="linkedTask(row)" :to="{path:'/inspection/tasks',query:{inbox:'0',keyword:row.batchId}}">查看已派任务</router-link>
-          <el-button v-else-if="row.status==='WAITING' && needsDetectionBatch(row)" link type="danger"
-            @click="withdrawal=row">撤回申请</el-button>
+    <el-alert v-if="loadError" :title="loadError" type="warning" :closable="false" role="alert">
+      <el-button link type="primary" :loading="loading" @click="load()">重新读取</el-button>
+    </el-alert>
+    <div v-show="historyExpanded" id="my-application-history" class="application-history">
+      <ul v-if="historyExpanded && !loadError && visibleRows.length">
+        <li v-for="{ row, createdAt, imageCount } in visibleRows" :key="row.workUnitId" :data-status="row.status">
+          <div class="application-record">
+            <div class="application-record-heading">
+              <strong>{{ statusLabel(row) }}</strong>
+              <small v-if="imageCount != null">最多 {{ imageCount }} 张</small>
+              <small v-if="createdAt">申请于 {{ createdAt }}</small>
+            </div>
+            <p v-if="row.remark" class="application-note">{{ row.remark }}</p>
+            <p v-if="row.status==='REJECTED' && row.decisionReason" class="application-reason">
+              <strong>驳回原因</strong> {{ row.decisionReason }}
+            </p>
+          </div>
+          <div class="application-row-actions">
+            <router-link v-if="linkedTask(row)" :to="{path:'/inspection/tasks',query:{inbox:'0',keyword:row.batchId}}">查看已派任务</router-link>
+            <el-button v-else-if="row.status==='WAITING' && needsDetectionBatch(row)" link type="danger"
+              @click="withdrawal=row">撤回申请</el-button>
+            <details class="application-identifiers">
+              <summary>编号</summary>
+              <dl>
+                <dt>申请编号</dt><dd><code>{{ row.workUnitId }}</code></dd>
+                <template v-if="row.sourceBatchId"><dt>原图批次编号</dt><dd><code>{{ row.sourceBatchId }}</code></dd></template>
+                <template v-if="linkedTask(row)"><dt>已派任务编号</dt><dd><code>{{ row.batchId }}</code></dd></template>
+              </dl>
+            </details>
+          </div>
         </li>
       </ul>
-      <p v-else-if="loaded">{{ keyword ? '没有匹配的检测申请' : '暂无检测申请' }}</p>
-      <el-button v-if="!keyword && rows.length>5" link type="primary" :aria-expanded="showAll" @click="showAll=!showAll">
-        {{ showAll ? '收起历史申请' : '查看全部申请（'+rows.length+'）' }}
-      </el-button>
-    </template>
+      <p v-else-if="loaded && !loadError">{{ keyword ? '没有匹配的检测申请' : '暂无检测申请' }}</p>
+      <el-button v-if="!loadError" link type="primary" :loading="loading" @click="load()">刷新申请</el-button>
+    </div>
     <WorkUnitApplicationDecision v-if="withdrawal" :application="withdrawal" action="withdraw"
       @close="withdrawal=null" @completed="recordWithdrawal" @refresh="load()" />
     <el-dialog v-model="dialog" title="申请检测任务" width="min(460px, 94vw)" destroy-on-close
@@ -51,8 +74,12 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { captureAccountRequest } from '@/api/request'
 import { useUserStore } from '@/stores/user'
+import { beijingDateTime } from '@/utils/beijingTime'
+import { knownCount } from '@/utils/countPresentation'
 import { needsDetectionBatch } from '@/utils/workUnitApplications'
 import WorkUnitApplicationDecision from './WorkUnitApplicationDecision.vue'
 
@@ -60,15 +87,24 @@ const props = defineProps({ keyword: {type:String, default:''} })
 const endpoint = '/api/detection/tasks/work-units'
 const api = captureAccountRequest()
 const user = useUserStore()
+const route = useRoute()
 const rows = ref([]), loaded = ref(false), loading = ref(false), loadError = ref('')
-const dialog = ref(false), saving = ref(false), saveError = ref(''), notice = ref('')
+const dialog = ref(false), saving = ref(false), saveError = ref('')
 const imageCount = ref(1), remark = ref(''), submitted = ref(null)
-const withdrawal = ref(null), showAll = ref(false)
+const withdrawal = ref(null), historyOpen = ref(false)
 let timer, disposed = false, reading = false, read = 0
 
+const historyExpanded = computed(() => Boolean(props.keyword) || historyOpen.value)
+const allApplications = computed(() => ({path:route.path, query:{...route.query, keyword:undefined, page:undefined}}))
+const waitingCount = computed(() => rows.value.filter(row => row.status === 'WAITING').length)
+const rejectedCount = computed(() => rows.value.filter(row => row.status === 'REJECTED').length)
 const visibleRows = computed(() => {
   const matching = props.keyword ? rows.value.filter(row => row.workUnitId === props.keyword) : rows.value
-  return showAll.value || props.keyword ? matching : matching.slice(0, 5)
+  return matching.map(row => ({
+    row,
+    createdAt: row.createdAt ? beijingDateTime(row.createdAt).slice(0, 16) : '',
+    imageCount: knownCount(row.imageCount)
+  }))
 })
 const linkedTask = row => /^det_folder_[a-f0-9]{32}$/.test(row.batchId || '')
 function statusLabel(row) {
@@ -82,6 +118,7 @@ function open() {
   saveError.value = ''
   dialog.value = true
 }
+defineExpose({ open })
 async function load(quiet = false) {
   if (disposed || (quiet && reading)) return
   const generation = ++read
@@ -103,7 +140,7 @@ async function load(quiet = false) {
 }
 function recordWithdrawal(saved) {
   rows.value = rows.value.map(row => row.workUnitId === saved.workUnitId ? saved : row)
-  notice.value = '申请已撤回 · ' + saved.workUnitId
+  ElMessage.success('申请已撤回')
   withdrawal.value = null
   void load()
 }
@@ -117,8 +154,8 @@ async function apply() {
     if (data?.code !== 200 || !data.data?.workUnitId) throw new Error(data?.message || '申请结果暂未确认')
     if (disposed) return
     rows.value = [data.data, ...rows.value.filter(row => row.workUnitId !== data.data.workUnitId)]
-    notice.value = (linkedTask(data.data) ? '申请已派单 · ' : '申请已提交 · ') + data.data.workUnitId
     dialog.value = false
+    ElMessage.success(linkedTask(data.data) ? '申请已派单' : '申请已提交')
     await load()
   } catch (error) {
     if (!disposed) saveError.value = error.response?.data?.message || error.message || '申请结果暂未确认，请重试提交。'
@@ -134,16 +171,29 @@ onBeforeUnmount(() => { disposed = true; window.clearInterval(timer) })
 </script>
 
 <style scoped>
-.applications { padding: 14px 16px; min-width: 0; }
-.applications header, .applications li, .application-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.applications { padding: 10px 16px; min-width: 0; }
+.applications header, .applications li, .application-overview, .application-summary, .application-record-heading,
+.application-row-actions, .application-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .applications header, .applications li { justify-content: space-between; }
-.applications h2 { margin: 0; font-size: 16px; }
+.applications header { min-height: 34px; }
+.applications h2 { margin: 0; font-size: 15px; }
 .applications p, .applications small { color: var(--app-text-secondary); font-size: 13px; }
-.applications p { margin: 8px 0 0; }
-.applications ul { margin: 8px 0 0; padding: 0; list-style: none; }
-.applications li { padding-top: 8px; margin-top: 8px; border-top: 1px solid var(--app-border); overflow-wrap: anywhere; }
-.applications small { display: block; margin-top: 3px; }
-.applications li a { color: var(--app-primary); }
+.applications p { margin: 0; }
+.applications header a, .applications li a { color: var(--app-primary); font-size: 13px; }
+.application-history { padding-top: 4px; }
+.application-history ul { margin: 0; padding: 0; list-style: none; }
+.applications li { align-items: baseline; padding: 10px 0; border-top: 1px solid var(--app-border); overflow-wrap: anywhere; }
+.application-record { flex: 1 1 300px; min-width: 0; }
+.application-record-heading strong { font-size: 14px; }
+.applications li[data-status=REJECTED] .application-record-heading strong { color: var(--app-danger); }
+.applications li[data-status=WAITING] .application-record-heading strong { color: var(--app-primary); }
+.application-record .application-note, .application-record .application-reason { margin-top: 4px; }
+.application-identifiers { max-width: 100%; min-width: 0; }
+.application-identifiers summary { color: var(--app-text-secondary); cursor: pointer; font-size: 13px; }
+.application-identifiers dl { margin: 7px 0 0; }
+.application-identifiers dt { margin-top: 4px; color: var(--app-text-secondary); font-size: 12px; }
+.application-identifiers dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
+.applications > .el-alert { margin-top: 6px; }
 .application-actions :deep(.el-button) { margin: 0; min-height: 44px; }
 .dialog-actions { justify-content: flex-end; margin-top: 14px; }
 </style>

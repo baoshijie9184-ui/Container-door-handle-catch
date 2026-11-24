@@ -9,10 +9,10 @@
         <router-link v-if="supervisor && (uploadsOnly || taskList)" to="/inspection/tasks"><AppIcon name="Tickets" :size="16"/>任务总表</router-link>
         <router-link v-if="!supervisor && uploadsOnly" :to="employeeScopeLink(true)"><AppIcon name="Tickets" :size="16"/>我的待办</router-link>
         <el-button v-if="supervisor && !uploadsOnly && !verificationList" type="primary" @click="openNew()"><AppIcon name="Plus"/>新建文件夹任务</el-button>
+        <el-button v-if="showApplications" type="primary" aria-haspopup="dialog" :disabled="!applicationPanel" @click="applicationPanel?.open()">申请检测任务</el-button>
       </nav>
     </header>
     <InspectionFlowNav class="board-flow" />
-    <WorkUnitApplications v-if="showApplications" :key="user.accountContext" :keyword="applicationKeyword" />
     <div v-if="applicationId" class="application-dispatch" aria-live="polite">
       <div v-if="application">
         <strong>{{ application.status==='WAITING' ? '为检测申请选择原图批次' : '为已批准的申请补选原图批次' }}</strong>
@@ -72,6 +72,7 @@
           <strong class="folder-name" :title="recordFolderLabel(row)">{{ recordFolderLabel(row) }}</strong>
           <div class="folder-metadata">
             <span v-if="uploadsOnly">{{ row.totalImages ?? '—' }} 张图片</span>
+            <span v-else-if="!supervisor && row.registeredAt">登记 {{ beijingDateTime(row.registeredAt).slice(0, 16) }}</span>
             <FolderMetadataLink :task-id="row.taskId" />
           </div>
         </template></el-table-column>
@@ -108,6 +109,7 @@
             <div>
               <h2>{{ recordFolderLabel(row) }}</h2>
               <small v-if="row.totalImages != null">{{ row.totalImages }} 张图片</small>
+              <small v-if="!supervisor && !uploadsOnly && row.registeredAt" class="card-task-date">登记 {{ beijingDateTime(row.registeredAt).slice(0, 16) }}</small>
             </div>
             <FolderMetadataLink :task-id="row.taskId" />
           </header>
@@ -134,6 +136,7 @@
       </div>
       <footer><span>{{ loading ? '正在读取…' : '共 '+total+' 项' }}</span><el-pagination v-if="total>20" layout="prev, pager, next" :pager-count="5" :page-size="20" :total="total" :current-page="page" @current-change="turn"/></footer>
     </section>
+    <WorkUnitApplications v-if="showApplications" ref="applicationPanel" :key="user.accountContext" :keyword="applicationKeyword" />
     <TaskDialogs v-if="activeAction" :key="activeAction.action + ':' + activeAction.taskId" :board-request="activeAction" @dismiss="closeAction" />
     <el-dialog v-model="dialog" :title="applicationId ? '确认申请派单' : target ? '改派检测员工' : sourceUpload ? '派发检测任务' : '新建文件夹任务'" width="min(620px, 95vw)" destroy-on-close :close-on-click-modal="false" :show-close="!busy" :close-on-press-escape="!busy">
       <el-form label-position="top" @submit.prevent>
@@ -182,6 +185,7 @@ import WorkUnitApplications from '@/components/WorkUnitApplications.vue'
 import {humanStep,modelStep} from '@/utils/taskBoardStages'
 import {boardDialog,employeeInbox,listLocation} from '@/utils/taskBoardNavigation'
 import {needsDetectionBatch} from '@/utils/workUnitApplications'
+import {beijingDateTime} from '@/utils/beijingTime'
 import {mutationHeaders} from '@/utils/mutationVersion'
 import {useUserStore} from '@/stores/user'
 const TaskDialogs=defineAsyncComponent(()=>import('./ImageDetection.vue'))
@@ -212,6 +216,7 @@ const assignedTaskId=computed(()=>!uploadsOnly.value && typeof route.query.assig
 const applicationKeyword=computed(()=>keyword.value.startsWith('WU-') ? keyword.value : '')
 const showApplications=computed(()=>user.isAuthenticated && user.role==='INSPECTOR' && !uploadsOnly.value && !assignedTaskId.value
   && (inboxKind.value==='detection' || (!inboxKind.value && (!keyword.value || applicationKeyword.value))))
+const applicationPanel=ref(null)
 const page=computed(()=>Number.isSafeInteger(Number(route.query.page)) && Number(route.query.page)>0 ? Number(route.query.page) : 1)
 const query=ref(''),uploaderInput=ref(''),total=ref(0),rows=ref([]),loading=ref(false),error=ref('')
 const boardIcon=computed(()=>uploadsOnly.value ? 'FolderOpened' : verificationList.value || inboxKind.value==='verification' ? 'CircleCheck' : 'Tickets')
@@ -492,6 +497,7 @@ onBeforeUnmount(()=>{clearInterval(timer);read++;folderRead++})
   display:flex; align-items:center; gap:0 12px; flex-wrap:wrap; margin-top:1px;
   color:var(--app-text-secondary); font-size:12px;
 }
+.card-task-date { display:block; }
 .person-label { color:var(--app-text-secondary); }
 .board-table progress { display:block; width:min(100%,126px); height:6px; margin-top:4px; accent-color:var(--app-primary); }
 .board-cards { display:none; }

@@ -142,10 +142,18 @@
           <p class="history-scope-note"><AppIcon name="Lock" :size="15" />{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测结果与人工结论分别记录。</p>
           <form class="history-query-form" @submit.prevent="onHistorySearch">
             <label for="history-keyword" class="history-query-keyword">任务、文件夹、工单或批次<el-input id="history-keyword" v-model="historySearchKeyword" clearable placeholder="输入编号或文件夹关键词"><template #prefix><AppIcon name="Search" :size="15" /></template></el-input></label>
-            <label for="history-collector">采集人员<el-input id="history-collector" v-model="historyFilterCollector" clearable placeholder="输入采集人员" /></label>
-            <label for="history-device">设备名称<el-input id="history-device" v-model="historyFilterDevice" clearable placeholder="输入采集设备名称" /></label>
-            <label for="history-region">采集区域<el-input id="history-region" v-model="historyFilterRegion" clearable placeholder="输入采集区域" /></label>
-            <div class="history-query-actions"><el-button type="primary" native-type="submit" :loading="historyLoading"><AppIcon name="Search" :size="15" />查询</el-button><el-button v-if="hasHistoryFilters" @click="onHistoryReset"><AppIcon name="Refresh" :size="15" />重置</el-button></div>
+            <div class="history-query-actions">
+              <el-button type="primary" native-type="submit" :loading="historyLoading"><AppIcon name="Search" :size="15" />查询</el-button>
+              <el-button native-type="button" :aria-expanded="historyMoreFiltersOpen" aria-controls="history-advanced-filters" @click="historyMoreFiltersOpen = !historyMoreFiltersOpen">
+                <AppIcon name="Filter" :size="14" />更多筛选<span v-if="historyAdvancedCount">（{{ historyAdvancedCount }}）</span>
+              </el-button>
+              <el-button v-if="hasHistoryFilters" native-type="button" @click="onHistoryReset"><AppIcon name="Refresh" :size="15" />重置</el-button>
+            </div>
+            <div v-show="historyMoreFiltersOpen" id="history-advanced-filters" class="history-advanced-filters">
+              <label for="history-collector">采集人员<el-input id="history-collector" v-model="historyFilterCollector" clearable placeholder="输入采集人员" /></label>
+              <label for="history-device">设备名称<el-input id="history-device" v-model="historyFilterDevice" clearable placeholder="输入采集设备名称" /></label>
+              <label for="history-region">采集区域<el-input id="history-region" v-model="historyFilterRegion" clearable placeholder="输入采集区域" /></label>
+            </div>
           </form>
           <p v-if="historyLoaded" class="history-applied-query">已读取：{{ historyAppliedDescription }} · 第 {{ historyPage }} 页 · 本页 {{ historyRecords.length }} 条</p>
           <p v-if="historyFiltersDirty && historyRecords.length" class="history-filter-note" role="status">筛选已改，点击查询更新结果。</p>
@@ -517,6 +525,12 @@ const {
   forgetTasks:forgetHistoryTasks
 } = useDetectionHistory(taskStore, pollingStore)
 const historyAppliedDescription = computed(() => Object.entries(historyAppliedFilters.value).map(([key,value]) => `${({keyword:'关键词',collector:'采集人员',deviceName:'设备名称',region:'采集区域'})[key] || key}：${value}`).join(' · ') || '全部条件')
+const historyMoreFiltersOpen = ref(false)
+const historyAdvancedKeys = ['collector', 'deviceName', 'region']
+const historyAdvancedCount = computed(() => historyAdvancedKeys.filter(key => historyAppliedFilters.value[key]).length)
+watch(historyAdvancedKeys.map(key => () => historyAppliedFilters.value[key]), () => {
+  if (historyAdvancedCount.value) historyMoreFiltersOpen.value = true
+})
 const historyCacheBusy = ref(false)
 async function clearHistoryTaskCache(taskId) {
   if (historyCacheBusy.value || !taskId) return
@@ -1319,11 +1333,11 @@ async function validateCollaborationAccess(){
 .upload-route:hover { border-color:var(--app-border-focus); }
 .history-scope-note { display:flex; align-items:flex-start; gap:7px; margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
 .history-scope-note > .el-icon { color:var(--app-primary); flex-shrink:0; margin-top:3px; }
-.history-query-form { display:grid; grid-template-columns:minmax(180px,1.6fr) repeat(3,minmax(100px,1fr)) auto; gap:10px; align-items:end; margin-bottom:14px; }
-.history-query-form > label { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-@media(max-width:1180px) { .history-query-form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+.history-query-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:end; margin-bottom:14px; }
+.history-query-form label { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .history-query-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:32px; }
 .history-query-actions .el-button + .el-button { margin-left:0; }
+.history-advanced-filters { grid-column:1 / -1; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:10px 12px; border-radius:8px; background:var(--app-surface-muted); }
 .history-applied-query { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
 .history-filter-note { padding:10px 12px; margin:0 0 16px; border-radius:7px; background:var(--app-primary-soft); color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
 .history-records-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:18px; }
@@ -1331,7 +1345,7 @@ async function validateCollaborationAccess(){
 .history-pagination { display:flex; justify-content:flex-end; padding:20px 0 4px; }
 .history-pagination :deep(.el-pagination) { flex-wrap:wrap; gap:8px; }
 @media(max-width:1100px) { .history-records-grid { grid-template-columns:minmax(0,1fr); } }
-@media(max-width:720px) { .history-query-form { grid-template-columns:minmax(0,1fr); } .history-query-keyword { grid-column:auto; } .history-pagination { justify-content:flex-start; } }
+@media(max-width:720px) { .history-query-form,.history-advanced-filters { grid-template-columns:minmax(0,1fr); } .history-pagination { justify-content:flex-start; } }
 .path-text {
   color: #172033;
 }

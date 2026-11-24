@@ -4,7 +4,7 @@
       <div>
         <h1>{{ isSupervisor ? '企业质量工作台' : '我的检测工作台' }}</h1>
       </div>
-      <nav class="shared-directories" aria-label="公共资料">
+      <nav v-if="isSupervisor" class="shared-directories" aria-label="公共资料">
         <router-link to="/employees"><AppIcon name="User" :size="17" />人员目录</router-link>
         <router-link to="/devices"><AppIcon name="Monitor" :size="17" />设备目录</router-link>
         <router-link to="/models"><AppIcon name="Cpu" :size="17" />检测模型</router-link>
@@ -38,7 +38,7 @@
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`未更新：${failedSections.join('、')}。显示上次数据或“—”。`" />
     </div>
-    <div class="dashboard-overview" :class="{ 'with-history': historicalSummary && isSupervisor, 'single-panel': !historicalSummary && !isSupervisor }">
+    <div class="dashboard-overview" :class="{ 'with-history': historicalSummary && isSupervisor, 'single-panel': !isSupervisor }">
       <section v-if="isSupervisor" ref="taskPanel" class="quality-overview" tabindex="-1" aria-labelledby="quality-overview-title" :aria-busy="applicationsLoading">
         <header>
           <div class="quality-heading">
@@ -72,7 +72,7 @@
         <WorkUnitApplicationDecision v-if="rejection" :application="rejection" action="reject"
           @close="rejection=null" @completed="recordRejection" @refresh="loadApplications()" />
       </section>
-      <HistoricalDetectionOverview v-if="historicalSummary" :summary="historicalSummary" />
+      <HistoricalDetectionOverview v-if="historicalSummary && isSupervisor" :summary="historicalSummary" />
       <CollaborationTodos />
     </div>
     <details class="dashboard-data-note count-scope">
@@ -225,8 +225,12 @@
             </el-radio-group>
           </div>
         </template>
-        <div ref="detectionTrendChartRef" class="chart" role="img" :aria-label="`${trendScopeLabel}检测趋势：左轴任务图片数，右轴各类目标数`" :aria-busy="trendLoading"></div>
-        <p class="dashboard-data-note">左轴为图片数，右轴为目标数。</p>
+        <el-radio-group v-model="trendMetric" size="small" aria-label="检测趋势统计指标" class="trend-metric">
+          <el-radio-button value="total">任务图片</el-radio-button>
+          <el-radio-button value="targets">目标分布</el-radio-button>
+        </el-radio-group>
+        <div ref="detectionTrendChartRef" class="chart" role="img" :aria-label="`${trendScopeLabel}检测趋势：${trendMetric === 'targets' ? '各类已记录目标数' : '任务图片数'}`" :aria-busy="trendLoading"></div>
+        <p class="dashboard-data-note">{{ trendMetric === 'targets' ? '仅统计有完整分类记录的任务。各时段的统计覆盖可在明细中核对。' : '没有已完成任务记录的时段保留在时间轴上，明细显示为“—”。' }}</p>
         <ChartDataDetails title="查看趋势数据" :columns="trendColumns" :rows="chartReadouts.trend.rows" :scope="chartReadouts.trend.scope || trendScopeLabel" :loaded="chartReadouts.trend.loaded" :loading="trendLoading" :read-error="failedSections.includes('检测趋势')?'趋势统计暂不可读取。':''" />
       </el-card>
 
@@ -277,6 +281,20 @@
             </div>
           </router-link>
         </div>
+      </el-card>
+
+      <el-card class="chart-card-full model-usage-card">
+        <template #header>
+          <div class="panel-header">
+            <div>
+              <h3 class="app-panel-title">模型使用量</h3>
+              <p class="app-panel-subtitle">企业累计 · 已完成及部分失败的检测任务</p>
+            </div>
+          </div>
+        </template>
+        <CollectionEmptyState v-if="!modelStats.length" :loading="modelStatsLoading" :error="failedSections.includes('模型') ? '模型使用量暂不可读取，请重新读取。' : ''" empty-title="暂无模型使用记录" empty-description="完成检测任务后，这里会显示各模型的累计使用量。" @retry="fetchModelStats" />
+        <p v-else-if="failedSections.includes('模型')" class="dashboard-data-note" role="status">本次读取失败，保留上次模型统计，请刷新核对。</p>
+        <ModelUsageOverview v-if="modelStats.length" :models="modelStats" />
       </el-card>
 
       <!-- 城市采集量 (左半) -->
@@ -398,48 +416,17 @@
         </div>
       </el-card>
 
-      <!-- 模型使用统计 -->
-      <el-card class="chart-card-full">
-        <template #header>
-          <div class="panel-header">
-            <div>
-              <h3 class="app-panel-title">模型使用统计</h3>
-              <p class="app-panel-subtitle">企业汇总 · 按模型</p>
-            </div>
-          </div>
-        </template>
-        <CollectionEmptyState v-if="!modelStats.length" :loading="modelStatsLoading" :error="failedSections.includes('模型') ? '模型使用统计暂不可读取，请重新读取。' : ''" empty-title="暂无模型使用记录" empty-description="完成检测任务后，在这里查看模型的累计使用情况。" @retry="fetchModelStats" />
-        <p v-else-if="failedSections.includes('模型')" class="dashboard-data-note" role="status">本次读取失败，保留上次模型统计，请刷新核对。</p>
-        <div v-if="modelStats.length" class="model-stats-grid">
-          <div v-for="item in modelStats" :key="item.modelId" class="model-stat-card">
-            <div class="model-stat-header">
-              <div class="model-stat-icon">
-                <el-icon><Setting /></el-icon>
-              </div>
-              <div class="model-stat-name">{{ item.modelName }}</div>
-            </div>
-            <div class="model-stat-metrics">
-              <div class="model-metric">
-                <span class="model-metric-label">使用次数</span>
-                <span class="model-metric-value">{{ formatNumber(item.taskCount) }} <small>次</small></span>
-              </div>
-              <div class="model-metric">
-                <span class="model-metric-label">检测图片</span>
-                <span class="model-metric-value">{{ formatNumber(item.totalImages) }} <small>张</small></span>
-              </div>
-            </div>
-            <div v-if="getModelUsagePercent(item.taskCount) !== null" class="model-stat-bar" aria-hidden="true">
-              <div class="model-stat-bar-fill" :style="{ width: getModelUsagePercent(item.taskCount) + '%' }"></div>
-            </div>
-            <ModelImageMissRate :groups="item.imageRateGroups" :task-count="item.taskCount" />
-          </div>
-        </div>
-        <details class="dashboard-source-note">
-          <summary><AppIcon name="Picture" :size="15" />图片漏检率计算说明</summary>
-          <p>图片漏检率 = 未检出任何目标的图片数 ÷ 成功检测的图片数 × 100%。检测失败的图片排除在统计之外。<router-link to="/inspection/history">查看检测记录</router-link></p>
-          <p>同一版本、同一阈值的任务先合计张数，再计算百分比。只有旧比例的任务显示为未记录。</p>
-        </details>
-      </el-card>
+    </section>
+    <section v-if="!isSupervisor" class="employee-reference" aria-label="企业资料">
+      <nav class="shared-directories" aria-label="公共资料">
+        <router-link to="/employees"><AppIcon name="User" :size="17" />人员目录</router-link>
+        <router-link to="/devices"><AppIcon name="Monitor" :size="17" />设备目录</router-link>
+        <router-link to="/models"><AppIcon name="Cpu" :size="17" />检测模型</router-link>
+      </nav>
+      <details v-if="historicalSummary" class="employee-history-summary">
+        <summary>企业历史检测数据</summary>
+        <HistoricalDetectionOverview :summary="historicalSummary" />
+      </details>
     </section>
     </template>
   </div>
@@ -458,11 +445,12 @@ import { needsDetectionBatch } from '@/utils/workUnitApplications'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ChartDataDetails from '@/components/ChartDataDetails.vue'
 import HistoricalDetectionOverview from '@/components/HistoricalDetectionOverview.vue'
-import ModelImageMissRate from '@/components/ModelImageMissRate.vue'
+import ModelUsageOverview from '@/components/ModelUsageOverview.vue'
+import { detectionTrendRows, TREND_TARGETS } from '@/utils/dashboardTrend'
 import WorkUnitApplicationDecision from '@/components/WorkUnitApplicationDecision.vue'
 import * as echarts from 'echarts'
 import {
-  User, Monitor, Setting,
+  User, Monitor,
   DataAnalysis, Refresh, WarningFilled, UserFilled, ArrowRight
 } from '@element-plus/icons-vue'
 import { captureAccountRequest } from '../api/request'
@@ -530,6 +518,7 @@ watch(historicalAccountScope, () => { historicalSummary.value = null }, { flush:
 const totalEmployees = ref(null)
 const totalDevices = ref(null)
 const detectionTimeRange = ref('month')
+const trendMetric = ref('total')
 const modelStats = ref([])
 const modelStatsLoading = ref(false)
 const trendLoading = ref(false)
@@ -543,7 +532,7 @@ const deviceStatus = reactive({
 
 // Reading alternatives use the same validated values as the charts, without another request.
 const chartReadouts=reactive({trend:{rows:[],loaded:false,scope:''},region:{rows:[],loaded:false},distribution:{rows:[],loaded:false}})
-const trendColumns=[{key:'period',label:'统计分组'},...Object.entries({total:'图片数（张）',normal:'正常目标（个）',bent:'弯曲目标（个）',deformed:'形变目标（个）',rusty:'锈蚀目标（个）',missing:'缺失目标（个）',compromised:'结构损伤目标（个）'}).map(([key,label])=>({key,label,numeric:true}))]
+const trendColumns=[{key:'period',label:'统计分组'},{key:'coverage',label:'任务记录'},{key:'classificationCoverage',label:'分类覆盖'},...Object.entries({total:'图片数（张）',normal:'正常目标（个）',bent:'弯曲目标（个）',deformed:'形变目标（个）',rusty:'锈蚀目标（个）',missing:'缺失目标（个）',compromised:'结构损伤目标（个）'}).map(([key,label])=>({key,label,numeric:true}))]
 const regionColumns=[{key:'label',label:'登记城市'},{key:'images',label:'图片数（张）',numeric:true},{key:'tasks',label:'任务数（个）',numeric:true}]
 const targetColumns=[{key:'label',label:'检测类别'},{key:'count',label:'目标数（个）',numeric:true}]
 const deviceColumns=[{key:'label',label:'设备业务状态'},{key:'count',label:'设备数（台）',numeric:true}]
@@ -621,6 +610,7 @@ const employeeTypeItems = computed(() => [
 // ── 生命周期 ──
 
 watch(detectionTimeRange, () => updateDetectionTrendChart())
+watch(trendMetric, () => renderDetectionTrend())
 
 onMounted(async () => {
   chartMotionPreference.addEventListener('change', updateChartMotion)
@@ -789,7 +779,7 @@ async function fetchModelStats() {
   try {
     const res = await dashboardRequest('模型', '/api/dashboard/model-stats', { params: companyScope })
     if (disposed) return
-    if (!Array.isArray(res.data?.data) || res.data.data.some(item => !item || typeof item !== 'object')) throw new Error('模型统计格式异常')
+    if (!Array.isArray(res.data?.data) || res.data.data.some(item => !item || typeof item.modelName !== 'string' || !item.modelName.trim() || item.modelId == null)) throw new Error('模型统计格式异常')
     modelStats.value = res.data.data
   } catch { if (!disposed) markSectionFailed('模型') }
   finally { if (!disposed) modelStatsLoading.value = false }
@@ -818,60 +808,9 @@ async function updateDetectionTrendChart() {
     if (disposed || generation !== trendRequestGeneration) return
     if (res.data?.code !== 200 || !Array.isArray(res.data?.data)) throw new Error('趋势统计格式异常')
     failedSections.value = failedSections.value.filter(item => item !== '检测趋势')
-    charts.detectionTrend.clear()
     renderedTrendRange = timeRange
-    const data = res.data?.data || []
-    if (!data.length) { chartReadouts.trend={rows:[],loaded:true,scope:trendScopeLabel.value};charts.detectionTrend.setOption(buildEmptyOption('所选时段没有已完成或部分失败的检测任务')); return }
-    const countKeys = ['total', 'normal', 'bent', 'deformed', 'rusty', 'missing', 'compromised']
-    if (data.some(item => !item || countKeys.some(key => knownCount(item[key]) === null))) throw new Error('趋势统计字段不完整')
-    chartReadouts.trend={rows:data.map(item=>Object.fromEntries([['period',item.date],...countKeys.map(key=>[key,knownCount(item[key])])])),loaded:true,scope:trendScopeLabel.value}
-
-    const labels = data.map(i => i.date)
-    const pick = (k) => data.map(i => knownCount(i[k]))
-
-    charts.detectionTrend.setOption({
-      ...chartMotionOptions(),
-      color: [CHART_COLORS.blue, CHART_COLORS.steel, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
-      tooltip: {
-        trigger: 'axis',
-        backgroundColor: '#fff',
-        borderColor: '#e2e8f0',
-        textStyle: { color: '#0f172a', fontSize: 13 },
-        boxShadow: '0 12px 40px rgba(15,23,42,0.12)'
-      },
-      legend: { top: 0, textStyle: { color: '#475569', fontSize: 12 }, itemGap: 16 },
-      grid: { left: 20, right: 18, bottom: 20, top: 48, containLabel: true },
-      xAxis: {
-        type: 'category', data: labels,
-        axisLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#475569', fontSize: 12 }
-      },
-      yAxis: [{
-        type: 'value', name: '图片数', minInterval: 1,
-        splitLine: { lineStyle: { color: '#f1f5f9' } },
-        axisLabel: { color: '#475569', fontSize: 12 }
-      }, {
-        type: 'value', name: '目标数', minInterval: 1,
-        splitLine: { show: false }, axisLabel: { color: '#475569', fontSize: 12 }
-      }],
-      series: [
-        {
-          name: '任务图片数', type: 'line', smooth: true, symbolSize: 6,
-          lineStyle: { width: 3 }, symbol: 'circle',
-          areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1, [
-            { offset: 0, color: 'rgba(37,99,235,0.18)' },
-            { offset: 1, color: 'rgba(37,99,235,0.0)' }
-          ])},
-          data: pick('total')
-        },
-        { name: '正常', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, itemStyle: { borderRadius: [4,4,0,0] }, data: pick('normal') },
-        { name: '弯曲', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('bent') },
-        { name: '形变', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('deformed') },
-        { name: '锈蚀', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('rusty') },
-        { name: '缺失', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('missing') },
-        { name: '结构损伤', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('compromised') }
-      ]
-    })
+    chartReadouts.trend = { rows: detectionTrendRows(res.data.data, timeRange), loaded: true, scope: trendScopeLabel.value }
+    renderDetectionTrend()
   } catch {
     if (!disposed && generation === trendRequestGeneration) {
       markSectionFailed('检测趋势')
@@ -881,6 +820,50 @@ async function updateDetectionTrendChart() {
   } finally {
     if (!disposed && generation === trendRequestGeneration) trendLoading.value = false
   }
+}
+
+function renderDetectionTrend() {
+  if (!charts.detectionTrend || !chartReadouts.trend.loaded || renderedTrendRange !== detectionTimeRange.value) return
+  const rows = chartReadouts.trend.rows
+  const targetView = trendMetric.value === 'targets'
+  const metrics = targetView ? TREND_TARGETS : [['total', '任务图片']]
+  const available = rows.some(row => metrics.some(([key]) => row[key] !== null))
+  if (!rows.length) {
+    charts.detectionTrend.setOption(buildEmptyOption('所选时段没有已完成或部分失败的检测任务'), true)
+    return
+  }
+  charts.detectionTrend.setOption({
+    ...chartMotionOptions(),
+    color: targetView ? [CHART_COLORS.steel, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan] : [CHART_COLORS.blue],
+    title: available ? undefined : { text: targetView ? '所选时段无完整分类记录' : '所选时段没有已完成任务记录',
+      left: 'center', top: 'middle', textStyle: { color: '#475569', fontSize: 14, fontWeight: 500 } },
+    tooltip: {
+      trigger: 'axis', renderMode: 'richText',
+      formatter: params => {
+        const row = rows[params[0]?.dataIndex]
+        if (!row) return ''
+        const lines = metrics.map(([key, label]) => `${label}  ${formatNumber(row[key])}`)
+        const coverage = targetView && row.classificationCoverage ? [row.classificationCoverage] : []
+        return [row.period, row.coverage, ...coverage, ...lines].join('\n')
+      }
+    },
+    legend: { show: targetView, top: 0, textStyle: { color: '#475569', fontSize: 12 }, itemGap: 14 },
+    grid: { left: 12, right: 15, bottom: 14, top: targetView ? 50 : 30, containLabel: true },
+    xAxis: {
+      type: 'category', data: rows.map(row => row.period),
+      axisLine: { lineStyle: { color: '#cbd5e1' } },
+      axisLabel: { color: '#475569', fontSize: 12, hideOverlap: true }
+    },
+    yAxis: {
+      type: 'value', name: targetView ? '目标数（个）' : '图片数（张）', minInterval: 1,
+      splitLine: { lineStyle: { color: '#e8edf4' } },
+      axisLabel: { color: '#475569', fontSize: 12 }
+    },
+    series: metrics.map(([key, label]) => ({
+      name: label, type: 'bar', stack: targetView ? 'result' : undefined, barMaxWidth: 30,
+      itemStyle: targetView ? undefined : { borderRadius: [4, 4, 0, 0] }, data: rows.map(row => row[key])
+    }))
+  }, true)
 }
 
 async function updateDetectionDistributionChart() {
@@ -1077,12 +1060,6 @@ function ratio(numerator, denominator) {
   return (count / total * 100).toFixed(1)
 }
 
-function getModelUsagePercent(taskCount) {
-  if (!modelStats.value.length) return null
-  const counts = modelStats.value.map(model => knownCount(model.taskCount))
-  if (counts.some(value => value === null)) return null
-  return ratio(taskCount, Math.max(...counts))
-}
 useResourceChanges({refresh:()=>refreshAll()})
 </script>
 
@@ -1412,97 +1389,13 @@ button.highlight-card { text-align:left; font:inherit; color:inherit; cursor:poi
   min-height: auto;
 }
 
-/* ── 模型统计 ── */
-
-.model-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
-  gap: 16px;
-}
-
-.model-stat-card {
-  padding: 20px;
-  border-radius: 14px;
-  background: var(--app-surface-muted);
-  border: 1px solid transparent;
-  transition: border-color var(--app-transition-fast), background-color var(--app-transition-fast), box-shadow var(--app-transition-fast);
-}
-
-.model-stat-card:hover {
-  border-color: var(--app-border);
-  background: var(--app-surface-strong);
-  box-shadow: var(--app-shadow-sm);
-}
-
-.model-stat-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.model-stat-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  font-size: 18px;
-  color: var(--app-primary);
-  background: var(--app-primary-soft);
-}
-
-.model-stat-name {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--app-text);
-}
-
-.model-stat-metrics {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.model-metric {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.model-metric-label {
-  font-size: 12px;
-  color: var(--app-text-muted);
-}
-
-.model-metric-value {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--app-text);
-}
-
-.model-metric-value small {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--app-text-muted);
-}
-
+.trend-metric { margin:0 0 10px; }
+.employee-reference { display:grid; gap:12px; }
+.employee-history-summary { padding:12px 16px; background:var(--app-surface); border:1px solid var(--app-border); border-radius:var(--app-radius-lg); }
+.employee-history-summary > summary { cursor:pointer; color:var(--app-text); font-size:14px; font-weight:600; }
+.employee-history-summary[open] > summary { margin-bottom:12px; }
 .text-danger { color: var(--app-danger); }
 .text-success { color: var(--app-success); }
-
-.model-stat-bar {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--app-border);
-  overflow: hidden;
-}
-
-.model-stat-bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--app-primary);
-  transition: width var(--app-transition-base);
-}
 
 /* ── 快速状态 ── */
 

@@ -19,7 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 统计数据控制器
@@ -28,6 +30,7 @@ import java.util.Map;
 @RequestMapping("/api/statistics")
 @Slf4j
 public class StatisticsController {
+    private static final List<String> TREND_CLASSES = List.of("Normal", "Bent", "Deformed", "Rusty", "Missing", "Compromised");
     
     @Autowired
     private DeviceService deviceService;
@@ -169,8 +172,8 @@ public class StatisticsController {
      * 获取检测记录趋势统计 — 从 detection_task 表
      */
     @GetMapping("/detection-trend")
-    public Result getDetectionTrend(@RequestParam(defaultValue = "month") String timeRange,
-                                    @RequestParam(name = "scope", defaultValue = "ACCOUNT") DashboardScope audience) {
+    public Result<List<Map<String, Object>>> getDetectionTrend(@RequestParam(defaultValue = "month") String timeRange,
+            @RequestParam(name = "scope", defaultValue = "ACCOUNT") DashboardScope audience) {
         var scope = audience.forCompletedResults(accessPolicy, "detection_task.");
         log.info("获取检测记录趋势统计，时间范围: {}", timeRange);
 
@@ -197,38 +200,22 @@ public class StatisticsController {
         }
 
         try {
-            String jn = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Normal')) AS UNSIGNED), 0)";
-            String jb = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Bent')) AS UNSIGNED), 0)";
-            String jd = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Deformed')) AS UNSIGNED), 0)";
-            String jr = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Rusty')) AS UNSIGNED), 0)";
-            String jm = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Missing')) AS UNSIGNED), 0)";
-            String jc = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Compromised')) AS UNSIGNED), 0)";
-
-            String sql = "SELECT " +
-                    "DATE_FORMAT(created_at, " + dateFormat + ") AS date, " +
-                    "SUM(total_images) AS total, " +
-                    "SUM(" + jn + ") AS normal, " +
-                    "SUM(" + jb + ") AS bent, " +
-                    "SUM(" + jd + ") AS deformed, " +
-                    "SUM(" + jr + ") AS rusty, " +
-                    "SUM(" + jm + ") AS missing, " +
-                    "SUM(" + jc + ") AS compromised " +
-                    "FROM detection_task " +
-                    "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND created_at IS NOT NULL AND " + scope.predicate() + " ";
+            boolean company = audience == DashboardScope.COMPANY;
+            String where = "status IN ('COMPLETED', 'PARTIAL_FAILED') AND created_at IS NOT NULL AND " + scope.predicate();
 
             if (!"year".equals(timeRange)) {
-                if (audience == DashboardScope.COMPANY) {
+                if (company) {
                     String firstDay = "month".equals(timeRange)
                             ? "DATE_SUB(DATE_FORMAT(CURRENT_DATE(), '%Y-%m-01'), INTERVAL 11 MONTH)"
                             : "DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY)";
-                    sql += "AND created_at >= " + firstDay + " AND created_at < CURRENT_DATE() + INTERVAL 1 DAY ";
+                    where += " AND created_at >= " + firstDay + " AND created_at < CURRENT_DATE() + INTERVAL 1 DAY";
                 } else {
-                    sql += "AND created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL " + interval + ") ";
+                    where += " AND created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL " + interval + ")";
                 }
             }
 
-            sql += "GROUP BY " + groupBy + " " +
-                    "ORDER BY MIN(created_at)";
+            String sql = company ? companyTrendSql(dateFormat, where) : accountTrendSql(dateFormat, where);
+            sql += " GROUP BY " + groupBy + " ORDER BY MIN(created_at)";
 
             List<Map<String, Object>> result = scopedJdbc.queryForList(sql, scope.parameters());
 
@@ -237,8 +224,10 @@ public class StatisticsController {
                 Map<String, Object> newRow = new HashMap<>();
 
                 String date = (String) row.get("date");
-                if (audience == DashboardScope.COMPANY) {
+                if (company) {
                     newRow.put("date", date);
+                    newRow.put("taskCount", row.get("taskCount"));
+                    newRow.put("classifiedTasks", row.get("classifiedTasks"));
                 } else if ("month".equals(timeRange)) {
                     String[] parts = date.split("-");
                     if (parts.length == 2) {
@@ -258,12 +247,11 @@ public class StatisticsController {
                 }
 
                 newRow.put("total", row.get("total") != null ? ((Number) row.get("total")).longValue() : 0L);
-                newRow.put("normal", row.get("normal") != null ? ((Number) row.get("normal")).longValue() : 0L);
-                newRow.put("bent", row.get("bent") != null ? ((Number) row.get("bent")).longValue() : 0L);
-                newRow.put("deformed", row.get("deformed") != null ? ((Number) row.get("deformed")).longValue() : 0L);
-                newRow.put("rusty", row.get("rusty") != null ? ((Number) row.get("rusty")).longValue() : 0L);
-                newRow.put("missing", row.get("missing") != null ? ((Number) row.get("missing")).longValue() : 0L);
-                newRow.put("compromised", row.get("compromised") != null ? ((Number) row.get("compromised")).longValue() : 0L);
+                for (String name : TREND_CLASSES) {
+                    String key = name.toLowerCase(Locale.ROOT);
+                    Number value = (Number) row.get(key);
+                    newRow.put(key, company ? value : (value == null ? 0L : value.longValue()));
+                }
 
                 processedResult.add(newRow);
             }
@@ -275,6 +263,42 @@ public class StatisticsController {
             log.error("获取检测记录趋势统计失败", e);
             return Result.error("获取检测记录趋势统计失败: " + e.getMessage());
         }
+    }
+
+    private static String accountTrendSql(String dateFormat, String where) {
+        String sums = TREND_CLASSES.stream().map(name ->
+                "SUM(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.%s')) AS UNSIGNED), 0)) AS %s"
+                        .formatted(name, name.toLowerCase(Locale.ROOT)))
+                .collect(Collectors.joining(", "));
+        return "SELECT DATE_FORMAT(created_at, %s) AS date, SUM(total_images) AS total, %s FROM detection_task WHERE %s"
+                .formatted(dateFormat, sums, where);
+    }
+
+    private static String companyTrendSql(String dateFormat, String where) {
+        List<String> keys = TREND_CLASSES.stream().map(name -> name.toLowerCase(Locale.ROOT)).toList();
+        String extracted = TREND_CLASSES.stream().map(name ->
+                "JSON_EXTRACT(stats, '$.classCounts.%s') AS %s".formatted(name, name.toLowerCase(Locale.ROOT)))
+                .collect(Collectors.joining(", "));
+        // Compare each counter before casting so absent, fractional or malformed data cannot become zero.
+        String complete = keys.stream().map(key -> "JSON_TYPE(%1$s) = 'INTEGER' AND JSON_UNQUOTE(%1$s) NOT LIKE '-%%'".formatted(key))
+                .collect(Collectors.joining(" AND "));
+        String sums = keys.stream().map(key -> "SUM(CASE WHEN classified THEN CAST(JSON_UNQUOTE(%1$s) AS DECIMAL(20,0)) END) AS %1$s".formatted(key))
+                .collect(Collectors.joining(", "));
+        return """
+                WITH scoped_tasks AS (
+                    SELECT created_at, total_images, successful_images, IF(JSON_VALID(statistics_json), statistics_json, '{}') AS stats
+                    FROM detection_task WHERE %s
+                ), class_counts AS (
+                    SELECT created_at, total_images, successful_images, %s FROM scoped_tasks
+                ), coverage AS (
+                    SELECT class_counts.*, ((successful_images IS NULL OR successful_images <> 0) AND %s) AS classified
+                    FROM class_counts
+                )
+                SELECT DATE_FORMAT(created_at, %s) AS date, SUM(total_images) AS total,
+                       COUNT(*) AS taskCount, COUNT(CASE WHEN classified THEN 1 END) AS classifiedTasks,
+                       %s
+                FROM coverage
+                """.formatted(where, extracted, complete, dateFormat, sums);
     }
     
     /**
