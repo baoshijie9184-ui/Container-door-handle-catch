@@ -2,7 +2,7 @@ import { beijingDateTime as formatClock, subscribeClock } from '../../frontend/s
 import '../../frontend/src/assets/beijing-clock.css';
 import { AccountBoundary } from './AccountBoundary';
 import { accountFetch as fetch } from '../../frontend/src/utils/accountFetch';
-import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE} from '../../frontend/src/utils/systemBrand';
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME} from '../../frontend/src/utils/systemBrand';
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button, Dropdown, Layout, message,Skeleton } from 'antd';
@@ -374,7 +374,7 @@ function App() {
   return <ConfigProvider prefixCls="ant" iconfont="" theme={{ cssVar:{key:'doorhandle-workbench'}, token: { colorPrimary: '#2563eb', colorSuccess: '#375c85', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#181b23', colorTextSecondary: '#525b6a', colorBorder: '#e6e8ec', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
     <Layout className={`agent-shell ${sidebarOpen ? 'with-sessions' : ''} ${infoOpen ? 'with-info' : ''}`}>
       <nav id="agent-sessions" className="session-sidebar" aria-label="对话历史" hidden={!sidebarOpen}>
-        <a className="agent-brand" href={BUSINESS} title={SYSTEM_NAME} aria-label={SYSTEM_NAME}><span className="brand-symbol"><ScanLine size={20} /></span><span>{SYSTEM_SHORT_NAME}<strong>{SYSTEM_TAGLINE}</strong></span></a>
+        <a className="agent-brand" href={BUSINESS} title={SYSTEM_NAME} aria-label={SYSTEM_NAME}><span className="brand-symbol"><ScanLine size={20} aria-hidden="true" /></span><span>{SYSTEM_SHORT_NAME}</span></a>
         <Button className="new-session" aria-label="新建对话" type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={newSession} disabled={loading||sessionLoading}>新建对话</Button>
         <SessionHistory sessions={sessions} selectedId={threadId} disabled={loading||sessionLoading} loading={sessionLoading} error={sessionError} currentTaskActive={!!controlState.run&&controlState.run.phase!=='IDLE'} base={SESSIONS} traceBase={TRACE} businessBase={LOGIN.replace(/#.*$/,'')} onSelect={selectHistorySession} onRefresh={()=>loadSession(threadId)} onChanged={(id,patch)=>{sessionMetadataVersion.current++;setSessions(current=>current.map(session=>session.sessionId===id?{...session,...patch}:session));}}/>
         <div className="sidebar-links"><a href={BUSINESS}><ArrowLeft size={16} aria-hidden="true"/>返回业务系统</a></div>
@@ -389,11 +389,11 @@ function App() {
       <main className="agent-main">
         <header className="agent-header">
           <Button ref={sidebarToggleRef} type="text" aria-label={sidebarOpen?'收起会话列表':'展开会话列表'} title={sidebarOpen?'收起会话列表':'展开会话列表'} aria-expanded={sidebarOpen} aria-controls="agent-sessions" icon={<PanelLeft size={18} aria-hidden="true" />} onClick={()=>setSidebarOpen(!sidebarOpen)} />
-          <div className="conversation-heading"><h1>{activeSession?.title||'智能对话助手'}</h1><span>{catalog?.role === 'SUPERVISOR' ? '主管工作助手' : catalog ? '员工工作助手' : '检测与质检工作助手'}</span></div>
+          <div className="conversation-heading"><h1>{activeSession?.title||'智能对话助手'}</h1><span className="composer-a11y-only">{catalog?.role === 'SUPERVISOR' ? '主管工作助手' : catalog ? '员工工作助手' : '检测与质检工作助手'}</span></div>
           {window.self === window.top && <BeijingClock />}
           <Button ref={infoToggleRef} className="info-toggle" type="text" aria-label="任务与资料" title="任务与资料" aria-expanded={infoOpen&&!showModels} aria-controls="agent-info" icon={<PanelRight size={17} aria-hidden="true"/>} onClick={showWorkbench}><span className="agent-toolbar-label">任务与资料</span></Button>
           <Dropdown autoFocus trigger={['click']} menu={{items:moreActions,onClick:selectMoreAction}}>
-            <Button className="agent-more-toggle" type="text" aria-label="更多对话操作" title="更多对话操作" icon={<Ellipsis size={19} aria-hidden="true"/>}><span className="agent-toolbar-label">更多</span></Button>
+            <Button className="agent-more-toggle" type="text" aria-label="更多对话操作" title="更多对话操作" icon={<Ellipsis size={19} aria-hidden="true"/>} />
           </Dropdown>
         </header>
         <section className="chat-panel" aria-label="智能对话">
@@ -417,7 +417,7 @@ function App() {
           {pendingToolReview&&(!infoOpen||showModels)&&<div className="composer-guidance" role="status">
             <button type="button" onClick={()=>{setShowModels(false);setInfoOpen(true)}}>查看待审查的工具调用</button>
           </div>}
-          <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={text=>submit(text)} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} streaming={loading} onStop={()=>loading?stopStream():controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
+          <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入消息，/ 选技能" onSubmit={text=>submit(text)} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} streaming={loading} onStop={()=>loading?stopStream():controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
       <aside ref={infoPanelRef} id="agent-info" className="agent-info" aria-labelledby="agent-info-heading" hidden={!infoOpen}>

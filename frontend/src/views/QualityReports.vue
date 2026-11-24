@@ -1,22 +1,48 @@
 <template>
   <div class="page-shell reports-page">
-    <PageHero :title="isSupervisor ? '报告与审批' : '我的质检报告'" description="主管审批，编写人须回避。"><template #actions><el-button :loading="loading" :disabled="busy" @click="load()"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button><el-button type="primary" :disabled="busy" @click="openCreate"><AppIcon name="Plus" :size="16" />新建报告草稿</el-button></template></PageHero>
-    <el-alert v-if="reportChanged" title="相关资料可能已更新 正在编辑的草稿已保留 请核对修改记录或明确加载最新版本" type="warning" :closable="false"><router-link :to="reportHistory">查看修改记录</router-link><el-button text @click="readLatestReport">核对最新资料</el-button></el-alert>
-    <p class="report-scope-note"><AppIcon name="Lock" :size="15" />{{ reportScope }}</p>
-    <form class="toolbar-panel report-toolbar" @submit.prevent="search">
-      <div class="report-filter-field"><label for="report-keyword">报告标题或任务编号</label><el-input id="report-keyword" v-model="keyword" aria-label="查询任务编号或报告标题" placeholder="输入标题或任务编号" maxlength="128" clearable /></div>
-      <router-link v-if="approvalOnly && !emptyApprovalQueue" to="/quality/reports">查看全部报告</router-link>
-      <div v-if="!approvalOnly" class="report-filter-field"><label for="report-status">审批状态</label><el-select id="report-status" v-model="status" aria-label="审批状态" placeholder="全部状态" clearable><el-option v-for="(label, value) in states" :key="value" :label="label" :value="value" /></el-select></div>
-      <el-button type="primary" native-type="submit" :loading="loading"><AppIcon name="Search" :size="16" />查询</el-button>
-      <el-button v-if="keyword.trim() || (!approvalOnly && status)" @click="resetSearch"><AppIcon name="Refresh" :size="16" />重置</el-button>
-    </form>
-    <section class="table-panel">
-      <p v-if="filtersDirty&&records.length" class="report-query-note" role="status">筛选已改，点击查询更新结果。</p>
-      <div class="collection-heading"><h2><AppIcon name="DocumentChecked" :size="18" />报告记录</h2><span>{{ loading ? '正在读取…' : error ? '本次读取失败' : total===null ? '总数尚未读取' : `共 ${total} 条` }}</span></div>
-      <p v-if="listLoaded" class="report-applied-query">已读取范围：{{ appliedQuery.keyword ? `关键词“${appliedQuery.keyword}”` : '全部关键词' }} · {{ appliedQuery.status ? states[appliedQuery.status] || '指定状态' : '全部状态' }} · 第 {{ appliedPage }} 页</p>
+    <PageHero class="report-page-heading" :title="approvalOnly ? '待我审批' : isSupervisor ? '报告与审批' : '我的质检报告'">
+      <template #actions>
+        <el-button type="primary" :disabled="busy" @click="openCreate"><AppIcon name="Plus" :size="16" />新建报告草稿</el-button>
+      </template>
+    </PageHero>
+    <el-alert v-if="reportChanged" title="报告资料可能已更新，当前编辑已保留" type="warning" :closable="false">
+      <router-link :to="reportHistory">查看修改记录</router-link>
+      <el-button text @click="readLatestReport">核对最新资料</el-button>
+    </el-alert>
+    <section class="table-panel report-collection" aria-labelledby="report-list-heading">
+      <div class="collection-heading">
+        <h2 id="report-list-heading">报告记录</h2>
+        <div class="report-list-meta">
+          <span>{{ loading ? '正在读取…' : error ? '本次读取失败' : total===null ? '' : `共 ${total} 条` }}</span>
+          <el-button text size="small" :loading="loading" :disabled="busy" @click="load()">
+            <AppIcon name="Refresh" :size="15" />刷新
+          </el-button>
+        </div>
+      </div>
+      <form class="report-toolbar" @submit.prevent="search">
+        <div class="report-filter-field report-keyword-field">
+          <label for="report-keyword" class="sr-only">报告标题或任务编号</label>
+          <el-input id="report-keyword" v-model="keyword" aria-label="查询任务编号或报告标题" placeholder="报告标题或任务编号" maxlength="128" clearable />
+        </div>
+        <div v-if="!approvalOnly" class="report-filter-field report-state-field">
+          <label for="report-status" class="sr-only">审批状态</label>
+          <el-select id="report-status" v-model="status" aria-label="审批状态" placeholder="全部状态" clearable>
+            <el-option v-for="(label, value) in states" :key="value" :label="label" :value="value" />
+          </el-select>
+        </div>
+        <div class="report-search-actions">
+          <el-button native-type="submit" :loading="loading"><AppIcon name="Search" :size="16" />查询</el-button>
+          <el-button v-if="keyword.trim() || (!approvalOnly && status)" text @click="resetSearch">重置</el-button>
+          <router-link v-if="approvalOnly && !emptyApprovalQueue" to="/quality/reports">查看全部报告</router-link>
+        </div>
+      </form>
+      <p v-if="filtersDirty && records.length" class="report-query-note" role="status">点击查询应用筛选。</p>
+      <p v-if="listLoaded" class="report-applied-query" :class="{ 'sr-only':!appliedQuery.keyword && !appliedQuery.status && appliedPage === 1 }">
+        已读取范围：{{ !appliedQuery.keyword && !appliedQuery.status ? '全部报告' : '' }}{{ appliedQuery.keyword ? `关键词“${appliedQuery.keyword}”` : '' }}{{ appliedQuery.keyword && appliedQuery.status ? ' · ' : '' }}{{ appliedQuery.status ? states[appliedQuery.status] || '指定状态' : '' }}{{ appliedPage > 1 ? ` · 第 ${appliedPage} 页` : '' }}
+      </p>
       <el-alert v-if="error && records.length" :title="error + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
-      <TableReadHint v-if="records.length" />
-      <el-table :scrollbar-tabindex="0" role="region" aria-label="质检报告记录" :data="records" v-loading="loading" row-key="reportId">
+      <TableReadHint v-if="records.length" id="report-table-scroll-hint" class="report-table-hint" />
+      <el-table :scrollbar-tabindex="0" role="region" aria-label="质检报告记录" :aria-describedby="records.length ? 'report-table-scroll-hint' : undefined" :data="records" v-loading="loading" row-key="reportId">
         <template #empty>
           <CollectionEmptyState
             :loading="loading" :error="error"
@@ -51,12 +77,11 @@
         <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.reportId)]" :revision="row.version" resource-type="QUALITY_REPORT" :resource-id="row.reportId" domain="QUALITY_REPORT" /></template></el-table-column>
       </el-table>
       <div v-if="error && records.length" class="report-list-retry"><el-button size="small" :loading="loading" @click="retryList"><AppIcon name="Refresh" :size="15" />重试上次读取</el-button></div>
-      <div v-if="total!==null" class="page-footer"><el-pagination :current-page="page" :page-size="20" :total="total" layout="total, prev, pager, next" :disabled="loading || !!error" @current-change="loadAppliedPage" /></div>
+      <div v-if="total!==null && (total>20 || page>1)" class="page-footer"><el-pagination :current-page="page" :page-size="20" :total="total" layout="prev, pager, next" :disabled="loading || !!error" @current-change="loadAppliedPage" /></div>
     </section>
 
     <el-dialog v-model="editorVisible" class="report-scroll-dialog report-editor-dialog" :title="editingId ? '编辑个人草稿' : '新建报告草稿'" width="min(650px, 94vw)" append-to-body :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy">
-      <p class="report-dialog-note"><AppIcon name="Document" :size="16" />保存草稿时更新任务依据，提交审批后本版本冻结；报告审批与任务放行分别处理。</p>
-      <p v-if="editingId" class="report-editor-version">正在编辑草稿版本 {{ knownCount(editingVersion) ?? '未记录' }} · 保存后请重新核对本版依据。</p>
+      <p v-if="editingId" class="report-editor-version">草稿版本 {{ knownCount(editingVersion) ?? '未记录' }}</p>
       <el-form id="quality-report-editor-form" label-position="top" @submit.prevent="saveDraft">
         <section class="report-editor-section" aria-labelledby="report-editor-source-heading"><h3 id="report-editor-source-heading"><AppIcon name="Tickets" :size="18" />报告依据</h3>
         <el-form-item label="检测任务编号" required>
@@ -67,7 +92,7 @@
             @update:model-value="clearEditorFieldError('taskId')" />
           <p v-if="editorFieldError?.field === 'taskId'" id="quality-report-task-error" class="report-field-error" role="alert">{{ editorFieldError.message }}</p>
         </el-form-item>
-        <p id="report-editor-source-note" class="report-editor-help">填写当前账号有权访问的已完成任务。编辑现有草稿时不能更换依据任务，可到<router-link :to="{path:'/inspection/history',query:typeof form.taskId==='string'&&form.taskId.trim()?{keyword:form.taskId.trim()}:{}}">检测记录</router-link>核对原始结果。</p></section>
+        <p id="report-editor-source-note" class="report-editor-help"><template v-if="editingId">此草稿关联的任务编号固定。</template><template v-else>可从<router-link :to="{path:'/inspection/history',query:form.taskId.trim()?{keyword:form.taskId.trim()}:{}}">检测记录</router-link>查找已完成任务。</template></p></section>
         <section class="report-editor-section" aria-labelledby="report-editor-content-heading"><h3 id="report-editor-content-heading"><AppIcon name="Edit" :size="18" />标题与意见</h3>
         <el-form-item label="报告标题" required>
           <el-input id="quality-report-title" v-model="form.title" aria-label="报告标题"
@@ -109,11 +134,13 @@
           <dl class="report-identity-strip"><div><dt>编写账号</dt><dd>{{ detail.ownerUsername || '未记录' }}</dd></div><div><dt>依据任务</dt><dd>{{ detail.taskId || '未记录' }}</dd></div><div><dt>报告编号</dt><dd>{{ detail.reportId }}</dd></div></dl>
           <div class="report-next-step"><AppIcon name="DocumentChecked" :size="17" /><p>{{ reportNextStep }}</p></div>
           <p v-if="detail.previousReportId" class="muted">修订自报告 {{ detail.previousReportId }}</p>
-          <h3><AppIcon name="Picture" :size="18" />本版检测依据</h3>
-          <ReportBasis :source="detail.source" />
-          <ReportSnapshotIdentity :key="detail.reportId+':'+detail.version" :report="detail" />
-          <h3><AppIcon name="Edit" :size="18" />编写意见</h3><p class="narrative">{{ detail.narrative || '未记录编写意见' }}</p>
-          <el-alert v-if="detail.status === 'DRAFT'" title="保存草稿会更新任务依据，提交后本版本内容冻结" type="info" :closable="false" />
+          <h3>编写意见</h3>
+          <p class="narrative">{{ detail.narrative || '未记录编写意见' }}</p>
+          <details class="report-basis-section" :open="detail.status === 'SUBMITTED'">
+            <summary>本版检测依据</summary>
+            <ReportBasis :source="detail.source" />
+            <ReportSnapshotIdentity :key="detail.reportId+':'+detail.version" :report="detail" />
+          </details>
           <details class="report-delivery" aria-label="报告状态同步">
             <summary><AppIcon name="Connection" :size="16" />审批状态同步<span v-if="eventsError"> · 读取未完成</span><span v-else-if="events.some(item=>['FAILED','RETRY'].includes(item.deliveryStatus))"> · 有待核对的发送记录</span></summary>
             <div class="detail-heading"><p class="muted">发送状态与已记录的审批决定分别显示；失败会按原机制重试，重新发送不会再次审批。</p><el-button size="small" :disabled="busy" :loading="eventsLoading" @click="loadEvents(detail.reportId)"><AppIcon name="Refresh" :size="15" />刷新同步状态</el-button></div>
@@ -233,14 +260,13 @@ const own = computed(() => detail.value?.ownerUserId != null && String(detail.va
 const approvalOnly = computed(() => isSupervisor.value && route.query.awaitingMyApproval === '1')
 const emptyApprovalQueue = computed(() => approvalOnly.value && listLoaded.value && total.value === 0
   && !records.value.length && !requestedQuery.keyword && !loading.value && !error.value)
-const reportScope = computed(() => approvalOnly.value ? '当前显示需要你审批的报告。' : isSupervisor.value ? '可见本人草稿及有权查看的已提交报告。' : userStore.role === 'INSPECTOR' ? '仅显示本人报告，审批与任务放行分开。' : '仅显示当前账号有权访问的报告，私人草稿按编写账号隔离。')
 const reportNextStep = computed(() => {
   const state = detail.value?.status
-  if (state === 'DRAFT') return own.value ? '当前为个人草稿。核对编写意见与依据后，提交固定版本供主管独立审批。' : '报告尚为草稿，需编写人提交后才能进入审批。'
-  if (state === 'SUBMITTED') return own.value ? '本版本已提交，等待主管独立审批。需要修改时先撤回，再创建修订草稿。' : isSupervisor.value ? '请核对提交快照，填写审批意见并预览，再确认本次决定。' : '本版本已提交，等待主管审批；当前不能作为已审批报告导出。'
-  if (state === 'APPROVED') return own.value ? '本版本已审批，可导出。修改内容需要另建修订草稿，原版本保持完整。' : '本版本已审批，可通过导出按钮获取报告；任务处置状态仍需分别核对。'
-  if (state === 'REJECTED') return '本版本已驳回，请核对审批意见。编写人可创建修订草稿，原记录继续保留。'
-  if (state === 'WITHDRAWN') return '本版本已撤回，原快照和操作记录继续保留。编写人可创建修订草稿。'
+  if (state === 'DRAFT') return own.value ? '核对编写意见和检测依据后，可提交主管审批。' : '报告尚为草稿，需编写人提交后才能进入审批。'
+  if (state === 'SUBMITTED') return own.value ? (isSupervisor.value ? '由其他主管审批。如需修改，先撤回申请。' : '需要修改时，先撤回申请，再创建修订草稿。') : isSupervisor.value ? '核对检测依据和编写意见，再填写审批决定。' : '等待主管审批。'
+  if (state === 'APPROVED') return own.value ? '可导出当前版本，或创建修订草稿。' : '可导出当前版本。任务处置在检测记录中查看。'
+  if (state === 'REJECTED') return '编写人可根据审批意见创建修订草稿。'
+  if (state === 'WITHDRAWN') return '编写人可创建修订草稿。'
   return '报告状态尚未确认，请重新读取后核对可用操作。'
 })
 const headers = { 'X-Report-Action': 'update' }
@@ -399,20 +425,24 @@ onBeforeUnmount(()=>{detailGeneration++;loadGeneration++;events.value=[];eventsE
 </script>
 
 <style scoped>
-.reports-page { gap: 18px; }
-.report-delivery { margin-top:20px;padding:16px;border:1px solid #dce6f4;border-radius:12px;background:#f7faff; }.report-delivery h3{margin:0}
-.report-toolbar { display: flex; gap: 12px; flex-wrap: wrap; }
-.report-toolbar .el-input { width: 280px; }.report-toolbar .el-select { width: 180px; }
-.detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-h2 { font-size: 20px; overflow-wrap: anywhere; }h3 { margin-top: 22px; font-size: 16px; }
-h3 { display:flex; align-items:center; gap:8px; color:var(--app-text); }
-h3 .el-icon { color:var(--app-primary); }
-.report-toolbar { align-items:flex-end; }
-.report-filter-field { display:grid; gap:8px; min-width:0; }
-.report-filter-field label { font-size:12px; color:var(--app-text-secondary); font-weight:550; }
-.report-scope-note { display:flex; align-items:flex-start; gap:8px; margin:0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
-.report-scope-note > .el-icon { margin-top:3px; flex-shrink:0; color:var(--app-primary); }
-.report-applied-query { margin:0 0 16px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+#app .reports-page { gap:16px; }
+.report-page-heading { align-items:center; }
+.report-page-heading :deep(.ui-page-symbol) { display:none; }
+.report-collection > .collection-heading { padding:15px 20px 0; border:0; }
+.report-list-meta { display:flex; align-items:center; gap:6px; color:var(--app-text-secondary); font-size:12px; }
+.report-list-meta .el-button { color:var(--app-text-secondary); }
+.report-toolbar { display:flex; flex-wrap:wrap; align-items:center; padding:12px 20px 16px; }
+.report-filter-field { min-width:0; }
+.report-keyword-field { width:min(100%,270px); }
+.report-state-field { width:154px; }
+.report-search-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; }
+.report-search-actions .el-button + .el-button { margin-left:0; }
+.report-search-actions a { color:var(--app-primary); font-size:13px; text-underline-offset:3px; }
+.report-applied-query,.report-query-note { margin:0 20px 12px; color:var(--app-text-secondary); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.report-collection > .page-footer { padding:10px 0; }
+.report-scroll-dialog h3 { display:flex; align-items:center; gap:8px; margin-top:20px; color:var(--app-text); font-size:16px; }
+.report-scroll-dialog h3 .el-icon { color:var(--app-primary); }
+.detail-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
 .report-list-identity { display:grid; justify-items:start; gap:6px; padding:6px 0; min-width:0; }
 .report-list-identity > button { max-width:100%; padding:0; border:0; background:none; color:var(--app-text); font:inherit; font-size:14px; font-weight:600; text-align:left; line-height:1.65; overflow-wrap:anywhere; cursor:pointer; transition:color 160ms ease; }
 .report-list-identity > button:hover { color:var(--app-primary); }
@@ -426,11 +456,11 @@ h3 .el-icon { color:var(--app-primary); }
 .report-task-link { color:var(--app-primary); text-decoration:underline; text-underline-offset:3px; font-size:12px; overflow-wrap:anywhere; }
 .report-list-retry { margin-top:14px; }
 :is(.report-list-identity button,.report-list-identity summary,.report-task-link,.report-delivery summary):focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; border-radius:3px; }
-.report-query-note { margin:0 0 12px; font-size:12px; line-height:1.8; color:var(--app-text-secondary); }
 .report-dialog-note { display:flex; align-items:flex-start; gap:8px; margin:0 0 20px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
 .report-dialog-note .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
 .report-editor-version { margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
-.report-editor-section { padding:16px 0 4px; border-top:1px solid var(--app-border); }
+.report-editor-section { padding:12px 0 4px; }
+.report-editor-section + .report-editor-section { border-top:1px solid var(--app-border); }
 .report-editor-section h3 { margin:0 0 18px; color:var(--app-text); font-size:14px; font-weight:600; line-height:1.8; }
 .report-editor-help { margin:-4px 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
 .report-editor-help a { color:var(--app-primary); text-underline-offset:3px; }
@@ -465,14 +495,33 @@ h3 .el-icon { color:var(--app-primary); }
 .report-next-step { display:flex; gap:9px; align-items:flex-start; padding:12px 14px; border-radius:8px; background:var(--app-primary-soft); color:var(--app-text-secondary); }
 .report-next-step > .el-icon { color:var(--app-primary); margin-top:3px; flex:0 0 auto; }
 .report-next-step p { margin:0; font-size:12px; line-height:1.85; }
-.report-delivery { background:white; border:1px solid var(--app-border); border-radius:9px; }
-.report-delivery summary { width:fit-content; max-width:100%; cursor:pointer; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
+.report-basis-section,.report-delivery { margin-top:16px; padding:12px 0; border-top:1px solid var(--app-border); }
+.report-basis-section > summary,.report-delivery > summary { width:fit-content; max-width:100%; cursor:pointer; line-height:1.75; }
+.report-basis-section > summary { color:var(--app-text); font-size:14px; font-weight:600; }
+.report-delivery summary { color:var(--app-text-secondary); font-size:12px; }
 .report-delivery summary .el-icon { margin-right:6px; vertical-align:middle; color:var(--app-primary); }
 .report-delivery summary span { color:var(--app-warning); }
 .report-operation-context { padding:14px 16px; margin:16px 0; border:1px solid var(--app-border); border-radius:8px; background:var(--app-primary-light); overflow-wrap:anywhere; }
 .report-operation-context strong { color:var(--app-text); font-size:14px; line-height:1.8; }
 .report-operation-context :is(p,small) { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-@media(max-width:640px) { .report-audit-mobile { display:block; } .report-audit-table { display:none; } .report-detail-heading h2 { font-size:16px; } .report-identity-strip { grid-template-columns:minmax(0,1fr); gap:10px; } .report-filter-field { width:100%; } .report-toolbar .el-input,.report-toolbar .el-select { width:100%; } }
+@media(max-width:640px) {
+  #app .reports-page { gap:12px; }
+  .report-page-heading { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
+  .report-page-heading :deep(.page-hero-title) { font-size:20px; letter-spacing:0; }
+  .report-page-heading :deep(.panel-actions) { margin:0; justify-content:flex-end; }
+  .report-page-heading :deep(.panel-actions .el-button) { padding-inline:9px; }
+  .report-collection > .collection-heading { padding:12px 14px 0; }
+  .report-toolbar { display:grid; grid-template-columns:minmax(0,1fr) auto; padding:10px 14px 12px; }
+  .report-keyword-field { grid-column:1/-1; width:100%; }
+  .report-state-field { width:100%; }
+  .report-search-actions { grid-column:2; justify-content:flex-end; }
+  .report-applied-query,.report-query-note { margin-inline:14px; }
+  .report-table-hint { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+  .report-audit-mobile { display:block; }
+  .report-audit-table { display:none; }
+  .report-detail-heading h2 { font-size:16px; }
+  .report-identity-strip { gap:8px; grid-template-columns:minmax(0,1fr); }
+}
 .source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }.source-grid div { display: flex; flex-direction: column; gap: 6px; }
 .source-grid span, .muted { font-size: 13px; color: #64748b; }.source-grid strong { font-weight: 500; overflow-wrap: anywhere; }
 .narrative { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
