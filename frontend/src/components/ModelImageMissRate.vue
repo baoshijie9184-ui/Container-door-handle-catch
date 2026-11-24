@@ -6,7 +6,7 @@
     </div>
     <div v-for="group in included" :key="JSON.stringify([group.modelVersion, group.threshold])" class="rate-group">
       <div class="rate-line">
-        <span>{{ group.modelVersion }} · 阈值 {{ group.threshold }}</span>
+        <span>{{ group.displayVersion ?? group.modelVersion }} · 阈值 {{ group.threshold }}</span>
         <strong>{{ rate(group) }}</strong>
       </div>
       <p>未检出 {{ number(group.missedImages) }} 张 / 成功检测 {{ number(group.successfulImages) }} 张</p>

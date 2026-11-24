@@ -48,14 +48,17 @@ const columns = [
 const metric = ref('taskCount')
 const selected = computed(() => metrics[metric.value])
 const number = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'
+const businessLabel = (value, fallback) => typeof value === 'string' && value.trim() && !/测试|\btest\b/i.test(value) ? value : fallback
 const rows = computed(() => props.models.map(item => ({
   ...item,
-  modelName: item.modelName.includes('测试') ? `模型 #${item.modelId}` : item.modelName,
+  modelName: businessLabel(item.modelName, `模型 #${item.modelId}`),
   modelNumber: String(item.modelId),
   taskCount: knownCount(item.taskCount),
   totalImages: knownCount(item.totalImages),
   value: knownCount(item[metric.value]),
-  imageRateGroups: Array.isArray(item.imageRateGroups) ? item.imageRateGroups : []
+  imageRateGroups: Array.isArray(item.imageRateGroups) ? item.imageRateGroups.map(group => ({
+    ...group, displayVersion: businessLabel(group.modelVersion, '历史版本')
+  })) : []
 })).sort((a, b) => (b.value ?? -1) - (a.value ?? -1) || a.modelName.localeCompare(b.modelName, 'zh-CN')))
 const maximum = computed(() => rows.value[0]?.value ?? 0)
 const total = computed(() => rows.value.some(row => row.value === null) ? null : rows.value.reduce((sum, row) => sum + row.value, 0))
