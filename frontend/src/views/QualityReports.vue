@@ -5,8 +5,8 @@
     <p class="report-scope-note"><AppIcon name="Lock" :size="15" />{{ reportScope }}</p>
     <form class="toolbar-panel report-toolbar" @submit.prevent="search">
       <div class="report-filter-field"><label for="report-keyword">报告标题或任务编号</label><el-input id="report-keyword" v-model="keyword" aria-label="查询任务编号或报告标题" placeholder="输入标题或任务编号" maxlength="128" clearable /></div>
-      <router-link v-if="approvalOnly" to="/quality/reports">查看全部报告</router-link>
-      <div v-else class="report-filter-field"><label for="report-status">审批状态</label><el-select id="report-status" v-model="status" aria-label="审批状态" placeholder="全部状态" clearable><el-option v-for="(label, value) in states" :key="value" :label="label" :value="value" /></el-select></div>
+      <router-link v-if="approvalOnly && !emptyApprovalQueue" to="/quality/reports">查看全部报告</router-link>
+      <div v-if="!approvalOnly" class="report-filter-field"><label for="report-status">审批状态</label><el-select id="report-status" v-model="status" aria-label="审批状态" placeholder="全部状态" clearable><el-option v-for="(label, value) in states" :key="value" :label="label" :value="value" /></el-select></div>
       <el-button type="primary" native-type="submit" :loading="loading"><AppIcon name="Search" :size="16" />查询</el-button>
       <el-button v-if="keyword.trim() || (!approvalOnly && status)" @click="resetSearch"><AppIcon name="Refresh" :size="16" />重置</el-button>
     </form>
@@ -17,11 +17,36 @@
       <el-alert v-if="error && records.length" :title="error + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
       <TableReadHint v-if="records.length" />
       <el-table :scrollbar-tabindex="0" role="region" aria-label="质检报告记录" :data="records" v-loading="loading" row-key="reportId">
-        <template #empty><CollectionEmptyState :loading="loading" :error="error" :filtered="!!(requestedQuery.keyword || requestedQuery.status)" empty-title="暂无质检报告" empty-description="可在新建报告草稿中填写有权访问的检测任务编号，提交后由主管独立审批。" @retry="retryList" @reset="resetSearch" /></template>
-        <el-table-column label="报告与编写账号" min-width="265"><template #default="{ row }"><div class="report-list-identity"><button type="button" :disabled="busy" @click="openDetail(row.reportId)">{{ row.title || '未命名报告' }}</button><span>编写账号 {{ row.ownerUsername || '未记录' }}</span><details><summary>报告编号</summary><code>{{ row.reportId }}</code></details></div></template></el-table-column>
+        <template #empty>
+          <CollectionEmptyState
+            :loading="loading" :error="error"
+            :filtered="!!(requestedQuery.keyword || (!approvalOnly && requestedQuery.status))"
+            :empty-title="approvalOnly ? '暂无待你审批的报告' : '暂无质检报告'"
+            :empty-description="approvalOnly ? '可以查看全部报告及其审批结果。' : '选用已完成的检测任务，可以新建并提交报告。'"
+            @retry="retryList" @reset="resetSearch"
+          >
+            <template v-if="emptyApprovalQueue" #empty-action>
+              <router-link to="/quality/reports" custom v-slot="{ href, navigate }">
+                <el-button tag="a" :href="href" type="primary" size="small" @click="navigate">查看全部报告</el-button>
+              </router-link>
+            </template>
+          </CollectionEmptyState>
+        </template>
+        <el-table-column label="报告与状态" min-width="265">
+          <template #default="{ row }">
+            <div class="report-list-identity">
+              <button type="button" :disabled="busy" @click="openDetail(row.reportId)">{{ row.title || '未命名报告' }}</button>
+              <div class="report-list-status">
+                <StatusBadge domain="report" :code="row.status" :label="states[row.status]" />
+                <small>版本 {{ knownCount(row.version) ?? '未记录' }}</small>
+              </div>
+              <span>编写账号 {{ row.ownerUsername || '未记录' }}</span>
+              <details><summary>报告编号</summary><code>{{ row.reportId }}</code></details>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" :disabled="busy" @click="openDetail(row.reportId)"><AppIcon name="Search" :size="16" />查看</el-button></template></el-table-column>
         <el-table-column label="依据任务" min-width="205"><template #default="{ row }"><router-link v-if="row.taskId" class="report-task-link" :to="{ path:'/inspection/history', query:{ keyword:row.taskId } }">{{ row.taskId }}</router-link><span v-else>未记录</span></template></el-table-column>
-        <el-table-column label="状态与版本" min-width="145"><template #default="{ row }"><div class="report-list-status"><StatusBadge domain="report" :code="row.status" :label="states[row.status]" /><small>版本 {{ knownCount(row.version) ?? '未记录' }}</small></div></template></el-table-column>
         <el-table-column label="最近更新" min-width="175"><template #default="{ row }"><span class="report-list-time">{{ reportTime(row.updatedAt) }}</span></template></el-table-column>
         <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.reportId)]" :revision="row.version" resource-type="QUALITY_REPORT" :resource-id="row.reportId" domain="QUALITY_REPORT" /></template></el-table-column>
       </el-table>
@@ -31,18 +56,47 @@
 
     <el-dialog v-model="editorVisible" class="report-scroll-dialog report-editor-dialog" :title="editingId ? '编辑个人草稿' : '新建报告草稿'" width="min(650px, 94vw)" append-to-body :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy">
       <p class="report-dialog-note"><AppIcon name="Document" :size="16" />保存草稿时更新任务依据，提交审批后本版本冻结；报告审批与任务放行分别处理。</p>
-      <el-alert v-if="reportConflict" title="报告版本已变化 草稿已保留 不会覆盖他人修改" type="warning" :closable="false"><el-button text @click="reloadDraft">确认加载新版本并重新编辑</el-button></el-alert>
       <p v-if="editingId" class="report-editor-version">正在编辑草稿版本 {{ knownCount(editingVersion) ?? '未记录' }} · 保存后请重新核对本版依据。</p>
       <el-form id="quality-report-editor-form" label-position="top" @submit.prevent="saveDraft">
         <section class="report-editor-section" aria-labelledby="report-editor-source-heading"><h3 id="report-editor-source-heading"><AppIcon name="Tickets" :size="18" />报告依据</h3>
-        <el-form-item label="检测任务编号" required><el-input id="quality-report-task" v-model="form.taskId" aria-label="输入已完成检测任务编号" aria-describedby="report-editor-source-note" placeholder="输入已完成检测任务编号" :disabled="!!editingId || busy" maxlength="128" /></el-form-item>
+        <el-form-item label="检测任务编号" required>
+          <el-input id="quality-report-task" v-model="form.taskId" aria-label="输入已完成检测任务编号"
+            :aria-invalid="editorFieldError?.field === 'taskId' || undefined"
+            :aria-describedby="editorFieldError?.field === 'taskId' ? 'quality-report-task-error report-editor-source-note' : 'report-editor-source-note'"
+            placeholder="输入已完成检测任务编号" :disabled="!!editingId || busy" maxlength="128"
+            @update:model-value="clearEditorFieldError('taskId')" />
+          <p v-if="editorFieldError?.field === 'taskId'" id="quality-report-task-error" class="report-field-error" role="alert">{{ editorFieldError.message }}</p>
+        </el-form-item>
         <p id="report-editor-source-note" class="report-editor-help">填写当前账号有权访问的已完成任务。编辑现有草稿时不能更换依据任务，可到<router-link :to="{path:'/inspection/history',query:typeof form.taskId==='string'&&form.taskId.trim()?{keyword:form.taskId.trim()}:{}}">检测记录</router-link>核对原始结果。</p></section>
         <section class="report-editor-section" aria-labelledby="report-editor-content-heading"><h3 id="report-editor-content-heading"><AppIcon name="Edit" :size="18" />标题与意见</h3>
-        <el-form-item label="报告标题" required><el-input id="quality-report-title" v-model="form.title" aria-label="报告标题" placeholder="为本版报告填写清晰标题" maxlength="120" show-word-limit :disabled="busy" /></el-form-item>
-        <el-form-item label="编写意见" required><el-input id="quality-report-narrative" v-model="form.narrative" type="textarea" :rows="7" maxlength="10000" show-word-limit aria-label="记录复核说明、风险和建议，检测数量以系统依据为准" placeholder="记录复核说明、风险和建议，检测数量以系统依据为准" :disabled="busy" /></el-form-item></section>
-        <el-alert v-if="editorError" :title="editorError" type="error" :closable="false" />
+        <el-form-item label="报告标题" required>
+          <el-input id="quality-report-title" v-model="form.title" aria-label="报告标题"
+            :aria-invalid="editorFieldError?.field === 'title' || undefined"
+            :aria-describedby="editorFieldError?.field === 'title' ? 'quality-report-title-error' : undefined"
+            placeholder="为本版报告填写清晰标题" maxlength="120" show-word-limit :disabled="busy"
+            @update:model-value="clearEditorFieldError('title')" />
+          <p v-if="editorFieldError?.field === 'title'" id="quality-report-title-error" class="report-field-error" role="alert">{{ editorFieldError.message }}</p>
+        </el-form-item>
+        <el-form-item label="编写意见" required>
+          <el-input id="quality-report-narrative" v-model="form.narrative" type="textarea" :rows="7" maxlength="10000" show-word-limit
+            aria-label="记录复核说明、风险和建议，检测数量以系统依据为准"
+            :aria-invalid="editorFieldError?.field === 'narrative' || undefined"
+            :aria-describedby="editorFieldError?.field === 'narrative' ? 'quality-report-narrative-error' : undefined"
+            placeholder="记录复核说明、风险和建议，检测数量以系统依据为准" :disabled="busy"
+            @update:model-value="clearEditorFieldError('narrative')" />
+          <p v-if="editorFieldError?.field === 'narrative'" id="quality-report-narrative-error" class="report-field-error" role="alert">{{ editorFieldError.message }}</p>
+        </el-form-item></section>
       </el-form>
-      <template #footer><div class="report-dialog-actions"><el-button :disabled="busy" @click="editorVisible = false"><AppIcon name="Close" :size="16" />取消</el-button><el-button type="primary" native-type="submit" form="quality-report-editor-form" :loading="busy"><AppIcon name="DocumentChecked" :size="16" />保存草稿</el-button></div></template>
+      <template #footer>
+        <el-alert v-if="reportConflict" class="report-dialog-feedback" :title="editorError" type="warning" :closable="false">
+          <el-button text @click="reloadDraft">核对最新报告版本</el-button>
+        </el-alert>
+        <el-alert v-else-if="editorError" class="report-dialog-feedback" :title="editorError" type="error" :closable="false" />
+        <div class="report-dialog-actions">
+          <el-button :disabled="busy" @click="editorVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+          <el-button type="primary" native-type="submit" form="quality-report-editor-form" :loading="busy" :disabled="reportConflict"><AppIcon name="DocumentChecked" :size="16" />保存草稿</el-button>
+        </div>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="detailVisible" class="report-scroll-dialog" title="报告详情" width="min(920px, 96vw)" append-to-body :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy">
@@ -50,6 +104,8 @@
         <CollectionEmptyState v-if="!detail" :loading="detailLoading" :error="detailError" empty-title="报告资料尚未读取" empty-description="请重新读取当前报告，核对本版内容及操作记录。" @retry="openDetail(detailRequestedId)" />
         <template v-if="detail">
           <header class="report-detail-heading"><h2>{{ detail.title }}</h2><div><StatusBadge domain="report" :code="detail.status" :label="states[detail.status]" /><span class="report-version">版本 {{ detail.version }}</span></div></header>
+          <el-alert v-if="detail.decisionReason" :title="`审批意见：${detail.decisionReason}`" :type="detail.status === 'APPROVED' ? 'success' : 'warning'" :closable="false" />
+          <p v-if="detail.deciderUsername" class="muted">审批账号 {{ detail.deciderUsername }} · {{ reportTime(detail.decidedAt) }}</p>
           <dl class="report-identity-strip"><div><dt>编写账号</dt><dd>{{ detail.ownerUsername || '未记录' }}</dd></div><div><dt>依据任务</dt><dd>{{ detail.taskId || '未记录' }}</dd></div><div><dt>报告编号</dt><dd>{{ detail.reportId }}</dd></div></dl>
           <div class="report-next-step"><AppIcon name="DocumentChecked" :size="17" /><p>{{ reportNextStep }}</p></div>
           <p v-if="detail.previousReportId" class="muted">修订自报告 {{ detail.previousReportId }}</p>
@@ -58,8 +114,6 @@
           <ReportSnapshotIdentity :key="detail.reportId+':'+detail.version" :report="detail" />
           <h3><AppIcon name="Edit" :size="18" />编写意见</h3><p class="narrative">{{ detail.narrative || '未记录编写意见' }}</p>
           <el-alert v-if="detail.status === 'DRAFT'" title="保存草稿会更新任务依据，提交后本版本内容冻结" type="info" :closable="false" />
-          <el-alert v-if="detail.decisionReason" :title="`审批意见：${detail.decisionReason}`" :type="detail.status === 'APPROVED' ? 'success' : 'warning'" :closable="false" />
-          <p v-if="detail.deciderUsername" class="muted">审批账号 {{ detail.deciderUsername }} · {{ reportTime(detail.decidedAt) }}</p>
           <details class="report-delivery" aria-label="报告状态同步">
             <summary><AppIcon name="Connection" :size="16" />审批状态同步<span v-if="eventsError"> · 读取未完成</span><span v-else-if="events.some(item=>['FAILED','RETRY'].includes(item.deliveryStatus))"> · 有待核对的发送记录</span></summary>
             <div class="detail-heading"><p class="muted">发送状态与已记录的审批决定分别显示；失败会按原机制重试，重新发送不会再次审批。</p><el-button size="small" :disabled="busy" :loading="eventsLoading" @click="loadEvents(detail.reportId)"><AppIcon name="Refresh" :size="15" />刷新同步状态</el-button></div>
@@ -72,14 +126,7 @@
               <el-table-column v-if="isSupervisor" label="操作" width="110"><template #default="{ row }"><el-button v-if="['FAILED','RETRY'].includes(row.deliveryStatus)" size="small" :disabled="busy||eventsLoading||row.clockStatus==='UNRESOLVED'" @click="retryEvent(row)">重新发送</el-button></template></el-table-column>
             </el-table>
           </details>
-          <div class="detail-actions">
-            <template v-if="own && detail.status === 'DRAFT'"><el-button :disabled="busy" @click="openEdit"><AppIcon name="Edit" :size="15" />编辑草稿</el-button><el-button type="primary" :loading="busy" @click="openTransition('submit')"><AppIcon name="DocumentChecked" :size="15" />提交主管审批</el-button></template>
-            <el-button v-if="own && detail.status === 'SUBMITTED'" :disabled="busy" @click="openTransition('withdraw')">撤回申请</el-button>
-            <el-button v-if="own && ['APPROVED', 'REJECTED', 'WITHDRAWN'].includes(detail.status)" :loading="busy" @click="runCommand('revise')">创建修订草稿</el-button>
-            <template v-if="isSupervisor && !own && detail.status === 'SUBMITTED'"><el-button type="primary" :disabled="busy" @click="openDecision('APPROVE')">审批通过</el-button><el-button type="danger" plain :disabled="busy" @click="openDecision('REJECT')">驳回报告</el-button></template>
-            <template v-if="detail.status === 'APPROVED'"><el-select v-model="exportFormat" :disabled="busy" aria-label="报告导出格式" style="width:130px"><el-option label="Word" value="docx" /><el-option label="PDF" value="pdf" /><el-option label="Excel" value="xlsx" /><el-option label="Markdown" value="md" /></el-select><el-button :loading="busy" @click="download"><AppIcon name="Download" :size="15" />导出已审批报告</el-button></template>
-          </div>
-          <ResourceChangeHistory resource-type="QUALITY_REPORT" :resource-id="detail.reportId" domain="QUALITY_REPORT" compact />
+          <ResourceChangeHistory v-if="userStore.capabilities?.changeHistory === true" resource-type="QUALITY_REPORT" :resource-id="detail.reportId" domain="QUALITY_REPORT" compact />
           <h3><AppIcon name="DocumentCopy" :size="18" />操作记录<span class="report-section-count">本次读取 {{ audits.length }} 条</span></h3>
           <el-table class="report-audit-table" :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间" min-width="190"><template #default="{ row }">{{ row.clockStatus==='UNRESOLVED' && !row.createdAt ? '历史时区未确认' : reportTime(row.createdAt) }}</template></el-table-column></el-table>
           <div class="report-audit-mobile" role="region" aria-label="报告操作记录，可聚焦后使用方向键滚动" tabindex="0">
@@ -93,16 +140,26 @@
             <p v-else>本次未返回报告操作记录</p>
           </div>
         </template>
-        <el-alert v-if="detailError&&detail" :title="detailError" type="error" :closable="false" />
       </div>
-      <template #footer><div class="report-dialog-actions"><span v-if="detail" class="report-dialog-footnote">当前展示版本 {{ knownCount(detail.version) ?? '未记录' }} · 操作前以本版资料核对</span><el-button :disabled="busy" @click="detailVisible=false">关闭详情</el-button></div></template>
+      <template #footer>
+        <el-alert v-if="detailError && detail" class="report-dialog-feedback" :title="detailError" type="error" :closable="false" />
+        <div class="report-dialog-actions">
+          <el-button :disabled="busy" @click="detailVisible=false">关闭详情</el-button>
+          <template v-if="detail">
+            <template v-if="own && detail.status === 'DRAFT'"><el-button :disabled="busy" @click="openEdit"><AppIcon name="Edit" :size="15" />编辑草稿</el-button><el-button type="primary" :loading="busy" @click="openTransition('submit')"><AppIcon name="DocumentChecked" :size="15" />提交主管审批</el-button></template>
+            <el-button v-if="own && detail.status === 'SUBMITTED'" :disabled="busy" @click="openTransition('withdraw')">撤回申请</el-button>
+            <el-button v-if="own && ['APPROVED', 'REJECTED', 'WITHDRAWN'].includes(detail.status)" :loading="busy" :type="detail.status === 'REJECTED' ? 'primary' : 'default'" @click="runCommand('revise')">创建修订草稿</el-button>
+            <template v-if="isSupervisor && !own && detail.status === 'SUBMITTED'"><el-button type="primary" :disabled="busy" @click="openDecision('APPROVE')">审批通过</el-button><el-button type="danger" plain :disabled="busy" @click="openDecision('REJECT')">驳回报告</el-button></template>
+            <template v-if="detail.status === 'APPROVED'"><el-select v-model="exportFormat" :disabled="busy" aria-label="报告导出格式" style="width:130px"><el-option label="Word" value="docx" /><el-option label="PDF" value="pdf" /><el-option label="Excel" value="xlsx" /><el-option label="Markdown" value="md" /></el-select><el-button :loading="busy" @click="download"><AppIcon name="Download" :size="15" />导出已审批报告</el-button></template>
+          </template>
+        </div>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="transitionVisible" class="report-scroll-dialog" :title="transition === 'submit' ? '提交主管审批' : '撤回报告申请'" width="min(480px, 94vw)" append-to-body :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy">
       <p>{{ transition === 'submit' ? '提交后本版本的意见和检测依据将冻结，主管审批的是这份内容。' : '撤回后保留本次提交快照和审计，可以创建修订草稿。' }}</p>
       <div v-if="detail" class="report-operation-context"><strong>{{ detail.title }}</strong><p>版本 {{ detail.version }} · 编写账号 {{ detail.ownerUsername }}</p><small>依据任务 {{ detail.taskId }}</small></div>
-      <el-alert v-if="transitionError" :title="transitionError" type="warning" show-icon :closable="false" />
-      <template #footer><el-button :disabled="busy" @click="transitionVisible = false"><AppIcon name="Close" :size="16" />取消</el-button><el-button type="primary" :loading="busy" @click="runCommand(transition)">确认{{ transition === 'submit' ? '提交' : '撤回' }}</el-button></template>
+      <template #footer><el-alert v-if="transitionError" class="report-dialog-feedback" :title="transitionError" type="warning" show-icon :closable="false" /><el-button :disabled="busy" @click="transitionVisible = false"><AppIcon name="Close" :size="16" />取消</el-button><el-button type="primary" :loading="busy" @click="runCommand(transition)">确认{{ transition === 'submit' ? '提交' : '撤回' }}</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="decisionVisible" class="report-scroll-dialog" :title="decision === 'APPROVE' ? '报告审批通过' : '驳回报告'" width="min(700px, 94vw)" append-to-body :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy">
@@ -117,8 +174,7 @@
         <p>决定：{{ decision === 'APPROVE' ? '审批通过' : '驳回' }} · {{ preview.reason }}</p>
         <p class="muted">审批记录将引用此快照，确认有效至 {{ reportTime(preview.expiresAt) }}</p>
       </div>
-      <el-alert v-if="decisionError" :title="decisionError" type="error" :closable="false" />
-      <template #footer><el-button :disabled="busy" @click="decisionVisible = false"><AppIcon name="Close" :size="16" />取消</el-button><el-button v-if="preview" :disabled="busy" @click="preview = null">修改意见</el-button><el-button v-if="!preview" :type="decision === 'APPROVE' ? 'primary' : 'danger'" :loading="busy" @click="prepareDecision">预览审批操作</el-button><el-button v-else :type="decision === 'APPROVE' ? 'primary' : 'danger'" :loading="busy" @click="confirmDecision">确认{{ decision === 'APPROVE' ? '审批通过' : '驳回报告' }}</el-button></template>
+      <template #footer><el-alert v-if="decisionError" class="report-dialog-feedback" :title="decisionError" type="error" :closable="false" /><el-button :disabled="busy" @click="decisionVisible = false"><AppIcon name="Close" :size="16" />取消</el-button><el-button v-if="preview" :disabled="busy" @click="preview = null">修改意见</el-button><el-button v-if="!preview" :type="decision === 'APPROVE' ? 'primary' : 'danger'" :loading="busy" @click="prepareDecision">预览审批操作</el-button><el-button v-else :type="decision === 'APPROVE' ? 'primary' : 'danger'" :loading="busy" @click="confirmDecision">确认{{ decision === 'APPROVE' ? '审批通过' : '驳回报告' }}</el-button></template>
     </el-dialog>
   </div>
 </template>
@@ -129,7 +185,7 @@ import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
 import { useLatestChanges } from '../composables/useLatestChanges'
 import { resourceHistoryLink } from '../utils/changeHistory'
 import { useResourceChanges } from '../composables/useResourceChanges'
-import { ref, reactive, computed, watch, onBeforeUnmount, onMounted } from 'vue'
+import { ref, shallowRef, reactive, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { captureAccountRequest } from '../api/request'
@@ -159,12 +215,24 @@ const detailRequestedId=ref(''),transitionError=ref('')
 const eventLabel=value=>({submitted:'提交审批',withdrawn:'撤回申请',approved:'审批通过',rejected:'驳回报告'}[value?.split('.')[2]]||'报告状态更新')
 const reportConflict=ref(false)
 const editorVisible = ref(false), editingId = ref(''), editingVersion = ref(null), editorError = ref('')
+const editorFieldError = shallowRef(null)
+const draftFields = {
+  taskId: { id:'quality-report-task', required:'请填写检测任务编号' },
+  title: { id:'quality-report-title', required:'请填写报告标题' },
+  narrative: { id:'quality-report-narrative', required:'请填写编写意见' }
+}
+const draftSourceErrors = new Set([
+  '任务编号不正确', '任务不存在或无访问权限', '只有已完成或部分失败的检测任务可以编写报告'
+])
+const draftVersionErrors = new Set(['报告版本已更新，请刷新后重试', '当前报告状态不允许此操作'])
 const form = reactive({ taskId: '', title: '', narrative: '' })
 const transitionVisible = ref(false), transition = ref('submit')
 const decisionVisible = ref(false), decision = ref('APPROVE'), reason = ref(''), preview = ref(null), decisionError = ref('')
 const isSupervisor = computed(() => userStore.role === 'SUPERVISOR')
 const own = computed(() => detail.value?.ownerUserId != null && String(detail.value.ownerUserId) === String(userStore.identity?.userId))
 const approvalOnly = computed(() => isSupervisor.value && route.query.awaitingMyApproval === '1')
+const emptyApprovalQueue = computed(() => approvalOnly.value && listLoaded.value && total.value === 0
+  && !records.value.length && !requestedQuery.keyword && !loading.value && !error.value)
 const reportScope = computed(() => approvalOnly.value ? '当前显示需要你审批的报告。' : isSupervisor.value ? '可见本人草稿及有权查看的已提交报告。' : userStore.role === 'INSPECTOR' ? '仅显示本人报告，审批与任务放行分开。' : '仅显示当前账号有权访问的报告，私人草稿按编写账号隔离。')
 const reportNextStep = computed(() => {
   const state = detail.value?.status
@@ -202,18 +270,40 @@ function search() { load({ keyword:keyword.value.trim(), status:status.value || 
 function loadAppliedPage(nextPage) { load({ ...appliedQuery, page:nextPage }) }
 function retryList() { load({ ...requestedQuery }) }
 function resetSearch() { keyword.value = ''; status.value = approvalOnly.value ? 'SUBMITTED' : ''; search() }
-function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || ''); form.title = ''; form.narrative = ''; editorError.value = ''; editorVisible.value = true }
-function openEdit() { reportConflict.value=false; keys.clear(); editingId.value = detail.value.reportId; editingVersion.value = detail.value.version; Object.assign(form, { taskId: detail.value.taskId, title: detail.value.title, narrative: detail.value.narrative }); editorError.value = ''; editorVisible.value = true }
+function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || ''); form.title = ''; form.narrative = ''; editorError.value = ''; editorFieldError.value = null; editorVisible.value = true }
+function openEdit() { reportConflict.value=false; keys.clear(); editingId.value = detail.value.reportId; editingVersion.value = detail.value.version; Object.assign(form, { taskId: detail.value.taskId, title: detail.value.title, narrative: detail.value.narrative }); editorError.value = ''; editorFieldError.value = null; editorVisible.value = true }
+function clearEditorFieldError(field) {
+  if (editorFieldError.value?.field === field) editorFieldError.value = null
+}
+async function markEditorField(field, text) {
+  const fieldError = { field, message:text }
+  editorFieldError.value = fieldError
+  await nextTick()
+  if (!editorVisible.value || editorFieldError.value !== fieldError) return
+  const input = document.getElementById(draftFields[field].id)
+  input?.closest('.el-form-item')?.scrollIntoView({ block:'center' })
+  input?.focus({ preventScroll:true })
+}
 async function saveDraft() {
   if (busy.value || reportConflict.value) return
-  if (!form.taskId.trim() || !form.title.trim() || !form.narrative.trim()) return ElMessage.warning('请填写任务、标题和意见')
-  busy.value = true; editorError.value = ''
+  editorError.value = ''
+  const incomplete = Object.keys(draftFields).find(field => !form[field].trim())
+  if (incomplete) return markEditorField(incomplete, draftFields[incomplete].required)
+  busy.value = true
+  editorFieldError.value = null
   try {
     const payload = editingId.value ? withId(`edit:${editingId.value}`, { expectedVersion: editingVersion.value, title: form.title.trim(), narrative: form.narrative }) : withId('create', { taskId: form.taskId.trim(), title: form.title.trim(), narrative: form.narrative })
     const saved = unwrap(editingId.value ? await request.put(`/api/detection/reports/${editingId.value}`, payload, { headers }) : await request.post('/api/detection/reports', payload, { headers }))
     editorVisible.value = false; ElMessage.success('报告草稿已保存'); await load(); await openDetail(saved.reportId)
-  } catch (e) { editorError.value = message(e); if(e.response?.status===409 && e.response?.data?.code!=='REQUEST_CONTENT_CONFLICT')reportConflict.value=true }
-  finally { busy.value = false }
+  } catch (e) {
+    busy.value = false
+    const failure = message(e)
+    if (!editingId.value && draftSourceErrors.has(failure)) await markEditorField('taskId', failure)
+    else {
+      editorError.value = failure
+      reportConflict.value = !!editingId.value && e.response?.status === 409 && draftVersionErrors.has(failure)
+    }
+  } finally { busy.value = false }
 }
 async function openDetail(id) {
   detailRequestedId.value=id
@@ -257,7 +347,10 @@ async function runCommand(action) {
 function openDecision(action) { decision.value = action; reason.value = ''; preview.value = null; decisionError.value = ''; decisionVisible.value = true }
 async function prepareDecision() {
   if (busy.value || !detail.value) return
-  if (!reason.value.trim()) return ElMessage.warning('请填写审批意见')
+  if (!reason.value.trim()) {
+    decisionError.value = '请填写审批意见'
+    return
+  }
   busy.value = true; decisionError.value = ''
   try { preview.value = unwrap(await request.post(`/api/detection/reports/${detail.value.reportId}/decision-preview`, { expectedVersion: detail.value.version, decision: decision.value, reason: reason.value.trim() }, { headers })) }
   catch (e) { decisionError.value = message(e) }
@@ -327,7 +420,7 @@ h3 .el-icon { color:var(--app-primary); }
 .report-list-identity > span,.report-list-identity details { max-width:100%; color:var(--app-text-secondary); font-size:12px; line-height:1.7; }
 .report-list-identity summary { width:fit-content; cursor:pointer; }
 .report-list-identity code { display:block; padding-top:5px; font-size:12px; overflow-wrap:anywhere; }
-.report-list-status { display:grid; justify-items:start; gap:7px; }
+.report-list-status { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; }
 .report-list-status small { color:var(--app-text-secondary); font-size:12px; }
 .report-list-time { color:var(--app-text-secondary); font-size:12px; font-variant-numeric:tabular-nums; }
 .report-task-link { color:var(--app-primary); text-decoration:underline; text-underline-offset:3px; font-size:12px; overflow-wrap:anywhere; }
@@ -343,7 +436,8 @@ h3 .el-icon { color:var(--app-primary); }
 .report-editor-help a { color:var(--app-primary); text-underline-offset:3px; }
 .report-dialog-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; width:100%; }
 .report-dialog-actions .el-button + .el-button { margin-left:0; }
-.report-dialog-footnote { flex:1 1 200px; text-align:left; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.report-field-error { width:100%; margin:4px 0 0; color:var(--app-danger); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.report-dialog-feedback { flex:0 0 100%; text-align:left; overflow-wrap:anywhere; }
 .report-section-count { margin-left:auto; color:var(--app-text-secondary); font-size:12px; font-weight:400; }
 .report-detail-heading { display:grid; gap:12px; margin:0 0 18px; min-width:0; }
 .report-detail-heading h2 { margin:0; color:var(--app-text); font-size:19px; font-weight:650; line-height:1.7; overflow-wrap:anywhere; }
@@ -381,7 +475,7 @@ h3 .el-icon { color:var(--app-primary); }
 @media(max-width:640px) { .report-audit-mobile { display:block; } .report-audit-table { display:none; } .report-detail-heading h2 { font-size:16px; } .report-identity-strip { grid-template-columns:minmax(0,1fr); gap:10px; } .report-filter-field { width:100%; } .report-toolbar .el-input,.report-toolbar .el-select { width:100%; } }
 .source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }.source-grid div { display: flex; flex-direction: column; gap: 6px; }
 .source-grid span, .muted { font-size: 13px; color: #64748b; }.source-grid strong { font-weight: 500; overflow-wrap: anywhere; }
-.narrative { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }.detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+.narrative { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .approval-preview { border:0; border-top:2px solid var(--app-border-focus); padding:16px 0; border-radius:0; background:white; }
 .approval-preview > h3 { margin:0 0 12px; font-size:16px; }
 .approval-preview > p { color:var(--app-text-secondary); font-size:13px; line-height:1.85; overflow-wrap:anywhere; }
@@ -397,5 +491,4 @@ h3 .el-icon { color:var(--app-primary); }
 .report-scroll-dialog .el-dialog__footer { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
 .report-scroll-dialog .el-dialog__footer .el-button + .el-button { margin-left:0; }
 .report-scroll-dialog :is(a,summary):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; border-radius:3px; }
-.report-scroll-dialog .detail-actions .el-button + .el-button { margin-left:0; }
 </style>

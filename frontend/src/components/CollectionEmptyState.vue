@@ -8,6 +8,9 @@
       <el-button v-if="error" size="small" @click="$emit('retry')"><AppIcon name="Refresh" :size="15" />重新读取</el-button>
       <el-button v-if="filtered" size="small" :type="error ? 'default' : 'primary'" plain @click="$emit('reset')"><AppIcon name="Filter" :size="15" />清空筛选</el-button>
     </div>
+    <div v-else-if="!loading && $slots['empty-action']" class="collection-empty-actions">
+      <slot name="empty-action" />
+    </div>
   </section>
 </template>
 
