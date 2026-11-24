@@ -48,11 +48,29 @@
         <el-table-column label="检测图片" min-width="100" align="right">
           <template #default="{row}">{{ count(row.detectedImages) }}</template>
         </el-table-column>
-        <el-table-column label="当前责任人" min-width="144">
+        <el-table-column label="主管责任" min-width="144">
           <template #default="{row}">
             <div class="ledger-cell">
-              <span>{{ row.assigneeName || row.assigneeUsername || (row.assignedAt ? '责任人未记录' : '未分派') }}</span>
-              <small v-if="row.assigneeName && row.assigneeUsername">{{ row.assigneeUsername }}</small>
+              <span>{{ row.supervisorName || row.supervisorUsername || '未分派' }}</span>
+              <small v-if="row.supervisorName && row.supervisorUsername && row.supervisorName !== row.supervisorUsername">
+                {{ row.supervisorUsername }}
+              </small>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="检测责任" min-width="154">
+          <template #default="{row}">
+            <div class="ledger-cell">
+              <span>{{ row.inspectorName || row.inspectorEmployeeNumber || row.inspectorUsername || '未分派' }}</span>
+              <small v-if="row.inspectorName && row.inspectorEmployeeNumber && row.inspectorName !== row.inspectorEmployeeNumber">
+                {{ row.inspectorEmployeeNumber }}
+              </small>
+              <small v-if="row.inspectorUsername && row.inspectorEmployeeNumber && row.inspectorUsername !== row.inspectorEmployeeNumber">
+                登录账号 {{ row.inspectorUsername }}
+              </small>
+              <small v-else-if="!row.inspectorUsername && (row.inspectorName || row.inspectorEmployeeNumber)">
+                未绑定登录账号
+              </small>
             </div>
           </template>
         </el-table-column>
