@@ -200,8 +200,8 @@
     </section>
     <section class="workflow-summary app-panel">
       <h3>{{ duplicateSummary?.scope === 'DEPARTMENT' ? '部门重复图片复查' : '我的重复图片复查' }}</h3>
-      <p>仅含未完成工单。</p>
-      <div v-if="duplicateSummary" class="hero-telemetry">
+      <p v-if="duplicateSummary?.activeCount === 0">暂无未完成的复查工单。</p>
+      <div v-else-if="duplicateSummary" class="hero-telemetry">
         <span v-if="duplicateSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ formatNumber(duplicateSummary.counts.OPEN) }}</span>
         <span class="metric-chip">待对比 {{ formatNumber(duplicateSummary.counts.ASSIGNED) }}</span>
         <span class="metric-chip">对比中 {{ formatNumber(duplicateSummary.counts.COMPARING) }}</span>

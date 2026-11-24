@@ -161,3 +161,54 @@ test('tests\\use-detection-history-contract.test.cjs', () => {
 
   console.log('use detection history contract assertions passed')
 })
+
+test('removing a linked detection-history keyword refreshes results and preserves manual filters', async () => {
+  const key = '__historyRouteTest'
+  globalThis[key] = {
+    ref: value => ({ value }), computed: read => ({ get value() { return read() } }),
+    onBeforeUnmount: () => {}, knownCount: value => value
+  }
+  try {
+    const source = readFrontendFile('src', 'composables', 'useDetectionHistory.js')
+      .replace("import { computed, ref, onBeforeUnmount } from 'vue'", `const {computed,ref,onBeforeUnmount}=globalThis[${JSON.stringify(key)}]`)
+      .replace("import { knownCount } from '../utils/countPresentation'", `const {knownCount}=globalThis[${JSON.stringify(key)}]`)
+    const { useDetectionHistory } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
+    const requests = []
+    const history = useDetectionHistory({}, {
+      async fetchTaskList(page, size, keyword, status, filters) {
+        requests.push({ page, filters })
+        return { ok: true, records: [], total: keyword === 'missing' ? 0 : 23 }
+      }
+    })
+
+    await history.readHistoryFromRoute('missing', false, true)
+    assert.equal(history.historyTotal.value, 0)
+    await history.readHistoryFromRoute(undefined, false)
+    assert.equal(history.historySearchKeyword.value, '')
+    assert.equal(history.historyTotal.value, 23)
+    assert.deepEqual(requests.at(-1), { page: 1, filters: {} })
+
+    history.historyFilterRegion.value = '已提交地区'
+    await history.readHistoryFromRoute('missing', true)
+    await history.readHistoryFromRoute('missing', true)
+    const linked = { page: 1, filters: { keyword: 'missing', region: '已提交地区', completedResults: true } }
+    assert.deepEqual(requests.slice(-2), [linked, linked])
+    history.historyFilterRegion.value = '地区草稿'
+    history.historySearchKeyword.value = '关键词草稿'
+    await history.readHistoryFromRoute(undefined, true)
+    assert.deepEqual(requests.at(-1), { page: 1, filters: { region: '已提交地区', completedResults: true } })
+    assert.equal(history.historySearchKeyword.value, '关键词草稿')
+    assert.equal(history.historyFilterRegion.value, '地区草稿')
+    assert.equal(history.historyFiltersDirty.value, true)
+
+    await history.readHistoryFromRoute('missing', false)
+    history.historySearchKeyword.value = '手工关键词'
+    await history.onHistorySearch()
+    await history.readHistoryFromRoute(undefined, false)
+    await history.onHistorySearch()
+    const manual = { page: 1, filters: { keyword: '手工关键词', region: '地区草稿' } }
+    assert.deepEqual(requests.slice(-3), [manual, manual, manual])
+  } finally {
+    delete globalThis[key]
+  }
+})

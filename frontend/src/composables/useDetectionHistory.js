@@ -18,7 +18,7 @@ export function useDetectionHistory(taskStore, pollingStore) {
   const historyPage=ref(1), historyPageSize=ref(10), historyTotal=ref(null), historyRecords=ref([])
   const historyLoading=ref(false), historyError=ref(''), historyLoaded=ref(false)
   const appliedQuery=ref(null), requestedQuery=ref(null)
-  let loadGeneration=0, disposed=false, pendingKey=''
+  let loadGeneration=0, disposed=false, pendingKey='', linkedKeyword=''
   onBeforeUnmount(()=>{disposed=true;loadGeneration++})
 
   const buildHistoryFilters=()=>{
@@ -89,6 +89,23 @@ export function useDetectionHistory(taskStore, pollingStore) {
   }
   const onHistorySearch=()=>fetchHistoryWithFilters(1,historyPageSize.value)
   const onHistoryReset=()=>{historySearchKeyword.value='';historyFilterCollector.value='';historyFilterDevice.value='';historyFilterRegion.value='';return onHistorySearch()}
+  function readHistoryFromRoute(keyword, completedResults, initial = false) {
+    const routeKeyword = typeof keyword === 'string' ? keyword.trim() : ''
+    if (!initial && !routeKeyword && !linkedKeyword && historyCompletedResults.value === completedResults) return
+
+    let filters
+    if (routeKeyword) {
+      historySearchKeyword.value = routeKeyword
+    } else if (linkedKeyword) {
+      // The link owns its keyword. Keep other submitted filters and leave form drafts unsubmitted.
+      if (historySearchKeyword.value.trim() === linkedKeyword) historySearchKeyword.value = ''
+      filters = { ...(requestedQuery.value || appliedQuery.value)?.filters }
+      if (filters.keyword === linkedKeyword) delete filters.keyword
+    }
+    linkedKeyword = routeKeyword
+    historyCompletedResults.value = completedResults
+    return fetchHistoryWithFilters(1, historyPageSize.value, filters)
+  }
   const onHistoryPageChange=page=>fetchHistoryWithFilters(page,historyPageSize.value,appliedQuery.value?.filters)
   const onHistorySizeChange=size=>fetchHistoryWithFilters(1,size,appliedQuery.value?.filters)
   const refreshHistory=()=>{
@@ -99,5 +116,5 @@ export function useDetectionHistory(taskStore, pollingStore) {
     const query=requestedQuery.value
     return query?fetchHistoryWithFilters(query.page,query.size,query.filters):fetchHistoryWithFilters()
   }
-  return {historySearchKeyword,historyFilterCollector,historyFilterDevice,historyFilterRegion,historyCompletedResults,historyPage,historyPageSize,historyTotal,historyRecords,historyLoading,historyError,historyLoaded,hasHistoryFilters,historyFiltersDirty,historyAppliedFilters,buildHistoryFilters,fetchHistoryWithFilters,onHistorySearch,onHistoryReset,onHistoryPageChange,onHistorySizeChange,refreshHistory,retryHistoryRead,forgetTasks}
+  return {historySearchKeyword,historyFilterCollector,historyFilterDevice,historyFilterRegion,historyCompletedResults,historyPage,historyPageSize,historyTotal,historyRecords,historyLoading,historyError,historyLoaded,hasHistoryFilters,historyFiltersDirty,historyAppliedFilters,buildHistoryFilters,fetchHistoryWithFilters,onHistorySearch,onHistoryReset,readHistoryFromRoute,onHistoryPageChange,onHistorySizeChange,refreshHistory,retryHistoryRead,forgetTasks}
 }

@@ -1,6 +1,7 @@
 <template>
   <section class="page-shell historical-ledger">
-    <PageHero :title="scope === 'all' ? '全部历史台账' : '我的历史台账'" icon="Tickets">
+    <PageHero :title="scope === 'all' ? '全部历史台账' : '我的历史台账'" icon="Tickets"
+      description="旧台账仅保留检测汇总，未保存原图和结果文件。">
       <template #actions>
         <div v-if="isSupervisor" class="ledger-scope" role="group" aria-label="台账查看范围">
           <el-button :type="scope === 'mine' ? 'primary' : 'default'" :aria-pressed="scope === 'mine'"

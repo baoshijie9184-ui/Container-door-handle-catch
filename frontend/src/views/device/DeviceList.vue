@@ -1,6 +1,11 @@
 <template>
   <div class="page-shell device-page">
-    <PageHero :title="isSupervisor ? '设备管理' : '设备目录'" icon="Monitor"><template #actions><el-button v-if="isSupervisor" type="primary" :disabled="writeBusy" @click="createDevice"><AppIcon name="Plus" :size="16" />新增设备</el-button></template></PageHero>
+    <PageHero :title="isSupervisor ? '设备管理' : '设备目录'" icon="Monitor">
+      <template v-if="isSupervisor" #actions>
+        <DeviceCaptureAlerts />
+        <el-button type="primary" :disabled="writeBusy" @click="createDevice"><AppIcon name="Plus" :size="16" />新增设备</el-button>
+      </template>
+    </PageHero>
 
     <!-- 独立登记统计，不随下方列表筛选变化 -->
     <section class="stats-bar" :aria-busy="statsLoading">
@@ -91,6 +96,7 @@ import { knownCount } from '../../utils/countPresentation'
 import { useManagedList } from '../../composables/useManagedList'
 import { useLatestChanges } from '../../composables/useLatestChanges'
 import ResourceMutationSummary from '../../components/ResourceMutationSummary.vue'
+import DeviceCaptureAlerts from './DeviceCaptureAlerts.vue'
 
 const router = useRouter()
 const userStore = useUserStore()

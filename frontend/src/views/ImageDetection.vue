@@ -524,6 +524,7 @@ const {
   fetchHistoryWithFilters,
   onHistorySearch,
   onHistoryReset,
+  readHistoryFromRoute,
   onHistoryPageChange,
   onHistorySizeChange,
   refreshHistory,
@@ -652,12 +653,12 @@ const syncTabFromRoute = async () => {
     if (batchTraceReport.value?.batchNo !== requested) await loadBatchTraceReport()
     return
   }
-  if (routeTab === 'history' && (routeKeyword || historyCompletedResults.value !== completedResults)) {
-    if (routeKeyword) historySearchKeyword.value = routeKeyword
-    historyCompletedResults.value = completedResults
-    historyPage.value = 1
-    await fetchHistoryWithFilters(1)
-    return
+  if (routeTab === 'history') {
+    const historyRead = readHistoryFromRoute(routeKeyword, completedResults)
+    if (historyRead) {
+      await historyRead
+      return
+    }
   }
   if (changed) await handleTabChange(routeTab, { fromRoute:true })
 }
@@ -931,19 +932,16 @@ onMounted(async () => {
   const queryBatchNo = typeof route.query.batchNo === 'string' ? route.query.batchNo.trim() : ''
   if (queryWorkOrderNo && activeTab.value === 'work-order-trace') workOrderTraceNo.value = queryWorkOrderNo
   if (queryBatchNo && activeTab.value === 'batch-trace') batchTraceNo.value = queryBatchNo
-  const queryKeyword = route.query.keyword
-  if (queryKeyword) {
+  if (typeof route.query.keyword === 'string' && route.query.keyword.trim()) {
     activeTab.value = 'history'
-    historySearchKeyword.value = String(queryKeyword)
   }
-  historyCompletedResults.value = route.query.completedResults === '1'
 
   if (activeTab.value === 'workspace') {
     fetchModels()
     return
   }
   await restoreFromSession()
-  if (activeTab.value === 'history') fetchHistoryWithFilters()
+  if (activeTab.value === 'history') readHistoryFromRoute(route.query.keyword, route.query.completedResults === '1', true)
 
   // 从上传页跳转过来时自动选中对应任务
   const queryTaskId = route.query.taskId

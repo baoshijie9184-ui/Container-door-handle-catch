@@ -55,9 +55,9 @@
     </section>
 
     <section class="operation-panel llm-applications" aria-labelledby="llm-applications-title">
-      <div class="llm-section-heading"><div><h2 id="llm-applications-title">{{supervisor ? '员工额度审批' : '我的申请'}}</h2><p>批准后追加员工的个人额度，保留已用与预留记录。</p></div></div>
-      <div class="llm-list-toolbar"><div class="llm-list-filters"><el-select v-model="activeList.status" aria-label="申请状态" :disabled="busy" @change="changeStatus"><el-option label="全部状态" value="" /><el-option v-for="(label, status) in quotaApplicationLabels" :key="status" :label="label" :value="status" /></el-select><el-button :loading="activeList.loading" :disabled="busy" @click="loadApplications(listScope)">刷新申请</el-button></div></div>
-      <el-alert v-if="activeList.error" :title="activeList.error" type="error" :closable="false" />
+      <div class="llm-section-heading"><div><h2 id="llm-applications-title">{{ supervisor ? '员工额度申请' : '我的申请' }}</h2><p>批准后追加员工的个人额度，保留已用与预留记录。</p></div></div>
+      <div class="llm-list-toolbar"><div class="llm-list-filters"><el-select v-model="activeList.status" aria-label="申请状态" :disabled="busy" @change="changeStatus"><el-option label="全部状态" :value="allApplicationStatuses" /><el-option v-for="(label, status) in quotaApplicationLabels" :key="status" :label="label" :value="status" /></el-select><el-button :loading="activeList.loading" :disabled="busy" @click="loadApplications(listScope)">刷新申请</el-button></div></div>
+      <el-alert v-if="activeList.error && activeList.items.length" :title="activeList.error" type="error" :closable="false" />
       <TransitionGroup name="quota-record" tag="div" class="llm-application-list" :aria-busy="activeList.loading">
         <article v-for="application in activeList.items" :key="application.id" class="operation-chunk llm-application">
           <div class="llm-application-heading"><h3>{{ application.modelId }}</h3><el-tag :type="quotaApplicationTones[application.status]">{{ quotaApplicationLabels[application.status] }}</el-tag></div>
@@ -76,7 +76,18 @@
           </div>
         </article>
       </TransitionGroup>
-      <CollectionEmptyState v-if="!activeList.items.length" :loading="activeList.loading" :error="activeList.error" :empty-title="listScope === 'mine' ? '还没有额度申请' : '暂无企业额度申请'" :empty-description="listScope === 'mine' ? '从上方模型选择申请，提交后由本企业主管审批。' : '成员提交后会在这里显示申请与处理状态。'" @retry="loadApplications(listScope)" />
+      <CollectionEmptyState
+        v-if="!activeList.items.length"
+        :loading="activeList.loading"
+        :error="activeList.error"
+        :filtered="activeList.status !== allApplicationStatuses"
+        :filtered-title="activeList.status === 'PENDING' ? '暂无待审批的额度申请' : '暂无符合所选状态的额度申请'"
+        filtered-description="清空筛选后可查看全部状态。"
+        :empty-title="listScope === 'mine' ? '还没有额度申请' : '暂无企业额度申请'"
+        :empty-description="listScope === 'mine' ? '从上方模型选择申请，提交后由本企业主管审批。' : '成员提交后会在这里显示申请与处理状态。'"
+        @retry="loadApplications(listScope)"
+        @reset="changeStatus()"
+      />
       <el-button v-if="activeList.nextCursor !== null" class="llm-load-more" :loading="activeList.loading" :disabled="busy" @click="loadApplications(listScope, true)">加载更早的申请</el-button>
     </section>
 
@@ -130,14 +141,15 @@ const base = '/api/agent/model-quotas', headers = { 'X-Budget-Action': 'update' 
 const models = ref([]), modelsLoading = ref(false), modelsError = ref(''), showUnconfigured = ref(false)
 const route=useRoute(),quotaConflict=ref(false)
 const listScope = computed(()=>supervisor.value ? 'team' : 'mine'), busy = ref(false), notice = ref('')
-const emptyList = (status = '') => ({ items: [], nextCursor: null, loading: false, error: '', loaded: false, status })
-const lists = reactive({ mine: emptyList(), team: emptyList('PENDING') })
+const allApplicationStatuses = 'ALL'
+const emptyList = () => ({ items: [], nextCursor: null, loading: false, error: '', loaded: false, status: allApplicationStatuses })
+const lists = reactive({ mine: emptyList(), team: emptyList() })
 if (Object.hasOwn(quotaApplicationLabels, route.query.status)) lists[listScope.value].status = route.query.status
 const dialogVisible = ref(false), dialogMode = ref('apply'), selectedApplication = ref(null), formError = ref(''), command = ref(null)
 const draft = reactive({ modelId: '', requestedTokens: undefined, reason: '', decision: 'APPROVE' })
 const scope = useAccountOperationScope(() => {
   models.value = []; modelsLoading.value = false; modelsError.value = ''
-  Object.assign(lists, { mine: emptyList(), team: emptyList('PENDING') })
+  Object.assign(lists, { mine: emptyList(), team: emptyList() })
   busy.value = false; notice.value = ''; dialogVisible.value = false; selectedApplication.value = null
   command.value = null; formError.value = ''; Object.assign(draft, { modelId: '', requestedTokens: undefined, reason: '', decision: 'APPROVE' })
 })
@@ -177,9 +189,10 @@ async function loadApplications(which = 'mine', more = false) {
   const list = lists[which]
   if (more && (list.loading || list.nextCursor === null)) return
   const token = listReads[which].begin(), before = more ? list.nextCursor : undefined
+  const status = list.status === allApplicationStatuses ? undefined : list.status
   list.loading = true; list.error = ''
   try {
-    const data = readQuotaApplications(operationData(await request.get(base + '/applications', { params: { scope: which, limit: 20, before, status: list.status || undefined }, signal: token.signal })))
+    const data = readQuotaApplications(operationData(await request.get(base + '/applications', { params: { scope: which, limit: 20, before, status }, signal: token.signal })))
     if (!listReads[which].current(token)) return
     if (more && data.nextCursor !== null && Number(data.nextCursor) >= Number(before)) throw new Error('申请分页游标未推进，请刷新后重新读取')
     list.items = more ? [...list.items, ...data.items.filter(row => !list.items.some(existing => existing.id === row.id))] : data.items
@@ -189,7 +202,12 @@ async function loadApplications(which = 'mine', more = false) {
 }
 
 async function refresh() { await Promise.allSettled([loadModels(), loadApplications(listScope.value)]) }
-function changeStatus() { activeList.value.items = []; activeList.value.nextCursor = null; loadApplications(listScope.value) }
+function changeStatus(status = allApplicationStatuses) {
+  activeList.value.status = status
+  activeList.value.items = []
+  activeList.value.nextCursor = null
+  return loadApplications(listScope.value)
+}
 function reopenPending() { if (!command.value) return false; dialogVisible.value = true; return true }
 function openApply(model) {
   if (supervisor.value || busy.value || reopenPending()) return

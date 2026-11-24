@@ -1,11 +1,21 @@
 <template>
-  <section class="memory-review-history">
-    <header><h3><AppIcon name="Search" :size="18" />相似记忆审阅</h3><el-button :loading="historyLoading" @click="history"><AppIcon name="Refresh" :size="15" />读取最近分析</el-button></header>
-    <p>从记忆卡片选择查找相似 先对比正文 再决定是否停用 仅针对本人账号</p>
-    <p v-if="historyError" role="alert" class="review-error">{{ historyError }}</p>
-    <p v-else-if="historyLoading&&!records.length" role="status">正在读取最近分析…</p>
-    <p v-else-if="!records.length">暂无已读取的分析记录 读取历史不会再次调用模型</p>
-    <div v-for="entry in records" :key="entry.id" class="review-history-row"><span>{{ memoryTime(entry.createdAt) }}</span><StatusBadge domain="memoryReview" :code="entry.status" :label="status(entry.status)" /><el-button size="small" @click="openHistory(entry.id)"><AppIcon name="Search" :size="15" />查看对比</el-button></div>
+  <div class="memory-review">
+    <details class="memory-review-history">
+      <summary>
+        <span class="review-history-title"><AppIcon name="Search" :size="16" />相似记忆审阅</span>
+        <span v-if="historyError" class="review-history-count review-error">读取失败</span>
+        <span v-else-if="records" class="review-history-count">{{ records.length ? `${records.length} 条分析记录` : '暂无分析记录' }}</span>
+      </summary>
+      <div class="review-history-content">
+        <header>
+          <p>从记忆卡片选择「查找相似」可开始分析。查看历史不会再次调用模型。</p>
+          <el-button size="small" :loading="historyLoading" @click="history"><AppIcon name="Refresh" :size="15" />读取最近分析</el-button>
+        </header>
+        <p v-if="historyError" role="alert" class="review-error">{{ historyError }}</p>
+        <p v-else-if="historyLoading && records === null" role="status">正在读取最近分析…</p>
+        <div v-for="entry in records" :key="entry.id" class="review-history-row"><span>{{ memoryTime(entry.createdAt) }}</span><StatusBadge domain="memoryReview" :code="entry.status" :label="status(entry.status)" /><el-button size="small" @click="openHistory(entry.id)"><AppIcon name="Search" :size="15" />查看对比</el-button></div>
+      </div>
+    </details>
     <el-dialog v-model="visible" title="相似记忆审阅" width="min(960px, calc(100vw - 32px))" class="memory-review-dialog" append-to-body :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" :before-close="close">
       <p v-if="error" role="alert" class="review-error">{{ error }}</p>
       <template v-if="!review">
@@ -38,7 +48,7 @@
       </template>
       <template #footer><el-button :disabled="saving" @click="visible=false">关闭</el-button></template>
     </el-dialog>
-  </section>
+  </div>
 </template>
 
 <script setup>
@@ -48,7 +58,7 @@ import {memoryTime} from '@/utils/memoryPresentation'
 import {personalMemory,memoryReviews,memoryReview,startMemoryReview,resolveMemoryReview} from '@/api/agentMemory'
 const props=defineProps({readEnabled:Boolean})
 const emit=defineEmits(['updated']),user=useUserStore()
-const visible=ref(false),saving=ref(false),source=ref(null),review=ref(null),error=ref(''),startId=ref(''),pending=ref(null),blocked=ref(false),uncertainId=ref(''),conflict=ref(false),records=ref([]),historyLoading=ref(false),historyError=ref('')
+const visible=ref(false),saving=ref(false),source=ref(null),review=ref(null),error=ref(''),startId=ref(''),pending=ref(null),blocked=ref(false),uncertainId=ref(''),conflict=ref(false),records=ref(null),historyLoading=ref(false),historyError=ref('')
 let generation=0,timer=null,pollDeadline=0
 const status=value=>({RUNNING:'正在分析',READY:'分析已完成',FAILED:'分析未完成',INTERRUPTED:'分析已中断'}[value]||'分析状态未确认')
 const label=value=>({DUPLICATE:'可能重复',CONFLICT:'可能矛盾',RELATED:'相关但有区别',DISTINCT:'不同信息',UNSURE:'需要人工判断'}[value]||'需要人工判断')
@@ -57,21 +67,31 @@ const decision=id=>review.value?.decisions?.find(row=>row.candidateId===id)
 const disabled=pair=>saving.value||!!pending.value||blocked.value||review.value?.status!=='READY'||review.value.sourceStale||pair.stale
 function reset(){generation++;clearTimeout(timer);source.value=null;review.value=null;pending.value=null;error.value='';startId.value='';blocked.value=false;uncertainId.value='';conflict.value=false;saving.value=false;historyLoading.value=false}
 function close(done){if(!saving.value)done()}
-async function history(){const actor=generation;historyLoading.value=true;try{const result=await memoryReviews();if(actor!==generation)return;if(!Array.isArray(result))throw new Error('分析历史暂不可用');records.value=result;historyError.value=''}catch(e){if(actor===generation){records.value=[];historyError.value=e.message}}finally{if(actor===generation)historyLoading.value=false}}
+async function history(){const actor=generation;historyLoading.value=true;try{const result=await memoryReviews();if(actor!==generation)return;if(!Array.isArray(result))throw new Error('分析历史暂不可用');records.value=result;historyError.value=''}catch(e){if(actor===generation){records.value=null;historyError.value=e.message}}finally{if(actor===generation)historyLoading.value=false}}
 async function open(item){reset();visible.value=true;const actor=generation;saving.value=true;try{const current=await personalMemory(item.id);if(actor!==generation)return;if(!current.lifecycle)throw new Error('记忆审阅服务需要更新');source.value=current}catch(e){if(actor===generation)error.value=e.message}finally{if(actor===generation){saving.value=false;schedule()}}}
 async function begin(){if(!props.readEnabled||saving.value||!source.value||startId.value)return;const actor=generation;saving.value=true;error.value='';startId.value=crypto.randomUUID();try{const result=await startMemoryReview(source.value.id,{requestId:startId.value,expectedDigest:source.value.digest,expectedRevision:source.value.lifecycle.revision});if(actor!==generation)return;review.value=result;pollDeadline=Date.now()+120000;schedule();await history()}catch(e){if(actor===generation)error.value=e.message+' 请读取原分析结果核对 不会自动再次发起'}finally{if(actor===generation){saving.value=false;schedule()}}}
 async function openHistory(id){reset();visible.value=true;pollDeadline=Date.now()+120000;await load(id)}
 function schedule(){clearTimeout(timer);if(visible.value&&review.value?.status==='RUNNING'&&Date.now()<pollDeadline)timer=setTimeout(()=>load(review.value.id),2000)}
-async function load(id){const actor=generation;if(saving.value)return;saving.value=true;try{const result=await memoryReview(id);if(actor!==generation)return;review.value=result;error.value='';if(uncertainId.value){if(result.decisions.some(row=>row.requestId===uncertainId.value)){blocked.value=false;uncertainId.value='';error.value='上次处理已核对 不会再次执行';emit('updated')}else if(conflict.value){blocked.value=false;uncertainId.value=''}else error.value='尚未找到对应处理回执 请稍后核对 不会自动重新提交'}schedule();await history()}catch(e){if(actor===generation){error.value=e.message;clearTimeout(timer);if([401,403].includes(e.status)){source.value=null;review.value=null;records.value=[]}}}finally{if(actor===generation){saving.value=false;schedule()}}}
+async function load(id){const actor=generation;if(saving.value)return;saving.value=true;try{const result=await memoryReview(id);if(actor!==generation)return;review.value=result;error.value='';if(uncertainId.value){if(result.decisions.some(row=>row.requestId===uncertainId.value)){blocked.value=false;uncertainId.value='';error.value='上次处理已核对 不会再次执行';emit('updated')}else if(conflict.value){blocked.value=false;uncertainId.value=''}else error.value='尚未找到对应处理回执 请稍后核对 不会自动重新提交'}schedule();await history()}catch(e){if(actor===generation){error.value=e.message;clearTimeout(timer);if([401,403].includes(e.status)){source.value=null;review.value=null;records.value=null}}}finally{if(actor===generation){saving.value=false;schedule()}}}
 function propose(pair,choice){if(disabled(pair))return;pending.value={requestId:crypto.randomUUID(),candidateId:pair.id,choice,expectedRevision:review.value.revision}}
 async function confirm(){if(!pending.value||saving.value)return;const actor=generation,request={...pending.value,confirmed:true};saving.value=true;error.value='';try{const result=await resolveMemoryReview(review.value.id,request);if(actor!==generation)return;review.value=result;pending.value=null;emit('updated');await history()}catch(e){if(actor===generation){error.value=e.message+' 请读取结果核对';uncertainId.value=request.requestId;conflict.value=e.status===409;blocked.value=true;pending.value=null}}finally{if(actor===generation){saving.value=false;schedule()}}}
 watch(visible,value=>{if(!value)clearTimeout(timer)})
-watch(()=>user.username,()=>{reset();visible.value=false;records.value=[];historyError.value='';historyLoading.value=false;history()})
+watch(()=>user.username,()=>{reset();visible.value=false;records.value=null;historyError.value='';historyLoading.value=false;history()})
 onBeforeUnmount(reset);onMounted(history);defineExpose({open})
 </script>
 
 <style scoped>
-.memory-review-history{margin-top:20px;padding:20px;border:1px solid #dce6f4;border-radius:14px;background:white}.memory-review-history header,.review-history-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.memory-review-history p,.review-history-row{font-size:13px;line-height:1.8;color:#5a6b82}.review-history-row{margin-top:10px;flex-wrap:wrap}.review-enter-active,.review-leave-active{transition:opacity .18s,transform .18s}.review-enter-from,.review-leave-to{opacity:0;transform:translateY(4px)}@media(prefers-reduced-motion:reduce){.review-enter-active,.review-leave-active{transition:none;transform:none}}
+.memory-review-history { margin-top:20px; border:1px solid var(--app-border); border-radius:14px; background:var(--app-surface); }
+.memory-review-history > summary { cursor:pointer; padding:12px 16px; border-radius:14px; color:var(--app-text); line-height:1.75; }
+.memory-review-history > summary:focus-visible { outline:2px solid var(--app-primary); outline-offset:2px; }
+.review-history-title { display:inline-flex; align-items:center; vertical-align:middle; gap:6px; margin-inline-start:4px; font-weight:600; }
+.review-history-count { margin-inline-start:10px; font-size:13px; color:var(--app-text-secondary); }
+.review-history-content { padding:0 16px 14px; }
+.review-history-content header,.review-history-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.review-history-content p,.review-history-row { font-size:13px; line-height:1.8; color:var(--app-text-secondary); }
+.memory-review-history .review-error { color:var(--app-danger); }
+.review-history-row { margin-top:10px; }
+.review-enter-active,.review-leave-active{transition:opacity .18s,transform .18s}.review-enter-from,.review-leave-to{opacity:0;transform:translateY(4px)}@media(prefers-reduced-motion:reduce){.review-enter-active,.review-leave-active{transition:none;transform:none}}
 </style>
 <style>
 .memory-review-dialog .el-dialog__body{max-height:min(65vh,650px);overflow:auto}.memory-review-dialog p,.memory-review-dialog small{line-height:1.8;overflow-wrap:anywhere;color:#5a6b82}.memory-review-dialog .review-error{color:#b42318}.memory-review-dialog .review-pair,.memory-review-dialog .review-confirm{border:1px solid #dce6f4;border-radius:12px;padding:16px;margin:16px 0}.memory-review-dialog .review-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.memory-review-dialog .review-text{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.8;max-height:240px;overflow:auto;background:#f7faff;padding:12px;border-radius:8px}.memory-review-dialog .review-text:focus-visible{outline:2px solid var(--app-primary);outline-offset:3px}.memory-review-dialog .review-text{overscroll-behavior:contain}.memory-review-dialog .review-actions,.memory-review-dialog .review-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.memory-review-dialog .el-button+.el-button{margin-left:0}@media(max-width:600px){.memory-review-dialog .review-grid{grid-template-columns:minmax(0,1fr)}.memory-review-dialog .review-pair{padding:12px}.memory-review-dialog .el-dialog__body{max-height:60vh}}

@@ -146,7 +146,7 @@
             <ReportBasis :source="detail.source" />
             <ReportSnapshotIdentity :key="detail.reportId+':'+detail.version" :report="detail" />
           </details>
-          <details class="report-delivery" aria-label="报告状态同步">
+          <details v-if="!reportDeliveryDisabled || eventsError || events.length" class="report-delivery" aria-label="报告状态同步">
             <summary>
               <AppIcon name="Connection" :size="16" />审批状态同步
               <span v-if="reportDeliveryDisabled"> · 投递未启用</span>
@@ -167,6 +167,7 @@
               <el-table-column v-if="isSupervisor && !reportDeliveryDisabled" label="操作" width="110"><template #default="{ row }"><el-button v-if="['FAILED','RETRY'].includes(row.deliveryStatus)" size="small" :disabled="busy||eventsLoading||row.clockStatus==='UNRESOLVED'" @click="retryEvent(row)">重新发送</el-button></template></el-table-column>
             </el-table>
           </details>
+          <p v-else class="muted">本站未启用报告事件投递。</p>
           <ResourceChangeHistory v-if="userStore.capabilities?.changeHistory === true" resource-type="QUALITY_REPORT" :resource-id="detail.reportId" domain="QUALITY_REPORT" compact />
           <h3><AppIcon name="DocumentCopy" :size="18" />操作记录<span class="report-section-count">本次读取 {{ audits.length }} 条</span></h3>
           <el-table class="report-audit-table" :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间" min-width="190"><template #default="{ row }">{{ row.clockStatus==='UNRESOLVED' && !row.createdAt ? '历史时区未确认' : reportTime(row.createdAt) }}</template></el-table-column></el-table>
