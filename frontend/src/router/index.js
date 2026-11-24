@@ -74,6 +74,11 @@ const routes = [
         meta: { title: '检测申请记录', requiresAuth: true, supervisorOnly: true }
       },
       {
+        path: 'inspection/historical-ledger', name: 'historicalDetectionLedger',
+        component: () => import('../views/inspection/HistoricalDetectionLedger.vue'),
+        meta: { title: '历史检测台账', employeeTitle: '我的历史台账', requiresAuth: true }
+      },
+      {
         path: 'inspection/workbench',
         name: 'inspectionWorkbench',
         component: () => import('../views/ImageDetection.vue'),

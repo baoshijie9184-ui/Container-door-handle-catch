@@ -3,6 +3,7 @@
     <header class="history-heading">
       <span class="history-icon"><AppIcon name="DataAnalysis" :size="21" /></span>
       <div><h2 id="history-overview-title">检测数据总览</h2><p>{{ period }} · 历史检测台账汇总</p></div>
+      <router-link class="history-assignment-link" to="/inspection/historical-ledger">查看分派<AppIcon name="ArrowRight" :size="14" /></router-link>
     </header>
     <dl class="history-metrics">
       <div class="history-volume"><dt>累计登记图片</dt><dd>{{ number(summary.imageCount) }}<small> 张</small></dd></div>
@@ -62,7 +63,8 @@ const period = computed(() => {
 <style scoped>
 .history-overview { min-width:0; margin:0; padding:22px; background:var(--app-surface); border:1px solid var(--app-border); border-radius:var(--app-radius-lg); box-shadow:var(--app-shadow-sm); }
 .history-heading,.history-chart-heading,.history-switch { display:flex; align-items:center; }
-.history-heading { gap:10px; }
+.history-heading { flex-wrap:wrap; gap:10px; }
+.history-assignment-link { display:inline-flex; align-items:center; gap:4px; margin-left:auto; color:var(--app-primary); font-size:13px; }
 .history-icon { display:grid; place-items:center; width:38px; height:38px; border-radius:11px; background:var(--app-primary-soft); color:var(--app-primary); }
 .history-overview h2 { margin:0; font-size:17px; font-weight:650; color:var(--app-text); }
 .history-overview p,.history-metrics dt { margin:3px 0 0; font-size:12px; color:var(--app-text-muted); }
