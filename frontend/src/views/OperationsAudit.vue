@@ -26,7 +26,7 @@
         <el-alert v-if="deliveryError && deliveries.length" :title="deliveryError + '；以下保留先前读取的交付记录。'" type="error" :closable="false" role="alert"/>
         <el-button v-if="deliveryError && deliveries.length" class="audit-retry" :loading="deliveryLoading" @click="retryDelivery"><AppIcon name="Refresh" :size="14" />重读上次交付请求</el-button>
         <div class="audit-table"><el-table :scrollbar-tabindex="0" role="region" aria-label="文件交付记录" :data="deliveries" v-loading="deliveryLoading" row-key="delivery_id">
-          <template #empty><CollectionEmptyState :loading="deliveryLoading" :error="deliveryError" empty-title="当前范围暂无文件交付记录" empty-description="" @retry="retryDelivery" /></template>
+          <template #empty><CollectionEmptyState :loading="deliveryLoading || (!deliveryLoaded && !deliveryError)" :error="deliveryError" empty-title="当前范围暂无文件交付记录" empty-description="" @retry="retryDelivery" /></template>
           <el-table-column label="业务资源" min-width="220"><template #default="{row}"><div class="audit-cell"><strong>{{ auditDomainLabel(row.domain) }}</strong><small>{{ row.resource_id||'资源未记录' }}</small></div></template></el-table-column>
           <el-table-column label="交付状态" min-width="180"><template #default="{row}"><StatusBadge domain="delivery" :code="row.state" /></template></el-table-column>
           <el-table-column label="服务端写出下界" min-width="145"><template #default="{row}">{{ deliveryBytes(row) }}</template></el-table-column>
