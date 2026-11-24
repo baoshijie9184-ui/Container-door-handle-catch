@@ -14,7 +14,7 @@
     <section v-if="supervisor" class="operation-toolbar llm-admin" aria-label="主管管理入口">
       <span><AppIcon name="Operation" :size="16" />主管管理</span>
       <router-link to="/agent/model-budgets">企业额度与供应商核对<AppIcon name="ArrowRight" :size="14" /></router-link>
-      <router-link to="/agent/model-config">模型连接与备用配置<AppIcon name="ArrowRight" :size="14" /></router-link>
+      <router-link v-if="user.capabilities?.agentModelConfig === true" to="/agent/model-config">模型连接与备用配置<AppIcon name="ArrowRight" :size="14" /></router-link>
     </section>
 
     <el-alert v-if="notice" :title="notice" type="success" :closable="true" @close="notice = ''" />

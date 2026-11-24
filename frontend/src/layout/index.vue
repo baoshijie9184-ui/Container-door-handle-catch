@@ -95,7 +95,10 @@
       <main id="main-content" class="layout-content" tabindex="-1">
         <router-view v-slot="{ Component }">
           <transition name="page-slide" mode="out-in">
-            <component :is="Component" :key="route.params.id || undefined" />
+            <component v-if="hasCapability(route.meta.requiresCapability)" :is="Component" :key="route.params.id || undefined" />
+            <PageHero v-else :key="route.name" :title="route.meta.title" description="本站未启用此功能。">
+              <template #actions><router-link to="/home">返回首页</router-link></template>
+            </PageHero>
           </transition>
         </router-view>
       </main>
@@ -142,6 +145,7 @@ const userStore = useUserStore()
 const chatAssistantStore = useChatAssistantStore()
 const router = useRouter()
 const route = useRoute()
+const hasCapability = name => !name || userStore.capabilities?.[name] === true
 
 const navigationSize = () => window.innerWidth <= 640 ? 'MOBILE' : window.innerWidth <= 1024 ? 'COMPACT' : 'DESKTOP'
 const navigationRange = ref(navigationSize())
@@ -250,6 +254,7 @@ const visibleNavGroups = computed(()=>{
   const supervisor=['SUPERVISOR','ADMIN'].includes(userStore.role)
   return navGroups.map(group=>({...group,items:group.items
     .filter(item=>supervisor ? !item.inspectorOnly : !item.supervisorOnly)
+    .filter(item=>hasCapability(router.resolve(item.path).meta.requiresCapability))
     .map(item=>!supervisor && item.employeeLabel ? {...item,label:item.employeeLabel} : item)
   })).filter(group=>group.items.length)
 })

@@ -55,7 +55,11 @@ class ConversationControlIntegrationTest {
         when(sessions.appendUserMessage(any(TenantContext.class),eq("s1"),anyString())).thenAnswer(inv->append(messages,nextId,"user",inv.getArgument(2),"TEXT"));
         when(sessions.appendAssistantMessage(any(TenantContext.class),eq("s1"),anyString(),anyString(),anyString(),isNull())).thenAnswer(inv->append(messages,nextId,"assistant",inv.getArgument(2),inv.getArgument(3)));
         var chatProperties=new ChatAssistantProperties();chatProperties.setEnabled(true);
-        var chat=new AgentScopeChatServiceImpl(sessions,apiProvider,mock(RagKnowledgeService.class),mock(Mem0Client.class),new SyncTaskExecutor(),chatProperties,json);
+        var knowledge=mock(RagKnowledgeService.class);var memory=mock(Mem0Client.class);
+        var emptyReference=new AgentConversationApi.ReferenceContext("",List.of());
+        when(knowledge.retrieveAgentContext(anyString(),any(),anyInt())).thenReturn(emptyReference);
+        when(memory.accountReference(any(),anyString(),anyString(),anyInt(),anyInt())).thenReturn(emptyReference);
+        var chat=new AgentScopeChatServiceImpl(sessions,apiProvider,knowledge,memory,new SyncTaskExecutor(),chatProperties,json);
         var users=mock(BusinessUserDirectory.class);when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));
         var controlProvider=mock(ObjectProvider.class);when(controlProvider.getIfAvailable()).thenReturn(controls);when(controlProvider.getObject()).thenReturn(controls);
         var inbox=new ConversationInboxService(jdbc,manager,sessions,chat,users,controlProvider);inputRef.set(inbox);inbox.schema();

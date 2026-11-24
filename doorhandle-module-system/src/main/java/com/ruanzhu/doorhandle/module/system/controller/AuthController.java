@@ -45,6 +45,10 @@ public class AuthController {
     @Value("${collaboration.mutations.enabled:false}") private boolean mutations;
     @Value("${collaboration.realtime.enabled:false}") private boolean realtime;
     @Value("${operations.audit.enabled:false}") private boolean baseAudit;
+    @Value("${app.quality-automation.enabled:false}") private boolean qualityDigests;
+    @Value("${detection.identity.enabled:false}") private boolean detectionIdentity;
+    @Value("${agentscope.model-config.enabled:false}") private boolean agentModelConfig;
+    @Value("${app.report-events.enabled:false}") private boolean reportEventDelivery;
     public AuthController(AuthService auth,LoginRateLimiter limiter,com.ruanzhu.doorhandle.module.system.service.AccountIdentityService identities){this(auth,limiter,identities,new LoginSessionProperties());}
     @Autowired public AuthController(AuthService auth,LoginRateLimiter limiter,com.ruanzhu.doorhandle.module.system.service.AccountIdentityService identities,LoginSessionProperties properties){authService=auth;loginRateLimiter=limiter;accountIdentities=identities;sessionProperties=properties;}
 
@@ -140,7 +144,15 @@ public class AuthController {
 
         Map<String, Object> response = new HashMap<>();
         response.put("authenticated", true);
-        response.put("capabilities",Map.of("sessionTracking",sessionProperties.isEnabled(),"changeHistory",changeHistory&&baseAudit,"mutations",mutations&&baseAudit,"realtime",realtime&&sessionProperties.isEnabled()&&changeHistory&&baseAudit));
+        response.put("capabilities", Map.of(
+                "sessionTracking", sessionProperties.isEnabled(),
+                "changeHistory", changeHistory && baseAudit,
+                "mutations", mutations && baseAudit,
+                "realtime", realtime && sessionProperties.isEnabled() && changeHistory && baseAudit,
+                "qualityDigests", qualityDigests,
+                "detectionIdentity", detectionIdentity,
+                "agentModelConfig", agentModelConfig,
+                "reportEventDelivery", reportEventDelivery));
         response.put("username", username);
         response.put("role", authentication.getAuthorities().stream()
                 .map(org.springframework.security.core.GrantedAuthority::getAuthority)

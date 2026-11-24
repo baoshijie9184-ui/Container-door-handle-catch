@@ -49,9 +49,9 @@ public class DeviceController {
 
         Map<String, Object> result = deviceService.getDevicesByPage(
                 deviceCode, deviceType, modelName, serialNumber, status, page, size);
-        if (!DirectoryResponses.includesContacts() && result.get("records") instanceof List<?> records) {
+        if (result.get("records") instanceof List<?> records) {
             var response = new LinkedHashMap<>(result);
-            response.put("records", records.stream().map(Device.class::cast).map(DirectoryResponses::withoutContact).toList());
+            response.put("records", DirectoryResponses.visibleDevices(records.stream().map(Device.class::cast).toList()));
             return Result.success(response);
         }
         return Result.success(result);
@@ -60,7 +60,7 @@ public class DeviceController {
     @GetMapping("/devices/unassigned")
     @Operation(summary = "查询未分配设备")
     public Result<List<Device>> getUnassignedDevices() {
-        return Result.success(deviceService.getUnassignedDevices());
+        return Result.success(DirectoryResponses.visibleDevices(deviceService.getUnassignedDevices()));
     }
 
     @GetMapping("/devices/{id}")
@@ -70,7 +70,7 @@ public class DeviceController {
         if (device == null) {
             return Result.error("设备不存在");
         }
-        return Result.success(DirectoryResponses.includesContacts() ? device : DirectoryResponses.withoutContact(device));
+        return Result.success(DirectoryResponses.visibleDevice(device));
     }
 
     @GetMapping("/devices/check-code")
@@ -161,7 +161,7 @@ public class DeviceController {
     @Operation(summary = "设备心跳")
     public Result<Device> heartbeat(@PathVariable String deviceCode, @RequestBody(required = false) DeviceHeartbeatRequest request) {
         try {
-            return Result.success(deviceService.heartbeat(deviceCode, request));
+            return Result.success(DirectoryResponses.visibleDevice(deviceService.heartbeat(deviceCode, request)));
         } catch (org.springframework.security.access.AccessDeniedException denied) {
             throw denied;
         } catch (Exception e) {

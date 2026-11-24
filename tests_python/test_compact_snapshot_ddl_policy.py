@@ -9,6 +9,10 @@ import pytest
 
 PROJECT = Path(__file__).resolve().parents[1]
 MISSING = object()
+SERVER_UUID = '11111111-1111-1111-1111-111111111111'
+RECOVERY_SCOPE = 'ecs-disposable-migration'
+RESTORE_SCHEMA = 'doorhandle_legacy_restore_0123456789'
+MIGRATION_CONTEXT = {'kind': 'synthetic-owned-recovery'}
 
 
 @pytest.fixture
@@ -40,6 +44,15 @@ def snapshot(runtime, *, policy=MISSING, explicit_charset=False):
         value['ddlHashPolicy'] = policy
     value['snapshotSha256'] = runtime.sha_json(runtime.snapshot_hash_payload(value))
     return value
+
+
+def verified_copy_evidence(source_digest):
+    return {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration-evidence', 'status': 'COPY_VERIFIED',
+            'migrationContext': MIGRATION_CONTEXT, 'sourceSnapshotSha256': source_digest,
+            'scope': RECOVERY_SCOPE, 'serverUuid': SERVER_UUID, 'attempt': 'a' * 32,
+            'ecs': {'instanceId': 'i-test', 'machineId': 'b' * 32}, 'sourceSchema': 'doorhandledb',
+            'targetSchema': 'doorhandle_compact_candidate_0123456789', 'contractSha256': 'c' * 64,
+            'sqlSha256': 'd' * 64, 'copyPlanSha256': 'e' * 64, 'targetMetadataSha256': 'f' * 64}
 
 
 def test_unmarked_snapshot_keeps_the_original_exact_v1_digest(modules):
@@ -116,17 +129,20 @@ def test_backup_carries_exact_policy_without_rewriting_the_source_snapshot(modul
 
 def test_restore_refuses_unknown_policy_before_creating_or_querying_a_schema(modules, monkeypatch):
     runtime = modules.runtime
-    manifest = {'schemaVersion': 1, 'kind': 'doorhandle-mysql-private-backup',
-                'serverUuid': '11111111-1111-1111-1111-111111111111', 'ddlHashPolicy': 'UNSUPPORTED'}
+    original = snapshot(runtime)
+    manifest = {**original, 'kind': 'doorhandle-mysql-private-backup', 'purpose': 'source',
+                'serverUuid': SERVER_UUID, 'migrationContext': MIGRATION_CONTEXT, 'ddlHashPolicy': 'UNSUPPORTED'}
+    evidence = verified_copy_evidence(original['snapshotSha256'])
     calls = iter([(modules.root / 'backup.json', manifest, 'a' * 64),
-                  (modules.root / 'evidence.json', {}, 'b' * 64)])
+                  (modules.root / 'evidence.json', evidence, 'b' * 64)])
     monkeypatch.setattr(runtime, 'private_json', lambda *_args, **_kwargs: next(calls))
     def refuse(*_args, **_kwargs):
         pytest.fail('An unsupported old-backup policy must stop before any schema operation')
     monkeypatch.setattr(runtime, 'new_schema', refuse)
-    mysql = SimpleNamespace(config={'serverUuid': manifest['serverUuid']}, script=refuse)
+    mysql = SimpleNamespace(config={'serverUuid': SERVER_UUID, 'scope': RECOVERY_SCOPE,
+                                    'recoverySchemas': {'source': RESTORE_SCHEMA}}, script=refuse)
     with pytest.raises(ValueError, match='Unknown snapshot DDL hash policy'):
-        runtime.restore_backup(mysql, modules.root / 'backup.json', 'restore', modules.root / 'output', modules.root / 'evidence.json')
+        runtime.restore_backup(mysql, modules.root / 'backup.json', RESTORE_SCHEMA, modules.root / 'output', modules.root / 'evidence.json')
 
 
 @pytest.mark.parametrize('policy', [MISSING, 'RAW_SHOW_CREATE_V1', 'CATALOG_VERIFIED_UTF8MB4_BIN_CHARSET_V1'])
@@ -139,25 +155,18 @@ def test_restore_explicitly_uses_the_backup_policy_including_unmarked_legacy(mod
     data = folder / 'data.sql'
     data.write_bytes(b'-- synthetic retained original bytes\n')
     data.chmod(0o600)
-    server_uuid = '11111111-1111-1111-1111-111111111111'
-    migration_context = {'kind': 'synthetic-owned-recovery'}
     manifest = {**original, 'kind': 'doorhandle-mysql-private-backup', 'purpose': 'source',
-        'serverUuid': server_uuid, 'metadataSha256': 'b' * 64, 'triggers': [], 'migrationContext': migration_context,
+        'serverUuid': SERVER_UUID, 'metadataSha256': 'b' * 64, 'triggers': [], 'migrationContext': MIGRATION_CONTEXT,
         'data': {'file': 'data.sql', 'sha256': runtime.sha_file(data), 'bytes': data.stat().st_size}}
     manifest_path = folder / 'manifest.json'
     runtime.write_json(manifest_path, manifest)
-    evidence = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration-evidence', 'status': 'COPY_VERIFIED',
-        'migrationContext': migration_context, 'sourceSnapshotSha256': original['snapshotSha256'],
-        'scope': 'ecs-disposable-migration', 'serverUuid': server_uuid, 'attempt': 'a' * 32,
-        'ecs': {'instanceId': 'i-test', 'machineId': 'b' * 32}, 'sourceSchema': 'doorhandledb',
-        'targetSchema': 'doorhandle_compact_candidate_0123456789', 'contractSha256': 'c' * 64,
-        'sqlSha256': 'd' * 64, 'copyPlanSha256': 'e' * 64, 'targetMetadataSha256': 'f' * 64}
+    evidence = verified_copy_evidence(original['snapshotSha256'])
     evidence_path = folder / 'copy-evidence.json'
     runtime.write_json(evidence_path, evidence)
-    restore_schema = 'doorhandle_legacy_restore_0123456789'
     selected = []
     class Mysql:
-        config = {'serverUuid': server_uuid, 'recoverySchemas': {'source': restore_schema}}
+        config = {'serverUuid': SERVER_UUID, 'scope': RECOVERY_SCOPE,
+                  'recoverySchemas': {'source': RESTORE_SCHEMA}}
         def script(self, *_args, **_kwargs):
             return b''
     def capture(_mysql, schema, tables, *, ddl_hash_policy):
@@ -172,7 +181,8 @@ def test_restore_explicitly_uses_the_backup_policy_including_unmarked_legacy(mod
     monkeypatch.setattr(runtime, 'install_triggers', lambda *_args: None)
     monkeypatch.setattr(runtime, 'schema_snapshot', capture)
     monkeypatch.setattr(runtime, 'metadata_snapshot', lambda *_args: ({}, 'b' * 64))
-    result = runtime.restore_backup(Mysql(), manifest_path, restore_schema, modules.root / 'work/recovery', evidence_path)
+    result = runtime.restore_backup(Mysql(), manifest_path, RESTORE_SCHEMA, modules.root / 'work/recovery', evidence_path)
     assert selected == [None if policy is MISSING else policy]
     assert result['status'] == 'VERIFIED' and result['expectedSnapshotSha256'] == original['snapshotSha256']
+    assert result['ecs'] == evidence['ecs']
     assert result['restoredSnapshotSha256'] == original['snapshotSha256'] and original == before

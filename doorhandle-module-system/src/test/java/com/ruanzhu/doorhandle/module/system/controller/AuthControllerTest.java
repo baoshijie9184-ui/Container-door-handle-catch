@@ -10,13 +10,40 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class AuthControllerTest {
+
+    @Test
+    void checkAuthAdvertisesOptionalBusinessFeaturesIndependently() {
+        AuthController controller = new AuthController(mock(AuthService.class), mock(LoginRateLimiter.class),
+                mock(com.ruanzhu.doorhandle.module.system.service.AccountIdentityService.class));
+        ReflectionTestUtils.setField(controller, "qualityDigests", true);
+        ReflectionTestUtils.setField(controller, "reportEventDelivery", true);
+        var context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken("alice", null,
+                List.of(new SimpleGrantedAuthority("ROLE_SUPERVISOR"))));
+        SecurityContextHolder.setContext(context);
+        try {
+            var capabilities = (Map<?, ?>) controller.checkAuth().getData().get("capabilities");
+            assertThat(capabilities.get("qualityDigests")).isEqualTo(true);
+            assertThat(capabilities.get("detectionIdentity")).isEqualTo(false);
+            assertThat(capabilities.get("agentModelConfig")).isEqualTo(false);
+            assertThat(capabilities.get("reportEventDelivery")).isEqualTo(true);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
 
     @Test
     void loginSetsHttpOnlyJwtCookieForAuthenticatedFileRequests() {

@@ -2,6 +2,7 @@ package com.ruanzhu.doorhandle.module.ai.model;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.api.AgentModelController;
 import com.ruanzhu.doorhandle.module.ai.config.AgentScopeConfiguration;
 import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
@@ -31,6 +32,7 @@ class AgentModelConfigurationTest {
                 .withBean(DetectionAgentReadApi.class, () -> mock(DetectionAgentReadApi.class))
                 .withBean(ResourceAgentReadApi.class, () -> mock(ResourceAgentReadApi.class))
                 .withBean(ModelAgentReadApi.class, () -> mock(ModelAgentReadApi.class))
+                .withBean(BusinessUserDirectory.class, () -> mock(BusinessUserDirectory.class))
                 .withPropertyValues("agentscope.ai.enabled=true", "agentscope.ai.model=openai-official:fixture-model",
                         "agentscope.models.openai.api-key=fixture-bound-secret", "agentscope.models.openai.model=fixture-model");
     }

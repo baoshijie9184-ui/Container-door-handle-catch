@@ -2469,11 +2469,10 @@ def test_322_database_recipe_is_an_exact_triple_without_expanding_runtime_admiss
         assert retirer.database_verification_recipe((legacy[0], reviewed[1]), reviewed[2]) is False
 
 
-def test_diagnostic_archive_recipe_remains_bound_to_the_three_current_source_members():
+def test_current_unreviewed_diagnostic_archive_is_not_admitted_for_retirement():
     paths = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
     recipe = tuple(sha((MODULE.parents[2] / path).read_bytes().replace(b'\r\n', b'\n')) for path in paths)
-    assert recipe == ('a7a0e1b5f710500d5c5834fb0bb8a5dfc506c1ae51d99b3e4d435c3be99a8c5e', 'f54373a3b588eaee1c6b669e89d2a4be01d4e6cbeb17575343189febc8b1798d', 'aa40822dc069b3e71250b6977fbec9da08a5276c27a7f7fd3c40859d563172f0')
-    assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is True
+    assert retirer.database_verification_recipe(recipe[:2], recipe[2]) is False
     assert recipe[:2] not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
 
 

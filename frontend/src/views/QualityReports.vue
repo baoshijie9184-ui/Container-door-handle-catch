@@ -142,15 +142,24 @@
             <ReportSnapshotIdentity :key="detail.reportId+':'+detail.version" :report="detail" />
           </details>
           <details class="report-delivery" aria-label="报告状态同步">
-            <summary><AppIcon name="Connection" :size="16" />审批状态同步<span v-if="eventsError"> · 读取未完成</span><span v-else-if="events.some(item=>['FAILED','RETRY'].includes(item.deliveryStatus))"> · 有待核对的发送记录</span></summary>
-            <div class="detail-heading"><p class="muted">发送状态与已记录的审批决定分别显示；失败会按原机制重试，重新发送不会再次审批。</p><el-button size="small" :disabled="busy" :loading="eventsLoading" @click="loadEvents(detail.reportId)"><AppIcon name="Refresh" :size="15" />刷新同步状态</el-button></div>
+            <summary>
+              <AppIcon name="Connection" :size="16" />审批状态同步
+              <span v-if="reportDeliveryDisabled"> · 投递未启用</span>
+              <span v-if="eventsError"> · 读取未完成</span>
+              <span v-else-if="!reportDeliveryDisabled && events.some(item=>['FAILED','RETRY'].includes(item.deliveryStatus))"> · 有待核对的发送记录</span>
+            </summary>
+            <div class="detail-heading">
+              <p class="muted" v-if="reportDeliveryDisabled">本站未启用报告事件投递。下方显示已保存的发送和接收记录。</p>
+              <p class="muted" v-else>发送状态与已记录的审批决定分别显示；失败会按原机制重试，重新发送不会再次审批。</p>
+              <el-button size="small" :disabled="busy" :loading="eventsLoading" @click="loadEvents(detail.reportId)"><AppIcon name="Refresh" :size="15" />刷新同步状态</el-button>
+            </div>
             <el-alert v-if="eventsError" :title="eventsError" type="error" :closable="false" />
             <el-table :scrollbar-tabindex="0" role="region" aria-label="报告同步状态更新" v-else :data="events" v-loading="eventsLoading" empty-text="本报告暂无已读取的同步状态更新" max-height="240">
               <el-table-column label="状态更新" min-width="110"><template #default="{ row }">{{ eventLabel(row.eventType) }}</template></el-table-column>
-              <el-table-column label="发送状态" min-width="140"><template #default="{ row }"><StatusBadge domain="reportDelivery" :code="row.deliveryStatus" /></template></el-table-column>
+              <el-table-column label="发送状态" min-width="140"><template #default="{ row }"><StatusBadge domain="reportDelivery" :code="row.deliveryStatus" :label="reportDeliveryLabel(row.deliveryStatus)" /></template></el-table-column>
               <el-table-column label="尝试次数" width="90"><template #default="{row}">{{ knownCount(row.attempts) ?? '—' }}</template></el-table-column>
-              <el-table-column label="接收结果" min-width="210"><template #default="{ row }"><el-tag v-if="row.clockStatus==='UNRESOLVED'" size="small" type="info">历史时间需核对</el-tag><span v-else>{{ row.consumedAt ? '已接收 · '+reportTime(row.consumedAt) : '等待接收确认' }}</span></template></el-table-column>
-              <el-table-column v-if="isSupervisor" label="操作" width="110"><template #default="{ row }"><el-button v-if="['FAILED','RETRY'].includes(row.deliveryStatus)" size="small" :disabled="busy||eventsLoading||row.clockStatus==='UNRESOLVED'" @click="retryEvent(row)">重新发送</el-button></template></el-table-column>
+              <el-table-column label="接收结果" min-width="210"><template #default="{ row }"><el-tag v-if="row.clockStatus==='UNRESOLVED'" size="small" type="info">历史时间需核对</el-tag><span v-else>{{ row.consumedAt ? '已接收 · '+reportTime(row.consumedAt) : reportDeliveryDisabled ? '未记录接收' : '等待接收确认' }}</span></template></el-table-column>
+              <el-table-column v-if="isSupervisor && !reportDeliveryDisabled" label="操作" width="110"><template #default="{ row }"><el-button v-if="['FAILED','RETRY'].includes(row.deliveryStatus)" size="small" :disabled="busy||eventsLoading||row.clockStatus==='UNRESOLVED'" @click="retryEvent(row)">重新发送</el-button></template></el-table-column>
             </el-table>
           </details>
           <ResourceChangeHistory v-if="userStore.capabilities?.changeHistory === true" resource-type="QUALITY_REPORT" :resource-id="detail.reportId" domain="QUALITY_REPORT" compact />
@@ -256,6 +265,12 @@ const form = reactive({ taskId: '', title: '', narrative: '' })
 const transitionVisible = ref(false), transition = ref('submit')
 const decisionVisible = ref(false), decision = ref('APPROVE'), reason = ref(''), preview = ref(null), decisionError = ref('')
 const isSupervisor = computed(() => userStore.role === 'SUPERVISOR')
+const reportDeliveryDisabled = computed(() => userStore.capabilities?.reportEventDelivery === false)
+function reportDeliveryLabel(status) {
+  if (!reportDeliveryDisabled.value) return undefined
+  if (['PENDING', 'PROCESSING', 'RETRY'].includes(status)) return '投递未启用'
+  if (status === 'FAILED') return '发送失败'
+}
 const own = computed(() => detail.value?.ownerUserId != null && String(detail.value.ownerUserId) === String(userStore.identity?.userId))
 const approvalOnly = computed(() => isSupervisor.value && route.query.awaitingMyApproval === '1')
 const emptyApprovalQueue = computed(() => approvalOnly.value && listLoaded.value && total.value === 0
@@ -351,11 +366,11 @@ async function loadEvents(id){
   catch(e){if(generation===detailGeneration){events.value=[];eventsError.value=message(e)}}finally{if(generation===detailGeneration)eventsLoading.value=false}
 }
 async function retryEvent(event){
-  if(busy.value||!detail.value)return
+  if(reportDeliveryDisabled.value||busy.value||!detail.value)return
   const generation=detailGeneration,id=detail.value.reportId;busy.value=true
   try{
     try{await ElMessageBox.confirm(`重新发送“${eventLabel(event.eventType)}”状态更新 不会重新执行审批`,'重新发送报告状态',{confirmButtonText:'确认重新发送',cancelButtonText:'取消'})}catch{return}
-    if(generation!==detailGeneration)return
+    if(reportDeliveryDisabled.value||generation!==detailGeneration)return
     const payload=withId(`retry-event:${event.eventId}`,{expectedAttempts:event.attempts,confirmed:true})
     const result=unwrap(await request.post(`/api/detection/reports/${id}/events/${event.eventId}/retry`,payload,{headers}));if(generation!==detailGeneration)return;events.value=reportRows(result,'报告同步记录')
     const auditResult=unwrap(await request.get(`/api/detection/reports/${id}/audit`))

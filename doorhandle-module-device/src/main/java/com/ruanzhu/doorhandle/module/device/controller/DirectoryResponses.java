@@ -6,10 +6,16 @@ import com.ruanzhu.doorhandle.module.device.entity.Employee;
 import org.springframework.beans.BeanUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import java.util.List;
+
 final class DirectoryResponses {
     private DirectoryResponses() {}
 
     static boolean includesContacts() {
+        return isSupervisor();
+    }
+
+    private static boolean isSupervisor() {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         return authentication != null && authentication.isAuthenticated() && authentication.getAuthorities().stream()
                 .anyMatch(authority -> "ROLE_SUPERVISOR".equals(authority.getAuthority()));
@@ -22,11 +28,32 @@ final class DirectoryResponses {
         return response;
     }
 
-    static Device withoutContact(Device device) {
-        if (device == null || device.getEmployee() == null || device.getEmployee().getContact() == null) return device;
+    static Device visibleDevice(Device device) {
+        return isSupervisor() ? device : employeeDevice(device);
+    }
+
+    static List<Device> visibleDevices(List<Device> devices) {
+        return isSupervisor() ? devices : devices.stream().map(DirectoryResponses::employeeDevice).toList();
+    }
+
+    private static Device employeeDevice(Device device) {
+        if (device == null) return null;
+        // Publish inventory and connection status without copying the capture snapshot.
         var response = new Device();
-        BeanUtils.copyProperties(device, response, "employee");
+        response.setId(device.getId());
+        response.setVersion(device.getVersion());
+        response.setDeviceCode(device.getDeviceCode());
+        response.setDeviceType(device.getDeviceType());
+        response.setModelName(device.getModelName());
+        response.setSerialNumber(device.getSerialNumber());
+        response.setStatus(device.getStatus());
+        response.setOnlineStatus(device.getOnlineStatus());
+        response.setLastHeartbeatAt(device.getLastHeartbeatAt());
+        response.setLastMaintenanceDate(device.getLastMaintenanceDate());
+        response.setEmployeeId(device.getEmployeeId());
         response.setEmployee(withoutContact(device.getEmployee()));
+        response.setCreatedTime(device.getCreatedTime());
+        response.setUpdatedTime(device.getUpdatedTime());
         return response;
     }
 

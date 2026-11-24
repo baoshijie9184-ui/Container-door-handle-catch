@@ -112,7 +112,7 @@ public class EmployeeController {
 
     @GetMapping("/employees/{id}/devices")
     public Result<List<Device>> getDevicesByEmployeeId(@PathVariable Long id) {
-        return Result.success(employeeService.getDevicesByEmployeeId(id));
+        return Result.success(DirectoryResponses.visibleDevices(employeeService.getDevicesByEmployeeId(id)));
     }
 
     @PostMapping("/employees/{employeeId}/assign-device/{deviceId}")

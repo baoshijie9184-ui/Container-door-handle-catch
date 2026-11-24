@@ -29,6 +29,9 @@ REVIEWED_SOURCE_FIXTURES = ROOT / 'tests_python/fixtures/ci-producer-3502d844'
 LEGACY_EXECUTOR = ROOT / 'tests_python/fixtures/ci-producer-7f8b992d/ecs-tool-runtime.py.txt'
 # Exact pre-control-gate runner; parsed only to preserve already-finished sources.
 PRE_CONTROL_GATE_RUNNER = ROOT / 'tests_python/fixtures/ci-producer-67188368/verify-ecs.py.txt'
+# Exact reviewed runner from b8ad2f093e85fb1c08e6d0600e2caae359aa39c9, before Alertmanager removal.
+REVIEWED_CONTROL_GATE_RUNNER = ROOT / 'tests_python/fixtures/ci-producer-b8ad2f09/verify-ecs.py.txt'
+REVIEWED_CONTROL_GATE_RUNNER_SHA = 'd46e90311bdf8336d6140b596bbeb876f912bae4ab2dad179d14970631f3ea4b'
 
 
 def load(name, filename):
@@ -291,7 +294,9 @@ def add_pytest_cases(state, monkeypatch, damage=None, *, recipe='legacy', execut
     """Bind real archived routing code to synthetic, completed Python evidence."""
     runner = ((REVIEWED_SOURCE_FIXTURES / 'verify-ecs.py.txt') if recipe == 'legacy'
               else PRE_CONTROL_GATE_RUNNER if recipe == 'pre-control-gate'
-              else (ROOT / 'script/jenkins/verify-ecs.py')).read_bytes()
+              else REVIEWED_CONTROL_GATE_RUNNER).read_bytes().replace(b'\r\n', b'\n')
+    if recipe == 'middleware':
+        assert cleanup.sha(runner) == REVIEWED_CONTROL_GATE_RUNNER_SHA
     executor = (LEGACY_EXECUTOR if executor_recipe == 'legacy' else ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
     main = next(node for node in ast.parse(runner).body if isinstance(node, ast.FunctionDef) and node.name == 'main')
     expected_main = ('e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3'
@@ -1603,8 +1608,14 @@ def test_dual_root_inbox_is_derived_from_authenticated_checkout_and_never_follow
         cleanup.checked_probe_inbox(state.checkout)
 
 
+def test_current_unreviewed_runner_is_not_admitted_for_pytest_cleanup():
+    runner = (ROOT / 'script/jenkins/verify-ecs.py').read_bytes()
+    main = next(node for node in ast.parse(runner).body if isinstance(node, ast.FunctionDef) and node.name == 'main')
+    assert cleanup.routing_ast_sha(main) not in cleanup.PYTEST_RUNNER_MAIN_AST
+
+
 @pytest.mark.parametrize('damage', ['changed-python-order', 'changed-python-command'])
-def test_current_nested_python_routing_cannot_escape_the_reviewed_main(state, monkeypatch, damage):
+def test_nested_python_routing_cannot_escape_the_reviewed_main(state, monkeypatch, damage):
     cases = add_pytest_cases(state, monkeypatch, damage, recipe='middleware')
     before = preserved_bytes(state)
     value = plan(state); candidate = value['candidates'][0]

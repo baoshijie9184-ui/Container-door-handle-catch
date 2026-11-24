@@ -16,7 +16,7 @@
     <div v-if="previews.length" class="history-image-previews"><button v-for="(image,index) in previews.slice(0,6)" :key="index" type="button" :aria-label="`打开任务图片对照：${image.imageName || '预览 '+(index+1)}`" @click="$emit('browse-images',task.taskId,image.annotatedUrl || image.previewUrl)"><el-image :src="previewUrl(image)" :alt="image.imageName || '检测结果预览'" loading="lazy" fit="contain"><template #error><span class="history-preview-failure"><AppIcon name="Warning" :size="18" /><OssPreviewFailure :src="previewUrl(image)" fallback="预览未读取" /></span></template></el-image><span>{{ image.imageName || `预览 ${index+1}` }}</span></button></div>
     <p v-if="previews.length>6" class="history-card-note">展示本次读取预览中的前 6 张，点击「浏览图片」查看完整清单。</p>
     <p v-if="!previews.length" class="history-preview-state" :role="task.resultLoading ? 'status' : undefined"><AppIcon :name="task.resultLoading ? 'Connection' : 'Picture'" :size="18" />{{ task.resultLoading ? '正在读取结果详情与预览…' : '本次未读取到可展示预览，可打开追溯详情核对。' }}</p>
-    <footer class="history-card-actions"><el-button type="primary" plain size="small" @click="$emit('trace',task.taskId)"><AppIcon name="Search" :size="15" />追溯详情</el-button><router-link class="history-report-link" :to="{path:'/quality/reports',query:{taskId:task.taskId}}"><AppIcon name="Document" :size="15" />编写报告草稿</router-link><a v-if="resultHref" :href="resultHref" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-label="查看本任务结果 JSON，新窗口打开">结果 JSON<AppIcon name="TopRight" :size="14" /></a></footer>
+    <footer class="history-card-actions"><el-button type="primary" plain size="small" @click="$emit('trace',task.taskId)"><AppIcon name="Search" :size="15" />追溯详情</el-button><router-link v-if="QUALITY_READY_STATUSES.includes(statusCode)" class="history-report-link" :to="{path:'/quality/reports',query:{taskId:task.taskId}}"><AppIcon name="Document" :size="15" />编写报告草稿</router-link><a v-if="resultHref" :href="resultHref" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-label="查看本任务结果 JSON，新窗口打开">结果 JSON<AppIcon name="TopRight" :size="14" /></a></footer>
     <details v-if="task.sourceOssPrefix || cached" class="history-local-details"><summary>存储资料与本机缓存</summary><p v-if="task.sourceOssPrefix">来源存储标识 <code>{{ task.sourceOssPrefix }}</code></p><template v-if="cached"><p>这里只清除本机任务缓存，后端记录继续保留，服务器检测不会被取消；重新查询可能再次缓存。</p><el-button type="danger" plain size="small" :disabled="cacheBusy" @click="$emit('remove-cache',task.taskId)"><AppIcon name="Delete" :size="14" />清除本机任务缓存</el-button></template></details>
   </article>
 </template>
@@ -31,6 +31,7 @@ import { computed } from 'vue'
 import { knownCount } from '@/utils/countPresentation'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { maintenanceFor } from '@/utils/modelMaintenance'
+import { QUALITY_READY_STATUSES } from '@/utils/qualityWorkflow'
 import { CATEGORY_LABELS } from '@/stores/taskStore'
 const props = defineProps({ task:{type:Object,required:true}, cached:Boolean, refreshing:Boolean, cacheBusy:Boolean, showHistory:Boolean, latestChange:Object })
 defineEmits(['trace','browse-images','refresh','remove-cache'])

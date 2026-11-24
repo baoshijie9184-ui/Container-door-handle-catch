@@ -1,6 +1,8 @@
 package com.ruanzhu.doorhandle.module.device.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceUsageRecord;
 import com.ruanzhu.doorhandle.module.device.entity.Employee;
@@ -16,6 +18,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.web.bind.annotation.GetMapping;
 import java.lang.reflect.InvocationTargetException;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
@@ -123,6 +126,106 @@ class ManagementAuthorizationTest {
         assertEquals("private-contact", people.getById(2L).getData().getContact());
         assertEquals("private-contact", devices.getDeviceById(1L).getData().getEmployee().getContact());
         assertEquals("private-contact", usageRecord(records).getContact());
+    }
+
+    @Test void employeeDeviceReadsAndHeartbeatExcludeCaptureInternalsFromEveryResponse() {
+        var employee = new Employee();
+        employee.setId(2L);
+        employee.setName("采集员");
+        employee.setEmployeeNumber("DET-0002");
+        employee.setEmployeeType("COLLECTOR");
+        employee.setContact("private-contact");
+        var assigned = registeredDevice(1L);
+        assigned.setEmployeeId(employee.getId());
+        assigned.setEmployee(employee);
+        var unassigned = registeredDevice(3L);
+
+        var devices = context.getBean(DeviceController.class);
+        var people = context.getBean(EmployeeController.class);
+        var deviceService = context.getBean(DeviceService.class);
+        when(deviceService.getDeviceById(1L)).thenReturn(assigned);
+        when(deviceService.getDevicesByPage(null, null, null, null, null, 1, 10))
+                .thenReturn(Map.of("records", List.of(assigned), "total", 1L, "page", 1L, "size", 10L));
+        when(deviceService.getUnassignedDevices()).thenReturn(List.of(unassigned));
+        when(deviceService.heartbeat(assigned.getDeviceCode(), null)).thenReturn(assigned);
+        when(context.getBean(EmployeeService.class).getDevicesByEmployeeId(2L)).thenReturn(List.of(assigned));
+
+        login("ROLE_INSPECTOR");
+        var mapper = new ObjectMapper().findAndRegisterModules().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        for (var row : readAssignedDeviceResponses(devices, people)) {
+            assertDeviceDirectoryFields(mapper, row, assigned);
+            assertEquals(2L, row.getEmployee().getId());
+            assertEquals("采集员", row.getEmployee().getName());
+            assertEquals("DET-0002", row.getEmployee().getEmployeeNumber());
+            assertEquals("COLLECTOR", row.getEmployee().getEmployeeType());
+            assertFalse(mapper.valueToTree(row).path("employee").has("contact"));
+        }
+        var unassignedResponse = devices.getUnassignedDevices().getData().get(0);
+        assertDeviceDirectoryFields(mapper, unassignedResponse, unassigned);
+        assertNull(unassignedResponse.getEmployee());
+
+        login("ROLE_SUPERVISOR");
+        for (var row : readAssignedDeviceResponses(devices, people)) {
+            assertSame(assigned, row);
+            assertEquals("private-contact", row.getEmployee().getContact());
+            assertEquals("edge-node", row.getEdgeNodeId());
+            assertEquals("capture/original.jpg", row.getLastImageKey());
+            assertEquals("{\"internal\":true}", row.getRuntimeMetadataJson());
+        }
+        assertSame(unassigned, devices.getUnassignedDevices().getData().get(0));
+    }
+
+    private static Device registeredDevice(long id) {
+        var device = new Device();
+        device.setId(id);
+        device.setVersion(5);
+        device.setDeviceCode("CAPTURE-" + id);
+        device.setDeviceType("IMAGE_CAPTURE");
+        device.setModelName("camera-model");
+        device.setSerialNumber("serial-" + id);
+        device.setStatus("IN_USE");
+        device.setOnlineStatus("ONLINE");
+        device.setLastHeartbeatAt(LocalDateTime.of(2026, 1, 2, 3, 4));
+        device.setLastMaintenanceDate(LocalDateTime.of(2026, 1, 1, 8, 0));
+        device.setCreatedTime(LocalDateTime.of(2025, 12, 1, 8, 0));
+        device.setUpdatedTime(device.getLastHeartbeatAt());
+        device.setStationCode("internal-station");
+        device.setEdgeNodeId("edge-node");
+        device.setLastImageKey("capture/original.jpg");
+        device.setRuntimeMetadataJson("{\"internal\":true}");
+        device.setPlcStatus("RUNNING");
+        device.setCameraStatus("READY");
+        device.setCaptureStatus("CAPTURING");
+        device.setLastCaptureAt(device.getLastHeartbeatAt());
+        return device;
+    }
+
+    private List<Device> readAssignedDeviceResponses(DeviceController devices, EmployeeController people) {
+        var page = devices.getAllDevices(null, null, null, null, null, 1, 10).getData();
+        assertEquals(1L, page.get("total"));
+        var listed = (List<?>) page.get("records");
+        return List.of((Device) listed.get(0), devices.getDeviceById(1L).getData(),
+                people.getDevicesByEmployeeId(2L).getData().get(0), devices.heartbeat("CAPTURE-1", null).getData());
+    }
+
+    private static void assertDeviceDirectoryFields(ObjectMapper mapper, Device row, Device original) {
+        assertEquals(original.getId(), row.getId());
+        assertEquals(original.getVersion(), row.getVersion());
+        assertEquals(original.getDeviceCode(), row.getDeviceCode());
+        assertEquals(original.getDeviceType(), row.getDeviceType());
+        assertEquals(original.getModelName(), row.getModelName());
+        assertEquals(original.getSerialNumber(), row.getSerialNumber());
+        assertEquals(original.getOnlineStatus(), row.getOnlineStatus());
+        assertEquals(original.getStatus(), row.getStatus());
+        assertEquals(original.getLastMaintenanceDate(), row.getLastMaintenanceDate());
+        assertEquals(original.getLastHeartbeatAt(), row.getLastHeartbeatAt());
+        assertEquals(original.getCreatedTime(), row.getCreatedTime());
+        assertEquals(original.getUpdatedTime(), row.getUpdatedTime());
+        var json = mapper.valueToTree(row);
+        for (var field : List.of("stationCode", "edgeNodeId", "lastImageKey", "runtimeMetadataJson",
+                "plcStatus", "cameraStatus", "captureStatus", "lastCaptureAt")) {
+            assertFalse(json.has(field), field);
+        }
     }
 
     private DeviceUsageRecord usageRecord(DeviceUsageRecordController controller) {
