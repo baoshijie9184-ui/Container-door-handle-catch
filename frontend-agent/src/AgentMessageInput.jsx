@@ -7,6 +7,7 @@ export function AgentMessageInput({ senderRef, catalog, draft, disabled, loading
   const [dismissed, setDismissed] = useState(false);
   const [selected, setSelected] = useState(0);
   const [composing, setComposing] = useState(false);
+  const compositionActive = useRef(false);
   const listId = useId();
   const list = useRef(null);
   const options = filterSkillCommands(catalog, draft);
@@ -31,9 +32,19 @@ export function AgentMessageInput({ senderRef, catalog, draft, disabled, loading
     senderRef.current?.focus?.();
   }
 
+  function updateComposition(active) {
+    compositionActive.current = active;
+    setComposing(active);
+  }
+
   function handleKeys(event) {
-    if (!open || composing || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
-        || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+    const native = event.nativeEvent;
+    if (compositionActive.current || native.isComposing || native.keyCode === 229) {
+      // Keep native IME selection while preventing Sender from treating confirmation as a send.
+      if (event.key === 'Enter' || native.keyCode === 13) event.stopPropagation();
+      return;
+    }
+    if (!open || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
     switch (event.key) {
       case 'ArrowDown':
         setSelected((active + 1) % options.length);
@@ -61,11 +72,11 @@ export function AgentMessageInput({ senderRef, catalog, draft, disabled, loading
       onBlurCapture={event => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
           setFocused(false);
-          setComposing(false);
+          updateComposition(false);
         }
       }}
-      onCompositionStart={() => setComposing(true)}
-      onCompositionEnd={() => setComposing(false)}
+      onCompositionStart={() => updateComposition(true)}
+      onCompositionEnd={() => updateComposition(false)}
     >
       {open && (
         <div className="agent-command-menu">
