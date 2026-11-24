@@ -35,6 +35,7 @@ import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
 import com.ruanzhu.doorhandle.module.detection.service.BusinessDetectionTasks;
+import com.ruanzhu.doorhandle.module.detection.service.DashboardScope;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionNotificationPort;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskDispatchService;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
@@ -581,13 +582,24 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     @Override
     public java.util.Map<String, Object> listTasks(int page, int size, String keyword, String status,
-                                                    String collector, String deviceName, String region, boolean businessOnly) {
+                                                    String collector, String deviceName, String region, boolean businessOnly,
+                                                    boolean completedResults) {
         com.baomidou.mybatisplus.core.metadata.IPage<DetectionTask> taskPage = new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
         LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<DetectionTask>()
-                .orderByDesc(DetectionTask::getCreatedAt);
-        applyOwnerFilter(wrapper);
-
-        if (businessOnly) wrapper.apply(BusinessDetectionTasks.FILTER);
+                .orderByDesc(DetectionTask::getCreatedAt, DetectionTask::getId);
+        if (completedResults) {
+            var scope = DashboardScope.ACCOUNT.forCompletedResults(accessPolicy, "detection_task.");
+            var parameters = new ArrayList<>();
+            String predicate = scope.predicate();
+            for (var parameter : scope.parameters().entrySet()) {
+                predicate = predicate.replaceAll(":" + parameter.getKey() + "\\b", "{" + parameters.size() + "}");
+                parameters.add(parameter.getValue());
+            }
+            wrapper.in(DetectionTask::getStatus, "COMPLETED", "PARTIAL_FAILED").apply(predicate, parameters.toArray());
+        } else {
+            applyOwnerFilter(wrapper);
+            if (businessOnly) wrapper.apply(BusinessDetectionTasks.FILTER);
+        }
 
         // 关键字搜索：任务ID、文件夹名、批次号或工单号
         if (org.springframework.util.StringUtils.hasText(keyword)) {

@@ -290,6 +290,42 @@ test('forgetting an inaccessible history task invalidates a late page read witho
   } finally { delete globalThis[key] }
 })
 
+test('the completed history entry keeps its scope through filters and pagination', async () => {
+  const key = '__completedDetectionHistory'
+  const requests = []
+  globalThis[key] = { ref: value => ({ value }), computed: read => ({ get value() { return read() } }),
+    onBeforeUnmount: () => {}, knownCount: value => value }
+  try {
+    const code = readFrontendFile('src', 'composables', 'useDetectionHistory.js')
+      .replace("import { computed, ref, onBeforeUnmount } from 'vue'", `const {computed,ref,onBeforeUnmount}=globalThis[${JSON.stringify(key)}]`)
+      .replace("import { knownCount } from '../utils/countPresentation'", `const {knownCount}=globalThis[${JSON.stringify(key)}]`)
+    const { useDetectionHistory } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))
+    const state = useDetectionHistory({}, {
+      async fetchTaskList(page, size, keyword, status, filters) {
+        requests.push({ page, size, keyword, status, filters })
+        return { ok: true, total: filters.completedResults ? 18 : 23, records: [] }
+      }
+    })
+    state.historyCompletedResults.value = true
+    state.historySearchKeyword.value = '批次'
+    state.historyFilterRegion.value = '上海'
+    await state.onHistorySearch()
+    await state.onHistoryPageChange(2)
+    await state.refreshHistory()
+    assert.equal(state.historyTotal.value, 18)
+    assert.deepEqual(state.historyAppliedFilters.value, { keyword: '批次', region: '上海' })
+    const filtered = { size: 10, keyword: '批次', status: '', filters: { keyword: '批次', region: '上海', completedResults: true } }
+    assert.deepEqual(requests, [{ page: 1, ...filtered }, { page: 2, ...filtered }, { page: 2, ...filtered }])
+
+    state.historyCompletedResults.value = false
+    await state.fetchHistoryWithFilters(1)
+    assert.equal(state.historyTotal.value, 23)
+    assert.deepEqual(requests.at(-1), { ...filtered, page: 1, filters: { keyword: '批次', region: '上海' } })
+  } finally {
+    delete globalThis[key]
+  }
+})
+
 test('a changed route URL prevents the old read from restoring the new route scroll', async () => {
   const {preserveBrowseState}=await subject,value=documentFixture(),listeners=new Map()
   value.doc.defaultView={location:{href:'http://owned/#/devices'},addEventListener:(type,listener)=>listeners.set(type,listener),removeEventListener:type=>listeners.delete(type)}

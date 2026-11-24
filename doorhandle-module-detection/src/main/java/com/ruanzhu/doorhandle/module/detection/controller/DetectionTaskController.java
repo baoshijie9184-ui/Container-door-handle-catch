@@ -143,9 +143,11 @@ public class DetectionTaskController {
             @RequestParam(required = false) String collector,
             @RequestParam(required = false) String deviceName,
             @RequestParam(required = false) String region,
-            @RequestParam(defaultValue = "false") boolean businessOnly
+            @RequestParam(defaultValue = "false") boolean businessOnly,
+            @RequestParam(defaultValue = "false") boolean completedResults
     ) {
-        return Result.success(detectionTaskService.listTasks(page, size, keyword, status, collector, deviceName, region, businessOnly));
+        return Result.success(detectionTaskService.listTasks(page, size, keyword, status, collector, deviceName, region,
+                businessOnly, completedResults));
     }
 
     @GetMapping("/by-collector")

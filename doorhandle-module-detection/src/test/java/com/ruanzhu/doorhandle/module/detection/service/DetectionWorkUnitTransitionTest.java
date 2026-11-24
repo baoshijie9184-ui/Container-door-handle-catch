@@ -1,7 +1,9 @@
 package com.ruanzhu.doorhandle.module.detection.service;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionApplicationHistory;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDecisionRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
@@ -9,6 +11,7 @@ import com.ruanzhu.doorhandle.module.detection.entity.DetectionWorkUnit;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitMapper;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionWorkUnitImageMapper;
 import com.ruanzhu.doorhandle.module.detection.service.impl.DetectionWorkUnitServiceImpl;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -138,6 +141,45 @@ class DetectionWorkUnitTransitionTest {
         when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(7, "DET-0001", false));
         assertEquals(403, assertThrows(BusinessException.class, () -> service.reject("WU", command)).getCode());
         verifyNoInteractions(mapper);
+    }
+
+    @Test void applicationHistoryRejectsEmployeesAndInvalidFiltersBeforeReading() {
+        var mapper = mock(DetectionWorkUnitMapper.class);
+        var users = mock(BusinessUserDirectory.class);
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users,
+                mock(DetectionWorkUnitAudit.class));
+        when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(7, "DET-0001", false));
+        assertEquals(403, assertThrows(BusinessException.class,
+                () -> service.applicationHistory(1, 20, null, null)).getCode());
+        when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(3, "SUP-0001", true));
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> service.applicationHistory(0, 20, null, null)).getCode());
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> service.applicationHistory(1, 20, null, "det%")).getCode());
+        verifyNoInteractions(mapper);
+    }
+
+    @Test void applicationHistoryForwardsExactTaskAndPreservesDecisionAndSourceFacts() {
+        var mapper = mock(DetectionWorkUnitMapper.class);
+        var users = mock(BusinessUserDirectory.class);
+        when(users.authenticated()).thenReturn(new BusinessUserDirectory.Identity(3, "SUP-0001", true));
+        var service = new DetectionWorkUnitServiceImpl(mapper, mock(DetectionWorkUnitImageMapper.class), users,
+                mock(DetectionWorkUnitAudit.class));
+        var entry = new DetectionApplicationHistory.Entry();
+        entry.setSourceBatchId("det_source");
+        entry.setBatchId("det_folder_formal");
+        entry.setWorkOrderNo("WO-123");
+        entry.setStatus("ASSIGNED");
+        entry.setDecisionAccount("SUP-0001");
+        var page = new Page<DetectionApplicationHistory.Entry>(2, 20, 21);
+        page.setRecords(List.of(entry));
+        when(mapper.findApplicationHistory(argThat(value -> value.getCurrent() == 2 && value.getSize() == 20),
+                eq("DET-0001"), eq("det_source"))).thenReturn(page);
+
+        var result = service.applicationHistory(2, 20, " DET-0001 ", " det_source ");
+        assertEquals(2L, result.page());
+        assertEquals(21L, result.total());
+        assertEquals(List.of(entry), result.records());
     }
 
     @Test void applicantCanWithdrawOnceAndCannotWithdrawSomeoneElsesApplication() {

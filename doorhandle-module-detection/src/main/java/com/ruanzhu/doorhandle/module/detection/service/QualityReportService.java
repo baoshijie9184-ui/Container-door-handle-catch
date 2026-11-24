@@ -51,6 +51,11 @@ public class QualityReportService {
     }
     @Transactional(readOnly=true)
     public Map<String,Object> list(Identity actor,int page,int size,String status,String keyword,boolean awaitingMyApproval) {
+        return list(actor,page,size,status,keyword,awaitingMyApproval,null);
+    }
+    @Transactional(readOnly=true)
+    public Map<String,Object> list(Identity actor,int page,int size,String status,String keyword,boolean awaitingMyApproval,
+                                   String relatedTaskId) {
         if(actor==null)throw new SecurityException("请先登录");
         actor=users.current(actor.userId(),actor.username());
         if(page<1||page>10000||size<1||size>100||(keyword!=null&&keyword.length()>128))fail(400,"查询参数不正确");
@@ -66,6 +71,25 @@ public class QualityReportService {
                 +" OR EXISTS (SELECT 1 FROM runtime_state g WHERE g.namespace='STAFF_REPORT_TRANSFER' AND g.owner_id=r.owner_user_id AND g.scope_key=BINARY r.report_id AND g.state_code='ASSIGNED'))";
         if(status!=null&&!status.isBlank()){where+=" AND r.status=:status";params.put("status",status);}
         if(keyword!=null&&!keyword.isBlank()){where+=" AND (r.task_id LIKE :keyword OR r.title LIKE :keyword)";params.put("keyword","%"+keyword.trim()+"%");}
+        if(relatedTaskId!=null) {
+            DetectionTask related=task(actor,relatedTaskId,false);
+            params.put("relatedTaskId",related.getTaskId());
+            String match="r.task_id=:relatedTaskId";
+            if("BATCH".equals(related.getTaskType())||"BATCH_DIRECT".equals(related.getTaskType())) {
+                // A source upload can show reports for its verified formal detection run.
+                match+="""
+                     OR (t.task_type='OSS_FOLDER' AND t.status<>'CANCELLED' AND EXISTS (
+                        SELECT 1 FROM detection_work_unit fw
+                        JOIN detection_task o ON o.task_id=:relatedTaskId
+                        WHERE fw.work_unit_id=t.task_id COLLATE utf8mb4_0900_ai_ci
+                          AND o.status<>'CANCELLED'
+                          AND fw.strategy='OSS_FOLDER' AND COALESCE(fw.assignee_user_id,'')<>''
+                          AND (%s)
+                     ))
+                    """.formatted(BusinessDetectionTasks.traceUploadLineage("o.","t."));
+            }
+            where+=" AND ("+match+")";
+        }
         var rows=reports.list(where,params,page,size);
         return Map.of("records",rows.stream().map(this::view).toList(),"total",reports.count(where,params),"page",page,"size",size);
     }

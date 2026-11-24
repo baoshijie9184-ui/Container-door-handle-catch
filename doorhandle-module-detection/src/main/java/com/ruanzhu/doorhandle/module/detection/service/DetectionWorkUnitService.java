@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.detection.service;
 
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionApplicationHistory;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDecisionRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
@@ -15,6 +16,7 @@ public interface DetectionWorkUnitService {
     DetectionWorkUnit withdraw(String workUnitId, DetectionWorkUnitDecisionRequest request);
     List<DetectionWorkUnit> listMine(String userId);
     List<DetectionWorkUnit> listActive();
+    DetectionApplicationHistory.Page applicationHistory(int page, int size, String keyword, String taskId);
     DetectionWorkUnit submit(String workUnitId, DetectionWorkUnitSubmitRequest request, String userId);
     DetectionWorkUnit dispatch(String workUnitId, DetectionWorkUnitDispatchRequest request, String operator);
     DetectionWorkUnit recall(String workUnitId, Integer expectedVersion, String operator);

@@ -237,6 +237,7 @@ export const usePollingStore = defineStore('polling', () => {
       if (filters.collector) params.collector = filters.collector
       if (filters.deviceName) params.deviceName = filters.deviceName
       if (filters.region) params.region = filters.region
+      if (filters.completedResults === true) params.completedResults = true
       const response = await request.get('/api/detection/tasks', { params })
       if(openedRead!==readEpoch)return {records:[],total:null,ok:false,message:'任务授权范围已变化，请重新读取'}
       if (!response.data || response.data.code !== 200) return { records: [], total: null, ok: false, httpStatus:response.data?.code || response.status, message: response.data?.message || '任务记录暂不可读取' }

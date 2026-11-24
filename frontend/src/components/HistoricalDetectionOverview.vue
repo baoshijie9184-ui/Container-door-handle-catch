@@ -2,11 +2,11 @@
   <section class="history-overview app-panel" aria-labelledby="history-overview-title">
     <header class="history-heading">
       <span class="history-icon"><AppIcon name="DataAnalysis" :size="21" /></span>
-      <div><h2 id="history-overview-title">检测数据总览</h2><p>{{ period }} · 全员可见的历史汇总</p></div>
+      <div><h2 id="history-overview-title">检测数据总览</h2><p>{{ period }} · 历史检测台账汇总</p></div>
     </header>
     <dl class="history-metrics">
       <div class="history-volume"><dt>累计登记图片</dt><dd>{{ number(summary.imageCount) }}<small> 张</small></dd></div>
-      <div><dt>历史批次</dt><dd>{{ number(summary.recordCount) }}</dd></div>
+      <div><dt>汇总记录</dt><dd>{{ number(summary.recordCount) }}</dd></div>
       <div><dt>登记目标</dt><dd>{{ number(summary.targetCount) }}</dd></div>
       <div><dt>检测模型</dt><dd>{{ number(summary.modelCount) }}</dd></div>
     </dl>
@@ -28,7 +28,7 @@
     <p v-else>年度资料待登记</p>
     <details class="history-details"><summary>查看年度登记明细</summary>
       <div class="history-scroll" tabindex="0" role="region" aria-label="年度登记明细，可横向滚动">
-        <table><thead><tr><th scope="col">年份</th><th scope="col">批次</th><th scope="col">图片</th><th scope="col">目标</th></tr></thead>
+        <table><thead><tr><th scope="col">年份</th><th scope="col">记录</th><th scope="col">图片</th><th scope="col">目标</th></tr></thead>
           <tbody><tr v-for="row in years" :key="row.year"><th scope="row">{{ row.year }}</th><td>{{ number(row.recordCount) }}</td><td>{{ number(row.imageCount) }}</td><td>{{ number(row.targetCount) }}</td></tr></tbody>
         </table>
       </div>

@@ -14,6 +14,7 @@ const normalizeHistoryRecord = (record, taskStore) => ({
 
 export function useDetectionHistory(taskStore, pollingStore) {
   const historySearchKeyword=ref(''), historyFilterCollector=ref(''), historyFilterDevice=ref(''), historyFilterRegion=ref('')
+  const historyCompletedResults=ref(false)
   const historyPage=ref(1), historyPageSize=ref(10), historyTotal=ref(null), historyRecords=ref([])
   const historyLoading=ref(false), historyError=ref(''), historyLoaded=ref(false)
   const appliedQuery=ref(null), requestedQuery=ref(null)
@@ -43,14 +44,16 @@ export function useDetectionHistory(taskStore, pollingStore) {
     const requestedPage=Number.isSafeInteger(Number(page))&&Number(page)>0?Number(page):historyPage.value
     const requestedSize=Number.isSafeInteger(Number(size))&&Number(size)>0?Number(size):historyPageSize.value
     const filters={...(filterOverride || buildHistoryFilters())}
-    const query={page:requestedPage,size:requestedSize,filters}, key=JSON.stringify(query)
+    const completedResults=historyCompletedResults.value
+    const query={page:requestedPage,size:requestedSize,filters,completedResults}, key=JSON.stringify(query)
     if(historyLoading.value&&pendingKey===key)return
     const generation=++loadGeneration
     pendingKey=key;requestedQuery.value=query
     if(key!==JSON.stringify(appliedQuery.value))clearRecords()
     historyLoading.value=true;historyError.value=''
     try{
-      const response=await pollingStore.fetchTaskList(requestedPage,requestedSize,filters.keyword || '','',filters)
+      const response=await pollingStore.fetchTaskList(requestedPage,requestedSize,filters.keyword || '','',
+        completedResults ? {...filters,completedResults:true} : filters)
       if(disposed||generation!==loadGeneration)return
       if(!response||response.ok!==true||!Array.isArray(response.records)){
         if([401,403].includes(response?.httpStatus)){clearRecords();appliedQuery.value=null}
@@ -96,5 +99,5 @@ export function useDetectionHistory(taskStore, pollingStore) {
     const query=requestedQuery.value
     return query?fetchHistoryWithFilters(query.page,query.size,query.filters):fetchHistoryWithFilters()
   }
-  return {historySearchKeyword,historyFilterCollector,historyFilterDevice,historyFilterRegion,historyPage,historyPageSize,historyTotal,historyRecords,historyLoading,historyError,historyLoaded,hasHistoryFilters,historyFiltersDirty,historyAppliedFilters,buildHistoryFilters,fetchHistoryWithFilters,onHistorySearch,onHistoryReset,onHistoryPageChange,onHistorySizeChange,refreshHistory,retryHistoryRead,forgetTasks}
+  return {historySearchKeyword,historyFilterCollector,historyFilterDevice,historyFilterRegion,historyCompletedResults,historyPage,historyPageSize,historyTotal,historyRecords,historyLoading,historyError,historyLoaded,hasHistoryFilters,historyFiltersDirty,historyAppliedFilters,buildHistoryFilters,fetchHistoryWithFilters,onHistorySearch,onHistoryReset,onHistoryPageChange,onHistorySizeChange,refreshHistory,retryHistoryRead,forgetTasks}
 }

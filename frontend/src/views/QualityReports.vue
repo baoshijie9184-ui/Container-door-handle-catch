@@ -19,6 +19,11 @@
           </el-button>
         </div>
       </div>
+      <p v-if="relatedTaskId" class="report-query-note">
+        关联检测任务 {{ relatedTaskId }}
+        <router-link :to="{path:'/inspection/history',query:{keyword:relatedTaskId}}">返回检测记录</router-link>
+        · <router-link to="/quality/reports">查看全部报告</router-link>
+      </p>
       <form class="report-toolbar" @submit.prevent="search">
         <div class="report-filter-field report-keyword-field">
           <label for="report-keyword" class="sr-only">报告标题或任务编号</label>
@@ -47,7 +52,7 @@
           <CollectionEmptyState
             :loading="loading" :error="error"
             :filtered="!!(requestedQuery.keyword || (!approvalOnly && requestedQuery.status))"
-            :empty-title="approvalOnly ? '暂无待你审批的报告' : '暂无质检报告'"
+            :empty-title="approvalOnly ? '暂无待你审批的报告' : relatedTaskId ? '该任务暂无可查看的报告' : '暂无质检报告'"
             :empty-description="approvalOnly ? '可以查看全部报告及其审批结果。' : '选用已完成的检测任务，可以新建并提交报告。'"
             @retry="retryList" @reset="resetSearch"
           >
@@ -273,6 +278,7 @@ function reportDeliveryLabel(status) {
 }
 const own = computed(() => detail.value?.ownerUserId != null && String(detail.value.ownerUserId) === String(userStore.identity?.userId))
 const approvalOnly = computed(() => isSupervisor.value && route.query.awaitingMyApproval === '1')
+const relatedTaskId = computed(() => typeof route.query.relatedTaskId === 'string' ? route.query.relatedTaskId : '')
 const emptyApprovalQueue = computed(() => approvalOnly.value && listLoaded.value && total.value === 0
   && !records.value.length && !requestedQuery.keyword && !loading.value && !error.value)
 const reportNextStep = computed(() => {
@@ -303,7 +309,7 @@ async function load(queryOverride) {
   const source = queryOverride && typeof queryOverride === 'object' ? queryOverride : listLoaded.value ? { ...appliedQuery, page:appliedPage.value } : requestedQuery
   const query={keyword:source.keyword || '',status:approvalOnly.value ? 'SUBMITTED' : source.status || ''}, requestedPage=source.page ?? page.value
   Object.assign(requestedQuery,query,{page:requestedPage})
-  try { const data = unwrap(await request.get('/api/detection/reports', { params: { page: requestedPage, size: 20, status: query.status || undefined, keyword: query.keyword || undefined, awaitingMyApproval: approvalOnly.value || undefined } })); if (generation === loadGeneration) { if(!Array.isArray(data?.records)||data.records.some(row=>!row||typeof row.reportId!=='string')||knownCount(data.total)===null)throw Error('报告列表或数量尚未完整读取');records.value = data.records; total.value = knownCount(data.total);Object.assign(appliedQuery,query);appliedPage.value=requestedPage;page.value=requestedPage;listLoaded.value=true } }
+  try { const data = unwrap(await request.get('/api/detection/reports', { params: { page: requestedPage, size: 20, status: query.status || undefined, keyword: query.keyword || undefined, relatedTaskId:relatedTaskId.value || undefined, awaitingMyApproval: approvalOnly.value || undefined } })); if (generation === loadGeneration) { if(!Array.isArray(data?.records)||data.records.some(row=>!row||typeof row.reportId!=='string')||knownCount(data.total)===null)throw Error('报告列表或数量尚未完整读取');records.value = data.records; total.value = knownCount(data.total);Object.assign(appliedQuery,query);appliedPage.value=requestedPage;page.value=requestedPage;listLoaded.value=true } }
   catch (e) { if (generation === loadGeneration) { if([401,403].includes(e.response?.status)){records.value=[];total.value=null;listLoaded.value=false}error.value = message(e) } }
   finally { if (generation === loadGeneration) loading.value = false }
 }
@@ -311,7 +317,7 @@ function search() { load({ keyword:keyword.value.trim(), status:status.value || 
 function loadAppliedPage(nextPage) { load({ ...appliedQuery, page:nextPage }) }
 function retryList() { load({ ...requestedQuery }) }
 function resetSearch() { keyword.value = ''; status.value = approvalOnly.value ? 'SUBMITTED' : ''; search() }
-function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || ''); form.title = ''; form.narrative = ''; editorError.value = ''; editorFieldError.value = null; editorVisible.value = true }
+function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || relatedTaskId.value); form.title = ''; form.narrative = ''; editorError.value = ''; editorFieldError.value = null; editorVisible.value = true }
 function openEdit() { reportConflict.value=false; keys.clear(); editingId.value = detail.value.reportId; editingVersion.value = detail.value.version; Object.assign(form, { taskId: detail.value.taskId, title: detail.value.title, narrative: detail.value.narrative }); editorError.value = ''; editorFieldError.value = null; editorVisible.value = true }
 function clearEditorFieldError(field) {
   if (editorFieldError.value?.field === field) editorFieldError.value = null
@@ -434,7 +440,14 @@ function loadRouteFilter() {
   keyword.value = ''
   return load({ status:status.value, keyword:'', page:1 })
 }
-watch([()=>route.query.status, approvalOnly],loadRouteFilter)
+watch([()=>route.query.status, approvalOnly, relatedTaskId], ([,,nextTask], [,,previousTask]) => {
+  if (nextTask !== previousTask) {
+    records.value = []
+    total.value = null
+    listLoaded.value = false
+  }
+  void loadRouteFilter()
+})
 onMounted(async () => { if (!userStore.identity) await userStore.checkAuth(); await loadRouteFilter(); if (route.query.reportId) await openDetail(String(route.query.reportId)); else if (route.query.taskId) openCreate() })
 onBeforeUnmount(()=>{detailGeneration++;loadGeneration++;events.value=[];eventsError.value='';keys.clear()})
 </script>

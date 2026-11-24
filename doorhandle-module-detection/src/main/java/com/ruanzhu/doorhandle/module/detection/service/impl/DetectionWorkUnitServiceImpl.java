@@ -1,8 +1,10 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
+import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionApplicationHistory;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitApplyRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitDecisionRequest;
 import com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionWorkUnitSubmitRequest;
@@ -142,6 +144,21 @@ public class DetectionWorkUnitServiceImpl implements DetectionWorkUnitService {
     }
 
     @Override public List<DetectionWorkUnit> listMine(String userId) { return mapper.findMine(userId); }
+
+    @Override
+    @Transactional(readOnly = true)
+    public DetectionApplicationHistory.Page applicationHistory(int page, int size, String keyword, String taskId) {
+        if (!users.authenticated().supervisor()) throw new BusinessException(403, "仅主管可查看检测申请记录");
+        String search = keyword == null ? "" : keyword.strip();
+        String exactTaskId = taskId == null ? "" : taskId.strip();
+        if (page < 1 || page > 10000 || size < 1 || size > 100 || search.length() > 64
+                || (!exactTaskId.isEmpty() && !exactTaskId.matches("[A-Za-z0-9_-]{1,64}"))) {
+            throw new BusinessException(400, "请核对申请记录的查询条件");
+        }
+        var result = mapper.findApplicationHistory(new Page<>(page, size), search, exactTaskId);
+        return new DetectionApplicationHistory.Page(result.getRecords(), result.getTotal(),
+                result.getCurrent(), result.getSize());
+    }
     @Override public List<DetectionWorkUnit> listActive() { return mapper.findActive(); }
 
     @Override @Transactional

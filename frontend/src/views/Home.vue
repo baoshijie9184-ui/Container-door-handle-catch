@@ -45,7 +45,10 @@
             <span class="quality-heading-icon"><AppIcon name="DocumentChecked" :size="21" /></span>
             <div><h2 id="quality-overview-title">员工申请审批</h2></div>
           </div>
-          <el-button text type="primary" :loading="applicationsLoading" @click="loadApplications">刷新申请</el-button>
+          <div class="application-row-actions">
+            <router-link to="/inspection/applications">申请审批记录</router-link>
+            <el-button text type="primary" :loading="applicationsLoading" @click="loadApplications">刷新申请</el-button>
+          </div>
         </header>
         <p v-if="applicationsNotice" class="application-notice" role="status">{{ applicationsNotice }}</p>
         <el-alert v-if="applicationsError" :title="applicationsError" type="warning" :closable="false"/>
@@ -77,7 +80,7 @@
     </div>
     <details class="dashboard-data-note count-scope">
       <summary>统计口径</summary>
-      <p>检测趋势、目标分类、城市和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。“—”表示数据缺失或无法计算。</p>
+      <p>检测趋势、目标分类、城市和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。已完成任务按正式检测结果去重，历史汇总沿用原台账记录。“—”表示数据缺失或无法计算。</p>
     </details>
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid" aria-label="任务与资源概览">
@@ -90,7 +93,7 @@
         </div>
 
         <div class="hero-highlights">
-          <button class="highlight-card hl-primary" type="button" title="查看企业检测趋势" @click="trendHeading?.focus()">
+          <button class="highlight-card hl-primary" type="button" :title="isSupervisor ? '查看已完成检测任务' : '查看企业检测趋势'" @click="openDetectionTotal">
             <span class="hl-header">
               <span class="hl-icon hl-icon-blue">
                 <el-icon><DataAnalysis /></el-icon>
@@ -244,7 +247,7 @@
           </div>
         </template>
         <div class="quick-stats">
-          <router-link class="quick-stat-item" to="/inspection/history">
+          <router-link class="quick-stat-item" :to="completedDetectionHistory">
             <div class="qs-icon qs-icon-blue">
               <el-icon><DataAnalysis /></el-icon>
             </div>
@@ -433,6 +436,7 @@
 </template>
 
 <script setup>
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import InspectionFlowNav from '@/components/InspectionFlowNav.vue'
 import CollaborationTodos from '../components/CollaborationTodos.vue'
@@ -510,6 +514,12 @@ function markSectionFailed(section) {
 const totalDetections = ref(null)
 const companyDetections = ref(null)
 const trendHeading = ref(null)
+const router = useRouter()
+const completedDetectionHistory = {path:'/inspection/history',query:{completedResults:'1'}}
+function openDetectionTotal() {
+  if(isSupervisor.value) router.push(completedDetectionHistory)
+  else trendHeading.value?.focus()
+}
 const companyScope = { scope: 'COMPANY' }
 const historicalSummary = ref(null)
 const isSupervisor = computed(() => userStore.isAuthenticated && ['SUPERVISOR', 'ADMIN'].includes(userStore.role))

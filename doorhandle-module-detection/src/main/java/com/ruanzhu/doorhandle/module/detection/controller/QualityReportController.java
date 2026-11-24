@@ -23,8 +23,9 @@ public class QualityReportController {
     @GetMapping public Result<Map<String,Object>> list(@AuthenticationPrincipal TenantPrincipal principal,
             @RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size,
             @RequestParam(required=false) String status,@RequestParam(required=false) String keyword,
-            @RequestParam(defaultValue="false") boolean awaitingMyApproval){
-        return Result.success(service.list(actor(principal),page,size,status,keyword,awaitingMyApproval));
+            @RequestParam(defaultValue="false") boolean awaitingMyApproval,
+            @RequestParam(required=false) String relatedTaskId){
+        return Result.success(service.list(actor(principal),page,size,status,keyword,awaitingMyApproval,relatedTaskId));
     }
     @GetMapping("/{id}") public Result<View> get(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id){return Result.success(service.get(actor(principal),id));}
     @GetMapping("/{id}/audit") public Result<List<Audit>> audit(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id){return Result.success(service.audit(actor(principal),id));}

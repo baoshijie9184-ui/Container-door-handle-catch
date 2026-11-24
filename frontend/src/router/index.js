@@ -69,6 +69,11 @@ const routes = [
         meta: { title: '校验任务列表', requiresAuth: true, supervisorOnly: true, taskList: 'verification' }
       },
       {
+        path: 'inspection/applications', name: 'detectionApplicationHistory',
+        component: () => import('../views/inspection/DetectionApplicationHistory.vue'),
+        meta: { title: '检测申请记录', requiresAuth: true, supervisorOnly: true }
+      },
+      {
         path: 'inspection/workbench',
         name: 'inspectionWorkbench',
         component: () => import('../views/ImageDetection.vue'),

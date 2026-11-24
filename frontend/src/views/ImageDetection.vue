@@ -139,7 +139,12 @@
       <el-tab-pane lazy name="history" label="检测记录">
         <el-card class="detection-card history-page-card" shadow="never">
           <template #header><div class="card-title-row"><span><AppIcon name="Filter" :size="18" />筛选记录</span><el-tag type="info" effect="plain">{{ historyLoading ? '正在读取任务与结果' : historyError ? '本次读取未完成' : historyTotal!==null ? `共 ${historyTotal} 条` : historyLoaded ? '总数未提供' : '数量尚未读取' }}</el-tag><el-button size="small" :loading="historyLoading" @click="refreshHistory"><AppIcon name="Refresh" :size="15" />刷新已读范围</el-button></div></template>
-          <p class="history-scope-note"><AppIcon name="Lock" :size="15" />{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测结果与人工结论分别记录。</p>
+          <p class="history-scope-note">
+            <AppIcon name="Lock" :size="15" />
+            <span v-if="historyCompletedResults">与首页一致的已完成正式任务，含部分失败。</span>
+            <span v-else>{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测结果与人工结论分别记录。</span>
+            <router-link v-if="historyCompletedResults" :to="{ path: '/inspection/history', query: { ...route.query, completedResults: undefined } }">切换到全部记录</router-link>
+          </p>
           <form class="history-query-form" @submit.prevent="onHistorySearch">
             <label for="history-keyword" class="history-query-keyword">任务、文件夹、工单或批次<el-input id="history-keyword" v-model="historySearchKeyword" clearable placeholder="输入编号或文件夹关键词"><template #prefix><AppIcon name="Search" :size="15" /></template></el-input></label>
             <div class="history-query-actions">
@@ -505,6 +510,7 @@ const {
   historyFilterCollector,
   historyFilterDevice,
   historyFilterRegion,
+  historyCompletedResults,
   historyPage,
   historyPageSize,
   historyTotal,
@@ -614,7 +620,10 @@ const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
   const targetPath = tabRouteMap[tabName]
   if (!fromRoute && targetPath && route.path !== targetPath && route.fullPath === startingRoute) {
     const { tab, ...query } = route.query
-    if (tabName !== 'history') delete query.keyword
+    if (tabName !== 'history') {
+      delete query.keyword
+      delete query.completedResults
+    }
     if (tabName !== 'work-order-trace') delete query.workOrderNo
     if (tabName !== 'batch-trace') delete query.batchNo
     router.replace({ path: targetPath, query })
@@ -624,6 +633,7 @@ const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
 const syncTabFromRoute = async () => {
   const text = value => typeof value === 'string' ? value.trim() : ''
   const routeKeyword = text(route.query.keyword)
+  const completedResults = route.query.completedResults === '1'
   const configuredTab = String(route.query.tab || route.meta?.detectionTab || '')
   if (!validTabs.includes(configuredTab) && route.path !== '/detection') return
   const routeTab = routeKeyword ? 'history' : configuredTab
@@ -642,8 +652,9 @@ const syncTabFromRoute = async () => {
     if (batchTraceReport.value?.batchNo !== requested) await loadBatchTraceReport()
     return
   }
-  if (routeTab === 'history' && routeKeyword) {
-    historySearchKeyword.value = routeKeyword
+  if (routeTab === 'history' && (routeKeyword || historyCompletedResults.value !== completedResults)) {
+    if (routeKeyword) historySearchKeyword.value = routeKeyword
+    historyCompletedResults.value = completedResults
     historyPage.value = 1
     await fetchHistoryWithFilters(1)
     return
@@ -652,7 +663,7 @@ const syncTabFromRoute = async () => {
 }
 
 watch(
-  () => [route.path, route.query.tab, route.query.workOrderNo, route.query.batchNo, route.query.keyword],
+  () => [route.path, route.query.tab, route.query.workOrderNo, route.query.batchNo, route.query.keyword, route.query.completedResults],
   syncTabFromRoute
 )
 
@@ -925,6 +936,7 @@ onMounted(async () => {
     activeTab.value = 'history'
     historySearchKeyword.value = String(queryKeyword)
   }
+  historyCompletedResults.value = route.query.completedResults === '1'
 
   if (activeTab.value === 'workspace') {
     fetchModels()
