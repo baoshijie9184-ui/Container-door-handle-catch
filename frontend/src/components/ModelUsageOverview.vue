@@ -76,7 +76,7 @@ const total = computed(() => rows.value.some(row => row.value === null) ? null :
 .usage-bar { display:block; height:100%; border-radius:6px; background:var(--app-primary); }
 .usage-row:not(:first-child) .usage-bar { opacity:.72; }
 .usage-value { text-align:right; color:var(--app-text); font-size:14px; font-weight:650; font-variant-numeric:tabular-nums; }
-.usage-value small { color:var(--app-text-secondary); font-size:12px; font-weight:400; }
+.usage-value small { margin-left:3px; color:var(--app-text-secondary); font-size:12px; font-weight:400; }
 .usage-rates { border-top:1px solid var(--app-border); margin-top:14px; padding-top:10px; }
 .usage-rates summary { width:fit-content; color:var(--app-primary); cursor:pointer; font-size:13px; }
 .usage-rates p { color:var(--app-text-secondary); font-size:13px; }

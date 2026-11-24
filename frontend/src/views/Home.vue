@@ -852,7 +852,12 @@ function renderDetectionTrend() {
     xAxis: {
       type: 'category', data: rows.map(row => row.period),
       axisLine: { lineStyle: { color: '#cbd5e1' } },
-      axisLabel: { color: '#475569', fontSize: 12, hideOverlap: true }
+      axisLabel: {
+        color: '#475569', fontSize: 12, hideOverlap: true,
+        interval: detectionTimeRange.value === 'month' ? 0 : 'auto',
+        formatter: (label, index) => detectionTimeRange.value === 'month' && index > 0 && !label.endsWith('-01')
+          ? `${Number(label.slice(5))}月` : label
+      }
     },
     yAxis: {
       type: 'value', name: targetView ? '目标数（个）' : '图片数（张）', minInterval: 1,
