@@ -131,3 +131,23 @@ a { color: #2563eb; text-decoration: none; }
 .wb-notifications { margin: 8px 0; padding-left: 18px; color: var(--app-text-secondary); }
 .wb-execution-details, .wb-history, .action-history { margin-top: 10px; color: var(--app-text-secondary); }
 .wb-execution-details > summary, .wb-history > summary, .action-history > summary { width: fit-content; min-height: 30px; padding: 4px 0; cursor: pointer; font-size: 12px; }
+
+@media (max-width:600px) {
+  .ant-cascader-dropdown.ant-suggestion {
+    max-width:calc(100vw - 48px);
+    max-width:calc(100dvw - 48px);
+  }
+  .ant-suggestion .ant-cascader-menu {
+    min-width:0;
+    max-width:100%;
+  }
+  .ant-suggestion .ant-cascader-menu-item {
+    min-height:32px;
+    align-items:center;
+  }
+  .ant-suggestion :is(.ant-cascader-menu-item-content,.ant-suggestion-item) {
+    min-width:0;
+    white-space:normal;
+    overflow-wrap:anywhere;
+  }
+}

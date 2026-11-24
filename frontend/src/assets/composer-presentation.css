@@ -39,7 +39,7 @@
 @container (max-width:540px) {
   .composer .composer-toolbar, .composer-resources .composer-resource-toolbar { gap:4px; }
   .composer-preferences { gap:3px; }
-  :is(.composer-toolbar,.composer-resource-toolbar) .composer-preferences .composer-model { width:clamp(70px,23cqi,134px); }
+  :is(.composer-toolbar,.composer-resource-toolbar) .composer-preferences .composer-model { width:clamp(94px,35cqi,142px); }
 }
 @media(max-width:540px) { .composer-attachments .composer-attachment { flex-basis:220px; } }
 @media(prefers-reduced-motion:reduce) { .composer-attachments .composer-attachment > button { transition:none; } :is(.composer,.composer-resources) .model-selection-feedback button { transition:none; transform:none!important; } }

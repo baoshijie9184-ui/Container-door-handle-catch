@@ -165,7 +165,12 @@
 .agent-chat-page .context-session,
 .agent-shell .workspace-session { border-bottom-color: var(--agent-line); }
 :is(.agent-chat-page, .agent-shell) :is(button, a, select, textarea):focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
-.agent-chat-page .gpt-composer-input .composer-textarea:focus-visible { outline: none; }
+.agent-chat-page .gpt-composer-input .composer-textarea:focus-visible,
+.agent-shell .resource-input .harness-composer-sender textarea:focus-visible { outline: none; }
+.agent-shell .resource-input:has(.harness-composer-sender textarea:focus-visible) {
+  outline: 2px solid var(--app-primary);
+  outline-offset: 2px;
+}
 
 @media (max-width: 768px) {
   .agent-chat-page .chat-workspace { border-radius: 14px; }

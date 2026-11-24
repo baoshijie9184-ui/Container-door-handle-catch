@@ -511,7 +511,8 @@ onBeforeUnmount(()=>{detailGeneration++;loadGeneration++;events.value=[];eventsE
   .report-page-heading :deep(.panel-actions) { margin:0; justify-content:flex-end; }
   .report-page-heading :deep(.panel-actions .el-button) { padding-inline:9px; }
   .report-collection > .collection-heading { padding:12px 14px 0; }
-  .report-toolbar { display:grid; grid-template-columns:minmax(0,1fr) auto; padding:10px 14px 12px; }
+  #app .reports-page .report-toolbar { display:grid; grid-template-columns:minmax(0,1fr) auto; padding:10px 14px 12px; }
+  .report-collection :deep(.el-table__empty-text) { width:min(100%,440px); }
   .report-keyword-field { grid-column:1/-1; width:100%; }
   .report-state-field { width:100%; }
   .report-search-actions { grid-column:2; justify-content:flex-end; }
