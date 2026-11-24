@@ -8,6 +8,7 @@
         </div>
       </section>
     </Transition>
+    <span class="composer-a11y-only" role="status">{{ menuVisible ? commandOptions.length + ' 个技能命令建议' : '' }}</span>
     <p v-if="commandError && draft.startsWith('/')" class="command-error" role="status">{{ commandError }}</p>
     <slot name="queue" />
     <div class="composer-input-wrap gpt-composer-input">
@@ -23,7 +24,7 @@
         :disabled="loading"
         rows="1"
         title="Enter 发送 · Shift + Enter 换行"
-        :aria-expanded="menuVisible" :aria-controls="menuVisible ? commandListId : undefined" :aria-activedescendant="menuVisible ? commandListId+'-'+activeCommand : undefined" aria-label="聊天消息或技能命令"
+        aria-autocomplete="list" aria-haspopup="listbox" :aria-controls="menuVisible ? commandListId : undefined" :aria-activedescendant="menuVisible ? commandListId+'-'+activeCommand : undefined" aria-label="聊天消息或技能命令"
         @input="handleInput"
         @focus="refreshCommands"
         @blur="menuDismissed=true"

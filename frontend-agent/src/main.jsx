@@ -9,7 +9,7 @@ import { Button, Dropdown, Layout, message,Skeleton } from 'antd';
 import ConfigProvider from '@agentscope-ai/design/lib/components/commonComponents/ConfigProvider';
 import { PlusOutlined } from '@ant-design/icons';
 import { PanelLeft, PanelRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw, List, Cpu, Ellipsis } from 'lucide-react';
-import { Bubble, Sender } from '@agentscope-ai/chat';
+import { Bubble } from '@agentscope-ai/chat';
 import '../../frontend/src/assets/design-tokens.css';
 import '../../frontend/src/assets/status-badge.css';
 import './styles.css';
@@ -22,7 +22,7 @@ import {WorkbenchMessage} from './WorkbenchMessage';
 import './workbench-ui.css';
 import { AgentResultCards } from './AgentResultCards';
 import { validCardReference } from '../../frontend/src/utils/agentCards';
-import { skillCommandOptions } from '../../frontend/src/utils/skillCommands';
+import { AgentMessageInput } from './AgentMessageInput';
 import { readSession, sessionItems } from './sessionClient';
 import { ConversationControls } from './ConversationControls';
 import {ComposerToolbar} from './ComposerToolbar';
@@ -417,7 +417,9 @@ function App() {
           {pendingToolReview&&(!infoOpen||showModels)&&<div className="composer-guidance" role="status">
             <button type="button" onClick={()=>{setShowModels(false);setInfoOpen(true)}}>查看待审查的工具调用</button>
           </div>}
-          <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入消息，/ 选技能" onSubmit={text=>submit(text)} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} streaming={loading} onStop={()=>loading?stopStream():controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
+          <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><AgentMessageInput senderRef={senderRef} catalog={commandCatalog} draft={draft} loading={loading}
+            disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired}
+            onChange={setDraft} onFocus={refreshCommands} onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} streaming={loading} onStop={()=>loading?stopStream():controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
       <aside ref={infoPanelRef} id="agent-info" className="agent-info" aria-labelledby="agent-info-heading" hidden={!infoOpen}>
