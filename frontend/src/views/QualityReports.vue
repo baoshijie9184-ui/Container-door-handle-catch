@@ -76,10 +76,10 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" :disabled="busy" @click="openDetail(row.reportId)"><AppIcon name="Search" :size="16" />查看</el-button></template></el-table-column>
-        <el-table-column label="依据任务" min-width="205"><template #default="{ row }"><router-link v-if="row.taskId" class="report-task-link" :to="{ path:'/inspection/history', query:{ keyword:row.taskId } }">{{ row.taskId }}</router-link><span v-else>未记录</span></template></el-table-column>
+        <el-table-column label="依据任务" min-width="205"><template #default="{ row }"><router-link v-if="row.taskId" class="report-task-link" :to="{ path:'/inspection/history', query:{ keyword:row.taskId } }" :title="row.taskId">{{ row.taskId }}</router-link><span v-else>未记录</span></template></el-table-column>
         <el-table-column label="最近更新" min-width="175"><template #default="{ row }"><span class="report-list-time">{{ reportTime(row.updatedAt) }}</span></template></el-table-column>
         <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.reportId)]" :revision="row.version" resource-type="QUALITY_REPORT" :resource-id="row.reportId" domain="QUALITY_REPORT" /></template></el-table-column>
+        <el-table-column label="操作" fixed="right" width="100"><template #default="{ row }"><el-button size="small" :disabled="busy" @click="openDetail(row.reportId)"><AppIcon name="Search" :size="16" />查看</el-button></template></el-table-column>
       </el-table>
       <div v-if="error && records.length" class="report-list-retry"><el-button size="small" :loading="loading" @click="retryList"><AppIcon name="Refresh" :size="15" />重试上次读取</el-button></div>
       <div v-if="total!==null && (total>20 || page>1)" class="page-footer"><el-pagination :current-page="page" :page-size="20" :total="total" layout="prev, pager, next" :disabled="loading || !!error" @current-change="loadAppliedPage" /></div>
@@ -90,11 +90,29 @@
       <el-form id="quality-report-editor-form" label-position="top" @submit.prevent="saveDraft">
         <section class="report-editor-section" aria-labelledby="report-editor-source-heading"><h3 id="report-editor-source-heading"><AppIcon name="Tickets" :size="18" />报告依据</h3>
         <el-form-item label="检测任务编号" required>
-          <el-input id="quality-report-task" v-model="form.taskId" aria-label="输入已完成检测任务编号"
-            :aria-invalid="editorFieldError?.field === 'taskId' || undefined"
-            :aria-describedby="editorFieldError?.field === 'taskId' ? 'quality-report-task-error report-editor-source-note' : 'report-editor-source-note'"
-            placeholder="输入已完成检测任务编号" :disabled="!!editingId || busy" maxlength="128"
-            @update:model-value="clearEditorFieldError('taskId')" />
+          <el-select
+            v-if="!editingId"
+            id="quality-report-task"
+            v-model="form.taskId"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            :loading="candidateTasksLoading"
+            :disabled="busy"
+            placeholder="选择近期已完成检测任务，或直接输入任务编号"
+            style="width:100%"
+            @change="clearEditorFieldError('taskId')"
+          >
+            <el-option
+              v-for="item in candidateTasks"
+              :key="item.taskId"
+              :label="item.label"
+              :value="item.taskId"
+            />
+          </el-select>
+          <el-input v-else id="quality-report-task" v-model="form.taskId" aria-label="输入已完成检测任务编号"
+            :disabled="true" maxlength="128" />
           <p v-if="editorFieldError?.field === 'taskId'" id="quality-report-task-error" class="report-field-error" role="alert">{{ editorFieldError.message }}</p>
         </el-form-item>
         <p id="report-editor-source-note" class="report-editor-help"><template v-if="editingId">此草稿关联的任务编号固定。</template><template v-else>可从<router-link :to="{path:'/inspection/history',query:form.taskId.trim()?{keyword:form.taskId.trim()}:{}}">检测记录</router-link>查找已完成任务。</template></p></section>
@@ -167,7 +185,6 @@
               <el-table-column v-if="isSupervisor && !reportDeliveryDisabled" label="操作" width="110"><template #default="{ row }"><el-button v-if="['FAILED','RETRY'].includes(row.deliveryStatus)" size="small" :disabled="busy||eventsLoading||row.clockStatus==='UNRESOLVED'" @click="retryEvent(row)">重新发送</el-button></template></el-table-column>
             </el-table>
           </details>
-          <p v-else class="muted">本站未启用报告事件投递。</p>
           <ResourceChangeHistory v-if="userStore.capabilities?.changeHistory === true" resource-type="QUALITY_REPORT" :resource-id="detail.reportId" domain="QUALITY_REPORT" compact />
           <h3><AppIcon name="DocumentCopy" :size="18" />操作记录<span class="report-section-count">本次读取 {{ audits.length }} 条</span></h3>
           <el-table class="report-audit-table" :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间" min-width="190"><template #default="{ row }">{{ row.clockStatus==='UNRESOLVED' && !row.createdAt ? '历史时区未确认' : reportTime(row.createdAt) }}</template></el-table-column></el-table>
@@ -318,7 +335,26 @@ function search() { load({ keyword:keyword.value.trim(), status:status.value || 
 function loadAppliedPage(nextPage) { load({ ...appliedQuery, page:nextPage }) }
 function retryList() { load({ ...requestedQuery }) }
 function resetSearch() { keyword.value = ''; status.value = approvalOnly.value ? 'SUBMITTED' : ''; search() }
-function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || relatedTaskId.value); form.title = ''; form.narrative = ''; editorError.value = ''; editorFieldError.value = null; editorVisible.value = true }
+const candidateTasks = ref([]), candidateTasksLoading = ref(false)
+async function loadCandidateTasks() {
+  candidateTasksLoading.value = true
+  try {
+    const res = await request.get('/api/detection/tasks', { params: { page: 1, size: 20 } })
+    const rows = res.data?.data?.records || res.data?.data?.items || (Array.isArray(res.data?.data) ? res.data.data : [])
+    candidateTasks.value = rows
+      .filter(r => r && (r.taskId || r.id) && ['COMPLETED', 'PARTIAL_FAILED', 'SUCCESS', 'DONE'].includes(String(r.status || r.detectionStatus || '').toUpperCase()))
+      .map(r => {
+        const id = String(r.taskId || r.id)
+        const name = r.folderName || r.batchCode || r.workOrderNo || ''
+        return { taskId: id, label: name ? `${name} (${id})` : id }
+      })
+  } catch {
+    candidateTasks.value = []
+  } finally {
+    candidateTasksLoading.value = false
+  }
+}
+function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || relatedTaskId.value); form.title = ''; form.narrative = ''; editorError.value = ''; editorFieldError.value = null; editorVisible.value = true; void loadCandidateTasks() }
 function openEdit() { reportConflict.value=false; keys.clear(); editingId.value = detail.value.reportId; editingVersion.value = detail.value.version; Object.assign(form, { taskId: detail.value.taskId, title: detail.value.title, narrative: detail.value.narrative }); editorError.value = ''; editorFieldError.value = null; editorVisible.value = true }
 function clearEditorFieldError(field) {
   if (editorFieldError.value?.field === field) editorFieldError.value = null
@@ -426,7 +462,7 @@ async function download() {
   } catch (e) { detailError.value = message(e) }
   finally { busy.value = false }
 }
-const {changed:reportChanged}=useResourceChanges({domains:['QUALITY_REPORT','DETECTION'],isEditing:()=>busy.value||editorVisible.value||decisionVisible.value||transitionVisible.value||detailVisible.value,refresh:()=>load()})
+const {changed:reportChanged}=useResourceChanges({domains:['QUALITY_REPORT','DETECTION'],isEditing:()=>busy.value||editorVisible.value||decisionVisible.value||transitionVisible.value,refresh:()=>load()})
 const reportHistory=computed(()=>resourceHistoryLink('QUALITY_REPORT',editingId.value||detail.value?.reportId,'QUALITY_REPORT'))
 async function readLatestReport(){
  if(editorVisible.value||decisionVisible.value||transitionVisible.value){ElMessage.info('未提交内容已保留 请先完成或关闭编辑，再核对最新资料');return}

@@ -38,7 +38,7 @@ Agent 前端参照本地 DeepSeek Harness：会话侧栏、居中正文、右侧
 
 已实现功能的用途、技术栈、模块划分及交付边界见 [系统功能说明](docs/monolith/系统功能说明.md)。
 
-当前 `java-cloud` 分支用于模块化单体，微服务拆分后置。主站聊天和独立 AG-UI 均使用 AgentScope Java 2.0.4，旧 StateGraph 与独立 DeepSeek 客户端已移除。可用工具由角色、数据范围和功能开关共同决定；检测操作提议需人工确认，报告工具在获准时只能处理本人草稿。见 [Agent 工具权限](docs/agent/README.md#工具权限与执行) 和 [模型平台配置](docs/agent/agentscope-platform-config.md)。
+当前 `java-cloud` 分支用于模块化单体，微服务拆分后置。主站聊天和独立 AG-UI 均使用 AgentScope Java 2.0.5，旧 StateGraph 与独立 DeepSeek 客户端已移除。可用工具由角色、数据范围和功能开关共同决定；检测操作提议需人工确认，报告工具在获准时只能处理本人草稿。见 [Agent 工具权限](docs/agent/README.md#工具权限与执行) 和 [模型平台配置](docs/agent/agentscope-platform-config.md)。
 
 “Agent执行追溯 → 模型路由”可查看实际候选模型、接入标识、耗时、失败分类、备用选择及熔断跳过。主站、独立 Agent 和专业委派按模型请求编号关联，旧历史不从默认配置推断实际模型。实现与验证边界见 [模型调用路由追溯](docs/agent/模型调用路由追溯.md)。
 
@@ -70,7 +70,7 @@ Agent 对话支持安全切点暂停/继续、本人持久消息排队与逐条�
 
 ## 服务器运行与发布
 
-现有 ECS 流程复用本地 Jenkins <http://127.0.0.1:8080/> 和 `doorhandle-local-ci`，通过 SSH/SCP 调度已启动的目标；不新增常驻 ECS Jenkins agent。登录信息见 Git 忽略的 [私有文档](work/jenkins/local-access.md)。ECS 的使用窗口及启停责任见 [项目工作约定](AGENTS.md)，流程见 [统一验收与发布](docs/monolith/README.md#ecs-统一验收与发布)。当前实验室开发不触发这条流水线。
+现有 ECS 流程复用本地 Jenkins <http://127.0.0.1:8080/> 和 `doorhandle-local-ci`，通过 SSH/SCP 调度已启动的目标；不新增常驻 ECS Jenkins agent。登录信息位于 Git 忽略的私有文档 `work/jenkins/local-access.md`。ECS 的使用窗口及启停责任见 [项目工作约定](AGENTS.md)，流程见 [统一验收与发布](docs/monolith/README.md#ecs-统一验收与发布)。当前个人服务器开发不触发这条流水线。
 
 当前统一入口为 `Jenkinsfile.ecs-monolith`，在本地 `doorhandle-local-ci` 节点执行控制与打包步骤，通过 SSH 在原单体 ECS 的隔离目录测试；旧 `Jenkinsfile` 的 Windows 本地测试流程已退役。启用任务前须确认统一入口及配套 CI 文件已推送到 SCM 分支，配置记录与最终状态见 CI/CD 文档及回执；ECS 离线或连接资料未配置时预检明确失败，流水线不自动开机或无限等待，告知用户处理目标就绪条件，助手不自动启停 ECS。三机流水线须在部署方案确定后适配，已有发布与回滚背景见 [Jenkins CI/CD](script/jenkins/README.md)。
 

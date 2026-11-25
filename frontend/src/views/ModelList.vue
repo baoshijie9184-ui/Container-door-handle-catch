@@ -89,8 +89,31 @@
         <template #empty>
           <CollectionEmptyState :loading="loading" :error="listError" :filtered="listLoaded ? Object.keys(appliedFilters).length>0 : !!hasSearch" empty-title="暂无检测模型" :empty-description="isSupervisor?'可使用上方上传入口登记模型，发布后供检测任务选择。':'当前账号可查看已登记模型，需要新增时请联系主管。'" @retry="retryModelList" @reset="resetSearch" />
         </template>
-        <el-table-column label="模型与版本" min-width="230"><template #default="{row}"><div class="model-record-cell"><strong>{{ row.modelName||'模型名称未记录' }}</strong><small>版本 {{ row.version||'未记录' }} · ID {{ row.modelId }}</small><span v-if="modelDefault(row.isDefault)==='是'" class="model-default-marker"><AppIcon name="CircleCheck" :size="13" />默认模型</span></div></template></el-table-column>
-        <el-table-column label="操作" :width="isSupervisor?220:88">
+        <el-table-column label="模型与版本" min-width="180"><template #default="{row}"><div class="model-record-cell"><strong>{{ row.modelName||'模型名称未记录' }}</strong><small>v{{ row.version||'未记录' }} · ID {{ row.modelId }}</small><span v-if="modelDefault(row.isDefault)==='是'" class="model-default-marker"><AppIcon name="CircleCheck" :size="13" />默认模型</span></div></template></el-table-column>
+        <el-table-column label="状态" width="104">
+          <template #default="{ row }">
+            <StatusBadge domain="model" :code="row.status" :label="statusLabelMap[row.status]" />
+          </template>
+        </el-table-column>
+        <el-table-column label="基础校验" width="118">
+          <template #default="{ row }">
+            <StatusBadge domain="modelValidation" :code="row.validationStatus" />
+          </template>
+        </el-table-column>
+        <el-table-column label="评估资料" min-width="140">
+          <template #default="{ row }">
+            <div class="model-record-cell"><StatusBadge domain="modelEvaluation" :code="row.mlopsStatus" /><small>mAP {{ formatMetric(row.mapScore) }}</small></div>
+          </template>
+        </el-table-column>
+        <el-table-column label="漏检率 / 速度" min-width="145"><template #default="{row}"><div class="model-record-cell" :title="modelNoDetection(row).description"><strong>未检出 {{ modelNoDetection(row).value }}</strong><small>实测 {{ modelFps(row.inferenceFps) }}</small></div></template></el-table-column>
+        <el-table-column label="训练资料" min-width="145"><template #default="{row}"><div class="model-record-cell"><strong>{{ modelTrainingImages(row.trainingImageCount) }}</strong><small>{{ modelTime(row.trainingCompletedAt) }}</small></div></template></el-table-column>
+        <el-table-column label="策略与使用" min-width="145">
+          <template #default="{ row }">
+            <div class="model-record-cell"><strong>{{ modelStrategy(row) }}</strong><small>已用 {{ modelUsage(row.usageCount) }} 次</small></div>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="155"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.modelId)]" :revision="resourceVersion(row,{model:true})" resource-type="DETECTION_MODEL" :resource-id="row.modelId" domain="DETECTION_MODEL" /></template></el-table-column>
+        <el-table-column label="操作" fixed="right" :width="isSupervisor?196:84">
           <template #default="{ row }">
             <div class="operation-buttons">
               <el-button size="small" text type="primary" :aria-label="'查看模型 '+row.modelId+' 详情'" @click="handleViewDetails(row)"><AppIcon name="Search" :size="14" />详情</el-button>
@@ -102,29 +125,6 @@
                 <el-dropdown-item command="delete" divided :disabled="knownCount(row.usageCount)!==0||modelDefault(row.isDefault)!=='否'" :title="knownCount(row.usageCount)!==0?'使用次数未核对或已有使用记录':modelDefault(row.isDefault)!=='否'?'默认状态未核对或仍为默认模型':'删除登记，文件保留待回收'"><span class="model-delete-menu"><AppIcon name="Delete" :size="14" />删除登记</span></el-dropdown-item>
               </el-dropdown-menu></template></el-dropdown>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.modelId)]" :revision="resourceVersion(row,{model:true})" resource-type="DETECTION_MODEL" :resource-id="row.modelId" domain="DETECTION_MODEL" /></template></el-table-column>
-        <el-table-column label="训练资料" min-width="210"><template #default="{row}"><div class="model-record-cell"><strong>{{ modelTrainingImages(row.trainingImageCount) }}</strong><small>完成 {{ modelTime(row.trainingCompletedAt) }}</small></div></template></el-table-column>
-        <el-table-column label="漏检率 / 速度" min-width="180"><template #default="{row}"><div class="model-record-cell"><strong>整图未检出 {{ modelNoDetection(row).value }}</strong><small>{{ modelNoDetection(row).description }}</small><small>实测 {{ modelFps(row.inferenceFps) }}</small></div></template></el-table-column>
-        <el-table-column label="状态" width="120">
-          <template #default="{ row }">
-            <StatusBadge domain="model" :code="row.status" :label="statusLabelMap[row.status]" />
-          </template>
-        </el-table-column>
-        <el-table-column label="基础校验" min-width="150">
-          <template #default="{ row }">
-            <StatusBadge domain="modelValidation" :code="row.validationStatus" />
-          </template>
-        </el-table-column>
-        <el-table-column label="评估资料" min-width="185">
-          <template #default="{ row }">
-            <div class="model-record-cell"><StatusBadge domain="modelEvaluation" :code="row.mlopsStatus" /><small>mAP（AP）{{ formatMetric(row.mapScore) }}</small></div>
-          </template>
-        </el-table-column>
-        <el-table-column label="登记策略与使用" min-width="190">
-          <template #default="{ row }">
-            <div class="model-record-cell"><strong>{{ modelStrategy(row) }}</strong><small>已记使用 {{ modelUsage(row.usageCount) }} 次</small><small>最近 {{ formatDateTime(row.lastUsedAt) }}</small></div>
           </template>
         </el-table-column>
       </el-table>

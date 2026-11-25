@@ -62,7 +62,7 @@
             <div>
               <strong>{{ row.applicantUserId }}</strong>
               <small>{{ row.status==='WAITING' ? '待审批' : '待补原图批次' }} · 最多 {{ row.imageCount }} 张</small>
-              <small>{{ row.workUnitId }}</small>
+              <small :title="row.workUnitId">申请单 #{{ String(row.workUnitId || '').slice(-6) }}</small>
               <small v-if="row.remark">{{ row.remark }}</small>
             </div>
             <div class="application-row-actions">
@@ -83,15 +83,10 @@
       <summary>统计口径</summary>
       <p>检测趋势、目标分类、城市和模型按企业汇总，设备与人员按全部登记资料统计。待办与检测记录按当前账号可见范围显示。已完成任务按正式检测结果去重，历史汇总沿用原台账记录。“—”表示数据缺失或无法计算。</p>
     </details>
-    <!-- ── 顶部 Hero + 运行态势 ── -->
-    <section class="hero-grid" aria-label="任务与资源概览">
+    <!-- ── 顶部 Hero + 运行态势（主管视图聚焦全局，员工视图聚焦个人待办） ── -->
+    <section v-if="isSupervisor" class="hero-grid" aria-label="任务与资源概览">
       <div class="hero-panel app-panel command-panel">
         <h2 class="app-panel-title">任务与资源</h2>
-        <div class="hero-telemetry">
-          <span class="metric-chip">使用中设备 {{ formatNumber(deviceStatus.inUse) }} 台</span>
-          <span class="metric-chip">在岗人员 {{ formatNumber(employeeStatus.active) }} 人</span>
-          <span class="metric-chip">登记设备 {{ formatNumber(totalDevices) }} 台</span>
-        </div>
 
         <div class="hero-highlights">
           <button class="highlight-card hl-primary" type="button" :title="isSupervisor ? '查看已完成检测任务' : '查看企业检测趋势'" @click="openDetectionTotal">

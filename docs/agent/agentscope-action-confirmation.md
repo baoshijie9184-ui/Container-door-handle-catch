@@ -18,7 +18,7 @@
 
 ## 框架与业务边界
 
-沿用 AgentScope Java 2.0.4 的 Harness / ReAct、Toolkit 和权限接口。显式注册允许的委派、只读工具与提议工具，未登记工具由 SDK 权限规则和运行中间件拒绝。提议工具标记为非只读；允许保存提议不意味着允许业务分配。[锁定版本的官方权限设计](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/docs/v2/en/docs/building-blocks/permission-system.md)、[官方许可证](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/LICENSE)。
+沿用 AgentScope Java 2.0.5 的 Harness / ReAct、Toolkit 和权限接口。显式注册允许的委派、只读工具与提议工具，未登记工具由 SDK 权限规则和运行中间件拒绝。提议工具标记为非只读；允许保存提议不意味着允许业务分配。[锁定版本的官方权限设计](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.5/docs/v2/en/docs/building-blocks/permission-system.md)、[官方许可证](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.5/LICENSE)。
 
 此次采用“提议结束本轮，用户通过受控接口确认”的应用流程，没有启用 SDK 的 `PERMISSION_ASKING` 快照恢复或客户端自由 resume，不声称已实现任意执行点续跑。确认和拒绝均不再调用模型。
 

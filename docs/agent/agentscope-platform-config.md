@@ -1,6 +1,6 @@
 # AgentScope 平台配置
 
-主站聊天和独立 AG-UI 共用 `doorhandle-module-ai` 的 AgentScope Java 2.0.4 角色工厂及模型服务。默认不开启 Agent；环境与验收约定见 [Agent 开发](README.md) 和 [开发总规则](../开发规则.md)。
+主站聊天和独立 AG-UI 共用 `doorhandle-module-ai` 的 AgentScope Java 2.0.5 角色工厂及模型服务。默认不开启 Agent；环境与验收约定见 [Agent 开发](README.md) 和 [开发总规则](../开发规则.md)。
 
 ## 从环境变量配置模型
 

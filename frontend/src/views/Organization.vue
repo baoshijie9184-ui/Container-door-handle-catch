@@ -47,7 +47,7 @@
         <el-table :scrollbar-tabindex="0" role="region" aria-label="账号与人员关联" :data="accounts" v-loading="loading" row-key="userId">
           <template #empty><CollectionEmptyState :loading="loading" :error="accountError||error" :filtered="!!appliedKeyword" empty-title="暂无可查看账号" empty-description="这里只显示当前账号有权限查看的关联记录。" @retry="retryLoad" @reset="resetSearch" /></template>
           <el-table-column label="登录账号" min-width="175"><template #default="{row}"><div class="organization-account-cell"><strong>{{ row.username||'账号名称未记录' }}</strong><small>{{ roleLabel(row.role) }} · ID {{ row.userId }}</small></div></template></el-table-column>
-          <el-table-column label="员工关联" min-width="200"><template #default="{ row }"><div class="organization-account-cell"><strong>{{ employeeLabel(row) }}</strong><small>关联版本 {{ row.bindingVersion??'未记录' }}</small></div></template></el-table-column>
+          <el-table-column label="员工关联" min-width="180"><template #default="{ row }"><div class="organization-account-cell"><strong>{{ employeeLabel(row) }}</strong></div></template></el-table-column>
           <el-table-column v-if="userStore.capabilities?.changeHistory" label="关联最近修改" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="bindingChanges[String(row.userId)]" :revision="row.bindingVersion" resource-type="ACCOUNT_BINDING" :resource-id="row.userId" domain="ORGANIZATION" /></template></el-table-column>
           <el-table-column label="部门" min-width="140"><template #default="{ row }">{{ departmentLabel(row) }}</template></el-table-column>
           <el-table-column label="员工状态" min-width="110"><template #default="{ row }"><StatusBadge v-if="row.employeeStatus" domain="employee" :code="row.employeeStatus" :label="statusLabel(row.employeeStatus)" /><span v-else class="muted">{{ row.employeeId==null?'未关联':'状态未记录' }}</span></template></el-table-column>
@@ -290,7 +290,7 @@ const {changed:organizationChanged}=useResourceChanges({domains:['ORGANIZATION']
 <style scoped>
 .organization-page { gap: 18px; }
 h2 { margin: 0 0 16px; font-size: 18px; color: #0f172a; }
-.identity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
+.identity-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .identity-grid div { display: flex; flex-direction: column; gap: 8px; }
 .identity-grid > div > span, .muted { color: #64748b; font-size: 13px; }
 .identity-grid strong { color: #0f172a; overflow-wrap: anywhere; }

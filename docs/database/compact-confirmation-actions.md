@@ -1,6 +1,6 @@
 # 人工确认动作迁移
 
-本切片将两套人工确认流程分别存入 `workflow_instance`，将 Agent 原审计及旧聊天动作的新状态变更存入 `audit_event`。不新增业务表，也不合并两套权限或状态机。代码与迁移候选已编写，包含 Unicode 和服务器测试适配的 [clean test-compile 08](../../work/schema-reduction-20261105/compact29-test-compile-08.log) 于 2026-11-06 02:29:35 通过；ECS MySQL 用例尚未执行，生成 SQL 和编译均不代表迁移已执行。
+本切片将两套人工确认流程分别存入 `workflow_instance`，将 Agent 原审计及旧聊天动作的新状态变更存入 `audit_event`。不新增业务表，也不合并两套权限或状态机。代码与迁移候选已编写，包含 Unicode 和服务器测试适配的 `work/schema-reduction-20261105/compact29-test-compile-08.log`（历史本地编译日志）于 2026-11-06 02:29:35 通过；ECS MySQL 用例尚未执行，生成 SQL 和编译均不代表迁移已执行。
 
 ## 来源和落点
 

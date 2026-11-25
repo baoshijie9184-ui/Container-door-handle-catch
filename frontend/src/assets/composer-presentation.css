@@ -29,7 +29,7 @@
 .composer-preferences { flex:0 1 auto; gap:5px; margin-inline-start:auto; max-width:100%; }
 .composer .composer-input-wrap .composer-tools .composer-voice:not(.recording):not(.transcribing) { background:transparent; color:var(--app-text-secondary); }
 .composer .composer-input-wrap .composer-tools .composer-voice:hover:not(:disabled):not(.recording) { background:var(--app-surface-muted); }
-:is(.composer-toolbar,.composer-resource-toolbar) .composer-preferences .composer-model { flex:0 1 auto; width:clamp(105px,24cqi,202px); min-width:0; text-overflow:ellipsis; }
+:is(.composer-toolbar,.composer-resource-toolbar) .composer-preferences .composer-model { flex:0 1 auto; width:clamp(105px,24cqi,202px); min-width:0; height:32px; line-height:30px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .composer-approval-mode { display:inline-flex; align-items:center; gap:1px; flex:0 0 auto; max-width:100%; color:var(--app-text-secondary); }
 .composer-approval-mode > :is(svg,.el-icon) { flex:0 0 auto; }
 :is(.composer-toolbar,.composer-resource-toolbar) .composer-approval-mode select { width:auto; max-width:100%; margin:0; }
@@ -37,9 +37,13 @@
 .composer-resources .composer-resource-toolbar > :is(.gpt-send,.gpt-stop) { margin-inline-start:2px; }
 .composer .composer-toolbar .composer-upload-status,.composer-resources .composer-resource-toolbar .composer-upload-status { order:5; flex:1 0 100%; text-align:end; }
 @container (max-width:540px) {
-  .composer .composer-toolbar, .composer-resources .composer-resource-toolbar { gap:4px; }
-  .composer-preferences { gap:3px; }
-  :is(.composer-toolbar,.composer-resource-toolbar) .composer-preferences .composer-model { width:clamp(94px,35cqi,142px); }
+  .composer .composer-toolbar, .composer-resources .composer-resource-toolbar { gap:6px; max-width:100%; }
+  .composer-preferences { gap:4px; flex-wrap:wrap; margin-inline-start:0; width:100%; }
+  :is(.composer-toolbar,.composer-resource-toolbar) .composer-preferences .composer-model { width:min(100%,150px); }
+}
+@media (max-width:620px) {
+  .composer, .composer-input-wrap, .composer-toolbar { max-width:100%; min-width:0; box-sizing:border-box; }
+  .composer-preferences { flex-wrap:wrap; margin-inline-start:0; }
 }
 @media(max-width:540px) { .composer-attachments .composer-attachment { flex-basis:220px; } }
 @media(prefers-reduced-motion:reduce) { .composer-attachments .composer-attachment > button { transition:none; } :is(.composer,.composer-resources) .model-selection-feedback button { transition:none; transform:none!important; } }

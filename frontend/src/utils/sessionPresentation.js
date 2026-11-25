@@ -31,7 +31,16 @@ export function sessionTimestampLabel(session) {
 
 export function sessionPreview(session) {
   // A sidebar excerpt is plain text, never rendered as Markdown or HTML.
-  return typeof session?.lastMessage === 'string' ? session.lastMessage.replace(/\s+/g, ' ').trim().slice(0, 180) : ''
+  if (typeof session?.lastMessage !== 'string') return ''
+  return session.lastMessage
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/(^|\s)[#>*~-]+(?=\s)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180)
 }
 
 export function sessionMetadata(session, now = Date.now()) {

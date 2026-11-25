@@ -21,9 +21,12 @@ import App from './App.vue'
 import router from './router'
 import './api/request'
 
-// 全局错误处理
+// 全局错误处理（忽略浏览器无害的 ResizeObserver 循环提示）
 window.addEventListener('error', (event) => {
-  console.error('全局JS错误:', event.error)
+  const msg = String(event?.message || event?.error?.message || '')
+  if (msg.includes('ResizeObserver loop')) return
+  if (event?.error == null && !msg) return
+  console.error('全局JS错误:', event.error || msg)
 })
 
 window.addEventListener('unhandledrejection', (event) => {

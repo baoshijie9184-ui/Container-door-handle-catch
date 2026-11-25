@@ -85,9 +85,6 @@
         <div class="header-actions">
           <BeijingClock />
           <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
-          <router-link v-if="!isAgentSection" to="/agent/chat" class="assistant-entry-link" aria-label="AI 工作助手">
-            <el-icon aria-hidden="true"><ChatDotRound /></el-icon><span>AI 工作助手</span>
-          </router-link>
           <AppAccountMenu :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @logout="handleLogout" />
         </div>
       </header>
@@ -95,7 +92,7 @@
       <main id="main-content" class="layout-content" tabindex="-1">
         <router-view v-slot="{ Component }">
           <transition name="page-slide" mode="out-in">
-            <component v-if="hasCapability(route.meta.requiresCapability)" :is="Component" :key="route.params.id || undefined" />
+            <component v-if="hasCapability(route.meta.requiresCapability)" :is="Component" :key="route.path" />
             <PageHero v-else :key="route.name" :title="route.meta.title" description="本站未启用此功能。">
               <template #actions><router-link to="/home">返回首页</router-link></template>
             </PageHero>

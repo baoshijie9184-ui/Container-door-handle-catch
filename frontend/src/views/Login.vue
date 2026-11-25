@@ -17,15 +17,15 @@
         <el-alert v-if="loginError" id="login-error" ref="loginErrorRef" tabindex="-1" :title="loginError" type="error" :closable="false" show-icon role="alert" />
         <p v-if="!online" class="login-inline-note is-warning" role="status"><AppIcon name="Connection" :size="15" />浏览器报告网络已断开，请核对连接。恢复后不会自动提交登录。</p>
         <el-form ref="loginFormRef" :model="loginForm" :rules="rules" :disabled="loading || loginAccepted" label-position="top" class="login-form" :aria-busy="loading" @submit.prevent="handleLogin">
-          <el-form-item label="用户名" prop="username">
-            <el-input v-model="loginForm.username" name="username" placeholder="请输入用户名" size="large" :prefix-icon="UserIcon" autocomplete="username" autocapitalize="none" :spellcheck="false" :disabled="loading" :aria-describedby="loginError ? 'login-error' : undefined" />
+          <el-form-item label="工号" prop="username">
+            <el-input v-model="loginForm.username" name="username" placeholder="请输入工号（如 SUP-0001 / DET-0001）" size="large" :prefix-icon="UserIcon" autocomplete="username" autocapitalize="none" :spellcheck="false" :disabled="loading" :aria-describedby="loginError ? 'login-error' : undefined" />
           </el-form-item>
           <el-form-item label="密码" prop="password">
             <el-input v-model="loginForm.password" name="password" type="password" placeholder="请输入密码" size="large" show-password :prefix-icon="LockIcon" autocomplete="current-password" :disabled="loading" :aria-describedby="[loginError ? 'login-error' : '', capsLock ? 'login-caps-lock' : ''].filter(Boolean).join(' ') || undefined" @keydown="updateCapsLock" @keyup="updateCapsLock" @blur="capsLock = false" />
           </el-form-item>
           <p v-if="capsLock" id="login-caps-lock" class="login-inline-note is-warning" role="status"><AppIcon name="Warning" :size="15" />大写锁定已开启，请注意密码大小写</p>
-          <div class="login-options"><el-checkbox v-model="rememberMe" :disabled="loading" aria-describedby="login-remember-note">记住账号</el-checkbox><el-button link type="primary" :disabled="loading" @click="showForgotDialog = true">忘记密码</el-button></div>
-          <p id="login-remember-note" class="login-remember-note">仅记住用户名，不保存密码</p>
+          <div class="login-options"><el-checkbox v-model="rememberMe" :disabled="loading" aria-describedby="login-remember-note">记住工号</el-checkbox><el-button link type="primary" :disabled="loading" @click="showForgotDialog = true">忘记密码</el-button></div>
+          <p id="login-remember-note" class="login-remember-note">仅记住工号，不保存密码</p>
           <p v-if="!preferenceAvailable || !userStore.displayCacheAvailable" class="login-inline-note" role="status"><AppIcon name="Document" :size="14" />浏览器暂不能保存账号偏好，本次登录仍可继续</p>
           <el-button v-if="!loginAccepted" type="primary" :loading="loading" class="login-button" size="large" native-type="submit"><span>{{ loading ? '正在登录' : '登录系统' }}</span><AppIcon v-if="!loading" name="ArrowRight" :size="17" /></el-button>
           <a v-else class="login-open-workspace" :href="router.resolve(loginDestination).href" @click.prevent="reloadRoute(router, loginDestination)">{{ loading ? '正在打开工作空间' : '重新打开工作空间' }}<AppIcon name="ArrowRight" :size="17" /></a>
@@ -36,7 +36,7 @@
     </section>
     <el-dialog v-model="showForgotDialog" title="找回密码" width="min(440px, 94vw)" class="login-password-help">
       <div class="password-help-heading"><AppIcon name="Key" :size="21" /><strong>联系企业主管或系统管理员</strong></div>
-      <p class="password-help">请提供需要核对的用户名，由有权限的管理员处理账号与密码问题。当前页面不支持自行重置。</p>
+      <p class="password-help">请提供需要核对的工号，由有权限的管理员处理账号与密码问题。当前页面不支持自行重置。</p>
       <template #footer><el-button type="primary" @click="showForgotDialog = false">知道了</el-button></template>
     </el-dialog>
   </div>
@@ -101,7 +101,7 @@ onUnmounted(() => {
 
 const rules = {
   username: [
-    { required: true, message: '请输入用户名', trigger: ['blur', 'change'] }
+    { required: true, message: '请输入工号', trigger: ['blur', 'change'] }
   ],
   password: [
     { required: true, message: '请输入密码', trigger: ['blur', 'change'] }
