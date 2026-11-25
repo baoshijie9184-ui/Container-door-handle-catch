@@ -339,13 +339,13 @@ const candidateTasks = ref([]), candidateTasksLoading = ref(false)
 async function loadCandidateTasks() {
   candidateTasksLoading.value = true
   try {
-    const res = await request.get('/api/detection/tasks', { params: { page: 1, size: 20 } })
+    const res = await request.get('/api/detection/board', { params: { page: 1, size: 20 } })
     const rows = res.data?.data?.records || res.data?.data?.items || (Array.isArray(res.data?.data) ? res.data.data : [])
     candidateTasks.value = rows
-      .filter(r => r && (r.taskId || r.id) && ['COMPLETED', 'PARTIAL_FAILED', 'SUCCESS', 'DONE'].includes(String(r.status || r.detectionStatus || '').toUpperCase()))
+      .filter(r => r && (r.taskId || r.id) && ['COMPLETED', 'PARTIAL_FAILED', 'SUCCESS', 'DONE', 'VERIFIED', 'REVIEWED'].includes(String(r.status || r.detectionStatus || r.taskStatus || '').toUpperCase()))
       .map(r => {
         const id = String(r.taskId || r.id)
-        const name = r.folderName || r.batchCode || r.workOrderNo || ''
+        const name = r.folderName || r.batchName || r.batchCode || r.workOrderNo || ''
         return { taskId: id, label: name ? `${name} (${id})` : id }
       })
   } catch {

@@ -207,8 +207,8 @@
     </section>
     </div>
 
-    <!-- ── 图表 + 摘要区 ── -->
-    <section class="content-grid">
+    <!-- ── 图表 + 摘要区（主管端展示企业全局分析，员工端聚焦个人待办与快捷入口） ── -->
+    <section v-if="isSupervisor" class="content-grid">
       <!-- 检测趋势 (左侧宽) -->
       <el-card class="chart-card-wide">
         <template #header>

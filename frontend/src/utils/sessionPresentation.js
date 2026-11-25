@@ -35,6 +35,7 @@ export function sessionPreview(session) {
   return session.lastMessage
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`([^`]+)`/g, '$1')
+    .replace(/`/g, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/__([^_]+)__/g, '$1')
     .replace(/(^|\s)[#>*~-]+(?=\s)/g, '$1')

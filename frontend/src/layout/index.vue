@@ -83,7 +83,7 @@
 
         <RealtimeStatus />
         <div class="header-actions">
-          <BeijingClock />
+          <BeijingClock v-if="!isMobile" />
           <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
           <AppAccountMenu :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @logout="handleLogout" />
         </div>
