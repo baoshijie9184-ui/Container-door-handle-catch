@@ -717,11 +717,15 @@ async function refreshAll() {
 async function initCharts() {
   await nextTick()
   if (disposed) return
-    charts.detectionTrend = echarts.init(detectionTrendChartRef.value)
-    charts.detectionDistribution = echarts.init(detectionDistributionChartRef.value)
-    charts.deviceStatus = echarts.init(deviceStatusChartRef.value)
-    charts.employeeStatus = echarts.init(employeeStatusChartRef.value)
-    charts.region = echarts.init(regionChartRef.value)
+  if (!isSupervisor.value) {
+    if (!failedSections.value.length && !trendLoading.value) lastUpdated.value = beijingDateTime()
+    return
+  }
+  if (detectionTrendChartRef.value) charts.detectionTrend = echarts.init(detectionTrendChartRef.value)
+  if (detectionDistributionChartRef.value) charts.detectionDistribution = echarts.init(detectionDistributionChartRef.value)
+  if (deviceStatusChartRef.value) charts.deviceStatus = echarts.init(deviceStatusChartRef.value)
+  if (employeeStatusChartRef.value) charts.employeeStatus = echarts.init(employeeStatusChartRef.value)
+  if (regionChartRef.value) charts.region = echarts.init(regionChartRef.value)
   await updateChartData()
   if (!failedSections.value.length && !trendLoading.value) lastUpdated.value = beijingDateTime()
 }
