@@ -627,7 +627,7 @@ onMounted(async () => {
   chartObserver = new ResizeObserver(entries => {
     for (const entry of entries) echarts.getInstanceByDom(entry.target)?.resize()
   })
-  Object.values(charts).forEach(chart => chartObserver.observe(chart.getDom()))
+  Object.values(charts).forEach(chart => { if (chart) chartObserver.observe(chart.getDom()) })
   refreshTimer = window.setInterval(() => {
     if (!document.hidden) refreshAll()
   }, 30000)
