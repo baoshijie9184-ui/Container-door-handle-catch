@@ -24,10 +24,14 @@ import './api/request'
 // 全局错误处理（忽略浏览器无害的 ResizeObserver 循环提示）
 window.addEventListener('error', (event) => {
   const msg = String(event?.message || event?.error?.message || '')
-  if (msg.includes('ResizeObserver loop')) return
+  if (msg.includes('ResizeObserver loop')) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return
+  }
   if (event?.error == null && !msg) return
   console.error('全局JS错误:', event.error || msg)
-})
+}, true)
 
 window.addEventListener('unhandledrejection', (event) => {
   console.error('未处理的Promise错误:', event.reason)

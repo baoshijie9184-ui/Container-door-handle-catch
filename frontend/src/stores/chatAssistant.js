@@ -66,7 +66,15 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     diagnosticsLoading.value = false
   }
   watch(sessionId, resetDiagnostics, { flush:'sync' })
-  onScopeDispose(resetDiagnostics)
+  const stopAccountReset = accountSession.onReset(() => {
+    sessionId.value = ''
+    sessionTitle.value = '智能助手'
+    sessions.value = []
+    messages.value = []
+    bootstrapped.value = false
+    resetDiagnostics()
+  })
+  onScopeDispose(() => { stopAccountReset(); resetDiagnostics() })
 
   // 菜单状态
   const menuOpenId = ref(null)
